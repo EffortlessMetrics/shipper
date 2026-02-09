@@ -1,0 +1,31 @@
+name: Publish to crates.io
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Optional: install a Rust toolchain.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Authenticate with crates.io (Trusted Publishing)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Install shipper
+        run: cargo install shipper-cli --locked
+
+      - name: Publish (resumable)
+        run: shipper publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
