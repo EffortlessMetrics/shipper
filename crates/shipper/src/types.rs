@@ -116,3 +116,58 @@ pub struct Receipt {
     pub finished_at: DateTime<Utc>,
     pub packages: Vec<PackageReceipt>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crates_io_registry_defaults_are_expected() {
+        let reg = Registry::crates_io();
+        assert_eq!(reg.name, "crates-io");
+        assert_eq!(reg.api_base, "https://crates.io");
+    }
+
+    #[test]
+    fn package_state_serializes_with_tagged_representation() {
+        let st = PackageState::Failed {
+            class: ErrorClass::Permanent,
+            message: "nope".to_string(),
+        };
+
+        let json = serde_json::to_string(&st).expect("serialize");
+        assert!(json.contains("\"state\":\"failed\""));
+        assert!(json.contains("\"class\":\"permanent\""));
+
+        let rt: PackageState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt, st);
+    }
+
+    #[test]
+    fn execution_state_roundtrips_json() {
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "demo@1.2.3".to_string(),
+            PackageProgress {
+                name: "demo".to_string(),
+                version: "1.2.3".to_string(),
+                attempts: 2,
+                state: PackageState::Published,
+                last_updated_at: Utc::now(),
+            },
+        );
+
+        let st = ExecutionState {
+            plan_id: "plan-1".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
+        };
+
+        let json = serde_json::to_string_pretty(&st).expect("serialize");
+        let parsed: ExecutionState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.plan_id, "plan-1");
+        assert!(parsed.packages.contains_key("demo@1.2.3"));
+    }
+}

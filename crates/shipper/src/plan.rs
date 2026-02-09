@@ -29,14 +29,14 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     // Workspace publishable set (restricted by `[package] publish` where possible).
     let publishable: BTreeSet<PackageId> = workspace_ids
         .iter()
-        .filter(|id| {
-            if let Some(pkg) = pkg_map.get(*id) {
-                publish_allowed(pkg, &spec.registry.name)
+        .filter_map(|id| {
+            let pkg = pkg_map.get(id)?;
+            if publish_allowed(pkg, &spec.registry.name) {
+                Some(id.clone())
             } else {
-                false
+                None
             }
         })
-        .cloned()
         .collect();
 
     // Build dependency edges A->deps (restricted to publishable workspace members).
@@ -57,13 +57,22 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
                 continue;
             }
 
-            let is_relevant = dep.dep_kinds.iter().any(|k| matches!(k.kind, DependencyKind::Normal | DependencyKind::Build));
+            let is_relevant = dep
+                .dep_kinds
+                .iter()
+                .any(|k| matches!(k.kind, DependencyKind::Normal | DependencyKind::Build));
             if !is_relevant {
                 continue;
             }
 
-            deps_of.entry(node.id.clone()).or_default().insert(dep.pkg.clone());
-            dependents_of.entry(dep.pkg.clone()).or_default().insert(node.id.clone());
+            deps_of
+                .entry(node.id.clone())
+                .or_default()
+                .insert(dep.pkg.clone());
+            dependents_of
+                .entry(dep.pkg.clone())
+                .or_default()
+                .insert(node.id.clone());
         }
     }
 
@@ -185,12 +194,13 @@ fn topo_sort(
                 if !included.contains(dep) {
                     continue;
                 }
-                if let Some(d) = indegree.get_mut(dep) {
-                    *d = d.saturating_sub(1);
-                    if *d == 0 {
-                        let name = pkg_map.get(dep).unwrap().name.clone();
-                        ready.insert((name, dep.clone()));
-                    }
+                let d = indegree
+                    .get_mut(dep)
+                    .expect("included package must have indegree");
+                *d = d.saturating_sub(1);
+                if *d == 0 {
+                    let name = pkg_map.get(dep).unwrap().name.clone();
+                    ready.insert((name, dep.clone()));
                 }
             }
         }
@@ -215,4 +225,279 @@ fn compute_plan_id(registry_api_base: &str, packages: &[PlannedPackage]) -> Stri
     }
     let digest = hasher.finalize();
     hex::encode(digest)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use cargo_metadata::{MetadataCommand, PackageId};
+    use proptest::prelude::*;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::types::Registry;
+
+    fn write_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("mkdir");
+        }
+        fs::write(path, content).expect("write");
+    }
+
+    fn create_workspace(root: &Path) {
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["a", "b", "c", "d", "zeta", "alpha", "npdep"]
+resolver = "2"
+"#,
+        );
+
+        write_file(
+            &root.join("a/Cargo.toml"),
+            r#"
+[package]
+name = "a"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("a/src/lib.rs"), "pub fn a() {}\n");
+
+        write_file(
+            &root.join("b/Cargo.toml"),
+            r#"
+[package]
+name = "b"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+a = { path = "../a", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("b/src/lib.rs"), "pub fn b() {}\n");
+
+        write_file(
+            &root.join("c/Cargo.toml"),
+            r#"
+[package]
+name = "c"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+        );
+        write_file(&root.join("c/src/lib.rs"), "pub fn c() {}\n");
+
+        write_file(
+            &root.join("d/Cargo.toml"),
+            r#"
+[package]
+name = "d"
+version = "0.1.0"
+edition = "2021"
+publish = ["private-reg"]
+"#,
+        );
+        write_file(&root.join("d/src/lib.rs"), "pub fn d() {}\n");
+
+        write_file(
+            &root.join("zeta/Cargo.toml"),
+            r#"
+[package]
+name = "zeta"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("zeta/src/lib.rs"), "pub fn zeta() {}\n");
+
+        write_file(
+            &root.join("alpha/Cargo.toml"),
+            r#"
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+a = { path = "../a", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("alpha/src/lib.rs"), "pub fn alpha() {}\n");
+
+        write_file(
+            &root.join("npdep/Cargo.toml"),
+            r#"
+[package]
+name = "npdep"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+c = { path = "../c", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("npdep/src/lib.rs"), "pub fn npdep() {}\n");
+    }
+
+    fn spec_for(root: &Path) -> ReleaseSpec {
+        ReleaseSpec {
+            manifest_path: root.join("Cargo.toml"),
+            registry: Registry::crates_io(),
+            selected_packages: None,
+        }
+    }
+
+    #[test]
+    fn build_plan_filters_publishability_and_orders_dependencies() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<String> = ws.plan.packages.iter().map(|p| p.name.clone()).collect();
+
+        assert!(names.contains(&"a".to_string()));
+        assert!(names.contains(&"b".to_string()));
+        assert!(names.contains(&"alpha".to_string()));
+        assert!(names.contains(&"zeta".to_string()));
+        assert!(names.contains(&"npdep".to_string()));
+        assert!(!names.contains(&"c".to_string()));
+        assert!(!names.contains(&"d".to_string()));
+
+        let a_idx = names.iter().position(|n| n == "a").expect("a present");
+        let b_idx = names.iter().position(|n| n == "b").expect("b present");
+        assert!(a_idx < b_idx);
+    }
+
+    #[test]
+    fn build_plan_selected_packages_include_internal_dependencies() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["b".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<String> = ws.plan.packages.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn build_plan_selected_single_package_does_not_include_dependents() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["a".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<String> = ws.plan.packages.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn build_plan_errors_for_unknown_selected_package() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["does-not-exist".to_string()]);
+        let err = build_plan(&spec).expect_err("must fail");
+        assert!(format!("{err:#}").contains("selected package not found"));
+    }
+
+    #[test]
+    fn topo_sort_reports_cycles() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let manifest = td.path().join("Cargo.toml");
+
+        let metadata = MetadataCommand::new()
+            .manifest_path(&manifest)
+            .exec()
+            .expect("metadata");
+
+        let pkg_map = metadata
+            .packages
+            .iter()
+            .map(|p| (p.id.clone(), p))
+            .collect::<BTreeMap<PackageId, &cargo_metadata::Package>>();
+        let mut by_name = BTreeMap::<String, PackageId>::new();
+        for pkg in &metadata.packages {
+            by_name.insert(pkg.name.clone(), pkg.id.clone());
+        }
+
+        let a = by_name.get("a").expect("a").clone();
+        let b = by_name.get("b").expect("b").clone();
+
+        let included = [a.clone(), b.clone()].into_iter().collect::<BTreeSet<_>>();
+        let deps_of = BTreeMap::from([
+            (a.clone(), [b.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (b.clone(), [a.clone()].into_iter().collect::<BTreeSet<_>>()),
+        ]);
+        let dependents_of = BTreeMap::from([
+            (a.clone(), [b.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (b.clone(), [a.clone()].into_iter().collect::<BTreeSet<_>>()),
+        ]);
+
+        let err = topo_sort(&included, &deps_of, &dependents_of, &pkg_map).expect_err("cycle");
+        assert!(format!("{err:#}").contains("dependency cycle detected"));
+    }
+
+    #[test]
+    fn build_plan_is_deterministic_for_independent_nodes_by_name() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let alpha_idx = ws
+            .plan
+            .packages
+            .iter()
+            .position(|p| p.name == "alpha")
+            .expect("alpha");
+        let zeta_idx = ws
+            .plan
+            .packages
+            .iter()
+            .position(|p| p.name == "zeta")
+            .expect("zeta");
+        assert!(alpha_idx < zeta_idx);
+    }
+
+    #[test]
+    fn build_plan_errors_for_missing_manifest() {
+        let spec = ReleaseSpec {
+            manifest_path: Path::new("missing").join("Cargo.toml"),
+            registry: Registry::crates_io(),
+            selected_packages: None,
+        };
+        let err = build_plan(&spec).expect_err("must fail");
+        assert!(format!("{err:#}").contains("failed to execute cargo metadata"));
+    }
+
+    proptest! {
+        #[test]
+        fn compute_plan_id_is_stable_and_hex(
+            registry in "[a-z]{1,8}",
+            packages in prop::collection::vec(("[a-z]{1,6}", 0u8..10u8, 0u8..10u8, 0u8..10u8), 1..8),
+        ) {
+            let pkgs: Vec<PlannedPackage> = packages
+                .iter()
+                .map(|(name, major, minor, patch)| PlannedPackage {
+                    name: name.clone(),
+                    version: format!("{}.{}.{}", major, minor, patch),
+                    manifest_path: Path::new("x").join(format!("{name}.toml")),
+                })
+                .collect();
+
+            let id1 = compute_plan_id(&registry, &pkgs);
+            let id2 = compute_plan_id(&registry, &pkgs);
+            prop_assert_eq!(&id1, &id2);
+            prop_assert_eq!(id1.len(), 64);
+            prop_assert!(id1.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+    }
 }
