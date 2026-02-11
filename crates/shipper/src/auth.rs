@@ -20,10 +20,10 @@ pub fn resolve_token(registry_name: &str) -> Result<Option<String>> {
     let cargo_home = cargo_home_dir()?;
     for filename in ["credentials.toml", "credentials"] {
         let path = cargo_home.join(filename);
-        if path.exists() {
-            if let Some(tok) = token_from_credentials_file(&path, registry_name)? {
-                return Ok(Some(tok));
-            }
+        if path.exists()
+            && let Some(tok) = token_from_credentials_file(&path, registry_name)?
+        {
+            return Ok(Some(tok));
         }
     }
 
@@ -32,12 +32,12 @@ pub fn resolve_token(registry_name: &str) -> Result<Option<String>> {
 
 fn token_from_env(registry_name: &str) -> Option<String> {
     // The default registry (crates.io) has a special env var name.
-    if registry_name == "crates-io" {
-        if let Ok(v) = env::var("CARGO_REGISTRY_TOKEN") {
-            let v = v.trim().to_string();
-            if !v.is_empty() {
-                return Some(v);
-            }
+    if registry_name == "crates-io"
+        && let Ok(v) = env::var("CARGO_REGISTRY_TOKEN")
+    {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Some(v);
         }
     }
 
@@ -80,16 +80,15 @@ fn token_from_credentials_file(path: &PathBuf, registry_name: &str) -> Result<Op
     })?;
 
     // crates.io commonly uses `[registry] token = "..."`.
-    if registry_name == "crates-io" {
-        if let Some(tok) = value
+    if registry_name == "crates-io"
+        && let Some(tok) = value
             .get("registry")
             .and_then(|t| t.get("token"))
             .and_then(|v| v.as_str())
-        {
-            let tok = tok.trim().to_string();
-            if !tok.is_empty() {
-                return Ok(Some(tok));
-            }
+    {
+        let tok = tok.trim().to_string();
+        if !tok.is_empty() {
+            return Ok(Some(tok));
         }
     }
 
@@ -268,8 +267,7 @@ mod tests {
         let path = td.path().join("credentials.toml");
         fs::write(
             &path,
-            r#"
-[registry]
+            r#"[registry]
 token = "  secret  "
 "#,
         )
@@ -285,14 +283,13 @@ token = "  secret  "
         let path = td.path().join("credentials.toml");
         fs::write(
             &path,
-            r#"
-[registries.private-reg]
+            r#"[registries.private_reg]
 token = "token-x"
 "#,
         )
         .expect("write");
 
-        let tok = token_from_credentials_file(&path, "private-reg").expect("parse");
+        let tok = token_from_credentials_file(&path, "private_reg").expect("parse");
         assert_eq!(tok.as_deref(), Some("token-x"));
     }
 
@@ -302,8 +299,7 @@ token = "token-x"
         let path = td.path().join("credentials.toml");
         fs::write(
             &path,
-            r#"
-[registries."crates.io"]
+            r#"[registries.crates-io]
 token = "token-dot"
 "#,
         )
@@ -337,8 +333,7 @@ token = "token-dot"
         let path = td.path().join("credentials.toml");
         fs::write(
             &path,
-            r#"
-[registry]
+            r#"[registry]
 token = ""
 "#,
         )
@@ -354,17 +349,16 @@ token = ""
         let path = td.path().join("credentials.toml");
         fs::write(
             &path,
-            r#"
-[registries.private-reg]
+            r#"[registries.private_reg]
 token = "   "
 
-[registries."crates.io"]
+[registries.crates-io]
 token = "  "
 "#,
         )
         .expect("write");
 
-        let named = token_from_credentials_file(&path, "private-reg").expect("parse");
+        let named = token_from_credentials_file(&path, "private_reg").expect("parse");
         assert!(named.is_none());
 
         let crates = token_from_credentials_file(&path, "crates-io").expect("parse");
@@ -380,8 +374,7 @@ token = "  "
 
         fs::write(
             td.path().join("credentials.toml"),
-            r#"
-[registry]
+            r#"[registry]
 token = "file-token"
 "#,
         )
@@ -400,8 +393,7 @@ token = "file-token"
         let _c = EnvGuard::unset("CARGO_REGISTRIES_PRIVATE_REG_TOKEN");
         fs::write(
             td.path().join("credentials"),
-            r#"
-[registries.private-reg]
+            r#"[registries.private_reg]
 token = "legacy-token"
 "#,
         )
@@ -421,16 +413,14 @@ token = "legacy-token"
 
         fs::write(
             td.path().join("credentials.toml"),
-            r#"
-[registry]
+            r#"[registry]
 token = "toml-token"
 "#,
         )
         .expect("write");
         fs::write(
             td.path().join("credentials"),
-            r#"
-[registry]
+            r#"[registry]
 token = "legacy-token"
 "#,
         )
@@ -450,16 +440,14 @@ token = "legacy-token"
 
         fs::write(
             td.path().join("credentials.toml"),
-            r#"
-[registry]
+            r#"[registry]
 token = " "
 "#,
         )
         .expect("write");
         fs::write(
             td.path().join("credentials"),
-            r#"
-[registry]
+            r#"[registry]
 token = "fallback-token"
 "#,
         )

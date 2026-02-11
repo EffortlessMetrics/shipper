@@ -7,9 +7,13 @@
 
 pub mod auth;
 pub mod cargo;
+pub mod config;
 pub mod engine;
+pub mod events;
 pub mod git;
+pub mod lock;
 pub mod plan;
 pub mod registry;
 pub mod state;
+pub mod store;
 pub mod types;

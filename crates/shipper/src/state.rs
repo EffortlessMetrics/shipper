@@ -45,6 +45,34 @@ pub fn write_receipt(state_dir: &Path, receipt: &Receipt) -> Result<()> {
     atomic_write_json(&path, receipt)
 }
 
+/// Load receipt from state directory
+pub fn load_receipt(state_dir: &Path) -> Result<Option<Receipt>> {
+    let path = receipt_path(state_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read receipt file {}", path.display()))?;
+    let receipt: Receipt = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse receipt JSON {}", path.display()))?;
+    Ok(Some(receipt))
+}
+
+/// Clear state file (state.json) from state directory
+pub fn clear_state(state_dir: &Path) -> Result<()> {
+    let path = state_path(state_dir);
+    if path.exists() {
+        fs::remove_file(&path)
+            .with_context(|| format!("failed to remove state file {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Check if there's incomplete state (state.json exists but receipt.json doesn't)
+pub fn has_incomplete_state(state_dir: &Path) -> bool {
+    state_path(state_dir).exists() && !receipt_path(state_dir).exists()
+}
+
 fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     let tmp = path.with_extension("tmp");
     let data = serde_json::to_vec_pretty(value).context("failed to serialize JSON")?;
@@ -118,7 +146,12 @@ mod tests {
                 started_at: Utc::now(),
                 finished_at: Utc::now(),
                 duration_ms: 10,
+                evidence: crate::types::PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
             }],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
         }
     }
 

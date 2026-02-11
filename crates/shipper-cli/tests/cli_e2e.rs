@@ -64,11 +64,7 @@ fn normalize_output(raw: &str) -> String {
 }
 
 fn path_sep() -> &'static str {
-    if cfg!(windows) {
-        ";"
-    } else {
-        ":"
-    }
+    if cfg!(windows) { ";" } else { ":" }
 }
 
 fn create_fake_cargo_proxy(bin_dir: &Path) {

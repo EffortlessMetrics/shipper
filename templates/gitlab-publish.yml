@@ -13,3 +13,8 @@ publish:
     # Configure this in GitLab CI/CD settings (masked, protected)
     # CARGO_REGISTRY_TOKEN: "..."
     CARGO_TERM_COLOR: "always"
+  artifacts:
+    paths:
+      - .shipper/
+    expire_in: 1 day
+    when: always

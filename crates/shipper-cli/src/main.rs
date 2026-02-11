@@ -1,10 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
+use shipper::config::ShipperConfig;
 use shipper::engine::{self, Reporter};
 use shipper::plan;
 use shipper::types::{Registry, ReleaseSpec, RuntimeOptions};
@@ -13,6 +14,10 @@ use shipper::types::{Registry, ReleaseSpec, RuntimeOptions};
 #[command(name = "shipper", version)]
 #[command(about = "Resumable, backoff-aware crates.io publishing for workspaces")]
 struct Cli {
+    /// Path to a custom configuration file (.shipper.toml)
+    #[arg(long)]
+    config: Option<PathBuf>,
+
     /// Path to the workspace Cargo.toml
     #[arg(long, default_value = "Cargo.toml")]
     manifest_path: PathBuf,
@@ -32,6 +37,10 @@ struct Cli {
     /// Directory for shipper state and receipts (default: .shipper)
     #[arg(long, default_value = ".shipper")]
     state_dir: PathBuf,
+
+    /// Number of output lines to capture for evidence (default: 50)
+    #[arg(long, default_value_t = 50)]
+    output_lines: usize,
 
     /// Allow publishing from a dirty git working tree.
     #[arg(long)]
@@ -71,9 +80,45 @@ struct Cli {
     #[arg(long, default_value = "5s")]
     verify_poll: String,
 
+    /// Readiness check method: api (default, fast), index (slower, more accurate), both (slowest, most reliable)
+    #[arg(long, default_value = "api")]
+    readiness_method: String,
+
+    /// How long to wait for registry visibility during readiness checks.
+    #[arg(long, default_value = "5m")]
+    readiness_timeout: String,
+
+    /// Poll interval for readiness checks.
+    #[arg(long, default_value = "2s")]
+    readiness_poll: String,
+
+    /// Disable readiness checks (for advanced users).
+    #[arg(long)]
+    no_readiness: bool,
+
     /// Force resume even if the computed plan differs from the state file.
     #[arg(long)]
     force_resume: bool,
+
+    /// Force override of existing locks (use with caution)
+    #[arg(long)]
+    force: bool,
+
+    /// Lock timeout duration (e.g. 1h, 30m). Locks older than this are considered stale.
+    #[arg(long, default_value = "1h")]
+    lock_timeout: String,
+
+    /// Publish policy: safe (verify+strict), balanced (verify when needed), fast (no verify)
+    #[arg(long, default_value = "safe")]
+    policy: String,
+
+    /// Verify mode: workspace (default), package (per-crate), none (no verify)
+    #[arg(long, default_value = "workspace")]
+    verify_mode: String,
+
+    /// Output format: text (default) or json
+    #[arg(long, default_value = "text")]
+    format: String,
 
     #[command(subcommand)]
     cmd: Commands,
@@ -93,6 +138,46 @@ enum Commands {
     Status,
     /// Print environment and auth diagnostics.
     Doctor,
+    /// View detailed event log.
+    InspectEvents,
+    /// View detailed receipt with evidence.
+    InspectReceipt,
+    /// Print CI configuration snippets for various platforms.
+    #[command(subcommand)]
+    Ci(CiCommands),
+    /// Clean state files (state.json, receipt.json, events.jsonl).
+    Clean {
+        /// Keep receipt.json (only remove state.json and events.jsonl)
+        #[arg(long)]
+        keep_receipt: bool,
+    },
+    /// Configuration file management.
+    #[command(subcommand)]
+    Config(ConfigCommands),
+}
+
+#[derive(Subcommand, Debug)]
+enum CiCommands {
+    /// Print GitHub Actions workflow snippet.
+    GitHubActions,
+    /// Print GitLab CI workflow snippet.
+    GitLab,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum ConfigCommands {
+    /// Generate a default .shipper.toml configuration file.
+    Init {
+        /// Output path for the configuration file (default: .shipper.toml)
+        #[arg(short, long, default_value = ".shipper.toml")]
+        output: PathBuf,
+    },
+    /// Validate a configuration file.
+    Validate {
+        /// Path to the configuration file to validate (default: .shipper.toml)
+        #[arg(short, long, default_value = ".shipper.toml")]
+        path: PathBuf,
+    },
 }
 
 struct CliReporter;
@@ -114,6 +199,11 @@ impl Reporter for CliReporter {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Handle Config commands early (they don't need workspace plan)
+    if let Commands::Config(config_cmd) = &cli.cmd {
+        return run_config(config_cmd.clone());
+    }
+
     let spec = ReleaseSpec {
         manifest_path: cli.manifest_path.clone(),
         registry: Registry {
@@ -129,6 +219,18 @@ fn main() -> Result<()> {
 
     let planned = plan::build_plan(&spec)?;
 
+    // Load configuration file
+    let config = if let Some(ref config_path) = cli.config {
+        // Use custom config file specified via --config
+        Some(ShipperConfig::load_from_file(config_path)
+            .with_context(|| format!("Failed to load config from: {}", config_path.display()))?)
+    } else {
+        // Try to load .shipper.toml from workspace root
+        ShipperConfig::load_from_workspace(&planned.workspace_root)
+            .with_context(|| "Failed to load config from workspace")?
+    };
+
+    // Build RuntimeOptions, merging config values where appropriate
     let opts = RuntimeOptions {
         allow_dirty: cli.allow_dirty,
         skip_ownership_check: cli.skip_ownership_check,
@@ -141,6 +243,27 @@ fn main() -> Result<()> {
         verify_poll_interval: parse_duration(&cli.verify_poll)?,
         state_dir: cli.state_dir.clone(),
         force_resume: cli.force_resume,
+        force: cli.force,
+        lock_timeout: parse_duration(&cli.lock_timeout)?,
+        policy: parse_policy(&cli.policy)?,
+        verify_mode: parse_verify_mode(&cli.verify_mode)?,
+        readiness: shipper::types::ReadinessConfig {
+            enabled: !cli.no_readiness,
+            method: parse_readiness_method(&cli.readiness_method)?,
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(60),
+            max_total_wait: parse_duration(&cli.readiness_timeout)?,
+            poll_interval: parse_duration(&cli.readiness_poll)?,
+            jitter_factor: 0.5,
+        },
+        output_lines: cli.output_lines,
+    };
+
+    // Merge with config if present (CLI values take precedence)
+    let opts = if let Some(ref config) = config {
+        config.merge_with_cli_opts(opts)
+    } else {
+        opts
     };
 
     let mut reporter = CliReporter;
@@ -155,17 +278,43 @@ fn main() -> Result<()> {
         }
         Commands::Publish => {
             let receipt = engine::run_publish(&planned, &opts, &mut reporter)?;
-            print_receipt(&receipt, &planned.workspace_root, &opts.state_dir);
+            print_receipt(
+                &receipt,
+                &planned.workspace_root,
+                &opts.state_dir,
+                &cli.format,
+            );
         }
         Commands::Resume => {
             let receipt = engine::run_resume(&planned, &opts, &mut reporter)?;
-            print_receipt(&receipt, &planned.workspace_root, &opts.state_dir);
+            print_receipt(
+                &receipt,
+                &planned.workspace_root,
+                &opts.state_dir,
+                &cli.format,
+            );
         }
         Commands::Status => {
             run_status(&planned, &mut reporter)?;
         }
         Commands::Doctor => {
             run_doctor(&planned, &opts, &mut reporter)?;
+        }
+        Commands::InspectEvents => {
+            run_inspect_events(&planned, &opts)?;
+        }
+        Commands::InspectReceipt => {
+            run_inspect_receipt(&planned, &opts)?;
+        }
+        Commands::Ci(ci_cmd) => {
+            run_ci(ci_cmd, &cli.state_dir, &planned.workspace_root)?;
+        }
+        Commands::Clean { keep_receipt } => {
+            run_clean(&cli.state_dir, &planned.workspace_root, keep_receipt)?;
+        }
+        Commands::Config(_) => {
+            // This should never be reached since we handle Config commands early
+            unreachable!("Config commands should be handled before this match");
         }
     }
 
@@ -174,6 +323,33 @@ fn main() -> Result<()> {
 
 fn parse_duration(s: &str) -> Result<Duration> {
     humantime::parse_duration(s).with_context(|| format!("invalid duration: {s}"))
+}
+
+fn parse_policy(s: &str) -> Result<shipper::types::PublishPolicy> {
+    match s.to_lowercase().as_str() {
+        "safe" => Ok(shipper::types::PublishPolicy::Safe),
+        "balanced" => Ok(shipper::types::PublishPolicy::Balanced),
+        "fast" => Ok(shipper::types::PublishPolicy::Fast),
+        _ => bail!("invalid policy: {s} (expected: safe, balanced, fast)"),
+    }
+}
+
+fn parse_verify_mode(s: &str) -> Result<shipper::types::VerifyMode> {
+    match s.to_lowercase().as_str() {
+        "workspace" => Ok(shipper::types::VerifyMode::Workspace),
+        "package" => Ok(shipper::types::VerifyMode::Package),
+        "none" => Ok(shipper::types::VerifyMode::None),
+        _ => bail!("invalid verify-mode: {s} (expected: workspace, package, none)"),
+    }
+}
+
+fn parse_readiness_method(s: &str) -> Result<shipper::types::ReadinessMethod> {
+    match s.to_lowercase().as_str() {
+        "api" => Ok(shipper::types::ReadinessMethod::Api),
+        "index" => Ok(shipper::types::ReadinessMethod::Index),
+        "both" => Ok(shipper::types::ReadinessMethod::Both),
+        _ => bail!("invalid readiness-method: {s} (expected: api, index, both)"),
+    }
 }
 
 fn print_plan(ws: &plan::PlannedWorkspace) {
@@ -185,6 +361,14 @@ fn print_plan(ws: &plan::PlannedWorkspace) {
     println!("workspace_root: {}", ws.workspace_root.display());
     println!();
 
+    if !ws.skipped.is_empty() {
+        println!("Skipped packages:");
+        for p in &ws.skipped {
+            println!("  - {}@{} ({})", p.name, p.version, p.reason);
+        }
+        println!();
+    }
+
     for (idx, p) in ws.plan.packages.iter().enumerate() {
         println!("{:>3}. {}@{}", idx + 1, p.name, p.version);
     }
@@ -193,11 +377,14 @@ fn print_plan(ws: &plan::PlannedWorkspace) {
 fn print_preflight(rep: &engine::PreflightReport) {
     println!("plan_id: {}", rep.plan_id);
     println!("token_detected: {}", rep.token_detected);
+    println!("finishability: {:?}", rep.finishability);
     println!();
 
     for p in &rep.packages {
         let status = if p.already_published {
             "already published"
+        } else if p.is_new_crate {
+            "new crate"
         } else {
             "needs publish"
         };
@@ -205,37 +392,141 @@ fn print_preflight(rep: &engine::PreflightReport) {
     }
 }
 
-fn print_receipt(receipt: &shipper::types::Receipt, workspace_root: &PathBuf, state_dir: &PathBuf) {
-    println!("plan_id: {}", receipt.plan_id);
-    println!(
-        "registry: {} ({})",
-        receipt.registry.name, receipt.registry.api_base
-    );
+fn print_receipt(
+    receipt: &shipper::types::Receipt,
+    workspace_root: &Path,
+    state_dir: &Path,
+    format: &str,
+) {
+    match format {
+        "json" => {
+            let json = serde_json::to_string_pretty(receipt).expect("serialize receipt");
+            println!("{}", json);
+        }
+        _ => {
+            println!("plan_id: {}", receipt.plan_id);
+            println!(
+                "registry: {} ({})",
+                receipt.registry.name, receipt.registry.api_base
+            );
 
-    let abs_state = if state_dir.is_absolute() {
-        state_dir.clone()
+            let abs_state = if state_dir.is_absolute() {
+                state_dir.to_path_buf()
+            } else {
+                workspace_root.join(state_dir)
+            };
+
+            println!(
+                "state:   {}/{}",
+                abs_state.display(),
+                shipper::state::STATE_FILE
+            );
+            println!(
+                "receipt: {}/{}",
+                abs_state.display(),
+                shipper::state::RECEIPT_FILE
+            );
+            println!(
+                "events:   {}/{}",
+                abs_state.display(),
+                shipper::events::EVENTS_FILE
+            );
+            println!();
+
+            for p in &receipt.packages {
+                println!(
+                    "{}@{}: {:?} (attempts={}, {}ms)",
+                    p.name, p.version, p.state, p.attempts, p.duration_ms
+                );
+                // Show evidence summary
+                if !p.evidence.attempts.is_empty() {
+                    println!("  Evidence:");
+                    for attempt in &p.evidence.attempts {
+                        println!(
+                            "    Attempt {}: exit={}, duration={}ms",
+                            attempt.attempt_number,
+                            attempt.exit_code,
+                            attempt.duration.as_millis()
+                        );
+                        if !attempt.stdout_tail.is_empty() {
+                            println!(
+                                "      stdout (last {} lines):",
+                                attempt.stdout_tail.lines().count()
+                            );
+                            for line in attempt.stdout_tail.lines().take(5) {
+                                println!("        {}", line);
+                            }
+                        }
+                        if !attempt.stderr_tail.is_empty() {
+                            println!(
+                                "      stderr (last {} lines):",
+                                attempt.stderr_tail.lines().count()
+                            );
+                            for line in attempt.stderr_tail.lines().take(5) {
+                                println!("        {}", line);
+                            }
+                        }
+                    }
+                }
+                if !p.evidence.readiness_checks.is_empty() {
+                    println!(
+                        "  Readiness checks: {} attempts",
+                        p.evidence.readiness_checks.len()
+                    );
+                    for check in &p.evidence.readiness_checks {
+                        println!(
+                            "    Poll {}: visible={}, delay_before={}ms",
+                            check.attempt,
+                            check.visible,
+                            check.delay_before.as_millis()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn run_inspect_events(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Result<()> {
+    let state_dir = if opts.state_dir.is_absolute() {
+        opts.state_dir.clone()
     } else {
-        workspace_root.join(state_dir)
+        ws.workspace_root.join(&opts.state_dir)
     };
 
-    println!(
-        "state:   {}/{}",
-        abs_state.display(),
-        shipper::state::STATE_FILE
-    );
-    println!(
-        "receipt: {}/{}",
-        abs_state.display(),
-        shipper::state::RECEIPT_FILE
-    );
+    let events_path = shipper::events::events_path(&state_dir);
+    let event_log = shipper::events::EventLog::read_from_file(&events_path)
+        .with_context(|| format!("failed to read event log from {}", events_path.display()))?;
+
+    println!("Event log: {}", events_path.display());
     println!();
 
-    for p in &receipt.packages {
-        println!(
-            "{}@{}: {:?} (attempts={}, {}ms)",
-            p.name, p.version, p.state, p.attempts, p.duration_ms
-        );
+    for event in event_log.all_events() {
+        let json = serde_json::to_string(event).expect("serialize event");
+        println!("{}", json);
     }
+
+    Ok(())
+}
+
+fn run_inspect_receipt(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Result<()> {
+    let state_dir = if opts.state_dir.is_absolute() {
+        opts.state_dir.clone()
+    } else {
+        ws.workspace_root.join(&opts.state_dir)
+    };
+
+    let receipt_path = shipper::state::receipt_path(&state_dir);
+    let content = std::fs::read_to_string(&receipt_path)
+        .with_context(|| format!("failed to read receipt from {}", receipt_path.display()))?;
+
+    let receipt: shipper::types::Receipt = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse receipt from {}", receipt_path.display()))?;
+
+    let json = serde_json::to_string_pretty(&receipt).expect("serialize receipt");
+    println!("{}", json);
+
+    Ok(())
 }
 
 fn run_status(ws: &plan::PlannedWorkspace, reporter: &mut dyn Reporter) -> Result<()> {
@@ -300,6 +591,136 @@ fn print_cmd_version(cmd: &str, reporter: &mut dyn Reporter) {
             reporter.warn(&format!("unable to run {cmd} --version: {e}"));
         }
     }
+}
+
+fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result<()> {
+    let abs_state = if state_dir.is_absolute() {
+        state_dir.to_path_buf()
+    } else {
+        workspace_root.join(state_dir)
+    };
+
+    match ci_cmd {
+        CiCommands::GitHubActions => {
+            println!("# Add these steps to your GitHub Actions workflow:");
+            println!("# Place before the 'shipper publish' step");
+            println!();
+            println!("# Restore shipper state from previous run (if exists)");
+            println!("- name: Restore shipper state");
+            println!("  uses: actions/download-artifact@v4");
+            println!("  with:");
+            println!("    name: shipper-state");
+            println!("    path: {}", abs_state.display());
+            println!("  continue-on-error: true");
+            println!();
+            println!("# Run shipper publish (will resume if state exists)");
+            println!("# ... your existing publish step ...");
+            println!();
+            println!("# Save shipper state for next run (even if publish fails)");
+            println!("- name: Save shipper state");
+            println!("  if: always()");
+            println!("  uses: actions/upload-artifact@v4");
+            println!("  with:");
+            println!("    name: shipper-state");
+            println!("    path: {}", abs_state.display());
+            println!("    retention-days: 1");
+        }
+        CiCommands::GitLab => {
+            println!("# Add these artifacts to your .gitlab-ci.yml:");
+            println!();
+            println!("publish:");
+            println!("  # ... your existing configuration ...");
+            println!("  artifacts:");
+            println!("    paths:");
+            println!("      - {}/", abs_state.display());
+            println!("    expire_in: 1 day");
+            println!("    when: always");
+        }
+    }
+
+    Ok(())
+}
+
+fn run_clean(state_dir: &PathBuf, workspace_root: &Path, keep_receipt: bool) -> Result<()> {
+    let abs_state = if state_dir.is_absolute() {
+        state_dir.clone()
+    } else {
+        workspace_root.join(state_dir)
+    };
+
+    let state_path = abs_state.join(shipper::state::STATE_FILE);
+    let receipt_path = abs_state.join(shipper::state::RECEIPT_FILE);
+    let events_path = abs_state.join(shipper::events::EVENTS_FILE);
+    let lock_path = abs_state.join(shipper::lock::LOCK_FILE);
+
+    // Check for active lock
+    if lock_path.exists() {
+        let lock_info = shipper::lock::LockFile::read_lock_info(&abs_state)?;
+        eprintln!("[warn] Active lock found:");
+        eprintln!("[warn]   PID: {}", lock_info.pid);
+        eprintln!("[warn]   Hostname: {}", lock_info.hostname);
+        eprintln!("[warn]   Acquired at: {}", lock_info.acquired_at);
+        eprintln!("[warn]   Plan ID: {:?}", lock_info.plan_id);
+        eprintln!("[warn] Use --force to override the lock");
+        bail!("cannot clean: active lock exists");
+    }
+
+    // Remove state file
+    if state_path.exists() {
+        std::fs::remove_file(&state_path)
+            .with_context(|| format!("failed to remove state file {}", state_path.display()))?;
+        println!("Removed: {}", state_path.display());
+    }
+
+    // Remove events file
+    if events_path.exists() {
+        std::fs::remove_file(&events_path)
+            .with_context(|| format!("failed to remove events file {}", events_path.display()))?;
+        println!("Removed: {}", events_path.display());
+    }
+
+    // Optionally remove receipt file
+    if !keep_receipt && receipt_path.exists() {
+        std::fs::remove_file(&receipt_path)
+            .with_context(|| format!("failed to remove receipt file {}", receipt_path.display()))?;
+        println!("Removed: {}", receipt_path.display());
+    } else if keep_receipt && receipt_path.exists() {
+        println!(
+            "Kept: {} (--keep-receipt specified)",
+            receipt_path.display()
+        );
+    }
+
+    // Note: We don't remove the state directory itself as it may contain other files
+    // and we want to keep the structure for future runs
+
+    println!("Clean complete");
+    Ok(())
+}
+
+fn run_config(cmd: ConfigCommands) -> Result<()> {
+    match cmd {
+        ConfigCommands::Init { output } => {
+            let template = ShipperConfig::default_toml_template();
+            std::fs::write(&output, template)
+                .with_context(|| format!("Failed to write config file to {}", output.display()))?;
+            println!("Created configuration file: {}", output.display());
+            println!();
+            println!("Edit the file to customize shipper settings for your workspace.");
+            println!("Run `shipper config validate` to check the configuration.");
+        }
+        ConfigCommands::Validate { path } => {
+            if !path.exists() {
+                bail!("Config file not found: {}", path.display());
+            }
+            let config = ShipperConfig::load_from_file(&path)
+                .with_context(|| format!("Failed to load config file: {}", path.display()))?;
+            config.validate()
+                .with_context(|| format!("Configuration validation failed for {}", path.display()))?;
+            println!("Configuration file is valid: {}", path.display());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -398,10 +819,12 @@ mod tests {
 
         let mut reporter = TestReporter::default();
         print_cmd_version(cmd_path.to_str().expect("utf8"), &mut reporter);
-        assert!(reporter
-            .warns
-            .iter()
-            .any(|w| w.contains("--version failed")));
+        assert!(
+            reporter
+                .warns
+                .iter()
+                .any(|w| w.contains("--version failed"))
+        );
     }
 
     #[test]
@@ -427,6 +850,7 @@ mod tests {
                 registry: Registry::crates_io(),
                 packages: vec![],
             },
+            skipped: vec![],
         };
 
         let state_dir = td.path().join("abs-state");
@@ -442,6 +866,12 @@ mod tests {
             verify_poll_interval: Duration::from_millis(0),
             state_dir: state_dir.clone(),
             force_resume: false,
+            force: false,
+            lock_timeout: Duration::from_secs(3600),
+            policy: shipper::types::PublishPolicy::Safe,
+            verify_mode: shipper::types::VerifyMode::Workspace,
+            readiness: shipper::types::ReadinessConfig::default(),
+            output_lines: 50,
         };
 
         unsafe { env::set_var("CARGO_REGISTRY_TOKEN", "orig-reg-token") };
@@ -477,6 +907,7 @@ mod tests {
                 registry: Registry::crates_io(),
                 packages: vec![],
             },
+            skipped: vec![],
         };
 
         let opts = RuntimeOptions {
@@ -491,6 +922,12 @@ mod tests {
             verify_poll_interval: Duration::from_millis(0),
             state_dir: td.path().join("abs-state-2"),
             force_resume: false,
+            force: false,
+            lock_timeout: Duration::from_secs(3600),
+            policy: shipper::types::PublishPolicy::Safe,
+            verify_mode: shipper::types::VerifyMode::Workspace,
+            readiness: shipper::types::ReadinessConfig::default(),
+            output_lines: 50,
         };
 
         unsafe { env::remove_var("CARGO_REGISTRY_TOKEN") };
@@ -513,5 +950,200 @@ mod tests {
         restore_env("CARGO_REGISTRY_TOKEN", old_registry);
         restore_env("CARGO_REGISTRIES_CRATES_IO_TOKEN", old_named);
         restore_env("CARGO_HOME", old_home);
+    }
+
+    #[test]
+    fn config_init_creates_file() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join("test-config.toml");
+
+        run_config(ConfigCommands::Init {
+            output: config_path.clone(),
+        })
+        .expect("config init should succeed");
+
+        assert!(config_path.exists(), "config file should be created");
+
+        let content = fs::read_to_string(&config_path).expect("read config file");
+        assert!(content.contains("[policy]"), "config should contain [policy] section");
+        assert!(content.contains("[readiness]"), "config should contain [readiness] section");
+    }
+
+    #[test]
+    fn config_validate_valid_file() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join("test-config.toml");
+
+        // Create a valid config
+        let valid_config = r#"
+[policy]
+mode = "safe"
+
+[verify]
+mode = "workspace"
+
+[readiness]
+enabled = true
+method = "api"
+initial_delay = "1s"
+max_delay = "60s"
+max_total_wait = "5m"
+poll_interval = "2s"
+jitter_factor = 0.5
+
+[output]
+lines = 50
+
+[retry]
+max_attempts = 6
+base_delay = "2s"
+max_delay = "2m"
+
+[lock]
+timeout = "1h"
+"#;
+
+        fs::write(&config_path, valid_config).expect("write config file");
+
+        run_config(ConfigCommands::Validate {
+            path: config_path.clone(),
+        })
+        .expect("config validate should succeed for valid file");
+    }
+
+    #[test]
+    fn config_validate_invalid_file() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join("test-config.toml");
+
+        // Create an invalid config (output_lines = 0)
+        let invalid_config = r#"
+[output]
+lines = 0
+"#;
+
+        fs::write(&config_path, invalid_config).expect("write config file");
+
+        let result = run_config(ConfigCommands::Validate {
+            path: config_path.clone(),
+        });
+
+        assert!(result.is_err(), "config validate should fail for invalid file");
+        let err = result.unwrap_err().to_string();
+        // The error is wrapped in context, so check the full message
+        assert!(
+            err.contains("output.lines must be greater than 0") ||
+            err.contains("Configuration validation failed"),
+            "error should mention output.lines or validation failed"
+        );
+    }
+
+    #[test]
+    fn config_validate_missing_file() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join("nonexistent-config.toml");
+
+        let result = run_config(ConfigCommands::Validate {
+            path: config_path.clone(),
+        });
+
+        assert!(result.is_err(), "config validate should fail for missing file");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found") || err.contains("Config file not found"),
+            "error should mention file not found"
+        );
+    }
+
+    #[test]
+    fn config_load_from_workspace() {
+        let td = tempdir().expect("tempdir");
+        let workspace_root = td.path();
+
+        // No config file exists
+        let result = ShipperConfig::load_from_workspace(workspace_root);
+        assert!(result.is_ok(), "load should succeed even without config file");
+        assert!(result.unwrap().is_none(), "should return None when no config exists");
+
+        // Create a config file
+        let config_path = workspace_root.join(".shipper.toml");
+        let valid_config = r#"
+[policy]
+mode = "fast"
+"#;
+
+        fs::write(&config_path, valid_config).expect("write config file");
+
+        let result = ShipperConfig::load_from_workspace(workspace_root);
+        assert!(result.is_ok(), "load should succeed");
+        let config = result.unwrap();
+        assert!(config.is_some(), "should return Some when config exists");
+        assert_eq!(
+            config.unwrap().policy.mode,
+            shipper::types::PublishPolicy::Fast
+        );
+    }
+
+    #[test]
+    fn config_merge_with_cli_opts() {
+        let config = ShipperConfig {
+            policy: shipper::config::PolicyConfig {
+                mode: shipper::types::PublishPolicy::Safe,
+            },
+            verify: shipper::config::VerifyConfig {
+                mode: shipper::types::VerifyMode::Workspace,
+            },
+            readiness: shipper::types::ReadinessConfig::default(),
+            output: shipper::config::OutputConfig {
+                lines: 100,
+            },
+            lock: shipper::config::LockConfig {
+                timeout: Duration::from_secs(1800),
+            },
+            flags: shipper::config::FlagsConfig {
+                allow_dirty: false,
+                skip_ownership_check: false,
+                strict_ownership: false,
+            },
+            retry: shipper::config::RetryConfig {
+                max_attempts: 10,
+                base_delay: Duration::from_secs(5),
+                max_delay: Duration::from_secs(300),
+            },
+            state_dir: None,
+            registry: None,
+        };
+
+        let opts = RuntimeOptions {
+            allow_dirty: true,
+            skip_ownership_check: false,
+            strict_ownership: false,
+            no_verify: false,
+            max_attempts: 3,
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(60),
+            verify_timeout: Duration::from_secs(120),
+            verify_poll_interval: Duration::from_secs(5),
+            state_dir: PathBuf::from(".shipper"),
+            force_resume: false,
+            force: false,
+            lock_timeout: Duration::from_secs(3600),
+            policy: shipper::types::PublishPolicy::Fast,
+            verify_mode: shipper::types::VerifyMode::None,
+            readiness: shipper::types::ReadinessConfig::default(),
+            output_lines: 50,
+        };
+
+        let merged = config.merge_with_cli_opts(opts);
+
+        // CLI values should win
+        assert_eq!(merged.allow_dirty, true, "CLI allow_dirty should win");
+        assert_eq!(merged.max_attempts, 3, "CLI max_attempts should win");
+        assert_eq!(merged.output_lines, 50, "CLI output_lines should win");
+        assert_eq!(
+            merged.policy,
+            shipper::types::PublishPolicy::Fast,
+            "CLI policy should win"
+        );
     }
 }

@@ -2,7 +2,7 @@ use std::env;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 pub fn is_git_clean(repo_root: &Path) -> Result<bool> {
     let out = Command::new(git_program())

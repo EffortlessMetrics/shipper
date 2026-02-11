@@ -25,7 +25,24 @@ jobs:
       - name: Install shipper
         run: cargo install shipper-cli --locked
 
+      # Restore shipper state from previous run (for resumability)
+      - name: Restore shipper state
+        uses: actions/download-artifact@v4
+        with:
+          name: shipper-state
+          path: .shipper
+        continue-on-error: true
+
       - name: Publish (resumable)
         run: shipper publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      # Save shipper state for next run (even if publish fails)
+      - name: Save shipper state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shipper-state
+          path: .shipper
+          retention-days: 1

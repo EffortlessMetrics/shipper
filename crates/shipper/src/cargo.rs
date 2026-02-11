@@ -1,14 +1,25 @@
 use std::env;
 use std::path::Path;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
 #[derive(Debug, Clone)]
 pub struct CargoOutput {
-    pub status_code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
+    pub exit_code: i32,
+    pub stdout_tail: String, // Last N lines (configurable, default 50)
+    pub stderr_tail: String,
+    pub duration: Duration,
+}
+
+fn tail_lines(s: &str, n: usize) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    if lines.len() <= n {
+        s.to_string()
+    } else {
+        lines[lines.len() - n..].join("\n")
+    }
 }
 
 pub fn cargo_publish(
@@ -17,7 +28,9 @@ pub fn cargo_publish(
     registry_name: &str,
     allow_dirty: bool,
     no_verify: bool,
+    output_lines: usize,
 ) -> Result<CargoOutput> {
+    let start = Instant::now();
     let mut cmd = Command::new(cargo_program());
     cmd.arg("publish").arg("-p").arg(package_name);
 
@@ -38,10 +51,53 @@ pub fn cargo_publish(
         .output()
         .context("failed to execute cargo publish; is Cargo installed?")?;
 
+    let duration = start.elapsed();
+    let exit_code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
     Ok(CargoOutput {
-        status_code: out.status.code(),
-        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+        exit_code,
+        stdout_tail: tail_lines(&stdout, output_lines),
+        stderr_tail: tail_lines(&stderr, output_lines),
+        duration,
+    })
+}
+
+pub fn cargo_publish_dry_run_workspace(
+    workspace_root: &Path,
+    registry_name: &str,
+    allow_dirty: bool,
+    output_lines: usize,
+) -> Result<CargoOutput> {
+    let start = Instant::now();
+    let mut cmd = Command::new(cargo_program());
+    cmd.arg("publish").arg("--workspace").arg("--dry-run");
+
+    // If the user configured a non-default registry, pass it through.
+    if !registry_name.trim().is_empty() && registry_name != "crates-io" {
+        cmd.arg("--registry").arg(registry_name);
+    }
+
+    if allow_dirty {
+        cmd.arg("--allow-dirty");
+    }
+
+    let out = cmd
+        .current_dir(workspace_root)
+        .output()
+        .context("failed to execute cargo publish --dry-run --workspace; is Cargo installed?")?;
+
+    let duration = start.elapsed();
+    let exit_code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    Ok(CargoOutput {
+        exit_code,
+        stdout_tail: tail_lines(&stdout, output_lines),
+        stderr_tail: tail_lines(&stderr, output_lines),
+        duration,
     })
 }
 
@@ -136,11 +192,11 @@ mod tests {
         let ws = td.path().join("workspace");
         fs::create_dir_all(&ws).expect("mkdir ws");
 
-        let out = cargo_publish(&ws, "my-crate", "private-reg", true, true).expect("publish");
+        let out = cargo_publish(&ws, "my-crate", "private-reg", true, true, 50).expect("publish");
 
-        assert_eq!(out.status_code, Some(7));
-        assert!(out.stdout.contains("fake-stdout"));
-        assert!(out.stderr.contains("fake-stderr"));
+        assert_eq!(out.exit_code, 7);
+        assert!(out.stdout_tail.contains("fake-stdout"));
+        assert!(out.stderr_tail.contains("fake-stderr"));
 
         let args = fs::read_to_string(args_log).expect("args");
         assert!(args.contains("publish"));
@@ -174,7 +230,7 @@ mod tests {
         let ws = td.path().join("workspace");
         fs::create_dir_all(&ws).expect("mkdir ws");
 
-        let _ = cargo_publish(&ws, "my-crate", "crates-io", false, false).expect("publish");
+        let _ = cargo_publish(&ws, "my-crate", "crates-io", false, false, 50).expect("publish");
 
         let args = fs::read_to_string(args_log).expect("args");
         assert!(!args.contains("--registry"));
@@ -189,7 +245,8 @@ mod tests {
         let missing = td.path().join("does-not-exist-cargo");
         let _program = EnvGuard::set("SHIPPER_CARGO_BIN", missing.to_str().expect("utf8"));
 
-        let err = cargo_publish(td.path(), "x", "crates-io", false, false).expect_err("must fail");
+        let err =
+            cargo_publish(td.path(), "x", "crates-io", false, false, 50).expect_err("must fail");
         assert!(format!("{err:#}").contains("failed to execute cargo publish"));
     }
 

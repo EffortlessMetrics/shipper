@@ -1,17 +1,25 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, PackageId};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 
-use crate::types::{PlannedPackage, ReleasePlan, ReleaseSpec};
+use crate::types::{PlannedPackage, PublishLevel, ReleasePlan, ReleaseSpec};
+
+#[derive(Debug, Clone)]
+pub struct SkippedPackage {
+    pub name: String,
+    pub version: String,
+    pub reason: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct PlannedWorkspace {
     pub workspace_root: PathBuf,
     pub plan: ReleasePlan,
+    pub skipped: Vec<SkippedPackage>,
 }
 
 pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
@@ -26,6 +34,9 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
 
     let workspace_ids: BTreeSet<PackageId> = metadata.workspace_members.iter().cloned().collect();
 
+    // Track skipped packages (publish=false or not in registry list)
+    let mut skipped: Vec<SkippedPackage> = Vec::new();
+
     // Workspace publishable set (restricted by `[package] publish` where possible).
     let publishable: BTreeSet<PackageId> = workspace_ids
         .iter()
@@ -34,6 +45,17 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
             if publish_allowed(pkg, &spec.registry.name) {
                 Some(id.clone())
             } else {
+                // Track why this package was skipped
+                let reason = match &pkg.publish {
+                    None => "publish not specified (default allowed)".to_string(),
+                    Some(list) if list.is_empty() => "publish = false".to_string(),
+                    Some(list) => format!("publish = {} (registry not in list)", list.join(", ")),
+                };
+                skipped.push(SkippedPackage {
+                    name: pkg.name.to_string(),
+                    version: pkg.version.to_string(),
+                    reason,
+                });
                 None
             }
         })
@@ -84,7 +106,7 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
             let pkg = pkg_map
                 .get(id)
                 .context("workspace package missing from metadata")?;
-            name_to_id.insert(pkg.name.clone(), id.clone());
+            name_to_id.insert(pkg.name.to_string(), id.clone());
         }
 
         let mut queue: VecDeque<PackageId> = VecDeque::new();
@@ -124,12 +146,37 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
         .map(|id| {
             let pkg = pkg_map.get(&id).expect("pkg exists");
             PlannedPackage {
-                name: pkg.name.clone(),
+                name: pkg.name.to_string(),
                 version: pkg.version.to_string(),
                 manifest_path: pkg.manifest_path.clone().into_std_path_buf(),
             }
         })
         .collect();
+
+    // Build dependency map for level-based parallel publishing
+    let mut dependencies: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for id in &order {
+        let pkg = pkg_map.get(id).expect("pkg exists");
+        let pkg_name = pkg.name.to_string();
+        
+        // Get all dependencies of this package that are in the plan
+        let dep_names: Vec<String> = deps_of
+            .get(id)
+            .map(|deps| {
+                deps.iter()
+                    .filter_map(|dep_id| {
+                        if included.contains(dep_id) {
+                            pkg_map.get(dep_id).map(|p| p.name.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        
+        dependencies.insert(pkg_name, dep_names);
+    }
 
     let plan_id = compute_plan_id(&spec.registry.api_base, &packages);
 
@@ -140,7 +187,9 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
             created_at: Utc::now(),
             registry: spec.registry.clone(),
             packages,
+            dependencies,
         },
+        skipped,
     })
 }
 
@@ -178,7 +227,10 @@ fn topo_sort(
     let mut ready: BTreeSet<(String, PackageId)> = BTreeSet::new();
     for (id, deg) in &indegree {
         if *deg == 0 {
-            let name = pkg_map.get(id).map(|p| p.name.clone()).unwrap_or_default();
+            let name = pkg_map
+                .get(id)
+                .map(|p| p.name.to_string())
+                .unwrap_or_else(|| String::from("unknown"));
             ready.insert((name, id.clone()));
         }
     }
@@ -186,7 +238,7 @@ fn topo_sort(
     let mut out: Vec<PackageId> = Vec::with_capacity(included.len());
 
     while let Some((_, id)) = ready.iter().next().cloned() {
-        ready.remove(&(pkg_map.get(&id).unwrap().name.clone(), id.clone()));
+        ready.remove(&(pkg_map.get(&id).unwrap().name.to_string(), id.clone()));
         out.push(id.clone());
 
         if let Some(deps) = dependents_of.get(&id) {
@@ -199,7 +251,7 @@ fn topo_sort(
                     .expect("included package must have indegree");
                 *d = d.saturating_sub(1);
                 if *d == 0 {
-                    let name = pkg_map.get(dep).unwrap().name.clone();
+                    let name = pkg_map.get(dep).unwrap().name.to_string();
                     ready.insert((name, dep.clone()));
                 }
             }
@@ -225,6 +277,56 @@ fn compute_plan_id(registry_api_base: &str, packages: &[PlannedPackage]) -> Stri
     }
     let digest = hasher.finalize();
     hex::encode(digest)
+}
+
+impl ReleasePlan {
+    /// Group packages by dependency level for parallel publishing.
+    ///
+    /// Packages at the same level have no dependencies on each other and can be
+    /// published in parallel. Level 0 packages have no dependencies on other packages
+    /// in the plan. Level N packages depend only on packages in levels < N.
+    ///
+    /// This method uses the `dependencies` field of the ReleasePlan to determine levels.
+    pub fn group_by_levels(&self) -> Vec<PublishLevel> {
+        use std::collections::HashMap;
+
+        if self.packages.is_empty() {
+            return Vec::new();
+        }
+
+        // Assign levels using a simple algorithm:
+        // Level 0: packages with no dependencies
+        // Level N: packages whose maximum dependency level is N-1
+        let mut levels: Vec<PublishLevel> = Vec::new();
+        let mut pkg_level: HashMap<String, usize> = HashMap::new();
+
+        for pkg in &self.packages {
+            let deps = self.dependencies.get(&pkg.name).cloned().unwrap_or_default();
+            
+            // Find the maximum level of all dependencies
+            let max_dep_level = deps
+                .iter()
+                .filter_map(|dep| pkg_level.get(dep).copied())
+                .max()
+                .unwrap_or(0);
+
+            // This package goes to the next level
+            let level = max_dep_level + 1;
+            pkg_level.insert(pkg.name.clone(), level);
+
+            // Ensure we have enough levels
+            while levels.len() < level {
+                levels.push(PublishLevel {
+                    level: levels.len(),
+                    packages: Vec::new(),
+                });
+            }
+
+            levels[level - 1].packages.push(pkg.clone());
+        }
+
+        levels
+    }
 }
 
 #[cfg(test)]
@@ -427,7 +529,7 @@ c = { path = "../c", version = "0.1.0" }
             .collect::<BTreeMap<PackageId, &cargo_metadata::Package>>();
         let mut by_name = BTreeMap::<String, PackageId>::new();
         for pkg in &metadata.packages {
-            by_name.insert(pkg.name.clone(), pkg.id.clone());
+            by_name.insert(pkg.name.to_string(), pkg.id.clone());
         }
 
         let a = by_name.get("a").expect("a").clone();
