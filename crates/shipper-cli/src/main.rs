@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use shipper::config::ShipperConfig;
 use shipper::engine::{self, Reporter};
 use shipper::plan;
-use shipper::types::{Registry, ReleaseSpec, RuntimeOptions};
+use shipper::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
 
 #[derive(Parser, Debug)]
 #[command(name = "shipper", version)]
@@ -209,6 +209,7 @@ fn main() -> Result<()> {
         registry: Registry {
             name: cli.registry.clone(),
             api_base: cli.api_base.clone(),
+            index_base: None,
         },
         selected_packages: if cli.packages.is_empty() {
             None
@@ -255,8 +256,15 @@ fn main() -> Result<()> {
             max_total_wait: parse_duration(&cli.readiness_timeout)?,
             poll_interval: parse_duration(&cli.readiness_poll)?,
             jitter_factor: 0.5,
+            index_path: None,
+            prefer_index: false,
         },
         output_lines: cli.output_lines,
+        parallel: shipper::types::ParallelConfig {
+            enabled: false,
+            max_concurrent: 4,
+            per_package_timeout: Duration::from_secs(1800),
+        },
     };
 
     // Merge with config if present (CLI values take precedence)
@@ -274,7 +282,7 @@ fn main() -> Result<()> {
         }
         Commands::Preflight => {
             let rep = engine::run_preflight(&planned, &opts, &mut reporter)?;
-            print_preflight(&rep);
+            print_preflight(&rep, &cli.format);
         }
         Commands::Publish => {
             let receipt = engine::run_publish(&planned, &opts, &mut reporter)?;
@@ -374,21 +382,86 @@ fn print_plan(ws: &plan::PlannedWorkspace) {
     }
 }
 
-fn print_preflight(rep: &engine::PreflightReport) {
-    println!("plan_id: {}", rep.plan_id);
-    println!("token_detected: {}", rep.token_detected);
-    println!("finishability: {:?}", rep.finishability);
-    println!();
+fn print_preflight(rep: &PreflightReport, format: &str) {
+    match format {
+        "json" => {
+            let json = serde_json::to_string_pretty(rep).expect("serialize preflight report");
+            println!("{}", json);
+        }
+        _ => {
+            println!("Preflight Report");
+            println!("===============");
+            println!();
+            println!("Plan ID: {}", rep.plan_id);
+            println!("Timestamp: {}", rep.timestamp.format("%Y-%m-%dT%H:%M:%SZ"));
+            println!();
+            println!("Token Detected: {}", if rep.token_detected { "✓" } else { "✗" });
+            println!();
 
-    for p in &rep.packages {
-        let status = if p.already_published {
-            "already published"
-        } else if p.is_new_crate {
-            "new crate"
-        } else {
-            "needs publish"
-        };
-        println!("{}@{}: {status}", p.name, p.version);
+            // Display finishability with color-coded status
+            let (finishability_color, finishability_text) = match rep.finishability {
+                Finishability::Proven => ("\x1b[32m", "PROVEN"),
+                Finishability::NotProven => ("\x1b[33m", "NOT PROVEN"),
+                Finishability::Failed => ("\x1b[31m", "FAILED"),
+            };
+            println!("Finishability: {}{}{}\x1b[0m", finishability_color, finishability_text, "\x1b[0m");
+            println!();
+
+            // Display packages in table format
+            println!("Packages:");
+            println!("┌─────────────────────┬─────────┬──────────┬──────────┬───────────────┬─────────────┬─────────────┐");
+            println!("│ Package             │ Version │ Published│ New Crate │ Auth Type     │ Ownership   │ Dry-run     │");
+            println!("├─────────────────────┼─────────┼──────────┼──────────┼───────────────┼─────────────┼─────────────┤");
+            for p in &rep.packages {
+                let published = if p.already_published { "Yes" } else { "No" };
+                let new_crate = if p.is_new_crate { "Yes" } else { "No" };
+                let auth_type = match p.auth_type {
+                    Some(shipper::types::AuthType::Token) => "Token",
+                    Some(shipper::types::AuthType::TrustedPublishing) => "Trusted",
+                    Some(shipper::types::AuthType::Unknown) => "Unknown",
+                    None => "-",
+                };
+                let ownership = if p.ownership_verified { "✓" } else { "✗" };
+                let dry_run = if p.dry_run_passed { "✓" } else { "✗" };
+
+                println!(
+                    "│ {:<19} │ {:<7} │ {:<8} │ {:<8} │ {:<13} │ {:<11} │ {:<11} │",
+                    p.name, p.version, published, new_crate, auth_type, ownership, dry_run
+                );
+            }
+            println!("└─────────────────────┴─────────┴──────────┴──────────┴───────────────┴─────────────┴─────────────┘");
+            println!();
+
+            // Summary
+            let total = rep.packages.len();
+            let already_published = rep.packages.iter().filter(|p| p.already_published).count();
+            let new_crates = rep.packages.iter().filter(|p| p.is_new_crate).count();
+            let ownership_verified = rep.packages.iter().filter(|p| p.ownership_verified).count();
+            let dry_run_passed = rep.packages.iter().filter(|p| p.dry_run_passed).count();
+
+            println!("Summary:");
+            println!("  Total packages: {}", total);
+            println!("  Already published: {}", already_published);
+            println!("  New crates: {}", new_crates);
+            println!("  Ownership verified: {}", ownership_verified);
+            println!("  Dry-run passed: {}", dry_run_passed);
+            println!();
+
+            // What to do next guidance
+            println!("What to do next:");
+            println!("-----------------");
+            match rep.finishability {
+                Finishability::Proven => {
+                    println!("\x1b[32m✓ All checks passed. Ready to publish with: shipper publish\x1b[0m");
+                }
+                Finishability::NotProven => {
+                    println!("\x1b[33m⚠ Some checks could not be verified. You can still publish, but may encounter permission issues. Use `shipper publish --policy fast` to proceed.\x1b[0m");
+                }
+                Finishability::Failed => {
+                    println!("\x1b[31m✗ Preflight failed. Please fix the issues above before publishing.\x1b[0m");
+                }
+            }
+        }
     }
 }
 
@@ -523,8 +596,69 @@ fn run_inspect_receipt(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Re
     let receipt: shipper::types::Receipt = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse receipt from {}", receipt_path.display()))?;
 
-    let json = serde_json::to_string_pretty(&receipt).expect("serialize receipt");
-    println!("{}", json);
+    // Display receipt in human-readable format
+    println!("Receipt");
+    println!("=======");
+    println!();
+    println!("Plan ID: {}", receipt.plan_id);
+    println!(
+        "Registry: {} ({})",
+        receipt.registry.name, receipt.registry.api_base
+    );
+    println!("Started: {}", receipt.started_at.format("%Y-%m-%dT%H:%M:%SZ"));
+    println!("Finished: {}", receipt.finished_at.format("%Y-%m-%dT%H:%M:%SZ"));
+    println!("Duration: {}ms", (receipt.finished_at - receipt.started_at).num_milliseconds());
+    println!();
+
+    // Display Git context if available
+    if let Some(git) = &receipt.git_context {
+        println!("Git Context:");
+        println!("------------");
+        if let Some(commit) = &git.commit {
+            println!("  Commit: {}", commit);
+        }
+        if let Some(branch) = &git.branch {
+            println!("  Branch: {}", branch);
+        }
+        if let Some(tag) = &git.tag {
+            println!("  Tag: {}", tag);
+        }
+        if let Some(dirty) = git.dirty {
+            println!("  Dirty: {}", if dirty { "Yes" } else { "No" });
+        }
+        println!();
+    }
+
+    // Display environment fingerprint
+    println!("Environment:");
+    println!("------------");
+    println!("  Shipper: {}", receipt.environment.shipper_version);
+    if let Some(cargo) = &receipt.environment.cargo_version {
+        println!("  Cargo: {}", cargo);
+    }
+    if let Some(rust) = &receipt.environment.rust_version {
+        println!("  Rust: {}", rust);
+    }
+    println!("  OS: {}", receipt.environment.os);
+    println!("  Arch: {}", receipt.environment.arch);
+    println!();
+
+    // Display packages
+    println!("Packages:");
+    println!("---------");
+    for p in &receipt.packages {
+        let state_str = match &p.state {
+            shipper::types::PackageState::Published => "\x1b[32mPublished\x1b[0m",
+            shipper::types::PackageState::Pending => "Pending",
+            shipper::types::PackageState::Skipped { reason } => &format!("Skipped: {}", reason),
+            shipper::types::PackageState::Failed { class, message } => &format!("\x1b[31mFailed ({:?}): {}\x1b[0m", class, message),
+            shipper::types::PackageState::Ambiguous { message } => &format!("\x1b[33mAmbiguous: {}\x1b[0m", message),
+        };
+        println!(
+            "  {}@{}: {} (attempts={}, {}ms)",
+            p.name, p.version, state_str, p.attempts, p.duration_ms
+        );
+    }
 
     Ok(())
 }
@@ -602,34 +736,59 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
 
     match ci_cmd {
         CiCommands::GitHubActions => {
-            println!("# Add these steps to your GitHub Actions workflow:");
-            println!("# Place before the 'shipper publish' step");
+            println!("# GitHub Actions workflow snippet for Shipper");
+            println!("# Add these steps to your workflow file");
             println!();
-            println!("# Restore shipper state from previous run (if exists)");
-            println!("- name: Restore shipper state");
+            println!("# Restore Shipper State (cache for faster restores)");
+            println!("- name: Restore Shipper State");
+            println!("  uses: actions/cache@v3");
+            println!("  with:");
+            println!("    path: {}/", abs_state.display());
+            println!("    key: shipper-${{{{ github.sha }}}}");
+            println!("    restore-keys: |");
+            println!("      shipper-");
+            println!();
+            println!("# Restore Shipper State (artifact for resumability)");
+            println!("- name: Restore Shipper State Artifact");
             println!("  uses: actions/download-artifact@v4");
             println!("  with:");
             println!("    name: shipper-state");
-            println!("    path: {}", abs_state.display());
+            println!("    path: {}/", abs_state.display());
             println!("  continue-on-error: true");
             println!();
             println!("# Run shipper publish (will resume if state exists)");
-            println!("# ... your existing publish step ...");
+            println!("- name: Publish Crates");
+            println!("  run: shipper publish");
+            println!("  env:");
+            println!("    CARGO_REGISTRY_TOKEN: ${{{{ secrets.CARGO_REGISTRY_TOKEN }}}}");
             println!();
-            println!("# Save shipper state for next run (even if publish fails)");
-            println!("- name: Save shipper state");
+            println!("# Save Shipper State (even if publish fails)");
+            println!("- name: Save Shipper State");
             println!("  if: always()");
-            println!("  uses: actions/upload-artifact@v4");
+            println!("  uses: actions/upload-artifact@v3");
             println!("  with:");
             println!("    name: shipper-state");
-            println!("    path: {}", abs_state.display());
-            println!("    retention-days: 1");
+            println!("    path: {}/", abs_state.display());
         }
         CiCommands::GitLab => {
-            println!("# Add these artifacts to your .gitlab-ci.yml:");
+            println!("# GitLab CI snippet for Shipper");
+            println!("# Add this to your .gitlab-ci.yml");
             println!();
             println!("publish:");
-            println!("  # ... your existing configuration ...");
+            println!("  image: rust:latest");
+            println!("  stage: publish");
+            println!("  cache:");
+            println!("    key: ${{CI_COMMIT_REF_SLUG}}");
+            println!("    paths:");
+            println!("      - {}/", abs_state.display());
+            println!("      - target/");
+            println!("  script:");
+            println!("    - cargo install shipper-cli --locked");
+            println!("    - shipper publish");
+            println!("  variables:");
+            println!("    CARGO_TERM_COLOR: \"always\"");
+            println!("    # Configure this in GitLab CI/CD settings (masked, protected)");
+            println!("    # CARGO_REGISTRY_TOKEN: \"...\"");
             println!("  artifacts:");
             println!("    paths:");
             println!("      - {}/", abs_state.display());

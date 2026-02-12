@@ -92,6 +92,122 @@ impl RegistryClient {
         }
     }
 
+    /// Check if a crate is new (doesn't exist in the registry).
+    ///
+    /// Returns true if the crate doesn't exist, false if it does.
+    pub fn check_new_crate(&self, crate_name: &str) -> Result<bool> {
+        let exists = self.crate_exists(crate_name)?;
+        Ok(!exists)
+    }
+
+    /// Check if a crate version is visible via the sparse index.
+    ///
+    /// Returns true if the version is found in the index, false otherwise.
+    /// Parse errors and network errors are treated as "not visible" rather than failures.
+    pub fn check_index_visibility(&self, crate_name: &str, version: &str) -> Result<bool> {
+        // Calculate the index path for the crate using the 2+2+N scheme
+        let index_path = self.calculate_index_path(crate_name);
+
+        // Fetch the index file content
+        let content = match self.fetch_index_file(&index_path) {
+            Ok(content) => content,
+            Err(_e) => {
+                // Network errors or missing files are treated as "not visible"
+                // This is graceful degradation - we don't want to fail the entire
+                // readiness check just because the index is temporarily unavailable
+                return Ok(false);
+            }
+        };
+
+        // Parse the JSON and check if version exists
+        match self.parse_version_from_index(&content, version) {
+            Ok(found) => Ok(found),
+            Err(_) => {
+                // Parse errors are treated as "not visible"
+                Ok(false)
+            }
+        }
+    }
+
+    /// Calculate the index path for a crate using the 2+2+N scheme.
+    ///
+    /// For example, "serde" becomes "s/e/serde"
+    /// and "tokio" becomes "t/o/tokio"
+    fn calculate_index_path(&self, crate_name: &str) -> String {
+        let chars: Vec<char> = crate_name.chars().collect();
+        let first = if chars.len() > 0 { chars[0] } else { '_' };
+        let second = if chars.len() > 1 { chars[1] } else { '_' };
+
+        // Handle special cases: crates starting with non-alphanumeric characters
+        let first = if first.is_alphanumeric() { first } else { '_' };
+        let second = if second.is_alphanumeric() { second } else { '_' };
+
+        format!("{}/{}/{}", first, second, crate_name)
+    }
+
+    /// Fetch the index file content from the registry.
+    fn fetch_index_file(&self, index_path: &str) -> Result<String> {
+        let index_base = self.registry.get_index_base();
+        let url = format!("{}/{}", index_base.trim_end_matches('/'), index_path);
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .context("index request failed")?;
+
+        match resp.status() {
+            StatusCode::OK => {
+                let content = resp.text().context("failed to read index response body")?;
+                Ok(content)
+            }
+            StatusCode::NOT_FOUND => {
+                // The crate doesn't exist in the index yet
+                bail!("index file not found: {}", url)
+            }
+            s => bail!("unexpected status while fetching index: {}", s),
+        }
+    }
+
+    /// Parse the index JSON and check if the version exists.
+    fn parse_version_from_index(&self, content: &str, version: &str) -> Result<bool> {
+        // The sparse index format is a JSON array of version objects
+        #[derive(Deserialize)]
+        struct IndexVersion {
+            name: String,
+            vers: String,
+        }
+
+        let versions: Vec<IndexVersion> = serde_json::from_str(content)
+            .with_context(|| format!("failed to parse index JSON for version {}", version))?;
+
+        Ok(versions.iter().any(|v| v.vers == version))
+    }
+
+    /// Attempt ownership verification for a crate.
+    ///
+    /// Returns true if ownership is verified, false if verification fails or endpoint is unavailable.
+    /// This function implements graceful degradation - if the ownership check fails due to API
+    /// limitations, it returns false rather than an error.
+    pub fn verify_ownership(&self, crate_name: &str, token: &str) -> Result<bool> {
+        match self.list_owners(crate_name, token) {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                // Graceful degradation: if the endpoint is unavailable or returns forbidden,
+                // return false rather than failing the entire preflight
+                if e.to_string().contains("forbidden")
+                    || e.to_string().contains("403")
+                    || e.to_string().contains("unauthorized")
+                    || e.to_string().contains("401")
+                {
+                    Ok(false)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
     /// Check if a version is visible with exponential backoff and jitter.
     ///
     /// Returns Ok(true) if the version becomes visible within the timeout,
@@ -122,14 +238,39 @@ impl RegistryClient {
             let visible = match config.method {
                 ReadinessMethod::Api => self.version_exists(crate_name, version)?,
                 ReadinessMethod::Index => {
-                    // Index-based verification (future-proofing)
-                    // For now, fall back to API check
-                    self.version_exists(crate_name, version)?
+                    // Index-based verification
+                    self.check_index_visibility(crate_name, version)?
                 }
                 ReadinessMethod::Both => {
                     // Check both API and index
-                    // For now, just use API result
-                    self.version_exists(crate_name, version)?
+                    // Try the preferred method first, fall back to the other
+                    if config.prefer_index {
+                        // Try index first, fall back to API
+                        match self.check_index_visibility(crate_name, version) {
+                            Ok(true) => true,
+                            Ok(false) => {
+                                // Index says not visible, try API
+                                self.version_exists(crate_name, version)?
+                            }
+                            Err(_) => {
+                                // Index check failed, fall back to API
+                                self.version_exists(crate_name, version)?
+                            }
+                        }
+                    } else {
+                        // Try API first, fall back to index
+                        match self.version_exists(crate_name, version) {
+                            Ok(true) => true,
+                            Ok(false) => {
+                                // API says not visible, try index
+                                self.check_index_visibility(crate_name, version)?
+                            }
+                            Err(_) => {
+                                // API check failed, fall back to index
+                                self.check_index_visibility(crate_name, version)?
+                            }
+                        }
+                    }
                 }
             };
 
@@ -220,6 +361,7 @@ mod tests {
         Registry {
             name: "crates-io".to_string(),
             api_base,
+            index_base: None,
         }
     }
 
@@ -418,11 +560,630 @@ mod tests {
             max_total_wait: Duration::from_secs(300),
             poll_interval: Duration::from_secs(2),
             jitter_factor: 0.5,
+            index_path: None,
+            prefer_index: false,
         };
 
         let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
         assert!(result.is_ok());
         assert!(result.unwrap());
+        handle.join().expect("join");
+    }
+
+    // Index-based readiness tests
+
+    #[test]
+    fn calculate_index_path_for_standard_crate() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        // Test standard crate names
+        assert_eq!(cli.calculate_index_path("serde"), "s/e/serde");
+        assert_eq!(cli.calculate_index_path("tokio"), "t/o/tokio");
+        assert_eq!(cli.calculate_index_path("rand"), "r/a/rand");
+        assert_eq!(cli.calculate_index_path("http"), "h/t/http");
+    }
+
+    #[test]
+    fn calculate_index_path_for_short_crate() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        // Test single-character crate name
+        assert_eq!(cli.calculate_index_path("a"), "a/_/a");
+
+        // Test two-character crate name
+        assert_eq!(cli.calculate_index_path("ab"), "a/b/ab");
+    }
+
+    #[test]
+    fn calculate_index_path_for_special_chars() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        // Test crate names starting with special characters
+        assert_eq!(cli.calculate_index_path("_serde"), "_/_/_serde");
+        assert_eq!(cli.calculate_index_path("-tokio"), "_/_/-tokio");
+    }
+
+    #[test]
+    fn parse_version_from_index_finds_version() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        let index_content = r#"[
+            {"name":"serde","vers":"1.0.0","deps":[],"cksum":"abc123"},
+            {"name":"serde","vers":"1.0.1","deps":[],"cksum":"def456"},
+            {"name":"serde","vers":"2.0.0","deps":[],"cksum":"ghi789"}
+        ]"#;
+
+        let found = cli.parse_version_from_index(index_content, "1.0.1");
+        assert!(found.is_ok());
+        assert!(found.unwrap());
+    }
+
+    #[test]
+    fn parse_version_from_index_returns_false_for_missing_version() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        let index_content = r#"[
+            {"name":"serde","vers":"1.0.0","deps":[],"cksum":"abc123"},
+            {"name":"serde","vers":"1.0.1","deps":[],"cksum":"def456"}
+        ]"#;
+
+        let found = cli.parse_version_from_index(index_content, "2.0.0");
+        assert!(found.is_ok());
+        assert!(!found.unwrap());
+    }
+
+    #[test]
+    fn parse_version_from_index_handles_invalid_json() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        let invalid_json = "not valid json";
+
+        let found = cli.parse_version_from_index(invalid_json, "1.0.0");
+        assert!(found.is_err());
+    }
+
+    #[test]
+    fn check_index_visibility_returns_true_for_existing_version() {
+        let index_content = r#"[
+            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"abc123"},
+            {"name":"demo","vers":"1.0.1","deps":[],"cksum":"def456"}
+        ]"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            assert_eq!(req.url(), "/d/e/demo");
+            let resp = Response::from_string(index_content)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let visible = cli.check_index_visibility("demo", "1.0.1").expect("check");
+        assert!(visible);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn check_index_visibility_returns_false_for_missing_version() {
+        let index_content = r#"[
+            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"abc123"}
+        ]"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            assert_eq!(req.url(), "/d/e/demo");
+            let resp = Response::from_string(index_content)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let visible = cli.check_index_visibility("demo", "1.0.1").expect("check");
+        assert!(!visible);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn check_index_visibility_returns_false_for_404() {
+        let (api_base, handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(404)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let visible = cli.check_index_visibility("missing", "1.0.0").expect("check");
+        assert!(!visible);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn check_index_visibility_returns_false_for_network_error() {
+        // Use a non-existent URL to simulate a network error
+        let registry = Registry {
+            name: "test".to_string(),
+            api_base: "http://nonexistent.invalid:9999".to_string(),
+            index_base: Some("http://nonexistent.invalid:9999".to_string()),
+        };
+
+        let cli = RegistryClient::new(registry).expect("client");
+        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
+        assert!(!visible);
+    }
+
+    #[test]
+    fn check_index_visibility_returns_false_for_invalid_json() {
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string("not valid json")
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
+        assert!(!visible);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn is_version_visible_with_backoff_uses_index_method() {
+        let index_content = r#"[
+            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"abc123"}
+        ]"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            assert_eq!(req.url(), "/d/e/demo");
+            let resp = Response::from_string(index_content)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Index,
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_secs(1),
+            max_total_wait: Duration::from_secs(1),
+            poll_interval: Duration::from_millis(100),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn is_version_visible_with_backoff_uses_both_method_prefer_index() {
+        let index_content = r#"[
+            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"abc123"}
+        ]"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            assert_eq!(req.url(), "/d/e/demo");
+            let resp = Response::from_string(index_content)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Both,
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_secs(1),
+            max_total_wait: Duration::from_secs(1),
+            poll_interval: Duration::from_millis(100),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: true, // Prefer index
+        };
+
+        let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn registry_get_index_base_returns_explicit_index_base() {
+        let registry = Registry {
+            name: "test".to_string(),
+            api_base: "https://example.com".to_string(),
+            index_base: Some("https://index.example.com".to_string()),
+        };
+
+        assert_eq!(registry.get_index_base(), "https://index.example.com");
+    }
+
+    #[test]
+    fn registry_get_index_base_derives_from_api_base() {
+        let registry = Registry {
+            name: "test".to_string(),
+            api_base: "https://crates.io".to_string(),
+            index_base: None,
+        };
+
+        assert_eq!(registry.get_index_base(), "https://index.crates.io");
+    }
+
+    #[test]
+    fn registry_get_index_base_derives_from_http_api_base() {
+        let registry = Registry {
+            name: "test".to_string(),
+            api_base: "http://crates.io".to_string(),
+            index_base: None,
+        };
+
+        assert_eq!(registry.get_index_base(), "http://index.crates.io");
+    }
+
+    // Additional index-based readiness tests
+
+    #[test]
+    fn check_index_visibility_with_empty_index_returns_false() {
+        let index_content = "[]";
+
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string(index_content)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
+        assert!(!visible);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn check_index_visibility_with_multiple_versions_finds_correct() {
+        let index_content = r#"[
+            {"name":"demo","vers":"0.1.0","deps":[],"cksum":"abc123"},
+            {"name":"demo","vers":"0.2.0","deps":[],"cksum":"def456"},
+            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"ghi789"},
+            {"name":"demo","vers":"1.1.0","deps":[],"cksum":"jkl012"}
+        ]"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string(index_content)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        
+        // Check each version exists
+        assert!(cli.check_index_visibility("demo", "0.1.0").expect("check"));
+        assert!(cli.check_index_visibility("demo", "0.2.0").expect("check"));
+        assert!(cli.check_index_visibility("demo", "1.0.0").expect("check"));
+        assert!(cli.check_index_visibility("demo", "1.1.0").expect("check"));
+        
+        // Check non-existent version
+        assert!(!cli.check_index_visibility("demo", "2.0.0").expect("check"));
+        
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn check_index_visibility_handles_malformed_json_gracefully() {
+        let malformed_json = r#"[
+            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"abc123"},
+            {"invalid":"entry"}
+        ]"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string(malformed_json)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        // Should return false for malformed JSON (graceful degradation)
+        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
+        assert!(!visible);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn is_version_visible_with_backoff_with_api_method() {
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string("{}")
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_secs(1),
+            max_total_wait: Duration::from_secs(1),
+            poll_interval: Duration::from_millis(100),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn is_version_visible_with_backoff_with_both_method_prefer_api() {
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string("{}")
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Both,
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_secs(1),
+            max_total_wait: Duration::from_secs(1),
+            poll_interval: Duration::from_millis(100),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false, // Prefer API
+        };
+
+        let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn is_version_visible_with_backoff_returns_false_on_timeout() {
+        let (api_base, handle) = with_server(move |req| {
+            // Always return 404
+            let resp = Response::empty(StatusCode(404));
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(50),
+            max_total_wait: Duration::from_millis(100),
+            poll_interval: Duration::from_millis(25),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn is_version_visible_with_backoff_handles_network_errors_gracefully() {
+        // Use a non-existent URL to simulate network errors
+        let registry = Registry {
+            name: "test".to_string(),
+            api_base: "http://nonexistent.invalid:9999".to_string(),
+            index_base: Some("http://nonexistent.invalid:9999".to_string()),
+        };
+
+        let cli = RegistryClient::new(registry).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(50),
+            max_total_wait: Duration::from_millis(100),
+            poll_interval: Duration::from_millis(25),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn is_version_visible_with_backoff_respects_initial_delay() {
+        let start = std::time::Instant::now();
+        
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string("{}")
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::from_millis(50),
+            max_delay: Duration::from_secs(1),
+            max_total_wait: Duration::from_secs(1),
+            poll_interval: Duration::from_millis(100),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let _result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
+        let elapsed = start.elapsed();
+        
+        // Should wait at least the initial delay
+        assert!(elapsed >= Duration::from_millis(50));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn verify_ownership_returns_true_on_success() {
+        let owners_json = r#"{"users":["user1","user2"]}"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            assert_eq!(req.url(), "/api/v1/crates/demo/owners");
+            let resp = Response::from_string(owners_json)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let verified = cli.verify_ownership("demo", "fake-token").expect("verify");
+        assert!(verified);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn verify_ownership_returns_false_on_forbidden() {
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string("{}")
+                .with_status_code(StatusCode(403))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let verified = cli.verify_ownership("demo", "fake-token").expect("verify");
+        assert!(!verified);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn verify_ownership_returns_false_on_not_found() {
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string("{}")
+                .with_status_code(StatusCode(404))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let verified = cli.verify_ownership("demo", "fake-token").expect("verify");
+        assert!(!verified);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn check_new_crate_returns_true_for_nonexistent_crate() {
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::empty(StatusCode(404));
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let is_new = cli.check_new_crate("demo").expect("check");
+        assert!(is_new);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn check_new_crate_returns_false_for_existing_crate() {
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string("{}")
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let is_new = cli.check_new_crate("demo").expect("check");
+        assert!(!is_new);
         handle.join().expect("join");
     }
 }

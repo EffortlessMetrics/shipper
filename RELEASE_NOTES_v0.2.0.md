@@ -6,6 +6,19 @@ Shipper v0.2.0 is a major release that introduces four key pillars for reliable 
 
 This release significantly improves the publishing experience for teams working with multi-crate workspaces, with better support for CI/CD pipelines and comprehensive failure analysis.
 
+## Summary of v0.2 Features
+
+- **Evidence Capture** - Detailed stdout/stderr, exit codes, and timestamps for each operation
+- **Event Logging** - Comprehensive event log (events.jsonl) for complete audit trails
+- **Readiness Checks** - Configurable verification with API, index, and combined methods
+- **Publish Policies** - Three built-in policies: safe, balanced, and fast
+- **Preflight Verification** - Finishability assessment with Proven/NotProven/Failed states
+- **Index-Based Readiness** - Direct sparse index verification for maximum accuracy
+- **New Crate Detection** - Identifies and validates first-time publishes
+- **Schema Versioning** - State and receipt files include version information
+- **Enhanced Receipts** - Git context, attempt evidence, and readiness evidence
+- **CI Integration** - Built-in workflow generation for GitHub Actions and GitLab CI
+
 ## Key Features
 
 ### 1. Evidence Capture
@@ -69,6 +82,85 @@ shipper publish --policy balanced
 shipper publish --policy fast
 ```
 
+### 5. Preflight Verification
+
+Comprehensive preflight checks run before any publishing begins:
+
+- **Finishability Assessment** - Determines if workspace is ready (Proven/NotProven/Failed)
+- **Ownership Verification** - Checks if you have permission to publish each crate
+- **New Crate Detection** - Identifies crates that don't exist on registry yet
+- **Workspace Dry-Run** - Verifies all packages can be published without uploading
+
+```bash
+# Run preflight checks
+shipper preflight
+
+# Run with strict ownership checks
+shipper preflight --strict-ownership
+
+# Allow new crate publishing
+shipper preflight --allow-new-crates
+```
+
+### 6. Index-Based Readiness
+
+Enhanced readiness verification with index support:
+
+- **Index Method** - Direct sparse index verification for maximum accuracy
+- **Prefer Index** - When using both methods, prioritize index checks
+- **Custom Index Path** - Support for testing with custom index locations
+
+```bash
+# Use index-based readiness
+shipper publish --readiness-method index
+
+# Prefer index when using both
+shipper publish --readiness-method both --prefer-index
+```
+
+### 7. Schema Versioning
+
+State and receipt files now include version information:
+
+- **State Version** - Identifies state file format version
+- **Plan Version** - Identifies plan format version
+- **Receipt Version** - Identifies receipt format version
+
+This allows Shipper to handle format changes gracefully and provide clear migration paths.
+
+### 8. Enhanced Receipts
+
+Receipts now include comprehensive evidence:
+
+- **Attempt Evidence** - Stdout/stderr, exit codes, and duration for each attempt
+- **Readiness Evidence** - Timestamps and results of each readiness check
+- **Git Context** - Optional git commit, branch, and tag information
+- **Environment Fingerprint** - Shipper, Cargo, and Rust version information
+
+```bash
+# View detailed receipt with evidence
+shipper inspect-receipt
+
+# Get JSON output for CI integration
+shipper inspect-receipt --format json
+```
+
+### 9. New Crate Detection
+
+Automatic detection and validation of new crate publishes:
+
+- **New Crate Identification** - Detects crates that don't exist on the registry
+- **Ownership Requirement** - Optional requirement for ownership verification of new crates
+- **Configurable Behavior** - Allow or prevent new crate publishing via configuration
+
+```bash
+# Allow new crate publishing
+shipper publish --allow-new-crates
+
+# Require ownership verification for new crates
+shipper publish --require-ownership-for-new-crates
+```
+
 ## New CLI Commands
 
 ### Inspection Commands
@@ -110,6 +202,14 @@ shipper publish --policy fast
 
 - `--force` - Force override of existing locks
 - `--lock-timeout <duration>` - Lock timeout duration (default: 1h)
+
+### Preflight Options
+
+- `--allow-new-crates` - Allow publishing new crates (first-time publishes)
+- `--require-ownership-for-new-crates` - Require ownership verification for new crates
+- `--allow-dirty` - Allow publishing from a dirty git working tree
+- `--skip-ownership-check` - Skip owners/permissions preflight
+- `--strict-ownership` - Fail preflight if ownership checks fail or if no token is available
 
 ## Migration Guide from v0.1.0
 
@@ -250,6 +350,9 @@ shipper inspect-receipt --format json
 
 - [README.md](README.md) - Main documentation
 - [CHANGELOG.md](CHANGELOG.md) - Detailed changelog
+- [docs/configuration.md](docs/configuration.md) - Configuration file options
+- [docs/preflight.md](docs/preflight.md) - Pre-flight verification guide
+- [docs/readiness.md](docs/readiness.md) - Readiness verification guide
 - [docs/failure-modes.md](docs/failure-modes.md) - Failure modes and debugging guide
 
 ## Support

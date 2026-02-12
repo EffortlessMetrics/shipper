@@ -24,6 +24,86 @@ Shipper v0.2 introduces four key pillars for reliable publishing:
 
 4. **Publish Policies** - Three built-in policies control verification behavior: `safe` (verify+strict), `balanced` (verify when needed), and `fast` (no verify). Choose the right balance of safety and speed for your workflow.
 
+## New Features in v0.2
+
+### Preflight Verification
+
+Preflight checks run before any publishing begins to verify your workspace is ready:
+
+- **Finishability Assessment** - Determines if your workspace is ready to publish (Proven/NotProven/Failed)
+- **Ownership Verification** - Checks if you have permission to publish each crate
+- **New Crate Detection** - Identifies crates that don't exist on the registry yet
+- **Workspace Dry-Run** - Verifies all packages can be published without uploading
+
+```bash
+# Run preflight checks
+shipper preflight
+
+# Run with strict ownership checks
+shipper preflight --strict-ownership
+```
+
+See [docs/preflight.md](docs/preflight.md) for detailed documentation.
+
+### Index-Based Readiness
+
+New readiness verification methods for more reliable publishing:
+
+- **API Method** (fast) - Queries the registry HTTP API
+- **Index Method** (accurate) - Checks the sparse index directly
+- **Both Method** (reliable) - Verifies using both methods
+
+```bash
+# Use index-based readiness
+shipper publish --readiness-method index
+
+# Use both methods for maximum reliability
+shipper publish --readiness-method both
+```
+
+See [docs/readiness.md](docs/readiness.md) for detailed documentation.
+
+### Enhanced Receipts
+
+Receipts now include comprehensive evidence for debugging and auditing:
+
+- **Attempt Evidence** - Stdout/stderr, exit codes, and duration for each attempt
+- **Readiness Evidence** - Timestamps and results of each readiness check
+- **Schema Versioning** - Receipts include version information for compatibility
+- **Git Context** - Optional git commit, branch, and tag information
+
+```bash
+# View the detailed receipt with evidence
+shipper inspect-receipt
+
+# Get JSON output for CI integration
+shipper inspect-receipt --format json
+```
+
+### Schema Versioning
+
+State and receipt files now include version information for forward compatibility:
+
+- **State Version** - Identifies the state file format version
+- **Plan Version** - Identifies the plan format version
+- **Receipt Version** - Identifies the receipt format version
+
+This allows Shipper to handle format changes gracefully and provide clear migration paths.
+
+### CI Integration Improvements
+
+New CI commands for easy workflow generation:
+
+```bash
+# Get GitHub Actions workflow
+shipper ci github-actions
+
+# Get GitLab CI workflow
+shipper ci gitlab
+```
+
+See [templates/](templates/) for example workflows.
+
 ## What shipper does
 
 - Builds a deterministic **publish plan** for workspace crates (dependency-first ordering).
@@ -149,6 +229,8 @@ Use `--state-dir <path>` to redirect these elsewhere (for example, a CI artifact
 - `--allow-dirty` — Allow publishing from a dirty git working tree
 - `--skip-ownership-check` — Skip owners/permissions preflight
 - `--strict-ownership` — Fail preflight if ownership checks fail or if no token is available
+- `--allow-new-crates` — Allow publishing new crates (first-time publishes)
+- `--require-ownership-for-new-crates` — Require ownership verification for new crates
 
 ### Retry options
 
@@ -232,6 +314,22 @@ shipper clean
 shipper clean --keep-receipt
 ```
 
+### Preflight verification (v0.2)
+
+```bash
+# Run preflight checks
+shipper preflight
+
+# Run with strict ownership checks
+shipper preflight --strict-ownership
+
+# Skip ownership checks
+shipper preflight --skip-ownership-check
+
+# Allow new crate publishing
+shipper preflight --allow-new-crates
+```
+
 ### CI integration (v0.2)
 
 ```bash
@@ -278,6 +376,14 @@ shipper publish --verify-mode none
 ## CI templates
 
 See `templates/` for example workflows.
+
+## Documentation
+
+- [Configuration](docs/configuration.md) - Configuration file options
+- [Preflight Verification](docs/preflight.md) - Pre-flight verification guide
+- [Readiness Checking](docs/readiness.md) - Readiness verification guide
+- [Failure Modes](docs/failure-modes.md) - Common failure scenarios and solutions
+- [Release Notes](RELEASE_NOTES_v0.2.0.md) - v0.2.0 release notes
 
 ## License
 

@@ -71,6 +71,69 @@ Shipper implements a sophisticated retry strategy:
 shipper publish --max-attempts 10 --base-delay 5s --max-delay 5m
 ```
 
+## Preflight failures (v0.2)
+
+Preflight checks run before any publishing begins to verify your workspace is ready. Failures here prevent any crates from being published.
+
+### Preflight finishability states
+
+Preflight produces one of three finishability states:
+
+| State | Meaning | Action |
+|-------|---------|--------|
+| **Proven** | All checks passed, ready to publish | Proceed with `shipper publish` |
+| **NotProven** | Some checks couldn't be verified (e.g., no token) | Review warnings, proceed if confident |
+| **Failed** | Critical checks failed | Fix issues before publishing |
+
+### Preflight failure modes
+
+#### Issue: Workspace verify failed
+
+**Symptoms**: Preflight shows `dry_run_passed: ✗` for packages
+
+**Cause**: The workspace dry-run check failed, indicating issues with package dependencies or metadata
+
+**Solutions**:
+1. Run `cargo publish --dry-run` manually to see the full error
+2. Check for missing dependencies or version conflicts
+3. Verify all packages have valid `Cargo.toml` metadata
+4. Ensure workspace members are properly configured
+
+#### Issue: Ownership verification failed
+
+**Symptoms**: Preflight shows `ownership_verified: ✗`
+
+**Cause**: The publish token doesn't have ownership permissions for the crate
+
+**Solutions**:
+1. Verify you're listed as an owner: `cargo owner --list <crate-name>`
+2. Check your token has the correct scopes
+3. Use `--skip-ownership-check` if you're confident (not recommended)
+4. For new crates, ensure you have permissions to create new packages
+
+#### Issue: New crate detected but not allowed
+
+**Symptoms**: Preflight shows `is_new_crate: true` and fails
+
+**Cause**: A crate doesn't exist on the registry yet, but `allow_new_crates` is disabled
+
+**Solutions**:
+1. Verify this is intentional: `cargo search <crate-name>`
+2. Enable new crate publishing: `shipper publish --allow-new-crates`
+3. Or set in config: `preflight.allow_new_crates = true`
+
+#### Issue: No token available for ownership check
+
+**Symptoms**: Preflight shows `token_detected: false` and `NotProven` status
+
+**Cause**: No registry token was found for ownership verification
+
+**Solutions**:
+1. Set `CARGO_REGISTRY_TOKEN` environment variable
+2. Run `cargo login` to create credentials
+3. Use `--skip-ownership-check` if you're confident (not recommended)
+4. Use `--strict-ownership=false` to allow continuation without verification
+
 ## Permission mismatches
 
 A common failure mode is having rights to publish some crates in a workspace but not all. Shipper can optionally preflight owners/permissions before publishing anything.
@@ -106,6 +169,34 @@ shipper publish --force
 shipper publish --lock-timeout 30m
 ```
 
+## Dry-run failures (v0.2)
+
+Dry-run verification checks whether packages can be successfully published without actually uploading them.
+
+### Issue: Dry-run failed for workspace
+
+**Symptoms**: Preflight shows `dry_run_passed: ✗` for multiple packages
+
+**Cause**: The workspace dry-run check failed, indicating issues with dependencies or metadata
+
+**Solutions**:
+1. Run `cargo publish --dry-run` manually to see the full error
+2. Check for missing dependencies or version conflicts
+3. Verify all packages have valid `Cargo.toml` metadata
+4. Ensure workspace members are properly configured
+
+### Issue: Dry-run failed for specific package
+
+**Symptoms**: Preflight shows `dry_run_passed: ✗` for a single package
+
+**Cause**: A specific package has issues that prevent publishing
+
+**Solutions**:
+1. Run `cargo publish -p <package-name> --dry-run` to see the full error
+2. Check package-specific dependencies
+3. Verify the package's `Cargo.toml` is valid
+4. Ensure the package version hasn't been published already
+
 ## Readiness failures (v0.2)
 
 A crate may appear to publish successfully but not be immediately available on the registry. Shipper's readiness checks verify actual registry visibility before proceeding.
@@ -114,9 +205,11 @@ A crate may appear to publish successfully but not be immediately available on t
 
 Shipper supports three readiness verification methods:
 
-1. **API** (default, fast) - Queries the registry API to check if the crate exists
-2. **Index** (slower, more accurate) - Checks the crate index for the new version
-3. **Both** (slowest, most reliable) - Verifies using both methods
+| Method | Speed | Accuracy | Use Case |
+|--------|-------|----------|----------|
+| **API** | Fast | Good | Default choice for most users |
+| **Index** | Slower | High | When API is unreliable |
+| **Both** | Slowest | Highest | Critical production publishes |
 
 ```bash
 # Use index-based readiness
@@ -139,6 +232,42 @@ If readiness checks fail, Shipper will:
 1. Retry with exponential backoff
 2. Wait up to the configured timeout (default: 5m)
 3. Fail the publish if the crate doesn't become visible
+
+### Index-based readiness issues
+
+#### Issue: Index checks are slow
+
+**Symptoms**: Readiness checks take a long time when using `index` or `both` methods
+
+**Cause**: The sparse index is large and checking it requires downloading and parsing index files
+
+**Solutions**:
+1. Use API-based readiness for faster checks: `--readiness-method api`
+2. Increase the timeout: `--readiness-timeout 10m`
+3. Use a local index mirror for faster access
+
+#### Issue: Index shows stale data
+
+**Symptoms**: Index checks fail even though the crate was successfully published
+
+**Cause**: The sparse index hasn't been updated yet (propagation delay)
+
+**Solutions**:
+1. Use API-based readiness instead: `--readiness-method api`
+2. Use both methods: `--readiness-method both --prefer-index=false`
+3. Increase the timeout to allow index propagation
+4. Manually update the index: `cargo update`
+
+#### Issue: Custom index path not found
+
+**Symptoms**: Readiness checks fail with "index path not found" error
+
+**Cause**: The configured `index_path` doesn't exist or is not accessible
+
+**Solutions**:
+1. Verify the index path is correct
+2. Remove the `index_path` setting to use the default index
+3. Ensure the path is accessible to the shipper process
 
 ## Evidence and debugging (v0.2)
 

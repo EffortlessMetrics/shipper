@@ -9,6 +9,7 @@ pub mod auth;
 pub mod cargo;
 pub mod config;
 pub mod engine;
+pub mod environment;
 pub mod events;
 pub mod git;
 pub mod lock;

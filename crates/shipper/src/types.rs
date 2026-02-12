@@ -31,6 +31,10 @@ pub struct Registry {
     pub name: String,
     /// Base URL for registry web API, e.g. `https://crates.io`.
     pub api_base: String,
+    /// Base URL for the sparse index, e.g. `https://index.crates.io`.
+    /// If not specified, will be derived from the API base.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_base: Option<String>,
 }
 
 impl Registry {
@@ -38,6 +42,19 @@ impl Registry {
         Self {
             name: "crates-io".to_string(),
             api_base: "https://crates.io".to_string(),
+            index_base: Some("https://index.crates.io".to_string()),
+        }
+    }
+
+    /// Get the index base URL, deriving it from the API base if not explicitly set.
+    pub fn get_index_base(&self) -> String {
+        if let Some(index_base) = &self.index_base {
+            index_base.clone()
+        } else {
+            // Default: derive from API base (e.g., https://crates.io -> https://index.crates.io)
+            self.api_base
+                .replace("https://", "https://index.")
+                .replace("http://", "http://index.")
         }
     }
 }
@@ -106,6 +123,11 @@ pub struct ReadinessConfig {
     pub poll_interval: Duration,
     /// Jitter factor (±50% means 0.5)
     pub jitter_factor: f64,
+    /// Custom index path for testing (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_path: Option<PathBuf>,
+    /// Use index as primary method when Both is selected
+    pub prefer_index: bool,
 }
 
 impl Default for ReadinessConfig {
@@ -118,6 +140,8 @@ impl Default for ReadinessConfig {
             max_total_wait: Duration::from_secs(300), // 5 minutes
             poll_interval: Duration::from_secs(2),
             jitter_factor: 0.5,
+            index_path: None,
+            prefer_index: false,
         }
     }
 }
@@ -187,6 +211,7 @@ pub struct PublishLevel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleasePlan {
+    pub plan_version: String,
     pub plan_id: String,
     pub created_at: DateTime<Utc>,
     pub registry: Registry,
@@ -227,6 +252,7 @@ pub struct PackageProgress {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionState {
+    pub state_version: String,
     pub plan_id: String,
     pub registry: Registry,
     pub created_at: DateTime<Utc>,
@@ -276,6 +302,23 @@ pub struct ReadinessEvidence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentFingerprint {
+    pub shipper_version: String,
+    pub cargo_version: Option<String>,
+    pub rust_version: Option<String>,
+    pub os: String,
+    pub arch: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitContext {
+    pub commit: Option<String>,
+    pub branch: Option<String>,
+    pub tag: Option<String>,
+    pub dirty: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Receipt {
     pub receipt_version: String,
     pub plan_id: String,
@@ -284,6 +327,9 @@ pub struct Receipt {
     pub finished_at: DateTime<Utc>,
     pub packages: Vec<PackageReceipt>,
     pub event_log_path: PathBuf,
+    #[serde(default)]
+    pub git_context: Option<GitContext>,
+    pub environment: EnvironmentFingerprint,
 }
 
 // Event types for evidence-first receipts
@@ -347,15 +393,34 @@ pub enum EventType {
     ReadinessTimeout {
         max_wait_ms: u64,
     },
+    // Index readiness events
+    IndexReadinessStarted {
+        crate_name: String,
+        version: String,
+    },
+    IndexReadinessCheck {
+        crate_name: String,
+        version: String,
+        found: bool,
+    },
+    IndexReadinessComplete {
+        crate_name: String,
+        version: String,
+        visible: bool,
+    },
 
     // Preflight events
     PreflightStarted,
     PreflightWorkspaceVerify {
         passed: bool,
+        output: String,
     },
     PreflightNewCrateDetected {
-        name: String,
-        auth_type: AuthType,
+        crate_name: String,
+    },
+    PreflightOwnershipCheck {
+        crate_name: String,
+        verified: bool,
     },
     PreflightComplete {
         finishability: Finishability,
@@ -375,7 +440,7 @@ pub enum ExecutionResult {
 pub enum AuthType {
     Token,
     TrustedPublishing,
-    None,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -384,6 +449,26 @@ pub enum Finishability {
     Proven,
     NotProven,
     Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreflightReport {
+    pub plan_id: String,
+    pub token_detected: bool,
+    pub finishability: Finishability,
+    pub packages: Vec<PreflightPackage>,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreflightPackage {
+    pub name: String,
+    pub version: String,
+    pub already_published: bool,
+    pub is_new_crate: bool,
+    pub auth_type: Option<AuthType>,
+    pub ownership_verified: bool,
+    pub dry_run_passed: bool,
 }
 
 #[cfg(test)]
@@ -427,6 +512,7 @@ mod tests {
         );
 
         let st = ExecutionState {
+            state_version: "shipper.state.v1".to_string(),
             plan_id: "plan-1".to_string(),
             registry: Registry::crates_io(),
             created_at: Utc::now(),
@@ -468,6 +554,8 @@ mod tests {
             max_total_wait: Duration::from_secs(600),
             poll_interval: Duration::from_secs(5),
             jitter_factor: 0.25,
+            index_path: None,
+            prefer_index: false,
         };
         assert!(!config.enabled);
         assert_eq!(config.method, ReadinessMethod::Both);
@@ -476,5 +564,335 @@ mod tests {
         assert_eq!(config.max_total_wait, Duration::from_secs(600));
         assert_eq!(config.poll_interval, Duration::from_secs(5));
         assert_eq!(config.jitter_factor, 0.25);
+    }
+
+    // Property-based tests using proptest
+
+    #[cfg(test)]
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            // Preflight report serialization/deserialization roundtrip
+            #[test]
+            fn preflight_report_roundtrip(
+                plan_id in "[a-z0-9-]+",
+                token_detected in any::<bool>(),
+                finishability_variant in 0u8..3,
+                package_count in 0usize..10,
+            ) {
+                let finishability = match finishability_variant {
+                    0 => Finishability::Proven,
+                    1 => Finishability::NotProven,
+                    _ => Finishability::Failed,
+                };
+
+                let packages: Vec<PreflightPackage> = (0..package_count)
+                    .map(|i| PreflightPackage {
+                        name: format!("crate-{}", i),
+                        version: format!("0.{}.0", i),
+                        already_published: i % 2 == 0,
+                        is_new_crate: i % 3 == 0,
+                        auth_type: if i % 2 == 0 { Some(AuthType::Token) } else { None },
+                        ownership_verified: i % 3 != 0,
+                        dry_run_passed: i % 5 != 0,
+                    })
+                    .collect();
+
+                let report = PreflightReport {
+                    plan_id: plan_id.clone(),
+                    token_detected,
+                    finishability,
+                    packages: packages.clone(),
+                    timestamp: Utc::now(),
+                };
+
+                // Serialize and deserialize
+                let json = serde_json::to_string(&report).unwrap();
+                let parsed: PreflightReport = serde_json::from_str(&json).unwrap();
+
+                // Verify roundtrip
+                assert_eq!(parsed.plan_id, report.plan_id);
+                assert_eq!(parsed.token_detected, report.token_detected);
+                assert_eq!(parsed.finishability, report.finishability);
+                assert_eq!(parsed.packages.len(), report.packages.len());
+                for (orig, parsed_pkg) in report.packages.iter().zip(parsed.packages.iter()) {
+                    assert_eq!(parsed_pkg.name, orig.name);
+                    assert_eq!(parsed_pkg.version, orig.version);
+                    assert_eq!(parsed_pkg.already_published, orig.already_published);
+                    assert_eq!(parsed_pkg.is_new_crate, orig.is_new_crate);
+                    assert_eq!(parsed_pkg.auth_type, orig.auth_type);
+                    assert_eq!(parsed_pkg.ownership_verified, orig.ownership_verified);
+                    assert_eq!(parsed_pkg.dry_run_passed, orig.dry_run_passed);
+                }
+            }
+
+            // Preflight package serialization roundtrip
+            #[test]
+            fn preflight_package_roundtrip(
+                name in "[a-z][a-z0-9-]*",
+                version in "[0-9]+\\.[0-9]+\\.[0-9]+",
+                already_published in any::<bool>(),
+                is_new_crate in any::<bool>(),
+                auth_type_variant in 0u8..4,
+                ownership_verified in any::<bool>(),
+                dry_run_passed in any::<bool>(),
+            ) {
+                let auth_type = match auth_type_variant {
+                    0 => Some(AuthType::Token),
+                    1 => Some(AuthType::TrustedPublishing),
+                    2 => Some(AuthType::Unknown),
+                    _ => None,
+                };
+
+                let pkg = PreflightPackage {
+                    name: name.clone(),
+                    version: version.clone(),
+                    already_published,
+                    is_new_crate,
+                    auth_type: auth_type.clone(),
+                    ownership_verified,
+                    dry_run_passed,
+                };
+
+                // Serialize and deserialize
+                let json = serde_json::to_string(&pkg).unwrap();
+                let parsed: PreflightPackage = serde_json::from_str(&json).unwrap();
+
+                // Verify roundtrip
+                assert_eq!(parsed.name, pkg.name);
+                assert_eq!(parsed.version, pkg.version);
+                assert_eq!(parsed.already_published, pkg.already_published);
+                assert_eq!(parsed.is_new_crate, pkg.is_new_crate);
+                assert_eq!(parsed.auth_type, pkg.auth_type);
+                assert_eq!(parsed.ownership_verified, pkg.ownership_verified);
+                assert_eq!(parsed.dry_run_passed, pkg.dry_run_passed);
+            }
+
+            // AuthType serialization roundtrip
+            #[test]
+            fn auth_type_roundtrip(auth_type_variant in 0u8..3) {
+                let auth_type = match auth_type_variant {
+                    0 => AuthType::Token,
+                    1 => AuthType::TrustedPublishing,
+                    _ => AuthType::Unknown,
+                };
+
+                let json = serde_json::to_string(&auth_type).unwrap();
+                let parsed: AuthType = serde_json::from_str(&json).unwrap();
+
+                assert_eq!(parsed, auth_type);
+            }
+
+            // Finishability serialization roundtrip
+            #[test]
+            fn finishability_roundtrip(finishability_variant in 0u8..3) {
+                let finishability = match finishability_variant {
+                    0 => Finishability::Proven,
+                    1 => Finishability::NotProven,
+                    _ => Finishability::Failed,
+                };
+
+                let json = serde_json::to_string(&finishability).unwrap();
+                let parsed: Finishability = serde_json::from_str(&json).unwrap();
+
+                assert_eq!(parsed, finishability);
+            }
+
+            // EnvironmentFingerprint serialization roundtrip
+            #[test]
+            fn environment_fingerprint_roundtrip(
+                shipper_version in "[0-9]+\\.[0-9]+\\.[0-9]+",
+                cargo_version in prop::option::of("[0-9]+\\.[0-9]+\\.[0-9]+"),
+                rust_version in prop::option::of("[0-9]+\\.[0-9]+\\.[0-9]+"),
+                os in "[a-z]+",
+                arch in "[a-z0-9_]+",
+            ) {
+                let fingerprint = EnvironmentFingerprint {
+                    shipper_version: shipper_version.clone(),
+                    cargo_version: cargo_version.clone(),
+                    rust_version: rust_version.clone(),
+                    os: os.clone(),
+                    arch: arch.clone(),
+                };
+
+                // Serialize and deserialize
+                let json = serde_json::to_string(&fingerprint).unwrap();
+                let parsed: EnvironmentFingerprint = serde_json::from_str(&json).unwrap();
+
+                // Verify roundtrip
+                assert_eq!(parsed.shipper_version, fingerprint.shipper_version);
+                assert_eq!(parsed.cargo_version, fingerprint.cargo_version);
+                assert_eq!(parsed.rust_version, fingerprint.rust_version);
+                assert_eq!(parsed.os, fingerprint.os);
+                assert_eq!(parsed.arch, fingerprint.arch);
+            }
+
+            // GitContext serialization roundtrip
+            #[test]
+            fn git_context_roundtrip(
+                commit in prop::option::of("[a-f0-9]+"),
+                branch in prop::option::of("[a-z0-9-]+"),
+                tag in prop::option::of("[a-z0-9-\\.]+"),
+                dirty in prop::option::of(any::<bool>()),
+            ) {
+                let git_context = GitContext {
+                    commit: commit.clone(),
+                    branch: branch.clone(),
+                    tag: tag.clone(),
+                    dirty: dirty.clone(),
+                };
+
+                // Serialize and deserialize
+                let json = serde_json::to_string(&git_context).unwrap();
+                let parsed: GitContext = serde_json::from_str(&json).unwrap();
+
+                // Verify roundtrip
+                assert_eq!(parsed.commit, git_context.commit);
+                assert_eq!(parsed.branch, git_context.branch);
+                assert_eq!(parsed.tag, git_context.tag);
+                assert_eq!(parsed.dirty, git_context.dirty);
+            }
+
+            // Registry serialization roundtrip
+            #[test]
+            fn registry_roundtrip(
+                name in "[a-z0-9-]+",
+                api_base in "https?://[a-z0-9.-]+",
+                index_base in prop::option::of("https?://[a-z0-9.-]+"),
+            ) {
+                let registry = Registry {
+                    name: name.clone(),
+                    api_base: api_base.clone(),
+                    index_base: index_base.clone(),
+                };
+
+                // Serialize and deserialize
+                let json = serde_json::to_string(&registry).unwrap();
+                let parsed: Registry = serde_json::from_str(&json).unwrap();
+
+                // Verify roundtrip
+                assert_eq!(parsed.name, registry.name);
+                assert_eq!(parsed.api_base, registry.api_base);
+                assert_eq!(parsed.index_base, registry.index_base);
+            }
+
+            // ReadinessConfig serialization roundtrip
+            #[test]
+            fn readiness_config_roundtrip(
+                enabled in any::<bool>(),
+                method_variant in 0u8..3,
+                initial_delay_ms in 0u64..10000,
+                max_delay_ms in 0u64..100000,
+                max_total_wait_ms in 0u64..1000000,
+                poll_interval_ms in 0u64..10000,
+                jitter_factor in 0.0f64..1.0,
+                prefer_index in any::<bool>(),
+            ) {
+                let method = match method_variant {
+                    0 => ReadinessMethod::Api,
+                    1 => ReadinessMethod::Index,
+                    _ => ReadinessMethod::Both,
+                };
+
+                let config = ReadinessConfig {
+                    enabled,
+                    method,
+                    initial_delay: Duration::from_millis(initial_delay_ms),
+                    max_delay: Duration::from_millis(max_delay_ms),
+                    max_total_wait: Duration::from_millis(max_total_wait_ms),
+                    poll_interval: Duration::from_millis(poll_interval_ms),
+                    jitter_factor,
+                    index_path: None,
+                    prefer_index,
+                };
+
+                // Serialize and deserialize
+                let json = serde_json::to_string(&config).unwrap();
+                let parsed: ReadinessConfig = serde_json::from_str(&json).unwrap();
+
+                // Verify roundtrip
+                assert_eq!(parsed.enabled, config.enabled);
+                assert_eq!(parsed.method, config.method);
+                assert_eq!(parsed.initial_delay, config.initial_delay);
+                assert_eq!(parsed.max_delay, config.max_delay);
+                assert_eq!(parsed.max_total_wait, config.max_total_wait);
+                assert_eq!(parsed.poll_interval, config.poll_interval);
+                assert_eq!(parsed.jitter_factor, config.jitter_factor);
+                assert_eq!(parsed.prefer_index, config.prefer_index);
+            }
+
+            // Index path calculation is deterministic
+            #[test]
+            fn index_path_deterministic(crate_name in "[a-z0-9-]+") {
+                // Calculate the index path twice and verify it's the same
+                let first = calculate_index_path_for_crate(&crate_name);
+                let second = calculate_index_path_for_crate(&crate_name);
+                assert_eq!(first, second, "Index path calculation should be deterministic");
+            }
+
+            // Index path follows 2+2+N pattern
+            #[test]
+            fn index_path_follows_pattern(crate_name in "[a-z0-9-]{3,20}") {
+                let path = calculate_index_path_for_crate(&crate_name);
+                let parts: Vec<&str> = path.split('/').collect();
+                
+                // Should have exactly 3 parts
+                assert_eq!(parts.len(), 3, "Index path should have 3 parts");
+                
+                // First part should be the first character or underscore
+                let first_char = crate_name.chars().next().unwrap_or('_');
+                let expected_first = if first_char.is_alphanumeric() { first_char } else { '_' };
+                assert_eq!(parts[0], expected_first.to_string());
+                
+                // Second part should be the second character or underscore
+                let second_char = crate_name.chars().nth(1).unwrap_or('_');
+                let expected_second = if second_char.is_alphanumeric() { second_char } else { '_' };
+                assert_eq!(parts[1], expected_second.to_string());
+                
+                // Third part should be the full crate name
+                assert_eq!(parts[2], crate_name);
+            }
+
+            // Schema version parsing is deterministic
+            #[test]
+            fn schema_version_parsing_deterministic(
+                prefix in "[a-z]+",
+                middle in "[a-z]+",
+                version_num in 1u32..1000,
+            ) {
+                let version_str = format!("{}.{}.v{}", prefix, middle, version_num);
+                
+                let first = parse_schema_version_for_test(&version_str);
+                let second = parse_schema_version_for_test(&version_str);
+                
+                assert_eq!(first, second, "Schema version parsing should be deterministic");
+                assert_eq!(first, Ok(version_num));
+            }
+        }
+
+        // Helper functions for property-based tests
+
+        fn calculate_index_path_for_crate(crate_name: &str) -> String {
+            let chars: Vec<char> = crate_name.chars().collect();
+            let first = if chars.len() > 0 { chars[0] } else { '_' };
+            let second = if chars.len() > 1 { chars[1] } else { '_' };
+
+            let first = if first.is_alphanumeric() { first } else { '_' };
+            let second = if second.is_alphanumeric() { second } else { '_' };
+
+            format!("{}/{}/{}", first, second, crate_name)
+        }
+
+        fn parse_schema_version_for_test(version: &str) -> Result<u32, String> {
+            let parts: Vec<&str> = version.split('.').collect();
+            if parts.len() != 3 || !parts[0].starts_with("shipper") || !parts[2].starts_with('v') {
+                return Err("invalid format".to_string());
+            }
+            
+            let version_part = &parts[2][1..];
+            version_part.parse::<u32>().map_err(|e| e.to_string())
+        }
     }
 }

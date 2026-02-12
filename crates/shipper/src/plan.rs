@@ -142,7 +142,7 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     let order = topo_sort(&included, &deps_of, &dependents_of, &pkg_map)?;
 
     let packages: Vec<PlannedPackage> = order
-        .into_iter()
+        .iter()
         .map(|id| {
             let pkg = pkg_map.get(&id).expect("pkg exists");
             PlannedPackage {
@@ -183,6 +183,7 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     Ok(PlannedWorkspace {
         workspace_root,
         plan: ReleasePlan {
+            plan_version: crate::state::CURRENT_PLAN_VERSION.to_string(),
             plan_id,
             created_at: Utc::now(),
             registry: spec.registry.clone(),

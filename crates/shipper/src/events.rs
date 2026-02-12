@@ -308,14 +308,16 @@ mod tests {
             },
             PublishEvent {
                 timestamp: Utc::now(),
-                event_type: EventType::PreflightWorkspaceVerify { passed: true },
+                event_type: EventType::PreflightWorkspaceVerify {
+                    passed: true,
+                    output: "dry-run output".to_string(),
+                },
                 package: "all".to_string(),
             },
             PublishEvent {
                 timestamp: Utc::now(),
                 event_type: EventType::PreflightNewCrateDetected {
-                    name: "newcrate".to_string(),
-                    auth_type: AuthType::Token,
+                    crate_name: "newcrate".to_string(),
                 },
                 package: "all".to_string(),
             },
