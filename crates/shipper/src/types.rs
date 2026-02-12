@@ -741,7 +741,7 @@ mod tests {
                     commit: commit.clone(),
                     branch: branch.clone(),
                     tag: tag.clone(),
-                    dirty: dirty.clone(),
+                    dirty,
                 };
 
                 // Serialize and deserialize
@@ -876,7 +876,7 @@ mod tests {
 
         fn calculate_index_path_for_crate(crate_name: &str) -> String {
             let chars: Vec<char> = crate_name.chars().collect();
-            let first = if chars.len() > 0 { chars[0] } else { '_' };
+            let first = if !chars.is_empty() { chars[0] } else { '_' };
             let second = if chars.len() > 1 { chars[1] } else { '_' };
 
             let first = if first.is_alphanumeric() { first } else { '_' };

@@ -599,20 +599,11 @@ mod tests {
     use crate::plan::PlannedWorkspace;
     use crate::types::{PlannedPackage, Registry, ReleasePlan};
 
+    #[derive(Default)]
     struct CollectingReporter {
         infos: Vec<String>,
         warns: Vec<String>,
         errors: Vec<String>,
-    }
-
-    impl Default for CollectingReporter {
-        fn default() -> Self {
-            Self {
-                infos: Vec::new(),
-                warns: Vec::new(),
-                errors: Vec::new(),
-            }
-        }
     }
 
     impl Reporter for CollectingReporter {
@@ -757,6 +748,7 @@ mod tests {
 
     struct TestRegistryServer {
         base_url: String,
+        #[allow(clippy::type_complexity)]
         seen: Arc<Mutex<Vec<(String, Option<String>)>>>,
         handle: thread::JoinHandle<()>,
     }

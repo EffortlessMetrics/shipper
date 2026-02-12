@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(config.verify.mode, VerifyMode::Workspace);
         assert_eq!(config.output.lines, 50);
         assert_eq!(config.retry.max_attempts, 6);
-        assert_eq!(config.flags.allow_dirty, false);
+        assert!(!config.flags.allow_dirty);
         assert!(config.validate().is_ok());
     }
 
@@ -423,11 +423,13 @@ mod tests {
 
     #[test]
     fn test_validate_invalid_registry() {
-        let mut config = ShipperConfig::default();
-        config.registry = Some(RegistryConfig {
-            name: String::new(),
-            api_base: "https://crates.io".to_string(),
-        });
+        let mut config = ShipperConfig {
+            registry: Some(RegistryConfig {
+                name: String::new(),
+                api_base: "https://crates.io".to_string(),
+            }),
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
         config.registry = Some(RegistryConfig {
@@ -474,12 +476,12 @@ skip_ownership_check = true
         let config: ShipperConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.policy.mode, PublishPolicy::Fast);
         assert_eq!(config.verify.mode, VerifyMode::None);
-        assert_eq!(config.readiness.enabled, false);
+        assert!(!config.readiness.enabled);
         assert_eq!(config.output.lines, 100);
         assert_eq!(config.lock.timeout, Duration::from_secs(1800));
         assert_eq!(config.retry.max_attempts, 3);
-        assert_eq!(config.flags.allow_dirty, true);
-        assert_eq!(config.flags.skip_ownership_check, true);
+        assert!(config.flags.allow_dirty);
+        assert!(config.flags.skip_ownership_check);
     }
 
     #[test]
@@ -507,7 +509,7 @@ per_package_timeout = "1h"
 "#;
 
         let config: ShipperConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.parallel.enabled, true);
+        assert!(config.parallel.enabled);
         assert_eq!(config.parallel.max_concurrent, 8);
         assert_eq!(
             config.parallel.per_package_timeout,

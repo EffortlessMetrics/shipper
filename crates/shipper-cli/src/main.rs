@@ -1356,7 +1356,7 @@ mode = "fast"
         let merged = config.merge_with_cli_opts(opts);
 
         // CLI values should win
-        assert_eq!(merged.allow_dirty, true, "CLI allow_dirty should win");
+        assert!(merged.allow_dirty, "CLI allow_dirty should win");
         assert_eq!(merged.max_attempts, 3, "CLI max_attempts should win");
         assert_eq!(merged.output_lines, 50, "CLI output_lines should win");
         assert_eq!(
