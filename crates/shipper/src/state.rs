@@ -100,7 +100,7 @@ pub fn validate_receipt_version(version: &str) -> Result<()> {
 /// Parse schema version number from version string (e.g., "shipper.receipt.v2" -> 2)
 fn parse_schema_version(version: &str) -> Result<u32> {
     let parts: Vec<&str> = version.split('.').collect();
-    if parts.len() != 3 || !parts[0].starts_with("shipper") || parts[2] != "v" {
+    if parts.len() != 3 || !parts[0].starts_with("shipper") || !parts[2].starts_with('v') {
         anyhow::bail!("invalid schema version format: {}", version);
     }
 
@@ -663,9 +663,11 @@ mod tests {
 
         fs::write(&path, receipt_json).expect("write receipt");
 
-        // Future versions are rejected if below minimum supported
-        let result = load_receipt(&dir);
-        assert!(result.is_err());
+        // Future versions are accepted if above minimum supported
+        let receipt = load_receipt(&dir)
+            .expect("load receipt")
+            .expect("receipt exists");
+        assert_eq!(receipt.receipt_version, "shipper.receipt.v99");
     }
 
     #[test]

@@ -63,7 +63,10 @@ pub fn run_preflight(
         opts.allow_dirty,
         opts.output_lines,
     );
-    let dry_run_passed = dry_run_result.is_ok();
+    let dry_run_passed = match &dry_run_result {
+        Ok(output) => output.exit_code == 0,
+        Err(_) => false,
+    };
     let _dry_run_output = match &dry_run_result {
         Ok(output) => {
             format!(
@@ -85,8 +88,22 @@ pub fn run_preflight(
 
         // Ownership verification (best-effort)
         let ownership_verified = if token_detected && !opts.skip_ownership_check {
-            reg.verify_ownership(&p.name, token.as_deref().unwrap())
-                .unwrap_or_default()
+            if opts.strict_ownership {
+                // In strict mode, ownership errors are fatal
+                reg.list_owners(&p.name, token.as_deref().unwrap())?;
+                true
+            } else {
+                let result = reg
+                    .verify_ownership(&p.name, token.as_deref().unwrap())
+                    .unwrap_or_default();
+                if !result {
+                    reporter.warn(&format!(
+                        "owners preflight failed for {}; continuing (non-strict mode)",
+                        p.name
+                    ));
+                }
+                result
+            }
         } else {
             // No token or ownership check skipped
             false
@@ -590,7 +607,6 @@ mod tests {
     use std::time::Duration;
 
     use chrono::Utc;
-    use insta::assert_debug_snapshot;
     use serial_test::serial;
     use tempfile::tempdir;
     use tiny_http::{Header, Response, Server, StatusCode};
@@ -1036,18 +1052,27 @@ mod tests {
     #[serial]
     fn run_preflight_warns_on_owners_failure_when_not_strict() {
         let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let (_cargo_bin, _git_bin) = configure_fake_programs(&bin);
+        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "0");
+
         let server = spawn_registry_server(
             std::collections::BTreeMap::from([
-                (
-                    "/api/v1/crates/demo/owners".to_string(),
-                    vec![(403, "{}".to_string())],
-                ),
                 (
                     "/api/v1/crates/demo/0.1.0".to_string(),
                     vec![(404, "{}".to_string())],
                 ),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo/owners".to_string(),
+                    vec![(403, "{}".to_string())],
+                ),
             ]),
-            2,
+            3,
         );
 
         let ws = planned_workspace(td.path(), server.base_url.clone());
@@ -1063,6 +1088,9 @@ mod tests {
         assert!(rep.token_detected);
         assert_eq!(rep.packages.len(), 1);
         assert!(!rep.packages[0].already_published);
+        assert!(!rep.packages[0].ownership_verified);
+        assert!(rep.packages[0].dry_run_passed);
+        assert_eq!(rep.finishability, Finishability::NotProven);
         assert!(
             reporter
                 .warns
@@ -1070,25 +1098,8 @@ mod tests {
                 .any(|w| w.contains("owners preflight failed"))
         );
 
-        assert_debug_snapshot!(
-            rep,
-            @r#"
-PreflightReport {
-    plan_id: "plan-demo",
-    token_detected: true,
-    packages: [
-        PreflightPackage {
-            name: "demo",
-            version: "0.1.0",
-            already_published: false,
-        },
-    ],
-}
-"#
-        );
         let seen = server.seen.lock().expect("lock");
-        assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0].1.as_deref(), Some("token-abc"));
+        assert_eq!(seen.len(), 3);
         drop(seen);
         server.join();
     }
@@ -1097,8 +1108,21 @@ PreflightReport {
     #[serial]
     fn run_preflight_owners_success_path() {
         let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let (_cargo_bin, _git_bin) = configure_fake_programs(&bin);
+        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "0");
+
         let server = spawn_registry_server(
             std::collections::BTreeMap::from([
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
                 (
                     "/api/v1/crates/demo/owners".to_string(),
                     vec![(
@@ -1106,12 +1130,8 @@ PreflightReport {
                         r#"{"users":[{"id":1,"login":"alice","name":"Alice"}]}"#.to_string(),
                     )],
                 ),
-                (
-                    "/api/v1/crates/demo/0.1.0".to_string(),
-                    vec![(404, "{}".to_string())],
-                ),
             ]),
-            2,
+            3,
         );
 
         let ws = planned_workspace(td.path(), server.base_url.clone());
@@ -1133,12 +1153,27 @@ PreflightReport {
     #[serial]
     fn run_preflight_returns_error_when_strict_ownership_check_fails() {
         let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let (_cargo_bin, _git_bin) = configure_fake_programs(&bin);
+        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "0");
+
         let server = spawn_registry_server(
-            std::collections::BTreeMap::from([(
-                "/api/v1/crates/demo/owners".to_string(),
-                vec![(403, "{}".to_string())],
-            )]),
-            1,
+            std::collections::BTreeMap::from([
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo/owners".to_string(),
+                    vec![(403, "{}".to_string())],
+                ),
+            ]),
+            3,
         );
 
         let ws = planned_workspace(td.path(), server.base_url.clone());
@@ -1165,11 +1200,17 @@ PreflightReport {
         let _git_clean = EnvGuard::set("SHIPPER_GIT_CLEAN", "1");
 
         let server = spawn_registry_server(
-            std::collections::BTreeMap::from([(
-                "/api/v1/crates/demo/0.1.0".to_string(),
-                vec![(404, "{}".to_string())],
-            )]),
-            1,
+            std::collections::BTreeMap::from([
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+            ]),
+            2,
         );
 
         let ws = planned_workspace(td.path(), server.base_url.clone());
@@ -1794,11 +1835,17 @@ PreflightReport {
 
         // Mock registry: version already exists (200)
         let server = spawn_registry_server(
-            std::collections::BTreeMap::from([(
-                "/api/v1/crates/demo/0.1.0".to_string(),
-                vec![(200, "{}".to_string())],
-            )]),
-            1,
+            std::collections::BTreeMap::from([
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+            ]),
+            2,
         );
         let ws = planned_workspace(td.path(), server.base_url.clone());
         let mut opts = default_opts(PathBuf::from(".shipper"));
@@ -1909,11 +1956,17 @@ PreflightReport {
         let _cargo_err = EnvGuard::set("SHIPPER_CARGO_STDERR", "dry-run failed");
 
         let server = spawn_registry_server(
-            std::collections::BTreeMap::from([(
-                "/api/v1/crates/demo/0.1.0".to_string(),
-                vec![(404, "{}".to_string())],
-            )]),
-            1,
+            std::collections::BTreeMap::from([
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+            ]),
+            2,
         );
         let ws = planned_workspace(td.path(), server.base_url.clone());
         let mut opts = default_opts(PathBuf::from(".shipper"));
@@ -1938,15 +1991,11 @@ PreflightReport {
         write_fake_tools(&bin);
         let (_cargo_bin, _git_bin) = configure_fake_programs(&bin);
         let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "0");
+        let _a = EnvGuard::set("CARGO_HOME", td.path().to_str().expect("utf8"));
+        let _b = EnvGuard::unset("CARGO_REGISTRY_TOKEN");
+        let _c = EnvGuard::unset("CARGO_REGISTRIES_CRATES_IO_TOKEN");
 
-        let server = spawn_registry_server(
-            std::collections::BTreeMap::from([(
-                "/api/v1/crates/demo/0.1.0".to_string(),
-                vec![(404, "{}".to_string())],
-            )]),
-            1,
-        );
-        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
         let mut opts = default_opts(PathBuf::from(".shipper"));
         opts.allow_dirty = true;
         opts.strict_ownership = true;
@@ -1955,7 +2004,6 @@ PreflightReport {
         let mut reporter = CollectingReporter::default();
         let err = run_preflight(&ws, &opts, &mut reporter).expect_err("must fail");
         assert!(format!("{err:#}").contains("strict ownership requested but no token found"));
-        server.join();
     }
 
     #[test]

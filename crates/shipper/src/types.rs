@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DurationMilliSeconds, serde_as};
 
 /// Deserialize a Duration from either a string (human-readable) or u64 (milliseconds)
@@ -23,6 +23,14 @@ where
             .map_err(|e| serde::de::Error::custom(format!("invalid duration: {}", e))),
         DurationHelper::U64(ms) => Ok(Duration::from_millis(ms)),
     }
+}
+
+/// Serialize a Duration as milliseconds (u64) so it roundtrips with deserialize_duration
+pub(crate) fn serialize_duration<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_u64(duration.as_millis() as u64)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,16 +118,16 @@ pub struct ReadinessConfig {
     /// Method for checking version visibility
     pub method: ReadinessMethod,
     /// Initial delay before first poll
-    #[serde(deserialize_with = "deserialize_duration")]
+    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
     pub initial_delay: Duration,
     /// Maximum delay between polls (capped)
-    #[serde(deserialize_with = "deserialize_duration")]
+    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
     pub max_delay: Duration,
     /// Maximum total time to wait for visibility
-    #[serde(deserialize_with = "deserialize_duration")]
+    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
     pub max_total_wait: Duration,
     /// Base poll interval
-    #[serde(deserialize_with = "deserialize_duration")]
+    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
     pub poll_interval: Duration,
     /// Jitter factor (±50% means 0.5)
     pub jitter_factor: f64,
@@ -127,6 +135,7 @@ pub struct ReadinessConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_path: Option<PathBuf>,
     /// Use index as primary method when Both is selected
+    #[serde(default)]
     pub prefer_index: bool,
 }
 
@@ -154,7 +163,7 @@ pub struct ParallelConfig {
     /// Maximum number of concurrent publish operations (default: 4)
     pub max_concurrent: usize,
     /// Timeout per package publish operation (default: 30 minutes)
-    #[serde(deserialize_with = "deserialize_duration")]
+    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
     pub per_package_timeout: Duration,
 }
 
@@ -819,7 +828,8 @@ mod tests {
                 assert_eq!(parsed.max_delay, config.max_delay);
                 assert_eq!(parsed.max_total_wait, config.max_total_wait);
                 assert_eq!(parsed.poll_interval, config.poll_interval);
-                assert_eq!(parsed.jitter_factor, config.jitter_factor);
+                assert!((parsed.jitter_factor - config.jitter_factor).abs() < 1e-10,
+                    "jitter_factor mismatch: {} vs {}", parsed.jitter_factor, config.jitter_factor);
                 assert_eq!(parsed.prefer_index, config.prefer_index);
             }
 
@@ -858,11 +868,10 @@ mod tests {
             // Schema version parsing is deterministic
             #[test]
             fn schema_version_parsing_deterministic(
-                prefix in "[a-z]+",
                 middle in "[a-z]+",
                 version_num in 1u32..1000,
             ) {
-                let version_str = format!("{}.{}.v{}", prefix, middle, version_num);
+                let version_str = format!("shipper.{}.v{}", middle, version_num);
 
                 let first = parse_schema_version_for_test(&version_str);
                 let second = parse_schema_version_for_test(&version_str);

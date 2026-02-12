@@ -72,7 +72,7 @@ fn token_from_credentials_file(path: &PathBuf, registry_name: &str) -> Result<Op
         )
     })?;
 
-    let value: toml::Value = content.parse().with_context(|| {
+    let value: toml::Value = toml::from_str(&content).with_context(|| {
         format!(
             "failed to parse cargo credentials file as TOML: {}",
             path.display()
@@ -393,7 +393,7 @@ token = "file-token"
         let _c = EnvGuard::unset("CARGO_REGISTRIES_PRIVATE_REG_TOKEN");
         fs::write(
             td.path().join("credentials"),
-            r#"[registries.private_reg]
+            r#"[registries.private-reg]
 token = "legacy-token"
 "#,
         )

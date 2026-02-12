@@ -309,7 +309,7 @@ mod tests {
             let path = bin.join("git.cmd");
             fs::write(
                 &path,
-                "@echo off\r\nif \"%1\"==\"rev-parse\" (\r\n  if \"%2\"==\"--git-dir\" exit /b 0\r\n  if \"%2\"==\"HEAD\" echo abc123def456\r\n  if \"%2\"==\"--abbrev-ref\" echo main\r\n  exit /b 0\r\n)\r\nif \"%1\"==\"describe\" exit /b 1\r\nif \"%1\"==\"status\" exit /b 0\r\n",
+                "@echo off\r\nif not \"%1\"==\"rev-parse\" goto :not_revparse\r\nif \"%2\"==\"--git-dir\" exit /b 0\r\nif \"%2\"==\"HEAD\" (\r\n  echo abc123def456\r\n  exit /b 0\r\n)\r\nif \"%2\"==\"--abbrev-ref\" (\r\n  echo main\r\n  exit /b 0\r\n)\r\nexit /b 0\r\n:not_revparse\r\nif \"%1\"==\"describe\" exit /b 1\r\nif \"%1\"==\"status\" exit /b 0\r\n",
             )
             .expect("write fake git");
         }
@@ -359,7 +359,7 @@ mod tests {
             let path = bin.join("git.cmd");
             fs::write(
                 &path,
-                "@echo off\r\nif \"%1\"==\"rev-parse\" (\r\n  if \"%2\"==\"--git-dir\" exit /b 0\r\n  if \"%2\"==\"HEAD\" echo abc123def456\r\n  if \"%2\"==\"--abbrev-ref\" echo main\r\n  exit /b 0\r\n)\r\nif \"%1\"==\"describe\" exit /b 1\r\nif \"%1\"==\"status\" echo M src/lib.rs\r\nexit /b 0\r\n",
+                "@echo off\r\nif not \"%1\"==\"rev-parse\" goto :not_revparse\r\nif \"%2\"==\"--git-dir\" exit /b 0\r\nif \"%2\"==\"HEAD\" (\r\n  echo abc123def456\r\n  exit /b 0\r\n)\r\nif \"%2\"==\"--abbrev-ref\" (\r\n  echo main\r\n  exit /b 0\r\n)\r\nexit /b 0\r\n:not_revparse\r\nif \"%1\"==\"describe\" exit /b 1\r\nif \"%1\"==\"status\" echo M src/lib.rs\r\nexit /b 0\r\n",
             )
             .expect("write fake git");
         }
@@ -409,7 +409,7 @@ mod tests {
             let path = bin.join("git.cmd");
             fs::write(
                 &path,
-                "@echo off\r\nif \"%1\"==\"rev-parse\" (\r\n  if \"%2\"==\"--git-dir\" exit /b 0\r\n  if \"%2\"==\"HEAD\" echo abc123def456\r\n  if \"%2\"==\"--abbrev-ref\" echo main\r\n  exit /b 0\r\n)\r\nif \"%1\"==\"describe\" (\r\n  if \"%2\"==\"--tags\" (\r\n    if \"%3\"==\"--exact-match\" echo v1.0.0\r\n    exit /b 0\r\n  )\r\n  exit /b 1\r\n)\r\nif \"%1\"==\"status\" exit /b 0\r\n",
+                "@echo off\r\nif not \"%1\"==\"rev-parse\" goto :not_revparse\r\nif \"%2\"==\"--git-dir\" exit /b 0\r\nif \"%2\"==\"HEAD\" (\r\n  echo abc123def456\r\n  exit /b 0\r\n)\r\nif \"%2\"==\"--abbrev-ref\" (\r\n  echo main\r\n  exit /b 0\r\n)\r\nexit /b 0\r\n:not_revparse\r\nif not \"%1\"==\"describe\" goto :not_describe\r\nif \"%2\"==\"--tags\" if \"%3\"==\"--exact-match\" (\r\n  echo v1.0.0\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n:not_describe\r\nif \"%1\"==\"status\" exit /b 0\r\n",
             )
             .expect("write fake git");
         }
@@ -459,7 +459,7 @@ mod tests {
             let path = bin.join("git.cmd");
             fs::write(
                 &path,
-                "@echo off\r\nif \"%1\"==\"rev-parse\" (\r\n  if \"%2\"==\"--git-dir\" exit /b 0\r\n  if \"%2\"==\"HEAD\" echo abc123def456\r\n  if \"%2\"==\"--abbrev-ref\" echo HEAD\r\n  exit /b 0\r\n)\r\nif \"%1\"==\"describe\" exit /b 1\r\nif \"%1\"==\"status\" exit /b 0\r\n",
+                "@echo off\r\nif not \"%1\"==\"rev-parse\" goto :not_revparse\r\nif \"%2\"==\"--git-dir\" exit /b 0\r\nif \"%2\"==\"HEAD\" (\r\n  echo abc123def456\r\n  exit /b 0\r\n)\r\nif \"%2\"==\"--abbrev-ref\" (\r\n  echo HEAD\r\n  exit /b 0\r\n)\r\nexit /b 0\r\n:not_revparse\r\nif \"%1\"==\"describe\" exit /b 1\r\nif \"%1\"==\"status\" exit /b 0\r\n",
             )
             .expect("write fake git");
         }
@@ -510,7 +510,7 @@ mod tests {
             let path = bin.join("git.cmd");
             fs::write(
                 &path,
-                "@echo off\r\nif \"%1\"==\"rev-parse\" (\r\n  if \"%2\"==\"--git-dir\" exit /b 0\r\n  if \"%2\"==\"HEAD\" exit /b 1\r\n  if \"%2\"==\"--abbrev-ref\" echo main\r\n  exit /b 0\r\n)\r\nif \"%1\"==\"describe\" exit /b 1\r\nif \"%1\"==\"status\" exit /b 0\r\n",
+                "@echo off\r\nif not \"%1\"==\"rev-parse\" goto :not_revparse\r\nif \"%2\"==\"--git-dir\" exit /b 0\r\nif \"%2\"==\"HEAD\" exit /b 1\r\nif \"%2\"==\"--abbrev-ref\" echo main\r\nexit /b 0\r\n:not_revparse\r\nif \"%1\"==\"describe\" exit /b 1\r\nif \"%1\"==\"status\" exit /b 0\r\nexit /b 0\r\n",
             )
             .expect("write fake git");
         }

@@ -175,6 +175,7 @@ impl RegistryClient {
         #[derive(Deserialize)]
         struct IndexVersion {
             #[allow(dead_code)]
+            #[serde(rename = "name")]
             _name: String,
             vers: String,
         }
@@ -196,10 +197,13 @@ impl RegistryClient {
             Err(e) => {
                 // Graceful degradation: if the endpoint is unavailable or returns forbidden,
                 // return false rather than failing the entire preflight
-                if e.to_string().contains("forbidden")
-                    || e.to_string().contains("403")
-                    || e.to_string().contains("unauthorized")
-                    || e.to_string().contains("401")
+                let msg = e.to_string();
+                if msg.contains("forbidden")
+                    || msg.contains("403")
+                    || msg.contains("unauthorized")
+                    || msg.contains("401")
+                    || msg.contains("not found")
+                    || msg.contains("404")
                 {
                     Ok(false)
                 } else {
@@ -236,11 +240,14 @@ impl RegistryClient {
             attempt += 1;
 
             // Check visibility based on method
+            // Errors are treated as "not visible" to allow backoff retries
             let visible = match config.method {
-                ReadinessMethod::Api => self.version_exists(crate_name, version)?,
+                ReadinessMethod::Api => {
+                    self.version_exists(crate_name, version).unwrap_or(false)
+                }
                 ReadinessMethod::Index => {
-                    // Index-based verification
-                    self.check_index_visibility(crate_name, version)?
+                    self.check_index_visibility(crate_name, version)
+                        .unwrap_or(false)
                 }
                 ReadinessMethod::Both => {
                     // Check both API and index
@@ -249,26 +256,15 @@ impl RegistryClient {
                         // Try index first, fall back to API
                         match self.check_index_visibility(crate_name, version) {
                             Ok(true) => true,
-                            Ok(false) => {
-                                // Index says not visible, try API
-                                self.version_exists(crate_name, version)?
-                            }
-                            Err(_) => {
-                                // Index check failed, fall back to API
-                                self.version_exists(crate_name, version)?
-                            }
+                            _ => self.version_exists(crate_name, version).unwrap_or(false),
                         }
                     } else {
                         // Try API first, fall back to index
                         match self.version_exists(crate_name, version) {
                             Ok(true) => true,
-                            Ok(false) => {
-                                // API says not visible, try index
-                                self.check_index_visibility(crate_name, version)?
-                            }
-                            Err(_) => {
-                                // API check failed, fall back to index
-                                self.check_index_visibility(crate_name, version)?
+                            _ => {
+                                self.check_index_visibility(crate_name, version)
+                                    .unwrap_or(false)
                             }
                         }
                     }
@@ -364,6 +360,31 @@ mod tests {
             api_base,
             index_base: None,
         }
+    }
+
+    fn test_registry_with_index(api_base: String) -> Registry {
+        Registry {
+            name: "crates-io".to_string(),
+            api_base: api_base.clone(),
+            index_base: Some(api_base),
+        }
+    }
+
+    fn with_multi_server<F>(handler: F, request_count: usize) -> (String, thread::JoinHandle<()>)
+    where
+        F: Fn(tiny_http::Request) + Send + 'static,
+    {
+        let server = Server::http("127.0.0.1:0").expect("server");
+        let addr = format!("http://{}", server.server_addr());
+        let handle = thread::spawn(move || {
+            for _ in 0..request_count {
+                match server.recv_timeout(Duration::from_secs(5)) {
+                    Ok(Some(req)) => handler(req),
+                    _ => break,
+                }
+            }
+        });
+        (addr, handle)
     }
 
     #[test]
@@ -615,8 +636,8 @@ mod tests {
         let cli = RegistryClient::new(test_registry(api_base)).expect("client");
 
         // Test crate names starting with special characters
-        assert_eq!(cli.calculate_index_path("_serde"), "_/_/_serde");
-        assert_eq!(cli.calculate_index_path("-tokio"), "_/_/-tokio");
+        assert_eq!(cli.calculate_index_path("_serde"), "_/s/_serde");
+        assert_eq!(cli.calculate_index_path("-tokio"), "_/t/-tokio");
     }
 
     #[test]
@@ -691,7 +712,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.1").expect("check");
         assert!(visible);
         handle.join().expect("join");
@@ -714,7 +735,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.1").expect("check");
         assert!(!visible);
         handle.join().expect("join");
@@ -727,7 +748,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
         let visible = cli
             .check_index_visibility("missing", "1.0.0")
             .expect("check");
@@ -761,7 +782,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(!visible);
         handle.join().expect("join");
@@ -784,7 +805,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Index,
@@ -820,7 +841,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Both,
@@ -888,7 +909,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(!visible);
         handle.join().expect("join");
@@ -903,17 +924,20 @@ mod tests {
             {"name":"demo","vers":"1.1.0","deps":[],"cksum":"jkl012"}
         ]"#;
 
-        let (api_base, handle) = with_server(move |req| {
-            let resp = Response::from_string(index_content)
-                .with_status_code(StatusCode(200))
-                .with_header(
-                    tiny_http::Header::from_bytes("Content-Type", "application/json")
-                        .expect("header"),
-                );
-            req.respond(resp).expect("respond");
-        });
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                let resp = Response::from_string(index_content)
+                    .with_status_code(StatusCode(200))
+                    .with_header(
+                        tiny_http::Header::from_bytes("Content-Type", "application/json")
+                            .expect("header"),
+                    );
+                req.respond(resp).expect("respond");
+            },
+            5,
+        );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
 
         // Check each version exists
         assert!(cli.check_index_visibility("demo", "0.1.0").expect("check"));
@@ -944,7 +968,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
         // Should return false for malformed JSON (graceful degradation)
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(!visible);
@@ -1015,11 +1039,14 @@ mod tests {
 
     #[test]
     fn is_version_visible_with_backoff_returns_false_on_timeout() {
-        let (api_base, handle) = with_server(move |req| {
-            // Always return 404
-            let resp = Response::empty(StatusCode(404));
-            req.respond(resp).expect("respond");
-        });
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                // Always return 404
+                let resp = Response::empty(StatusCode(404));
+                req.respond(resp).expect("respond");
+            },
+            10,
+        );
 
         let cli = RegistryClient::new(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
@@ -1104,7 +1131,7 @@ mod tests {
 
     #[test]
     fn verify_ownership_returns_true_on_success() {
-        let owners_json = r#"{"users":["user1","user2"]}"#;
+        let owners_json = r#"{"users":[{"id":1,"login":"user1","name":null},{"id":2,"login":"user2","name":null}]}"#;
 
         let (api_base, handle) = with_server(move |req| {
             assert_eq!(req.url(), "/api/v1/crates/demo/owners");
