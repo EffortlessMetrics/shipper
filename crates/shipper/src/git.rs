@@ -72,11 +72,7 @@ fn get_git_branch(repo_root: &Path) -> Option<String> {
     if output.status.success() {
         let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
         // Filter out detached HEAD state
-        if branch == "HEAD" {
-            None
-        } else {
-            Some(branch)
-        }
+        if branch == "HEAD" { None } else { Some(branch) }
     } else {
         None
     }
@@ -333,7 +329,12 @@ mod tests {
             fs::set_permissions(&path, perms).expect("chmod");
         }
 
-        let _program = EnvGuard::set("SHIPPER_GIT_BIN", bin.join(if cfg!(windows) { "git.cmd" } else { "git" }).to_str().expect("utf8"));
+        let _program = EnvGuard::set(
+            "SHIPPER_GIT_BIN",
+            bin.join(if cfg!(windows) { "git.cmd" } else { "git" })
+                .to_str()
+                .expect("utf8"),
+        );
 
         let context = collect_git_context();
         assert!(context.is_some());
@@ -378,7 +379,12 @@ mod tests {
             fs::set_permissions(&path, perms).expect("chmod");
         }
 
-        let _program = EnvGuard::set("SHIPPER_GIT_BIN", bin.join(if cfg!(windows) { "git.cmd" } else { "git" }).to_str().expect("utf8"));
+        let _program = EnvGuard::set(
+            "SHIPPER_GIT_BIN",
+            bin.join(if cfg!(windows) { "git.cmd" } else { "git" })
+                .to_str()
+                .expect("utf8"),
+        );
 
         let context = collect_git_context();
         assert!(context.is_some());
@@ -423,7 +429,12 @@ mod tests {
             fs::set_permissions(&path, perms).expect("chmod");
         }
 
-        let _program = EnvGuard::set("SHIPPER_GIT_BIN", bin.join(if cfg!(windows) { "git.cmd" } else { "git" }).to_str().expect("utf8"));
+        let _program = EnvGuard::set(
+            "SHIPPER_GIT_BIN",
+            bin.join(if cfg!(windows) { "git.cmd" } else { "git" })
+                .to_str()
+                .expect("utf8"),
+        );
 
         let context = collect_git_context();
         assert!(context.is_some());
@@ -468,7 +479,12 @@ mod tests {
             fs::set_permissions(&path, perms).expect("chmod");
         }
 
-        let _program = EnvGuard::set("SHIPPER_GIT_BIN", bin.join(if cfg!(windows) { "git.cmd" } else { "git" }).to_str().expect("utf8"));
+        let _program = EnvGuard::set(
+            "SHIPPER_GIT_BIN",
+            bin.join(if cfg!(windows) { "git.cmd" } else { "git" })
+                .to_str()
+                .expect("utf8"),
+        );
 
         let context = collect_git_context();
         assert!(context.is_some());
@@ -514,7 +530,12 @@ mod tests {
             fs::set_permissions(&path, perms).expect("chmod");
         }
 
-        let _program = EnvGuard::set("SHIPPER_GIT_BIN", bin.join(if cfg!(windows) { "git.cmd" } else { "git" }).to_str().expect("utf8"));
+        let _program = EnvGuard::set(
+            "SHIPPER_GIT_BIN",
+            bin.join(if cfg!(windows) { "git.cmd" } else { "git" })
+                .to_str()
+                .expect("utf8"),
+        );
 
         let context = collect_git_context();
         assert!(context.is_some());

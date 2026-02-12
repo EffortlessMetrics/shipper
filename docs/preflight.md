@@ -27,6 +27,9 @@ shipper preflight --skip-ownership-check
 
 # Allow dirty working tree
 shipper preflight --allow-dirty
+
+# Get JSON output for CI integration
+shipper preflight --format json
 ```
 
 ## Finishability Assessment
@@ -53,177 +56,95 @@ Critical checks failed. Publishing would likely fail.
 
 ## Interpreting Preflight Output
 
-Preflight outputs a detailed report for each package:
+Preflight outputs a table-based report showing each package's status:
 
 ```
 Preflight Report
 ===============
 
 Plan ID: plan-abc123
-Token Detected: true
-Finishability: Proven
+Timestamp: 2025-02-10T15:30:00Z
+
+Token Detected: ✓
+
+Finishability: PROVEN
 
 Packages:
----------
+┌─────────────────────┬─────────┬──────────┬──────────┬───────────────┬─────────────┬─────────────┐
+│ Package             │ Version │ Published│ New Crate │ Auth Type     │ Ownership   │ Dry-run     │
+├─────────────────────┼─────────┼──────────┼──────────┼───────────────┼─────────────┼─────────────┤
+│ my-core             │ 0.2.0   │ No       │ No       │ Token         │ ✓           │ ✓           │
+│ my-utils            │ 0.2.0   │ No       │ Yes      │ Token         │ ✓           │ ✓           │
+└─────────────────────┴─────────┴──────────┴──────────┴───────────────┴─────────────┴─────────────┘
 
-my-crate@0.1.0
-  Already Published: false
-  Is New Crate: true
-  Auth Type: Token
-  Ownership Verified: ✓
-  Dry Run Passed: ✓
+Summary:
+  Total packages: 2
+  Already published: 0
+  New crates: 1
+  Ownership verified: 2
+  Dry-run passed: 2
 
-dependency-crate@0.2.0
-  Already Published: false
-  Is New Crate: false
-  Auth Type: Token
-  Ownership Verified: ✓
-  Dry Run Passed: ✓
+What to do next:
+-----------------
+✓ All checks passed. Ready to publish with: shipper publish
 ```
 
-### Package Status Indicators
+### Package Status Columns
 
-| Field | Meaning |
-|-------|---------|
-| `Already Published` | The version already exists on the registry |
-| `Is New Crate` | The crate doesn't exist on the registry yet |
-| `Auth Type` | Authentication method detected (`Token`, `TrustedPublishing`, or `Unknown`) |
-| `Ownership Verified` | Whether ownership was verified for this crate |
-| `Dry Run Passed` | Whether the dry-run check passed for this crate |
+| Column | Meaning |
+|--------|---------|
+| `Published` | Whether the version already exists on the registry |
+| `New Crate` | Whether the crate doesn't exist on the registry yet |
+| `Auth Type` | Authentication method detected (`Token`, `Trusted`, `Unknown`, or `-`) |
+| `Ownership` | Whether ownership was verified for this crate (`✓` or `✗`) |
+| `Dry-run` | Whether the dry-run check passed for this crate (`✓` or `✗`) |
 
-## Example Preflight Outputs
+## Example Preflight Scenarios
 
-### Example 1: Proven (Ready to Publish)
+### Scenario 1: Proven (Ready to Publish)
+
+All checks pass. The "What to do next" section shows:
 
 ```
-Preflight Report
-===============
-
-Plan ID: plan-abc123
-Token Detected: true
-Finishability: Proven
-
-Packages:
----------
-
-my-crate@0.1.0
-  Already Published: false
-  Is New Crate: false
-  Auth Type: Token
-  Ownership Verified: ✓
-  Dry Run Passed: ✓
+✓ All checks passed. Ready to publish with: shipper publish
 ```
-
-**Interpretation**: All checks passed. Ready to publish.
 
 **Next Step**: Run `shipper publish`
 
-### Example 2: NotProven (No Token)
+### Scenario 2: NotProven (No Token)
+
+Token not detected, ownership can't be verified. The "What to do next" section shows:
 
 ```
-Preflight Report
-===============
-
-Plan ID: plan-abc123
-Token Detected: false
-Finishability: NotProven
-
-Packages:
----------
-
-my-crate@0.1.0
-  Already Published: false
-  Is New Crate: false
-  Auth Type: Unknown
-  Ownership Verified: ✗ (no token)
-  Dry Run Passed: ✓
+⚠ Some checks could not be verified. You can still publish, but may encounter permission issues.
 ```
-
-**Interpretation**: Workspace verified, but ownership couldn't be checked because no token was available.
 
 **Next Steps**:
 1. Set `CARGO_REGISTRY_TOKEN` environment variable
 2. Run `cargo login` to create credentials
 3. Or proceed with `shipper publish` if you're confident
 
-### Example 3: Failed (Ownership Not Verified)
+### Scenario 3: Failed (Ownership Not Verified)
 
-```
-Preflight Report
-===============
-
-Plan ID: plan-abc123
-Token Detected: true
-Finishability: Failed
-
-Packages:
----------
-
-my-crate@0.1.0
-  Already Published: false
-  Is New Crate: false
-  Auth Type: Token
-  Ownership Verified: ✗
-  Dry Run Passed: ✓
-```
-
-**Interpretation**: Ownership check failed. You don't have permission to publish this crate.
+Token detected but ownership check failed for one or more crates.
 
 **Next Steps**:
 1. Verify you're listed as an owner: `cargo owner --list my-crate`
 2. Check your token has the correct scopes
 3. Contact the crate owner to add you
 
-### Example 4: Failed (Dry Run Failed)
+### Scenario 4: Failed (Dry Run Failed)
 
-```
-Preflight Report
-===============
-
-Plan ID: plan-abc123
-Token Detected: true
-Finishability: Failed
-
-Packages:
----------
-
-my-crate@0.1.0
-  Already Published: false
-  Is New Crate: false
-  Auth Type: Token
-  Ownership Verified: ✓
-  Dry Run Passed: ✗
-```
-
-**Interpretation**: The dry-run check failed, indicating issues with the package.
+The dry-run check failed, indicated by `✗` in the Dry-run column.
 
 **Next Steps**:
 1. Run `cargo publish --dry-run` manually to see the full error
 2. Check for missing dependencies or version conflicts
 3. Verify the package's `Cargo.toml` is valid
 
-### Example 5: New Crate Detected
+### Scenario 5: New Crate Detected
 
-```
-Preflight Report
-===============
-
-Plan ID: plan-abc123
-Token Detected: true
-Finishability: Proven
-
-Packages:
----------
-
-new-crate@0.1.0
-  Already Published: false
-  Is New Crate: true
-  Auth Type: Token
-  Ownership Verified: ✓
-  Dry Run Passed: ✓
-```
-
-**Interpretation**: This crate doesn't exist on the registry yet. This is a new crate publish.
+The New Crate column shows `Yes` for a package. This means the crate doesn't exist on the registry yet and will be created on first publish.
 
 **Next Steps**:
 1. Verify this is intentional: `cargo search new-crate`
@@ -232,20 +153,20 @@ new-crate@0.1.0
 
 ## Configuration Options
 
-Preflight behavior can be configured via `.shipper.toml` or CLI flags:
+Preflight behavior can be configured via `.shipper.toml` or CLI flags.
 
 ### Configuration File
 
+Ownership and git-cleanliness settings live in the `[flags]` section:
+
 ```toml
-[preflight]
+[flags]
+# Allow publishing from a dirty git working tree (not recommended)
+allow_dirty = false
 # Skip owners/permissions preflight (not recommended)
 skip_ownership_check = false
-# Fail preflight if ownership checks fail (recommended)
+# Fail preflight if ownership checks fail (recommended for production)
 strict_ownership = false
-# Allow publishing new crates (first-time publishes)
-allow_new_crates = true
-# Require ownership verification for new crates (recommended)
-require_ownership_for_new_crates = true
 ```
 
 ### CLI Flags
@@ -259,14 +180,11 @@ shipper preflight --strict-ownership
 
 # Allow dirty working tree
 shipper preflight --allow-dirty
-
-# Prevent new crate publishing
-shipper preflight --no-allow-new-crates
 ```
 
 ## Troubleshooting
 
-### Issue: Preflight shows "NotProven" with no token
+### Issue: Preflight shows "NOT PROVEN" with no token
 
 **Cause**: No registry token was found for ownership verification
 
@@ -275,7 +193,7 @@ shipper preflight --no-allow-new-crates
 2. Run `cargo login` to create credentials
 3. Use `--skip-ownership-check` if you're confident (not recommended)
 
-### Issue: Preflight shows "Failed" for ownership
+### Issue: Preflight shows "FAILED" for ownership
 
 **Cause**: You don't have permission to publish the crate
 
@@ -284,7 +202,7 @@ shipper preflight --no-allow-new-crates
 2. Check your token has the correct scopes
 3. Contact the crate owner to add you
 
-### Issue: Preflight shows "Failed" for dry run
+### Issue: Preflight shows "FAILED" for dry run
 
 **Cause**: The dry-run check failed, indicating issues with the package
 
@@ -292,23 +210,6 @@ shipper preflight --no-allow-new-crates
 1. Run `cargo publish --dry-run` manually to see the full error
 2. Check for missing dependencies or version conflicts
 3. Verify the package's `Cargo.toml` is valid
-
-### Issue: Preflight shows new crate detected but not allowed
-
-**Cause**: A crate doesn't exist on the registry yet, but `allow_new_crates` is disabled
-
-**Solutions**:
-1. Verify this is intentional: `cargo search <crate-name>`
-2. Enable new crate publishing: `shipper preflight --allow-new-crates`
-3. Or set in config: `preflight.allow_new_crates = true`
-
-## Best Practices
-
-1. **Always run preflight before publishing** - This catches issues early before any crates are uploaded
-2. **Use strict ownership checks in production** - This ensures you have permission to publish before attempting
-3. **Review NotProven status carefully** - If preflight can't verify ownership, make sure you're confident before proceeding
-4. **Keep your working tree clean** - Publishing from a dirty tree can lead to unexpected results
-5. **Check for new crates intentionally** - New crate creation is a significant action, verify it's intended
 
 ## Related Documentation
 

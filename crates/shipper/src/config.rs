@@ -10,7 +10,10 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use crate::types::{PublishPolicy, ReadinessConfig, RuntimeOptions, VerifyMode, deserialize_duration, ParallelConfig};
+use crate::types::{
+    ParallelConfig, PublishPolicy, ReadinessConfig, RuntimeOptions, VerifyMode,
+    deserialize_duration,
+};
 
 /// Nested policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -506,6 +509,9 @@ per_package_timeout = "1h"
         let config: ShipperConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.parallel.enabled, true);
         assert_eq!(config.parallel.max_concurrent, 8);
-        assert_eq!(config.parallel.per_package_timeout, Duration::from_secs(3600));
+        assert_eq!(
+            config.parallel.per_package_timeout,
+            Duration::from_secs(3600)
+        );
     }
 }

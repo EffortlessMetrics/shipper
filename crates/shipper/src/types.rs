@@ -837,20 +837,20 @@ mod tests {
             fn index_path_follows_pattern(crate_name in "[a-z0-9-]{3,20}") {
                 let path = calculate_index_path_for_crate(&crate_name);
                 let parts: Vec<&str> = path.split('/').collect();
-                
+
                 // Should have exactly 3 parts
                 assert_eq!(parts.len(), 3, "Index path should have 3 parts");
-                
+
                 // First part should be the first character or underscore
                 let first_char = crate_name.chars().next().unwrap_or('_');
                 let expected_first = if first_char.is_alphanumeric() { first_char } else { '_' };
                 assert_eq!(parts[0], expected_first.to_string());
-                
+
                 // Second part should be the second character or underscore
                 let second_char = crate_name.chars().nth(1).unwrap_or('_');
                 let expected_second = if second_char.is_alphanumeric() { second_char } else { '_' };
                 assert_eq!(parts[1], expected_second.to_string());
-                
+
                 // Third part should be the full crate name
                 assert_eq!(parts[2], crate_name);
             }
@@ -863,10 +863,10 @@ mod tests {
                 version_num in 1u32..1000,
             ) {
                 let version_str = format!("{}.{}.v{}", prefix, middle, version_num);
-                
+
                 let first = parse_schema_version_for_test(&version_str);
                 let second = parse_schema_version_for_test(&version_str);
-                
+
                 assert_eq!(first, second, "Schema version parsing should be deterministic");
                 assert_eq!(first, Ok(version_num));
             }
@@ -880,7 +880,11 @@ mod tests {
             let second = if chars.len() > 1 { chars[1] } else { '_' };
 
             let first = if first.is_alphanumeric() { first } else { '_' };
-            let second = if second.is_alphanumeric() { second } else { '_' };
+            let second = if second.is_alphanumeric() {
+                second
+            } else {
+                '_'
+            };
 
             format!("{}/{}/{}", first, second, crate_name)
         }
@@ -890,7 +894,7 @@ mod tests {
             if parts.len() != 3 || !parts[0].starts_with("shipper") || !parts[2].starts_with('v') {
                 return Err("invalid format".to_string());
             }
-            
+
             let version_part = &parts[2][1..];
             version_part.parse::<u32>().map_err(|e| e.to_string())
         }

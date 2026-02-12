@@ -24,14 +24,6 @@ From the repository root:
 - Run the CLI without installing (useful during development):
   - `cargo run -p shipper-cli -- <command>`  (e.g. `cargo run -p shipper-cli -- plan`)
 
-Shipper CLI common commands (after installing or via `cargo run -p shipper-cli`):
-- `shipper plan`
-- `shipper preflight`
-- `shipper publish`
-- `shipper resume`
-- `shipper status`
-- `shipper doctor`
-
 Tests / single-test usage:
 - Run all tests (workspace): `cargo test`
 - Run tests for a single package: `cargo test -p shipper` or `cargo test -p shipper-cli`
@@ -48,25 +40,28 @@ Formatting & linting:
 Toolchain:
 - The workspace declares `rust-version = "1.92"` in `Cargo.toml`; use the matching toolchain (rustup) when reproducibility is required.
 
-CI templates:
-- See `templates/github-trusted-publishing.yml` and `templates/gitlab-publish.yml` for example CI steps (they show installing `shipper-cli` and running `shipper publish` on tagged pushes).
-
 ---
 
 ## High-level architecture (big picture)
 
 - Workspace layout:
-  - `crates/shipper` — core library exposing modules: `auth`, `cargo`, `engine`, `git`, `plan`, `registry`, `state`, `types`.
+  - `crates/shipper` — core library exposing modules: `auth`, `cargo`, `config`, `engine`, `engine_parallel`, `environment`, `events`, `git`, `lock`, `plan`, `registry`, `state`, `store`, `types`.
   - `crates/shipper-cli` — binary that parses CLI args and calls into the library (builds `ReleaseSpec`/`RuntimeOptions` then runs plan/preflight/publish/resume/status/doctor flows).
 
 - Primary flow:
-  1. Build a deterministic `ReleasePlan` from the workspace manifest.
+  1. Build a deterministic `ReleasePlan` from the workspace manifest (`plan::build_plan` returns `PlannedWorkspace`).
   2. Optionally run preflight checks (git cleanliness, publishability, ownership, registry reachability).
   3. Execute the plan: publish crates one-by-one using `cargo publish -p <crate>` with retry/backoff and verification of registry visibility.
-  4. Persist progress to disk (`.shipper/state.json`) and write a `receipt.json` for CI/audit.
+  4. Persist progress to disk (`.shipper/state.json`) and write a `receipt.json` + `events.jsonl` for CI/audit.
 
 - Persistence & audit:
   - By default state and receipts are written under `.shipper` in the workspace root. Use `--state-dir <path>` to change this location.
+
+- Configuration:
+  - Project-specific settings via `.shipper.toml` (see `docs/configuration.md`).
+  - Sections: `[policy]`, `[verify]`, `[readiness]`, `[output]`, `[lock]`, `[retry]`, `[flags]`, `[parallel]`, `[registry]`.
+  - CLI flags always take precedence over config file values.
+  - Ownership and git-cleanliness flags live in `[flags]` (not a separate `[preflight]` section).
 
 - Registry & auth:
   - The project performs explicit registry checks (version existence and optional owners checks) and resolves tokens from the standard places: `CARGO_REGISTRY_TOKEN`, `CARGO_REGISTRIES_<NAME>_TOKEN`, or `$CARGO_HOME/credentials.toml`.
@@ -86,12 +81,18 @@ CI templates:
   - Many tests use `serial_test` and are intentionally run serially (tests may mutate global env or filesystem); use `#[serial]` in tests that need isolation.
   - Tests mock registry interactions (e.g. `tiny_http`) — prefer local HTTP mocks in tests rather than hitting real registries.
   - Snapshot testing uses `insta` in dev-dependencies.
+  - Property-based testing uses `proptest`.
 - CLI flags commonly used during development/debugging:
   - `--manifest-path <path>` (defaults to `Cargo.toml`)
+  - `--config <path>` to use a custom `.shipper.toml`
   - `--state-dir <path>` to relocate state/receipts
-  - `--packages` to restrict to specific packages
+  - `--package` to restrict to specific packages
   - `--skip-ownership-check` and `--strict-ownership` to control owners preflight behavior
   - `--no-verify` to pass `--no-verify` to `cargo publish`
+- Config subcommands:
+  - `config init` accepts `-o`/`--output` for output path
+  - `config validate` accepts `-p`/`--path` for config file path
+- Readiness config-only settings: `prefer_index` and `index_path` are only settable via `.shipper.toml`, not via CLI flags.
 - Selecting single-package operations: when running cargo commands in this workspace, prefer `-p <package>` to scope operations (e.g., `cargo test -p shipper` or `cargo run -p shipper-cli`).
 
 ---
@@ -99,6 +100,9 @@ CI templates:
 ## Where to look for more details
 
 - README.md (root) — quick start, commands, and install instructions.
+- `docs/configuration.md` — `.shipper.toml` reference with all sections and options.
+- `docs/preflight.md` — preflight verification guide.
+- `docs/readiness.md` — readiness checking guide.
 - `docs/failure-modes.md` — notes on partial publishes, ambiguous timeouts, rate limiting, and CI cancellations.
 - `templates/` — example CI workflows for GitHub/GitLab showing how this repo is expected to be used in release pipelines.
 - `crates/shipper/src` — implementation entry points and module breakdown.
@@ -107,8 +111,8 @@ CI templates:
 
 ## AI assistant / Copilot notes
 
-- No repository-specific Copilot/assistant instruction files were found (e.g., `CLAUDE.md`, `.cursorrules`, `AGENTS.md`, `.windsurfrules`, `CONVENTIONS.md`).
-- This file should be the primary source of repo-specific guidance for future Copilot sessions.
+- `CLAUDE.md` in the repository root provides repo-specific guidance for Claude Code sessions.
+- This file (`copilot-instructions.md`) is the primary source of repo-specific guidance for Copilot sessions.
 
 ---
 

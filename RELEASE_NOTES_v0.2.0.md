@@ -14,10 +14,11 @@ This release significantly improves the publishing experience for teams working 
 - **Publish Policies** - Three built-in policies: safe, balanced, and fast
 - **Preflight Verification** - Finishability assessment with Proven/NotProven/Failed states
 - **Index-Based Readiness** - Direct sparse index verification for maximum accuracy
-- **New Crate Detection** - Identifies and validates first-time publishes
+- **New Crate Detection** - Identifies first-time publishes during preflight
 - **Schema Versioning** - State and receipt files include version information
 - **Enhanced Receipts** - Git context, attempt evidence, and readiness evidence
 - **CI Integration** - Built-in workflow generation for GitHub Actions and GitLab CI
+- **Configuration File** - Project-specific settings via `.shipper.toml`
 
 ## Key Features
 
@@ -97,25 +98,19 @@ shipper preflight
 
 # Run with strict ownership checks
 shipper preflight --strict-ownership
-
-# Allow new crate publishing
-shipper preflight --allow-new-crates
 ```
 
 ### 6. Index-Based Readiness
 
-Enhanced readiness verification with index support:
+Enhanced readiness verification with sparse index support:
 
 - **Index Method** - Direct sparse index verification for maximum accuracy
-- **Prefer Index** - When using both methods, prioritize index checks
-- **Custom Index Path** - Support for testing with custom index locations
+- **Prefer Index** - When using both methods, prioritize index checks (via config file)
+- **Custom Index Path** - Support for testing with custom index locations (via config file)
 
 ```bash
 # Use index-based readiness
 shipper publish --readiness-method index
-
-# Prefer index when using both
-shipper publish --readiness-method both --prefer-index
 ```
 
 ### 7. Schema Versioning
@@ -145,20 +140,20 @@ shipper inspect-receipt
 shipper inspect-receipt --format json
 ```
 
-### 9. New Crate Detection
+### 9. Configuration File Support
 
-Automatic detection and validation of new crate publishes:
+Project-specific configuration via `.shipper.toml`:
 
-- **New Crate Identification** - Detects crates that don't exist on the registry
-- **Ownership Requirement** - Optional requirement for ownership verification of new crates
-- **Configurable Behavior** - Allow or prevent new crate publishing via configuration
+- Policy, verify mode, readiness, retry, and output settings
+- Lock and parallel publishing configuration
+- CLI flags always take precedence over config file values
 
 ```bash
-# Allow new crate publishing
-shipper publish --allow-new-crates
+# Generate a default configuration file
+shipper config init
 
-# Require ownership verification for new crates
-shipper publish --require-ownership-for-new-crates
+# Validate a configuration file
+shipper config validate
 ```
 
 ## New CLI Commands
@@ -172,6 +167,11 @@ shipper publish --require-ownership-for-new-crates
 
 - `shipper ci github-actions` - Print GitHub Actions workflow snippet
 - `shipper ci gitlab` - Print GitLab CI workflow snippet
+
+### Configuration Commands
+
+- `shipper config init` - Generate a default `.shipper.toml` configuration file
+- `shipper config validate` - Validate a configuration file
 
 ### Cleanup Command
 
@@ -203,13 +203,9 @@ shipper publish --require-ownership-for-new-crates
 - `--force` - Force override of existing locks
 - `--lock-timeout <duration>` - Lock timeout duration (default: 1h)
 
-### Preflight Options
+### Configuration Options
 
-- `--allow-new-crates` - Allow publishing new crates (first-time publishes)
-- `--require-ownership-for-new-crates` - Require ownership verification for new crates
-- `--allow-dirty` - Allow publishing from a dirty git working tree
-- `--skip-ownership-check` - Skip owners/permissions preflight
-- `--strict-ownership` - Fail preflight if ownership checks fail or if no token is available
+- `--config <path>` - Path to a custom `.shipper.toml` configuration file
 
 ## Migration Guide from v0.1.0
 
@@ -261,10 +257,6 @@ shipper publish --policy safe
 shipper publish --policy balanced
 ```
 
-### Step 6: Update documentation
-
-Review the updated README and failure modes documentation for new features and best practices.
-
 ## Breaking Changes
 
 ### State File Format
@@ -308,44 +300,6 @@ shipper publish --readiness-method api
 
 Some registry tokens may not allow querying ownership information. In this case, ownership checks will be skipped even with `--strict-ownership` enabled.
 
-## Getting Started
-
-### Quick Start
-
-```bash
-# Plan the publish
-shipper plan
-
-# Run preflight checks
-shipper preflight
-
-# Publish with safe policy
-shipper publish --policy safe
-```
-
-### CI Integration
-
-```bash
-# Get GitHub Actions workflow
-shipper ci github-actions > .github/workflows/publish.yml
-
-# Get GitLab CI workflow
-shipper ci gitlab > .gitlab-ci.yml
-```
-
-### Debugging Failures
-
-```bash
-# View the event log
-shipper inspect-events
-
-# View the receipt with evidence
-shipper inspect-receipt
-
-# Get JSON output for automated analysis
-shipper inspect-receipt --format json
-```
-
 ## Documentation
 
 - [README.md](README.md) - Main documentation
@@ -355,16 +309,7 @@ shipper inspect-receipt --format json
 - [docs/readiness.md](docs/readiness.md) - Readiness verification guide
 - [docs/failure-modes.md](docs/failure-modes.md) - Failure modes and debugging guide
 
-## Support
-
-For issues, questions, or contributions, please visit the project repository.
-
-## Acknowledgments
-
-Thanks to all contributors who helped make this release possible!
-
 ---
 
-**Version**: 0.2.0  
-**Release Date**: 2024-02-10  
+**Version**: 0.2.0
 **License**: MIT OR Apache-2.0

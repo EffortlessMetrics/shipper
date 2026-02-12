@@ -379,8 +379,7 @@ fn preflight_command_with_policy_flags() {
 
     // Test with --policy fast
     let mut cmd = shipper_cmd();
-    cmd
-        .arg("--manifest-path")
+    cmd.arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
         .arg(&registry.base_url)
@@ -393,11 +392,10 @@ fn preflight_command_with_policy_flags() {
         .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
         .assert()
         .success();
-    
+
     // Test with --verify-mode package
     let mut cmd = shipper_cmd();
-    cmd
-        .arg("--manifest-path")
+    cmd.arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
         .arg(&registry.base_url)
@@ -991,14 +989,14 @@ fn preflight_command_json_output_structure() {
 
     let stdout = String::from_utf8(out).expect("utf8");
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
-    
+
     // Verify JSON structure
     assert!(json.get("plan_id").is_some());
     assert!(json.get("token_detected").is_some());
     assert!(json.get("finishability").is_some());
     assert!(json.get("packages").is_some());
     assert!(json.get("timestamp").is_some());
-    
+
     // Verify packages array structure
     let packages = json.get("packages").unwrap().as_array().unwrap();
     assert_eq!(packages.len(), 1);
@@ -1010,6 +1008,6 @@ fn preflight_command_json_output_structure() {
     assert!(pkg.get("auth_type").is_some());
     assert!(pkg.get("ownership_verified").is_some());
     assert!(pkg.get("dry_run_passed").is_some());
-    
+
     registry.join();
 }

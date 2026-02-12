@@ -144,7 +144,7 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     let packages: Vec<PlannedPackage> = order
         .iter()
         .map(|id| {
-            let pkg = pkg_map.get(&id).expect("pkg exists");
+            let pkg = pkg_map.get(id).expect("pkg exists");
             PlannedPackage {
                 name: pkg.name.to_string(),
                 version: pkg.version.to_string(),
@@ -158,7 +158,7 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     for id in &order {
         let pkg = pkg_map.get(id).expect("pkg exists");
         let pkg_name = pkg.name.to_string();
-        
+
         // Get all dependencies of this package that are in the plan
         let dep_names: Vec<String> = deps_of
             .get(id)
@@ -174,7 +174,7 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
                     .collect()
             })
             .unwrap_or_default();
-        
+
         dependencies.insert(pkg_name, dep_names);
     }
 
@@ -302,8 +302,12 @@ impl ReleasePlan {
         let mut pkg_level: HashMap<String, usize> = HashMap::new();
 
         for pkg in &self.packages {
-            let deps = self.dependencies.get(&pkg.name).cloned().unwrap_or_default();
-            
+            let deps = self
+                .dependencies
+                .get(&pkg.name)
+                .cloned()
+                .unwrap_or_default();
+
             // Find the maximum level of all dependencies
             let max_dep_level = deps
                 .iter()

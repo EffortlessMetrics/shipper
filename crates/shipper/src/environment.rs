@@ -28,10 +28,7 @@ pub fn collect_environment_fingerprint() -> EnvironmentFingerprint {
 
 /// Get cargo version by running `cargo --version`
 fn get_cargo_version() -> Option<String> {
-    let output = Command::new("cargo")
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = Command::new("cargo").arg("--version").output().ok()?;
 
     if output.status.success() {
         let version_string = String::from_utf8_lossy(&output.stdout);
@@ -48,10 +45,7 @@ fn get_cargo_version() -> Option<String> {
 
 /// Get rust version by running `rustc --version`
 fn get_rust_version() -> Option<String> {
-    let output = Command::new("rustc")
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = Command::new("rustc").arg("--version").output().ok()?;
 
     if output.status.success() {
         let version_string = String::from_utf8_lossy(&output.stdout);
@@ -119,7 +113,7 @@ mod tests {
 
         let json = serde_json::to_string(&fingerprint).expect("serialize");
         let parsed: EnvironmentFingerprint = serde_json::from_str(&json).expect("deserialize");
-        
+
         assert_eq!(parsed.shipper_version, fingerprint.shipper_version);
         assert_eq!(parsed.cargo_version, fingerprint.cargo_version);
         assert_eq!(parsed.rust_version, fingerprint.rust_version);
@@ -139,7 +133,7 @@ mod tests {
 
         let json = serde_json::to_string(&fingerprint).expect("serialize");
         let parsed: EnvironmentFingerprint = serde_json::from_str(&json).expect("deserialize");
-        
+
         assert_eq!(parsed.shipper_version, fingerprint.shipper_version);
         assert_eq!(parsed.cargo_version, None);
         assert_eq!(parsed.rust_version, None);
@@ -150,7 +144,7 @@ mod tests {
     #[test]
     fn environment_fingerprint_has_valid_os() {
         let fingerprint = collect_environment_fingerprint();
-        
+
         // OS should be a valid identifier
         assert!(!fingerprint.os.is_empty());
         assert!(fingerprint.os.len() <= 16); // Typical max length for OS identifiers
@@ -159,7 +153,7 @@ mod tests {
     #[test]
     fn environment_fingerprint_has_valid_arch() {
         let fingerprint = collect_environment_fingerprint();
-        
+
         // Arch should be a valid identifier
         assert!(!fingerprint.arch.is_empty());
         assert!(fingerprint.arch.len() <= 16); // Typical max length for arch identifiers
@@ -168,20 +162,25 @@ mod tests {
     #[test]
     fn environment_fingerprint_shipper_version_is_set() {
         let fingerprint = collect_environment_fingerprint();
-        
+
         // Shipper version should always be set from CARGO_PKG_VERSION
         assert!(!fingerprint.shipper_version.is_empty());
         // Should be a valid semver format (major.minor.patch)
-        assert!(fingerprint.shipper_version.chars().all(|c| c.is_numeric() || c == '.'));
+        assert!(
+            fingerprint
+                .shipper_version
+                .chars()
+                .all(|c| c.is_numeric() || c == '.')
+        );
     }
 
     #[test]
     fn environment_fingerprint_roundtrip_preserves_all_fields() {
         let original = collect_environment_fingerprint();
-        
+
         let json = serde_json::to_string(&original).expect("serialize");
         let parsed: EnvironmentFingerprint = serde_json::from_str(&json).expect("deserialize");
-        
+
         assert_eq!(parsed.shipper_version, original.shipper_version);
         assert_eq!(parsed.cargo_version, original.cargo_version);
         assert_eq!(parsed.rust_version, original.rust_version);

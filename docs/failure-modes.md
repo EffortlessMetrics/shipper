@@ -17,9 +17,9 @@ Shipper maintains a persistent state file (`.shipper/state.json`) that tracks wh
 
 Cargo may fail locally even when the upload succeeded server-side. Shipper verifies the registry state (`crate@version exists`) before treating a step as failed.
 
-### Evidence capture (v0.2)
+### Evidence capture
 
-When failures occur, Shipper now captures detailed evidence:
+When failures occur, Shipper captures detailed evidence:
 
 - **Stdout/stderr output** from the failed command
 - **Exit codes** for precise failure classification
@@ -30,7 +30,7 @@ This evidence is stored in:
 - `.shipper/events.jsonl` - Line-delimited event log
 - `.shipper/receipt.json` - Structured receipt with embedded evidence
 
-### Inspecting failures (v0.2)
+### Inspecting failures
 
 Use the inspection commands to debug failures:
 
@@ -71,7 +71,7 @@ Shipper implements a sophisticated retry strategy:
 shipper publish --max-attempts 10 --base-delay 5s --max-delay 5m
 ```
 
-## Preflight failures (v0.2)
+## Preflight failures
 
 Preflight checks run before any publishing begins to verify your workspace is ready. Failures here prevent any crates from being published.
 
@@ -89,7 +89,7 @@ Preflight produces one of three finishability states:
 
 #### Issue: Workspace verify failed
 
-**Symptoms**: Preflight shows `dry_run_passed: ✗` for packages
+**Symptoms**: Dry-run column shows `✗` in the preflight table
 
 **Cause**: The workspace dry-run check failed, indicating issues with package dependencies or metadata
 
@@ -101,7 +101,7 @@ Preflight produces one of three finishability states:
 
 #### Issue: Ownership verification failed
 
-**Symptoms**: Preflight shows `ownership_verified: ✗`
+**Symptoms**: Ownership column shows `✗` in the preflight table
 
 **Cause**: The publish token doesn't have ownership permissions for the crate
 
@@ -111,20 +111,9 @@ Preflight produces one of three finishability states:
 3. Use `--skip-ownership-check` if you're confident (not recommended)
 4. For new crates, ensure you have permissions to create new packages
 
-#### Issue: New crate detected but not allowed
-
-**Symptoms**: Preflight shows `is_new_crate: true` and fails
-
-**Cause**: A crate doesn't exist on the registry yet, but `allow_new_crates` is disabled
-
-**Solutions**:
-1. Verify this is intentional: `cargo search <crate-name>`
-2. Enable new crate publishing: `shipper publish --allow-new-crates`
-3. Or set in config: `preflight.allow_new_crates = true`
-
 #### Issue: No token available for ownership check
 
-**Symptoms**: Preflight shows `token_detected: false` and `NotProven` status
+**Symptoms**: Preflight shows `Token Detected: ✗` and `NOT PROVEN` finishability
 
 **Cause**: No registry token was found for ownership verification
 
@@ -132,7 +121,6 @@ Preflight produces one of three finishability states:
 1. Set `CARGO_REGISTRY_TOKEN` environment variable
 2. Run `cargo login` to create credentials
 3. Use `--skip-ownership-check` if you're confident (not recommended)
-4. Use `--strict-ownership=false` to allow continuation without verification
 
 ## Permission mismatches
 
@@ -142,7 +130,7 @@ A common failure mode is having rights to publish some crates in a workspace but
 
 Shipper provides two levels of ownership verification:
 
-1. **Best-effort check** (`--skip-ownership-check=false`) - Checks ownership if a token is available
+1. **Best-effort check** (default) - Checks ownership if a token is available
 2. **Strict check** (`--strict-ownership`) - Fails preflight if ownership checks fail or if no token is available
 
 ```bash
@@ -154,9 +142,9 @@ shipper preflight --strict-ownership
 
 If your CI cancels a job mid-publish, you can re-run the job and Shipper will continue from the persisted state.
 
-### Lock files (v0.2)
+### Lock files
 
-Shipper now uses lock files to prevent concurrent publish operations:
+Shipper uses lock files to prevent concurrent publish operations:
 
 - `.shipper/lock` - Prevents multiple shipper instances from running simultaneously
 - Configurable timeout (default: 1h) for stale lock cleanup
@@ -169,13 +157,13 @@ shipper publish --force
 shipper publish --lock-timeout 30m
 ```
 
-## Dry-run failures (v0.2)
+## Dry-run failures
 
 Dry-run verification checks whether packages can be successfully published without actually uploading them.
 
 ### Issue: Dry-run failed for workspace
 
-**Symptoms**: Preflight shows `dry_run_passed: ✗` for multiple packages
+**Symptoms**: Dry-run column shows `✗` for multiple packages in the preflight table
 
 **Cause**: The workspace dry-run check failed, indicating issues with dependencies or metadata
 
@@ -187,7 +175,7 @@ Dry-run verification checks whether packages can be successfully published witho
 
 ### Issue: Dry-run failed for specific package
 
-**Symptoms**: Preflight shows `dry_run_passed: ✗` for a single package
+**Symptoms**: Dry-run column shows `✗` for a single package in the preflight table
 
 **Cause**: A specific package has issues that prevent publishing
 
@@ -197,7 +185,7 @@ Dry-run verification checks whether packages can be successfully published witho
 3. Verify the package's `Cargo.toml` is valid
 4. Ensure the package version hasn't been published already
 
-## Readiness failures (v0.2)
+## Readiness failures
 
 A crate may appear to publish successfully but not be immediately available on the registry. Shipper's readiness checks verify actual registry visibility before proceeding.
 
@@ -254,57 +242,85 @@ If readiness checks fail, Shipper will:
 
 **Solutions**:
 1. Use API-based readiness instead: `--readiness-method api`
-2. Use both methods: `--readiness-method both --prefer-index=false`
+2. Use both methods: `--readiness-method both`
 3. Increase the timeout to allow index propagation
 4. Manually update the index: `cargo update`
 
-#### Issue: Custom index path not found
-
-**Symptoms**: Readiness checks fail with "index path not found" error
-
-**Cause**: The configured `index_path` doesn't exist or is not accessible
-
-**Solutions**:
-1. Verify the index path is correct
-2. Remove the `index_path` setting to use the default index
-3. Ensure the path is accessible to the shipper process
-
-## Evidence and debugging (v0.2)
+## Evidence and debugging
 
 ### Event log
 
-The event log (`.shipper/events.jsonl`) provides a complete audit trail:
+The event log (`.shipper/events.jsonl`) provides a complete audit trail. Each line is a JSON object representing a `PublishEvent`:
 
 ```json
-{"timestamp":"2024-02-10T15:30:00Z","event":"preflight_start","details":{...}}
-{"timestamp":"2024-02-10T15:30:05Z","event":"preflight_complete","details":{...}}
-{"timestamp":"2024-02-10T15:30:10Z","event":"publish_start","crate":"my-crate","version":"0.1.0",...}
-{"timestamp":"2024-02-10T15:30:30Z","event":"publish_complete","crate":"my-crate","version":"0.1.0",...}
+{"timestamp":"2025-02-10T15:30:00Z","event_type":{"type":"preflight_started"},"package":""}
+{"timestamp":"2025-02-10T15:30:05Z","event_type":{"type":"preflight_complete","finishability":"proven"},"package":""}
+{"timestamp":"2025-02-10T15:30:10Z","event_type":{"type":"package_started","name":"my-crate","version":"0.1.0"},"package":"my-crate@0.1.0"}
+{"timestamp":"2025-02-10T15:30:12Z","event_type":{"type":"package_attempted","attempt":1,"command":"cargo publish -p my-crate"},"package":"my-crate@0.1.0"}
+{"timestamp":"2025-02-10T15:30:30Z","event_type":{"type":"package_published","duration_ms":18000},"package":"my-crate@0.1.0"}
 ```
 
 ### Receipt format
 
-The receipt (`.shipper/receipt.json`) contains:
+The receipt (`.shipper/receipt.json`) contains structured audit data:
 
 ```json
 {
-  "version": "0.2.0",
-  "timestamp": "2024-02-10T15:30:00Z",
-  "workspace_root": "/path/to/workspace",
-  "published": [
+  "receipt_version": "shipper.receipt.v2",
+  "plan_id": "abc123",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io",
+    "index_base": null
+  },
+  "started_at": "2025-02-10T15:30:00Z",
+  "finished_at": "2025-02-10T15:30:45Z",
+  "packages": [
     {
       "name": "my-crate",
       "version": "0.1.0",
-      "published_at": "2024-02-10T15:30:30Z",
+      "attempts": 1,
+      "state": "Published",
+      "started_at": "2025-02-10T15:30:10Z",
+      "finished_at": "2025-02-10T15:30:30Z",
+      "duration_ms": 20000,
       "evidence": {
-        "stdout": "...",
-        "stderr": "...",
-        "exit_code": 0
+        "attempts": [
+          {
+            "attempt_number": 1,
+            "command": "cargo publish -p my-crate",
+            "exit_code": 0,
+            "stdout_tail": "...",
+            "stderr_tail": "...",
+            "timestamp": "2025-02-10T15:30:12Z",
+            "duration": 18000
+          }
+        ],
+        "readiness_checks": [
+          {
+            "attempt": 1,
+            "visible": true,
+            "timestamp": "2025-02-10T15:30:32Z",
+            "delay_before": 2000
+          }
+        ]
       }
     }
   ],
-  "failed": [],
-  "events_file": ".shipper/events.jsonl"
+  "event_log_path": ".shipper/events.jsonl",
+  "git_context": {
+    "commit": "abc1234",
+    "branch": "main",
+    "tag": "v0.1.0",
+    "dirty": false
+  },
+  "environment": {
+    "shipper_version": "0.2.0",
+    "cargo_version": "cargo 1.82.0",
+    "rust_version": "rustc 1.82.0",
+    "os": "linux",
+    "arch": "x86_64"
+  }
 }
 ```
 
@@ -350,7 +366,7 @@ shipper inspect-receipt
 
 **Debug with**:
 ```bash
-shipper inspect-events | grep "retry"
+shipper inspect-events
 ```
 
 ### Scenario 3: CI cancellation mid-publish

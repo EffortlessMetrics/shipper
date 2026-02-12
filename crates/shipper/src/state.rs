@@ -78,10 +78,14 @@ pub fn validate_receipt_version(version: &str) -> Result<()> {
     // Parse version string (e.g., "shipper.receipt.v2" -> 2)
     let version_num = parse_schema_version(version)
         .with_context(|| format!("invalid receipt version format: {}", version))?;
-    
-    let minimum_num = parse_schema_version(MINIMUM_SUPPORTED_VERSION)
-        .with_context(|| format!("invalid minimum version format: {}", MINIMUM_SUPPORTED_VERSION))?;
-    
+
+    let minimum_num = parse_schema_version(MINIMUM_SUPPORTED_VERSION).with_context(|| {
+        format!(
+            "invalid minimum version format: {}",
+            MINIMUM_SUPPORTED_VERSION
+        )
+    })?;
+
     if version_num < minimum_num {
         anyhow::bail!(
             "receipt version {} is too old. Minimum supported version is {}",
@@ -89,7 +93,7 @@ pub fn validate_receipt_version(version: &str) -> Result<()> {
             MINIMUM_SUPPORTED_VERSION
         );
     }
-    
+
     Ok(())
 }
 
@@ -99,33 +103,33 @@ fn parse_schema_version(version: &str) -> Result<u32> {
     if parts.len() != 3 || !parts[0].starts_with("shipper") || parts[2] != "v" {
         anyhow::bail!("invalid schema version format: {}", version);
     }
-    
+
     // Extract the version number from the last part (e.g., "v2" -> 2)
     let version_part = &parts[2][1..]; // Skip 'v'
-    version_part.parse::<u32>().with_context(|| {
-        format!("invalid version number in schema version: {}", version)
-    })
+    version_part
+        .parse::<u32>()
+        .with_context(|| format!("invalid version number in schema version: {}", version))
 }
 
 /// Migrate a receipt from an older schema version to the current version
 pub fn migrate_receipt(path: &Path) -> Result<Receipt> {
     // Load the receipt JSON
-    let content = fs::read_to_string(&path)
+    let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read receipt file {}", path.display()))?;
-    
+
     let value: serde_json::Value = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse receipt JSON {}", path.display()))?;
-    
+
     // Check the receipt_version field
     let receipt_version = value
         .get("receipt_version")
         .and_then(|v| v.as_str())
         .unwrap_or("shipper.receipt.v1") // Default to v1 if missing
         .to_string(); // Clone to avoid borrow issues
-    
+
     // Validate the version
     validate_receipt_version(&receipt_version)?;
-    
+
     // Apply migrations based on version
     let receipt = match receipt_version.as_str() {
         "shipper.receipt.v1" => migrate_v1_to_v2(value)?,
@@ -142,7 +146,7 @@ pub fn migrate_receipt(path: &Path) -> Result<Receipt> {
             })?
         }
     };
-    
+
     Ok(receipt)
 }
 
@@ -152,17 +156,17 @@ fn migrate_v1_to_v2(mut receipt: serde_json::Value) -> Result<Receipt> {
     if receipt.get("git_context").is_none() {
         receipt["git_context"] = serde_json::Value::Null;
     }
-    
+
     // Add environment: default EnvironmentFingerprint if not present
     if receipt.get("environment").is_none() {
         let environment = collect_environment_fingerprint();
         receipt["environment"] = serde_json::to_value(environment)
             .context("failed to serialize environment fingerprint")?;
     }
-    
+
     // Update receipt_version to v2
     receipt["receipt_version"] = serde_json::Value::String(CURRENT_RECEIPT_VERSION.to_string());
-    
+
     // Deserialize as Receipt
     serde_json::from_value(receipt).context("failed to deserialize migrated receipt")
 }
@@ -173,11 +177,11 @@ pub fn load_receipt(state_dir: &Path) -> Result<Option<Receipt>> {
     if !path.exists() {
         return Ok(None);
     }
-    
+
     // Try to load directly first
     let content = fs::read_to_string(&path)
         .with_context(|| format!("failed to read receipt file {}", path.display()))?;
-    
+
     // Try to parse as Receipt directly
     if let Ok(receipt) = serde_json::from_str::<Receipt>(&content) {
         // Validate the version
@@ -187,7 +191,7 @@ pub fn load_receipt(state_dir: &Path) -> Result<Option<Receipt>> {
         }
         return Ok(Some(receipt));
     }
-    
+
     // If direct parsing failed, attempt migration
     migrate_receipt(&path).map(Some)
 }
@@ -331,7 +335,8 @@ mod tests {
 
     #[test]
     fn validate_receipt_version_accepts_minimum_version() {
-        validate_receipt_version(MINIMUM_SUPPORTED_VERSION).expect("minimum version should be valid");
+        validate_receipt_version(MINIMUM_SUPPORTED_VERSION)
+            .expect("minimum version should be valid");
     }
 
     #[test]
@@ -376,7 +381,7 @@ mod tests {
     fn migrate_v1_to_v2_adds_missing_fields() {
         let td = tempdir().expect("tempdir");
         let path = td.path().join("receipt.json");
-        
+
         // Create a v1 receipt (without git_context and environment)
         let v1_json = r#"{
             "receipt_version": "shipper.receipt.v1",
@@ -391,11 +396,11 @@ mod tests {
             "packages": [],
             "event_log_path": ".shipper/events.jsonl"
         }"#;
-        
+
         fs::write(&path, v1_json).expect("write v1 receipt");
-        
+
         let receipt = migrate_receipt(&path).expect("migrate receipt");
-        
+
         assert_eq!(receipt.receipt_version, CURRENT_RECEIPT_VERSION);
         assert!(receipt.git_context.is_none());
         assert!(!receipt.environment.shipper_version.is_empty());
@@ -406,9 +411,9 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let dir = td.path().join("out");
         fs::create_dir_all(&dir).expect("mkdir");
-        
+
         let path = receipt_path(&dir);
-        
+
         // Create a v1 receipt
         let v1_json = r#"{
             "receipt_version": "shipper.receipt.v1",
@@ -423,11 +428,13 @@ mod tests {
             "packages": [],
             "event_log_path": ".shipper/events.jsonl"
         }"#;
-        
+
         fs::write(&path, v1_json).expect("write v1 receipt");
-        
-        let receipt = load_receipt(&dir).expect("load receipt").expect("receipt exists");
-        
+
+        let receipt = load_receipt(&dir)
+            .expect("load receipt")
+            .expect("receipt exists");
+
         assert_eq!(receipt.receipt_version, CURRENT_RECEIPT_VERSION);
         assert!(receipt.git_context.is_none());
         assert!(!receipt.environment.shipper_version.is_empty());
@@ -438,11 +445,13 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let dir = td.path().join("out");
         let receipt = sample_receipt();
-        
+
         write_receipt(&dir, &receipt).expect("write receipt");
-        
-        let loaded = load_receipt(&dir).expect("load receipt").expect("receipt exists");
-        
+
+        let loaded = load_receipt(&dir)
+            .expect("load receipt")
+            .expect("receipt exists");
+
         assert_eq!(loaded.receipt_version, receipt.receipt_version);
         assert_eq!(loaded.plan_id, receipt.plan_id);
     }
@@ -519,7 +528,7 @@ mod tests {
         });
 
         let receipt = migrate_v1_to_v2(v1_json).expect("migrate receipt");
-        
+
         assert_eq!(receipt.receipt_version, CURRENT_RECEIPT_VERSION);
         assert!(receipt.git_context.is_none());
         assert!(!receipt.environment.shipper_version.is_empty());
@@ -548,7 +557,7 @@ mod tests {
         });
 
         let receipt = migrate_v1_to_v2(v1_json).expect("migrate receipt");
-        
+
         assert_eq!(receipt.receipt_version, CURRENT_RECEIPT_VERSION);
         assert!(receipt.git_context.is_some());
         let ctx = receipt.git_context.unwrap();
@@ -580,10 +589,13 @@ mod tests {
         });
 
         let receipt = migrate_v1_to_v2(v1_json).expect("migrate receipt");
-        
+
         assert_eq!(receipt.receipt_version, CURRENT_RECEIPT_VERSION);
         assert_eq!(receipt.environment.shipper_version, "0.1.0");
-        assert_eq!(receipt.environment.cargo_version, Some("1.75.0".to_string()));
+        assert_eq!(
+            receipt.environment.cargo_version,
+            Some("1.75.0".to_string())
+        );
     }
 
     #[test]
@@ -591,9 +603,9 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let dir = td.path().join("out");
         fs::create_dir_all(&dir).expect("mkdir");
-        
+
         let path = receipt_path(&dir);
-        
+
         // Create a receipt without receipt_version field (should default to v1)
         let receipt_json = r#"{
             "plan_id": "test-plan",
@@ -607,11 +619,13 @@ mod tests {
             "packages": [],
             "event_log_path": ".shipper/events.jsonl"
         }"#;
-        
+
         fs::write(&path, receipt_json).expect("write receipt");
-        
-        let receipt = load_receipt(&dir).expect("load receipt").expect("receipt exists");
-        
+
+        let receipt = load_receipt(&dir)
+            .expect("load receipt")
+            .expect("receipt exists");
+
         // Should be migrated to v2
         assert_eq!(receipt.receipt_version, CURRENT_RECEIPT_VERSION);
     }
@@ -621,9 +635,9 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let dir = td.path().join("out");
         fs::create_dir_all(&dir).expect("mkdir");
-        
+
         let path = receipt_path(&dir);
-        
+
         // Create a receipt with a future version (should still load if format is compatible)
         let receipt_json = r#"{
             "receipt_version": "shipper.receipt.v99",
@@ -646,9 +660,9 @@ mod tests {
                 "arch": "x86_64"
             }
         }"#;
-        
+
         fs::write(&path, receipt_json).expect("write receipt");
-        
+
         // Future versions are rejected if below minimum supported
         let result = load_receipt(&dir);
         assert!(result.is_err());
@@ -659,11 +673,11 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let dir = td.path().join("out");
         fs::create_dir_all(&dir).expect("mkdir");
-        
+
         // Create state file but not receipt
         let st = sample_state();
         save_state(&dir, &st).expect("save state");
-        
+
         assert!(has_incomplete_state(&dir));
     }
 
@@ -672,12 +686,12 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let dir = td.path().join("out");
         fs::create_dir_all(&dir).expect("mkdir");
-        
+
         // Create both state and receipt
         let st = sample_state();
         save_state(&dir, &st).expect("save state");
         write_receipt(&dir, &sample_receipt()).expect("write receipt");
-        
+
         assert!(!has_incomplete_state(&dir));
     }
 
@@ -686,7 +700,7 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let dir = td.path().join("out");
         fs::create_dir_all(&dir).expect("mkdir");
-        
+
         assert!(!has_incomplete_state(&dir));
     }
 
@@ -695,12 +709,12 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let dir = td.path().join("out");
         fs::create_dir_all(&dir).expect("mkdir");
-        
+
         // Create state file
         let st = sample_state();
         save_state(&dir, &st).expect("save state");
         assert!(state_path(&dir).exists());
-        
+
         // Clear state
         clear_state(&dir).expect("clear state");
         assert!(!state_path(&dir).exists());
@@ -711,12 +725,12 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let dir = td.path().join("out");
         fs::create_dir_all(&dir).expect("mkdir");
-        
+
         // Create both state and receipt
         let st = sample_state();
         save_state(&dir, &st).expect("save state");
         write_receipt(&dir, &sample_receipt()).expect("write receipt");
-        
+
         // Clear state only
         clear_state(&dir).expect("clear state");
         assert!(!state_path(&dir).exists());

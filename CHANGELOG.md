@@ -23,9 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `shipper ci github-actions` - Print GitHub Actions workflow snippet
 - `shipper ci gitlab` - Print GitLab CI workflow snippet
 - `shipper clean` - Clean state files (state.json, receipt.json, events.jsonl)
+- `shipper config init` - Generate a default `.shipper.toml` configuration file
+- `shipper config validate` - Validate a configuration file
 
 #### New CLI Flags
 
+- `--config <path>` - Path to a custom `.shipper.toml` configuration file
 - `--policy <policy>` - Publish policy: safe (verify+strict), balanced (verify when needed), fast (no verify)
 - `--verify-mode <mode>` - Verify mode: workspace (default), package (per-crate), none (no verify)
 - `--readiness-method <method>` - Readiness check method: api (default, fast), index (slower, more accurate), both (slowest, most reliable)
@@ -43,12 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### New Features
 
+- Configuration file support (`.shipper.toml`) with `config init` and `config validate` subcommands
 - Lock file mechanism to prevent concurrent publish operations
 - Configurable evidence capture with adjustable output line limits
 - JSON output format for CI/CD integration
 - Readiness verification with multiple methods (API, index, combined)
 - Publish policies for different safety levels
 - Enhanced receipt format with embedded evidence
+- Schema versioning for state, plan, and receipt files
 
 ### Changed
 
@@ -92,6 +97,3 @@ If you're upgrading from v0.1.0:
 - Resumable execution with state persistence
 - Status command to compare local versions to registry
 - Doctor command for environment and auth diagnostics
-
-[0.2.0]: https://github.com/yourusername/shipper/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/yourusername/shipper/releases/tag/v0.1.0

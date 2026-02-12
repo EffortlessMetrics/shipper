@@ -73,9 +73,14 @@ Verifies using both API and index methods for maximum reliability.
 ```bash
 # Use both methods for maximum reliability
 shipper publish --readiness-method both
+```
 
-# Prefer index over API when using both
-shipper publish --readiness-method both --prefer-index
+To prefer index over API when using `both`, set `prefer_index = true` in your `.shipper.toml` (this is a config-file-only setting):
+
+```toml
+[readiness]
+method = "both"
+prefer_index = true
 ```
 
 ## Configuring Readiness Checking
@@ -98,16 +103,16 @@ max_total_wait = "5m"
 poll_interval = "2s"
 # Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
 jitter_factor = 0.5
-# Use index as primary method when Both is selected
+# Use index as primary method when Both is selected (config-only, no CLI flag)
 prefer_index = false
-# Custom index path for testing (optional)
-index_path = "/path/to/custom/index"
+# Custom index path for testing (config-only, optional)
+# index_path = "/path/to/custom/index"
 ```
 
 ### CLI Flags
 
 ```bash
-# Enable/disable readiness checks
+# Disable readiness checks
 shipper publish --no-readiness
 
 # Set readiness method
@@ -120,10 +125,9 @@ shipper publish --readiness-timeout 10m
 
 # Configure poll interval
 shipper publish --readiness-poll 5s
-
-# Prefer index when using both
-shipper publish --readiness-method both --prefer-index
 ```
+
+> **Note:** `prefer_index` and `index_path` are config-file-only settings with no corresponding CLI flags.
 
 ### Configuration Options
 
@@ -136,8 +140,8 @@ shipper publish --readiness-method both --prefer-index
 | `max_total_wait` | duration | `5m` | Maximum total time to wait for visibility |
 | `poll_interval` | duration | `2s` | Base interval between polls |
 | `jitter_factor` | float | `0.5` | Randomization factor for delays (0.0 = no jitter, 1.0 = full jitter) |
-| `prefer_index` | bool | `false` | When using `both`, prefer index over API |
-| `index_path` | path | `None` | Custom index path for testing (optional) |
+| `prefer_index` | bool | `false` | When using `both`, prefer index over API (config-only) |
+| `index_path` | path | `None` | Custom index path for testing (config-only, optional) |
 
 ## How Readiness Checking Works
 
@@ -219,7 +223,7 @@ actual_delay = delay * (1 ± jitter_factor)
 
 **Solutions**:
 1. Use API-based readiness instead: `--readiness-method api`
-2. Use both methods: `--readiness-method both --prefer-index=false`
+2. Use both methods: `--readiness-method both` (set `prefer_index = false` in `.shipper.toml` to prioritize API)
 3. Increase the timeout to allow index propagation
 4. Manually update the index: `cargo update`
 

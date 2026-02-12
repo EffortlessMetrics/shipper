@@ -221,15 +221,17 @@ fn main() -> Result<()> {
     let planned = plan::build_plan(&spec)?;
 
     // Load configuration file
-    let config = if let Some(ref config_path) = cli.config {
-        // Use custom config file specified via --config
-        Some(ShipperConfig::load_from_file(config_path)
-            .with_context(|| format!("Failed to load config from: {}", config_path.display()))?)
-    } else {
-        // Try to load .shipper.toml from workspace root
-        ShipperConfig::load_from_workspace(&planned.workspace_root)
-            .with_context(|| "Failed to load config from workspace")?
-    };
+    let config =
+        if let Some(ref config_path) = cli.config {
+            // Use custom config file specified via --config
+            Some(ShipperConfig::load_from_file(config_path).with_context(|| {
+                format!("Failed to load config from: {}", config_path.display())
+            })?)
+        } else {
+            // Try to load .shipper.toml from workspace root
+            ShipperConfig::load_from_workspace(&planned.workspace_root)
+                .with_context(|| "Failed to load config from workspace")?
+        };
 
     // Build RuntimeOptions, merging config values where appropriate
     let opts = RuntimeOptions {
@@ -395,7 +397,10 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
             println!("Plan ID: {}", rep.plan_id);
             println!("Timestamp: {}", rep.timestamp.format("%Y-%m-%dT%H:%M:%SZ"));
             println!();
-            println!("Token Detected: {}", if rep.token_detected { "✓" } else { "✗" });
+            println!(
+                "Token Detected: {}",
+                if rep.token_detected { "✓" } else { "✗" }
+            );
             println!();
 
             // Display finishability with color-coded status
@@ -404,14 +409,23 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
                 Finishability::NotProven => ("\x1b[33m", "NOT PROVEN"),
                 Finishability::Failed => ("\x1b[31m", "FAILED"),
             };
-            println!("Finishability: {}{}{}\x1b[0m", finishability_color, finishability_text, "\x1b[0m");
+            println!(
+                "Finishability: {}{}",
+                finishability_color, finishability_text
+            );
             println!();
 
             // Display packages in table format
             println!("Packages:");
-            println!("┌─────────────────────┬─────────┬──────────┬──────────┬───────────────┬─────────────┬─────────────┐");
-            println!("│ Package             │ Version │ Published│ New Crate │ Auth Type     │ Ownership   │ Dry-run     │");
-            println!("├─────────────────────┼─────────┼──────────┼──────────┼───────────────┼─────────────┼─────────────┤");
+            println!(
+                "┌─────────────────────┬─────────┬──────────┬──────────┬───────────────┬─────────────┬─────────────┐"
+            );
+            println!(
+                "│ Package             │ Version │ Published│ New Crate │ Auth Type     │ Ownership   │ Dry-run     │"
+            );
+            println!(
+                "├─────────────────────┼─────────┼──────────┼──────────┼───────────────┼─────────────┼─────────────┤"
+            );
             for p in &rep.packages {
                 let published = if p.already_published { "Yes" } else { "No" };
                 let new_crate = if p.is_new_crate { "Yes" } else { "No" };
@@ -429,7 +443,9 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
                     p.name, p.version, published, new_crate, auth_type, ownership, dry_run
                 );
             }
-            println!("└─────────────────────┴─────────┴──────────┴──────────┴───────────────┴─────────────┴─────────────┘");
+            println!(
+                "└─────────────────────┴─────────┴──────────┴──────────┴───────────────┴─────────────┴─────────────┘"
+            );
             println!();
 
             // Summary
@@ -452,13 +468,19 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
             println!("-----------------");
             match rep.finishability {
                 Finishability::Proven => {
-                    println!("\x1b[32m✓ All checks passed. Ready to publish with: shipper publish\x1b[0m");
+                    println!(
+                        "\x1b[32m✓ All checks passed. Ready to publish with: shipper publish\x1b[0m"
+                    );
                 }
                 Finishability::NotProven => {
-                    println!("\x1b[33m⚠ Some checks could not be verified. You can still publish, but may encounter permission issues. Use `shipper publish --policy fast` to proceed.\x1b[0m");
+                    println!(
+                        "\x1b[33m⚠ Some checks could not be verified. You can still publish, but may encounter permission issues. Use `shipper publish --policy fast` to proceed.\x1b[0m"
+                    );
                 }
                 Finishability::Failed => {
-                    println!("\x1b[31m✗ Preflight failed. Please fix the issues above before publishing.\x1b[0m");
+                    println!(
+                        "\x1b[31m✗ Preflight failed. Please fix the issues above before publishing.\x1b[0m"
+                    );
                 }
             }
         }
@@ -605,9 +627,18 @@ fn run_inspect_receipt(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Re
         "Registry: {} ({})",
         receipt.registry.name, receipt.registry.api_base
     );
-    println!("Started: {}", receipt.started_at.format("%Y-%m-%dT%H:%M:%SZ"));
-    println!("Finished: {}", receipt.finished_at.format("%Y-%m-%dT%H:%M:%SZ"));
-    println!("Duration: {}ms", (receipt.finished_at - receipt.started_at).num_milliseconds());
+    println!(
+        "Started: {}",
+        receipt.started_at.format("%Y-%m-%dT%H:%M:%SZ")
+    );
+    println!(
+        "Finished: {}",
+        receipt.finished_at.format("%Y-%m-%dT%H:%M:%SZ")
+    );
+    println!(
+        "Duration: {}ms",
+        (receipt.finished_at - receipt.started_at).num_milliseconds()
+    );
     println!();
 
     // Display Git context if available
@@ -651,8 +682,12 @@ fn run_inspect_receipt(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Re
             shipper::types::PackageState::Published => "\x1b[32mPublished\x1b[0m",
             shipper::types::PackageState::Pending => "Pending",
             shipper::types::PackageState::Skipped { reason } => &format!("Skipped: {}", reason),
-            shipper::types::PackageState::Failed { class, message } => &format!("\x1b[31mFailed ({:?}): {}\x1b[0m", class, message),
-            shipper::types::PackageState::Ambiguous { message } => &format!("\x1b[33mAmbiguous: {}\x1b[0m", message),
+            shipper::types::PackageState::Failed { class, message } => {
+                &format!("\x1b[31mFailed ({:?}): {}\x1b[0m", class, message)
+            }
+            shipper::types::PackageState::Ambiguous { message } => {
+                &format!("\x1b[33mAmbiguous: {}\x1b[0m", message)
+            }
         };
         println!(
             "  {}@{}: {} (attempts={}, {}ms)",
@@ -874,8 +909,9 @@ fn run_config(cmd: ConfigCommands) -> Result<()> {
             }
             let config = ShipperConfig::load_from_file(&path)
                 .with_context(|| format!("Failed to load config file: {}", path.display()))?;
-            config.validate()
-                .with_context(|| format!("Configuration validation failed for {}", path.display()))?;
+            config.validate().with_context(|| {
+                format!("Configuration validation failed for {}", path.display())
+            })?;
             println!("Configuration file is valid: {}", path.display());
         }
     }
@@ -1004,10 +1040,12 @@ mod tests {
         let ws = plan::PlannedWorkspace {
             workspace_root: td.path().to_path_buf(),
             plan: shipper::types::ReleasePlan {
+                plan_version: "1".to_string(),
                 plan_id: "plan-x".to_string(),
                 created_at: chrono::Utc::now(),
                 registry: Registry::crates_io(),
                 packages: vec![],
+                dependencies: std::collections::BTreeMap::new(),
             },
             skipped: vec![],
         };
@@ -1031,6 +1069,7 @@ mod tests {
             verify_mode: shipper::types::VerifyMode::Workspace,
             readiness: shipper::types::ReadinessConfig::default(),
             output_lines: 50,
+            parallel: shipper::types::ParallelConfig::default(),
         };
 
         unsafe { env::set_var("CARGO_REGISTRY_TOKEN", "orig-reg-token") };
@@ -1061,10 +1100,12 @@ mod tests {
         let ws = plan::PlannedWorkspace {
             workspace_root: td.path().to_path_buf(),
             plan: shipper::types::ReleasePlan {
+                plan_version: "1".to_string(),
                 plan_id: "plan-y".to_string(),
                 created_at: chrono::Utc::now(),
                 registry: Registry::crates_io(),
                 packages: vec![],
+                dependencies: std::collections::BTreeMap::new(),
             },
             skipped: vec![],
         };
@@ -1087,6 +1128,7 @@ mod tests {
             verify_mode: shipper::types::VerifyMode::Workspace,
             readiness: shipper::types::ReadinessConfig::default(),
             output_lines: 50,
+            parallel: shipper::types::ParallelConfig::default(),
         };
 
         unsafe { env::remove_var("CARGO_REGISTRY_TOKEN") };
@@ -1124,8 +1166,14 @@ mod tests {
         assert!(config_path.exists(), "config file should be created");
 
         let content = fs::read_to_string(&config_path).expect("read config file");
-        assert!(content.contains("[policy]"), "config should contain [policy] section");
-        assert!(content.contains("[readiness]"), "config should contain [readiness] section");
+        assert!(
+            content.contains("[policy]"),
+            "config should contain [policy] section"
+        );
+        assert!(
+            content.contains("[readiness]"),
+            "config should contain [readiness] section"
+        );
     }
 
     #[test]
@@ -1187,12 +1235,15 @@ lines = 0
             path: config_path.clone(),
         });
 
-        assert!(result.is_err(), "config validate should fail for invalid file");
+        assert!(
+            result.is_err(),
+            "config validate should fail for invalid file"
+        );
         let err = result.unwrap_err().to_string();
         // The error is wrapped in context, so check the full message
         assert!(
-            err.contains("output.lines must be greater than 0") ||
-            err.contains("Configuration validation failed"),
+            err.contains("output.lines must be greater than 0")
+                || err.contains("Configuration validation failed"),
             "error should mention output.lines or validation failed"
         );
     }
@@ -1206,7 +1257,10 @@ lines = 0
             path: config_path.clone(),
         });
 
-        assert!(result.is_err(), "config validate should fail for missing file");
+        assert!(
+            result.is_err(),
+            "config validate should fail for missing file"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("not found") || err.contains("Config file not found"),
@@ -1221,8 +1275,14 @@ lines = 0
 
         // No config file exists
         let result = ShipperConfig::load_from_workspace(workspace_root);
-        assert!(result.is_ok(), "load should succeed even without config file");
-        assert!(result.unwrap().is_none(), "should return None when no config exists");
+        assert!(
+            result.is_ok(),
+            "load should succeed even without config file"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "should return None when no config exists"
+        );
 
         // Create a config file
         let config_path = workspace_root.join(".shipper.toml");
@@ -1253,9 +1313,7 @@ mode = "fast"
                 mode: shipper::types::VerifyMode::Workspace,
             },
             readiness: shipper::types::ReadinessConfig::default(),
-            output: shipper::config::OutputConfig {
-                lines: 100,
-            },
+            output: shipper::config::OutputConfig { lines: 100 },
             lock: shipper::config::LockConfig {
                 timeout: Duration::from_secs(1800),
             },
@@ -1271,6 +1329,7 @@ mode = "fast"
             },
             state_dir: None,
             registry: None,
+            parallel: shipper::types::ParallelConfig::default(),
         };
 
         let opts = RuntimeOptions {
@@ -1291,6 +1350,7 @@ mode = "fast"
             verify_mode: shipper::types::VerifyMode::None,
             readiness: shipper::types::ReadinessConfig::default(),
             output_lines: 50,
+            parallel: shipper::types::ParallelConfig::default(),
         };
 
         let merged = config.merge_with_cli_opts(opts);

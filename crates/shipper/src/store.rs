@@ -48,10 +48,15 @@ pub fn validate_schema_version(version: &str) -> Result<()> {
     // Parse version string (e.g., "shipper.receipt.v2" -> 2)
     let version_num = parse_schema_version(version)
         .with_context(|| format!("invalid schema version format: {}", version))?;
-    
-    let minimum_num = parse_schema_version(crate::state::MINIMUM_SUPPORTED_VERSION)
-        .with_context(|| format!("invalid minimum version format: {}", crate::state::MINIMUM_SUPPORTED_VERSION))?;
-    
+
+    let minimum_num =
+        parse_schema_version(crate::state::MINIMUM_SUPPORTED_VERSION).with_context(|| {
+            format!(
+                "invalid minimum version format: {}",
+                crate::state::MINIMUM_SUPPORTED_VERSION
+            )
+        })?;
+
     if version_num < minimum_num {
         anyhow::bail!(
             "schema version {} is too old. Minimum supported version is {}",
@@ -59,7 +64,7 @@ pub fn validate_schema_version(version: &str) -> Result<()> {
             crate::state::MINIMUM_SUPPORTED_VERSION
         );
     }
-    
+
     Ok(())
 }
 
@@ -69,12 +74,12 @@ fn parse_schema_version(version: &str) -> Result<u32> {
     if parts.len() != 3 || !parts[0].starts_with("shipper") || !parts[2].starts_with('v') {
         anyhow::bail!("invalid schema version format: {}", version);
     }
-    
+
     // Extract the version number from the last part (e.g., "v2" -> 2)
     let version_part = &parts[2][1..]; // Skip 'v'
-    version_part.parse::<u32>().with_context(|| {
-        format!("invalid version number in schema version: {}", version)
-    })
+    version_part
+        .parse::<u32>()
+        .with_context(|| format!("invalid version number in schema version: {}", version))
 }
 
 /// Filesystem-based state store implementation.
@@ -390,7 +395,7 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let path = td.path().join(".shipper");
         let store = FileStore::new(path.clone());
-        
+
         assert_eq!(store.state_dir(), path);
     }
 
@@ -398,10 +403,10 @@ mod tests {
     fn file_store_validate_version_delegates_to_validate_schema_version() {
         let td = tempdir().expect("tempdir");
         let store = FileStore::new(td.path().to_path_buf());
-        
+
         // Test valid version
         assert!(store.validate_version("shipper.receipt.v2").is_ok());
-        
+
         // Test invalid version
         assert!(store.validate_version("shipper.receipt.v0").is_err());
     }

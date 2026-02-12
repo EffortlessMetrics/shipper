@@ -135,12 +135,16 @@ impl RegistryClient {
     /// and "tokio" becomes "t/o/tokio"
     fn calculate_index_path(&self, crate_name: &str) -> String {
         let chars: Vec<char> = crate_name.chars().collect();
-        let first = if chars.len() > 0 { chars[0] } else { '_' };
+        let first = if !chars.is_empty() { chars[0] } else { '_' };
         let second = if chars.len() > 1 { chars[1] } else { '_' };
 
         // Handle special cases: crates starting with non-alphanumeric characters
         let first = if first.is_alphanumeric() { first } else { '_' };
-        let second = if second.is_alphanumeric() { second } else { '_' };
+        let second = if second.is_alphanumeric() {
+            second
+        } else {
+            '_'
+        };
 
         format!("{}/{}/{}", first, second, crate_name)
     }
@@ -150,11 +154,7 @@ impl RegistryClient {
         let index_base = self.registry.get_index_base();
         let url = format!("{}/{}", index_base.trim_end_matches('/'), index_path);
 
-        let resp = self
-            .http
-            .get(&url)
-            .send()
-            .context("index request failed")?;
+        let resp = self.http.get(&url).send().context("index request failed")?;
 
         match resp.status() {
             StatusCode::OK => {
@@ -174,7 +174,8 @@ impl RegistryClient {
         // The sparse index format is a JSON array of version objects
         #[derive(Deserialize)]
         struct IndexVersion {
-            name: String,
+            #[allow(dead_code)]
+            _name: String,
             vers: String,
         }
 
@@ -727,7 +728,9 @@ mod tests {
         });
 
         let cli = RegistryClient::new(test_registry(api_base)).expect("client");
-        let visible = cli.check_index_visibility("missing", "1.0.0").expect("check");
+        let visible = cli
+            .check_index_visibility("missing", "1.0.0")
+            .expect("check");
         assert!(!visible);
         handle.join().expect("join");
     }
@@ -911,16 +914,16 @@ mod tests {
         });
 
         let cli = RegistryClient::new(test_registry(api_base)).expect("client");
-        
+
         // Check each version exists
         assert!(cli.check_index_visibility("demo", "0.1.0").expect("check"));
         assert!(cli.check_index_visibility("demo", "0.2.0").expect("check"));
         assert!(cli.check_index_visibility("demo", "1.0.0").expect("check"));
         assert!(cli.check_index_visibility("demo", "1.1.0").expect("check"));
-        
+
         // Check non-existent version
         assert!(!cli.check_index_visibility("demo", "2.0.0").expect("check"));
-        
+
         handle.join().expect("join");
     }
 
@@ -1067,7 +1070,7 @@ mod tests {
     #[test]
     fn is_version_visible_with_backoff_respects_initial_delay() {
         let start = std::time::Instant::now();
-        
+
         let (api_base, handle) = with_server(move |req| {
             let resp = Response::from_string("{}")
                 .with_status_code(StatusCode(200))
@@ -1093,7 +1096,7 @@ mod tests {
 
         let _result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
         let elapsed = start.elapsed();
-        
+
         // Should wait at least the initial delay
         assert!(elapsed >= Duration::from_millis(50));
         handle.join().expect("join");

@@ -29,7 +29,7 @@ shipper config validate
 Or validate a specific file:
 
 ```bash
-shipper config validate -o my-config.toml
+shipper config validate -p my-config.toml
 ```
 
 ## Using a Configuration File
@@ -68,27 +68,6 @@ mode = "workspace"
 - **package**: Run verify per-crate during publish. Slower but more thorough.
 - **none**: Skip verification. Not recommended.
 
-### Preflight
-
-```toml
-[preflight]
-# Skip owners/permissions preflight (not recommended)
-skip_ownership_check = false
-# Fail preflight if ownership checks fail (recommended)
-strict_ownership = false
-# Allow publishing new crates (first-time publishes)
-allow_new_crates = true
-# Require ownership verification for new crates (recommended)
-require_ownership_for_new_crates = true
-```
-
-Preflight checks run before any publishing begins to verify your workspace is ready:
-
-- **skip_ownership_check**: Skip checking if you have permission to publish to the registry. Not recommended for production.
-- **strict_ownership**: Fail preflight immediately if ownership checks fail or if no token is available. Recommended for production.
-- **allow_new_crates**: Allow publishing crates that don't exist on the registry yet. Set to `false` to prevent accidental new crate creation.
-- **require_ownership_for_new_crates**: When publishing new crates, require ownership verification before proceeding. Recommended to prevent publishing to the wrong registry.
-
 ### Readiness
 
 ```toml
@@ -107,10 +86,8 @@ max_total_wait = "5m"
 poll_interval = "2s"
 # Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
 jitter_factor = 0.5
-# Use index as primary method when Both is selected
+# Use index as primary method when Both is selected (config-only, no CLI flag)
 prefer_index = false
-# Custom index path for testing (optional)
-index_path = "/path/to/custom/index"
 ```
 
 Readiness checks ensure your published packages are visible on the registry before continuing. This is important for workspaces where later packages depend on earlier ones.
@@ -124,14 +101,16 @@ Readiness checks ensure your published packages are visible on the registry befo
 | `max_total_wait` | duration | `5m` | Maximum total time to wait for visibility |
 | `poll_interval` | duration | `2s` | Base interval between polls |
 | `jitter_factor` | float | `0.5` | Randomization factor for delays (0.0 = no jitter, 1.0 = full jitter) |
-| `prefer_index` | bool | `false` | When using `both`, prefer index over API |
-| `index_path` | path | `None` | Custom index path for testing (optional) |
+| `prefer_index` | bool | `false` | When using `both`, prefer index over API (config-only) |
+| `index_path` | path | `None` | Custom index path for testing (config-only, optional) |
 
 **Readiness Methods:**
 
 - **api** (default): Check crates.io HTTP API. Fast and usually reliable.
 - **index**: Check the sparse index. Slower but more accurate, as it directly verifies the crate index entry.
 - **both**: Check both methods. Slowest but most reliable. Use `prefer_index` to prioritize index checks.
+
+> **Note:** `prefer_index` and `index_path` are config-file-only settings with no corresponding CLI flags.
 
 ### Output
 
@@ -177,11 +156,33 @@ Controls retry behavior for failed publish operations.
 [flags]
 # Allow publishing from a dirty git working tree (not recommended)
 allow_dirty = false
+# Skip owners/permissions preflight (not recommended)
+skip_ownership_check = false
+# Fail preflight if ownership checks fail (recommended for production)
+strict_ownership = false
 ```
 
 - **allow_dirty**: Allow publishing even with uncommitted changes. Not recommended for production.
+- **skip_ownership_check**: Skip checking if you have permission to publish to the registry. Not recommended for production.
+- **strict_ownership**: Fail preflight immediately if ownership checks fail or if no token is available. Recommended for production.
 
-**Note**: Ownership and preflight settings have been moved to the `[preflight]` section. See the [Preflight](#preflight) section above.
+### Parallel
+
+```toml
+[parallel]
+# Enable parallel publishing (default: false for sequential)
+enabled = false
+# Maximum number of concurrent publish operations (default: 4)
+max_concurrent = 4
+# Timeout per package publish operation (default: 30 minutes)
+per_package_timeout = "30m"
+```
+
+Controls parallel publishing behavior. When enabled, packages at the same dependency level can be published concurrently.
+
+- **enabled**: Enable parallel publishing (default: `false`, sequential publishing)
+- **max_concurrent**: Maximum number of concurrent publish operations (default: `4`)
+- **per_package_timeout**: Timeout for each individual package publish (default: `30m`)
 
 ### Registry
 
@@ -223,16 +224,6 @@ mode = "safe"
 # Verify mode: workspace (default, safest), package (per-crate), or none (no verify)
 mode = "workspace"
 
-[preflight]
-# Skip owners/permissions preflight (not recommended)
-skip_ownership_check = false
-# Fail preflight if ownership checks fail (recommended)
-strict_ownership = false
-# Allow publishing new crates (first-time publishes)
-allow_new_crates = true
-# Require ownership verification for new crates (recommended)
-require_ownership_for_new_crates = true
-
 [readiness]
 # Enable readiness checks (wait for registry visibility after publish)
 enabled = true
@@ -248,8 +239,6 @@ max_total_wait = "5m"
 poll_interval = "2s"
 # Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
 jitter_factor = 0.5
-# Use index as primary method when Both is selected
-prefer_index = false
 
 [output]
 # Number of output lines to capture for evidence
@@ -270,6 +259,18 @@ max_delay = "2m"
 [flags]
 # Allow publishing from a dirty git working tree (not recommended)
 allow_dirty = false
+# Skip owners/permissions preflight (not recommended)
+skip_ownership_check = false
+# Fail preflight if ownership checks fail (recommended)
+strict_ownership = false
+
+[parallel]
+# Enable parallel publishing (default: false for sequential)
+enabled = false
+# Maximum number of concurrent publish operations (default: 4)
+max_concurrent = 4
+# Timeout per package publish operation (default: 30 minutes)
+per_package_timeout = "30m"
 
 # Optional: Custom registry configuration
 # [registry]

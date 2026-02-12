@@ -101,9 +101,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::types::{
-        AuthType, ErrorClass, EventType, ExecutionResult, Finishability, ReadinessMethod,
-    };
+    use crate::types::{ErrorClass, EventType, ExecutionResult, Finishability, ReadinessMethod};
     use chrono::Utc;
 
     fn sample_event(package: &str) -> PublishEvent {

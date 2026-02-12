@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
 use crate::auth;
@@ -85,13 +85,8 @@ pub fn run_preflight(
 
         // Ownership verification (best-effort)
         let ownership_verified = if token_detected && !opts.skip_ownership_check {
-            match reg.verify_ownership(&p.name, token.as_deref().unwrap()) {
-                Ok(verified) => verified,
-                Err(_) => {
-                    // Graceful degradation: treat as unverified but don't fail
-                    false
-                }
-            }
+            reg.verify_ownership(&p.name, token.as_deref().unwrap())
+                .unwrap_or_default()
         } else {
             // No token or ownership check skipped
             false
@@ -824,18 +819,22 @@ mod tests {
         PlannedWorkspace {
             workspace_root: workspace_root.to_path_buf(),
             plan: ReleasePlan {
+                plan_version: "1".to_string(),
                 plan_id: "plan-demo".to_string(),
                 created_at: Utc::now(),
                 registry: Registry {
                     name: "crates-io".to_string(),
                     api_base,
+                    index_base: None,
                 },
                 packages: vec![PlannedPackage {
                     name: "demo".to_string(),
                     version: "0.1.0".to_string(),
                     manifest_path: workspace_root.join("demo").join("Cargo.toml"),
                 }],
+                dependencies: std::collections::BTreeMap::new(),
             },
+            skipped: vec![],
         }
     }
 
@@ -852,6 +851,13 @@ mod tests {
             verify_poll_interval: Duration::from_millis(1),
             state_dir,
             force_resume: false,
+            policy: crate::types::PublishPolicy::default(),
+            verify_mode: crate::types::VerifyMode::default(),
+            readiness: crate::types::ReadinessConfig::default(),
+            output_lines: 100,
+            force: false,
+            lock_timeout: Duration::from_secs(3600),
+            parallel: crate::types::ParallelConfig::default(),
         }
     }
 
@@ -942,6 +948,7 @@ mod tests {
         let reg = RegistryClient::new(Registry {
             name: "crates-io".to_string(),
             api_base: server.base_url.clone(),
+            index_base: None,
         })
         .expect("client");
 
@@ -965,6 +972,7 @@ mod tests {
         let reg = RegistryClient::new(Registry {
             name: "crates-io".to_string(),
             api_base: "http://127.0.0.1:9".to_string(),
+            index_base: None,
         })
         .expect("client");
 
@@ -987,6 +995,7 @@ mod tests {
         let reg_unknown = RegistryClient::new(Registry {
             name: "crates-io".to_string(),
             api_base: server_unknown.base_url.clone(),
+            index_base: None,
         })
         .expect("client");
         let exists_unknown = reg_unknown
@@ -1002,6 +1011,7 @@ mod tests {
         let reg_empty = RegistryClient::new(Registry {
             name: "crates-io".to_string(),
             api_base: server_empty.base_url.clone(),
+            index_base: None,
         })
         .expect("client");
         let exists_empty = reg_empty
@@ -1061,10 +1071,12 @@ mod tests {
         assert!(rep.token_detected);
         assert_eq!(rep.packages.len(), 1);
         assert!(!rep.packages[0].already_published);
-        assert!(reporter
-            .warns
-            .iter()
-            .any(|w| w.contains("owners preflight failed")));
+        assert!(
+            reporter
+                .warns
+                .iter()
+                .any(|w| w.contains("owners preflight failed"))
+        );
 
         assert_debug_snapshot!(
             rep,
@@ -1592,10 +1604,12 @@ PreflightReport {
         let mut reporter = CollectingReporter::default();
         let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
         assert!(receipt.packages.is_empty());
-        assert!(reporter
-            .warns
-            .iter()
-            .any(|w| w.contains("forcing resume with mismatched plan_id")));
+        assert!(
+            reporter
+                .warns
+                .iter()
+                .any(|w| w.contains("forcing resume with mismatched plan_id"))
+        );
     }
 
     #[test]
@@ -1650,17 +1664,15 @@ PreflightReport {
             plan_id: "test-plan".to_string(),
             token_detected: true,
             finishability: Finishability::Proven,
-            packages: vec![
-                PreflightPackage {
-                    name: "demo".to_string(),
-                    version: "0.1.0".to_string(),
-                    already_published: false,
-                    is_new_crate: false,
-                    auth_type: Some(AuthType::Token),
-                    ownership_verified: true,
-                    dry_run_passed: true,
-                },
-            ],
+            packages: vec![PreflightPackage {
+                name: "demo".to_string(),
+                version: "0.1.0".to_string(),
+                already_published: false,
+                is_new_crate: false,
+                auth_type: Some(AuthType::Token),
+                ownership_verified: true,
+                dry_run_passed: true,
+            }],
             timestamp: Utc::now(),
         };
 
@@ -1678,17 +1690,15 @@ PreflightReport {
             plan_id: "test-plan".to_string(),
             token_detected: true,
             finishability: Finishability::Proven,
-            packages: vec![
-                PreflightPackage {
-                    name: "demo".to_string(),
-                    version: "0.1.0".to_string(),
-                    already_published: false,
-                    is_new_crate: false,
-                    auth_type: Some(AuthType::Token),
-                    ownership_verified: true,
-                    dry_run_passed: true,
-                },
-            ],
+            packages: vec![PreflightPackage {
+                name: "demo".to_string(),
+                version: "0.1.0".to_string(),
+                already_published: false,
+                is_new_crate: false,
+                auth_type: Some(AuthType::Token),
+                ownership_verified: true,
+                dry_run_passed: true,
+            }],
             timestamp: Utc::now(),
         };
 
@@ -1701,17 +1711,15 @@ PreflightReport {
             plan_id: "test-plan".to_string(),
             token_detected: true,
             finishability: Finishability::NotProven,
-            packages: vec![
-                PreflightPackage {
-                    name: "demo".to_string(),
-                    version: "0.1.0".to_string(),
-                    already_published: false,
-                    is_new_crate: true,
-                    auth_type: Some(AuthType::Token),
-                    ownership_verified: false,
-                    dry_run_passed: true,
-                },
-            ],
+            packages: vec![PreflightPackage {
+                name: "demo".to_string(),
+                version: "0.1.0".to_string(),
+                already_published: false,
+                is_new_crate: true,
+                auth_type: Some(AuthType::Token),
+                ownership_verified: false,
+                dry_run_passed: true,
+            }],
             timestamp: Utc::now(),
         };
 
@@ -1724,17 +1732,15 @@ PreflightReport {
             plan_id: "test-plan".to_string(),
             token_detected: true,
             finishability: Finishability::Failed,
-            packages: vec![
-                PreflightPackage {
-                    name: "demo".to_string(),
-                    version: "0.1.0".to_string(),
-                    already_published: false,
-                    is_new_crate: false,
-                    auth_type: Some(AuthType::Token),
-                    ownership_verified: true,
-                    dry_run_passed: false,
-                },
-            ],
+            packages: vec![PreflightPackage {
+                name: "demo".to_string(),
+                version: "0.1.0".to_string(),
+                already_published: false,
+                is_new_crate: false,
+                auth_type: Some(AuthType::Token),
+                ownership_verified: true,
+                dry_run_passed: false,
+            }],
             timestamp: Utc::now(),
         };
 
@@ -1829,8 +1835,14 @@ PreflightReport {
         // Mock registry: crate doesn't exist (404 for both crate and version)
         let server = spawn_registry_server(
             std::collections::BTreeMap::from([
-                ("/api/v1/crates/demo".to_string(), vec![(404, "{}".to_string())]),
-                ("/api/v1/crates/demo/0.1.0".to_string(), vec![(404, "{}".to_string())]),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
             ]),
             2,
         );
@@ -1861,9 +1873,18 @@ PreflightReport {
         // Mock registry: version doesn't exist, crate exists, ownership check fails with 403
         let server = spawn_registry_server(
             std::collections::BTreeMap::from([
-                ("/api/v1/crates/demo".to_string(), vec![(200, "{}".to_string())]),
-                ("/api/v1/crates/demo/0.1.0".to_string(), vec![(404, "{}".to_string())]),
-                ("/api/v1/crates/demo/owners".to_string(), vec![(403, "{}".to_string())]),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo/owners".to_string(),
+                    vec![(403, "{}".to_string())],
+                ),
             ]),
             3,
         );
@@ -1958,9 +1979,18 @@ PreflightReport {
         // Mock registry: version doesn't exist, crate exists, ownership succeeds
         let server = spawn_registry_server(
             std::collections::BTreeMap::from([
-                ("/api/v1/crates/demo".to_string(), vec![(200, "{}".to_string())]),
-                ("/api/v1/crates/demo/0.1.0".to_string(), vec![(404, "{}".to_string())]),
-                ("/api/v1/crates/demo/owners".to_string(), vec![(200, r#"{"users":[]}"#.to_string())]),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo/owners".to_string(),
+                    vec![(200, r#"{"users":[]}"#.to_string())],
+                ),
             ]),
             3,
         );
