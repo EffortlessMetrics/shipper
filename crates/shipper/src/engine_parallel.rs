@@ -595,3 +595,626 @@ pub fn run_publish_parallel(
 
     Ok(all_receipts)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::env;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use chrono::Utc;
+    use serial_test::serial;
+    use tempfile::tempdir;
+    use tiny_http::{Header, Response, Server, StatusCode};
+
+    use super::*;
+    use crate::plan::PlannedWorkspace;
+    use crate::types::{
+        PackageProgress, PlannedPackage, PublishLevel, ReadinessConfig, Registry, ReleasePlan,
+    };
+
+    #[derive(Default)]
+    struct CollectingReporter {
+        infos: Vec<String>,
+        warns: Vec<String>,
+        errors: Vec<String>,
+    }
+
+    impl Reporter for CollectingReporter {
+        fn info(&mut self, msg: &str) {
+            self.infos.push(msg.to_string());
+        }
+
+        fn warn(&mut self, msg: &str) {
+            self.warns.push(msg.to_string());
+        }
+
+        fn error(&mut self, msg: &str) {
+            self.errors.push(msg.to_string());
+        }
+    }
+
+    #[derive(Clone)]
+    struct EnvGuard {
+        key: String,
+        old: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &str, value: &str) -> Self {
+            let old = env::var(key).ok();
+            unsafe { env::set_var(key, value) };
+            Self {
+                key: key.to_string(),
+                old,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.old {
+                unsafe { env::set_var(&self.key, v) };
+            } else {
+                unsafe { env::remove_var(&self.key) };
+            }
+        }
+    }
+
+    fn write_fake_cargo(bin_dir: &Path) {
+        #[cfg(windows)]
+        {
+            fs::write(
+                bin_dir.join("cargo.cmd"),
+                "@echo off\r\nif not \"%SHIPPER_CARGO_ARGS_LOG%\"==\"\" echo %*>>\"%SHIPPER_CARGO_ARGS_LOG%\"\r\nif not \"%SHIPPER_CARGO_STDOUT%\"==\"\" echo %SHIPPER_CARGO_STDOUT%\r\nif not \"%SHIPPER_CARGO_STDERR%\"==\"\" echo %SHIPPER_CARGO_STDERR% 1>&2\r\nif \"%SHIPPER_CARGO_EXIT%\"==\"\" (exit /b 0) else (exit /b %SHIPPER_CARGO_EXIT%)\r\n",
+            )
+            .expect("write fake cargo");
+        }
+
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let path = bin_dir.join("cargo");
+            fs::write(
+                &path,
+                "#!/usr/bin/env sh\nif [ -n \"$SHIPPER_CARGO_ARGS_LOG\" ]; then\n  echo \"$*\" >>\"$SHIPPER_CARGO_ARGS_LOG\"\nfi\nif [ -n \"$SHIPPER_CARGO_STDOUT\" ]; then\n  echo \"$SHIPPER_CARGO_STDOUT\"\nfi\nif [ -n \"$SHIPPER_CARGO_STDERR\" ]; then\n  echo \"$SHIPPER_CARGO_STDERR\" >&2\nfi\nexit \"${SHIPPER_CARGO_EXIT:-0}\"\n",
+            )
+            .expect("write fake cargo");
+            let mut perms = fs::metadata(&path).expect("meta").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms).expect("chmod");
+        }
+    }
+
+    fn write_fake_tools(bin_dir: &Path) {
+        fs::create_dir_all(bin_dir).expect("mkdir");
+        write_fake_cargo(bin_dir);
+    }
+
+    #[cfg(windows)]
+    fn fake_cargo_path(bin_dir: &Path) -> PathBuf {
+        bin_dir.join("cargo.cmd")
+    }
+
+    #[cfg(not(windows))]
+    fn fake_cargo_path(bin_dir: &Path) -> PathBuf {
+        bin_dir.join("cargo")
+    }
+
+    struct TestRegistryServer {
+        base_url: String,
+        handle: std::thread::JoinHandle<()>,
+    }
+
+    impl TestRegistryServer {
+        fn join(self) {
+            self.handle.join().expect("join server");
+        }
+    }
+
+    fn spawn_registry_server(
+        mut routes: BTreeMap<String, Vec<(u16, String)>>,
+        expected_requests: usize,
+    ) -> TestRegistryServer {
+        let server = Server::http("127.0.0.1:0").expect("server");
+        let base_url = format!("http://{}", server.server_addr());
+
+        let handle = std::thread::spawn(move || {
+            for _ in 0..expected_requests {
+                let req = server.recv().expect("request");
+                let path = req.url().to_string();
+
+                let response = if let Some(list) = routes.get_mut(&path) {
+                    if list.is_empty() {
+                        (404, "{}".to_string())
+                    } else if list.len() == 1 {
+                        list[0].clone()
+                    } else {
+                        list.remove(0)
+                    }
+                } else {
+                    (404, "{}".to_string())
+                };
+
+                let resp = Response::from_string(response.1)
+                    .with_status_code(StatusCode(response.0))
+                    .with_header(
+                        Header::from_bytes("Content-Type", "application/json").expect("header"),
+                    );
+                req.respond(resp).expect("respond");
+            }
+        });
+
+        TestRegistryServer { base_url, handle }
+    }
+
+    fn planned_workspace(workspace_root: &Path, api_base: String) -> PlannedWorkspace {
+        PlannedWorkspace {
+            workspace_root: workspace_root.to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-parallel".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base,
+                    index_base: None,
+                },
+                packages: vec![PlannedPackage {
+                    name: "demo".to_string(),
+                    version: "0.1.0".to_string(),
+                    manifest_path: workspace_root.join("demo").join("Cargo.toml"),
+                }],
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        }
+    }
+
+    fn default_opts(state_dir: PathBuf) -> RuntimeOptions {
+        RuntimeOptions {
+            allow_dirty: true,
+            skip_ownership_check: true,
+            strict_ownership: false,
+            no_verify: false,
+            max_attempts: 2,
+            base_delay: Duration::from_millis(0),
+            max_delay: Duration::from_millis(0),
+            verify_timeout: Duration::from_millis(20),
+            verify_poll_interval: Duration::from_millis(1),
+            state_dir,
+            force_resume: false,
+            policy: crate::types::PublishPolicy::default(),
+            verify_mode: crate::types::VerifyMode::default(),
+            readiness: ReadinessConfig {
+                enabled: true,
+                method: crate::types::ReadinessMethod::Api,
+                initial_delay: Duration::from_millis(0),
+                max_delay: Duration::from_millis(20),
+                max_total_wait: Duration::from_millis(200),
+                poll_interval: Duration::from_millis(1),
+                jitter_factor: 0.0,
+                index_path: None,
+                prefer_index: false,
+            },
+            output_lines: 100,
+            force: false,
+            lock_timeout: Duration::from_secs(3600),
+            parallel: crate::types::ParallelConfig {
+                enabled: true,
+                max_concurrent: 4,
+                per_package_timeout: Duration::from_secs(60),
+            },
+        }
+    }
+
+    fn init_state_for_package(
+        plan_id: &str,
+        registry: &Registry,
+        pkg_name: &str,
+        pkg_version: &str,
+    ) -> ExecutionState {
+        let key = engine::pkg_key(pkg_name, pkg_version);
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            key,
+            PackageProgress {
+                name: pkg_name.to_string(),
+                version: pkg_version.to_string(),
+                attempts: 0,
+                state: PackageState::Pending,
+                last_updated_at: Utc::now(),
+            },
+        );
+        ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: plan_id.to_string(),
+            registry: registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_publish_package_skips_already_published() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let _cargo_bin = EnvGuard::set(
+            "SHIPPER_CARGO_BIN",
+            fake_cargo_path(&bin).to_str().expect("utf8"),
+        );
+
+        // Registry returns 200 for version_exists (already published)
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(200, "{}".to_string())],
+            )]),
+            1,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let opts = default_opts(PathBuf::from(".shipper"));
+        let state_dir = td.path().join(".shipper");
+        let st = Arc::new(Mutex::new(init_state_for_package(
+            &ws.plan.plan_id,
+            &ws.plan.registry,
+            "demo",
+            "0.1.0",
+        )));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        let result = publish_package(
+            &ws.plan.packages[0],
+            &ws,
+            &opts,
+            &reg,
+            &st,
+            &state_dir,
+            &event_log,
+            &events_path,
+            &reporter,
+        );
+
+        let receipt = result.result.expect("should succeed");
+        assert!(matches!(receipt.state, PackageState::Skipped { .. }));
+        assert_eq!(receipt.attempts, 0);
+
+        // State should be updated to Skipped
+        let state = st.lock().unwrap();
+        let progress = state.packages.get("demo@0.1.0").expect("pkg");
+        assert!(matches!(progress.state, PackageState::Skipped { .. }));
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_publish_package_publishes_successfully() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let _cargo_bin = EnvGuard::set(
+            "SHIPPER_CARGO_BIN",
+            fake_cargo_path(&bin).to_str().expect("utf8"),
+        );
+        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "0");
+
+        // version_exists returns 404 (not published), then readiness returns 200
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(404, "{}".to_string()), (200, "{}".to_string())],
+            )]),
+            2,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let opts = default_opts(PathBuf::from(".shipper"));
+        let state_dir = td.path().join(".shipper");
+        let st = Arc::new(Mutex::new(init_state_for_package(
+            &ws.plan.plan_id,
+            &ws.plan.registry,
+            "demo",
+            "0.1.0",
+        )));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        let result = publish_package(
+            &ws.plan.packages[0],
+            &ws,
+            &opts,
+            &reg,
+            &st,
+            &state_dir,
+            &event_log,
+            &events_path,
+            &reporter,
+        );
+
+        let receipt = result.result.expect("should succeed");
+        assert!(matches!(receipt.state, PackageState::Published));
+        assert!(receipt.attempts >= 1);
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_publish_package_handles_permanent_failure() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let _cargo_bin = EnvGuard::set(
+            "SHIPPER_CARGO_BIN",
+            fake_cargo_path(&bin).to_str().expect("utf8"),
+        );
+        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "1");
+        let _cargo_err = EnvGuard::set("SHIPPER_CARGO_STDERR", "permission denied");
+
+        // version_exists returns 404 both times (initial + after failure check)
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(404, "{}".to_string()), (404, "{}".to_string())],
+            )]),
+            2,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let opts = default_opts(PathBuf::from(".shipper"));
+        let state_dir = td.path().join(".shipper");
+        let st = Arc::new(Mutex::new(init_state_for_package(
+            &ws.plan.plan_id,
+            &ws.plan.registry,
+            "demo",
+            "0.1.0",
+        )));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        let result = publish_package(
+            &ws.plan.packages[0],
+            &ws,
+            &opts,
+            &reg,
+            &st,
+            &state_dir,
+            &event_log,
+            &events_path,
+            &reporter,
+        );
+
+        assert!(result.result.is_err());
+        let err_msg = format!("{:#}", result.result.unwrap_err());
+        assert!(err_msg.contains("permanent failure"));
+
+        // State should be updated to Failed
+        let state = st.lock().unwrap();
+        let progress = state.packages.get("demo@0.1.0").expect("pkg");
+        assert!(matches!(
+            progress.state,
+            PackageState::Failed {
+                class: ErrorClass::Permanent,
+                ..
+            }
+        ));
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_publish_package_retries_on_transient() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let _cargo_bin = EnvGuard::set(
+            "SHIPPER_CARGO_BIN",
+            fake_cargo_path(&bin).to_str().expect("utf8"),
+        );
+        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "1");
+        let _cargo_err = EnvGuard::set("SHIPPER_CARGO_STDERR", "timeout talking to server");
+
+        // version_exists: 404 (initial), 404 (after failure), 200 (found after retry)
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![
+                    (404, "{}".to_string()),
+                    (404, "{}".to_string()),
+                    (200, "{}".to_string()),
+                ],
+            )]),
+            3,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.max_attempts = 2;
+        let state_dir = td.path().join(".shipper");
+        let st = Arc::new(Mutex::new(init_state_for_package(
+            &ws.plan.plan_id,
+            &ws.plan.registry,
+            "demo",
+            "0.1.0",
+        )));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        let result = publish_package(
+            &ws.plan.packages[0],
+            &ws,
+            &opts,
+            &reg,
+            &st,
+            &state_dir,
+            &event_log,
+            &events_path,
+            &reporter,
+        );
+
+        // Should succeed because final registry check found the version
+        let receipt = result.result.expect("should succeed");
+        assert!(matches!(receipt.state, PackageState::Published));
+        assert_eq!(receipt.attempts, 2);
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_run_publish_level_processes_packages() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let _cargo_bin = EnvGuard::set(
+            "SHIPPER_CARGO_BIN",
+            fake_cargo_path(&bin).to_str().expect("utf8"),
+        );
+
+        // Two packages, both already published
+        let server = spawn_registry_server(
+            BTreeMap::from([
+                (
+                    "/api/v1/crates/alpha/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/beta/0.2.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+            ]),
+            2,
+        );
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-level".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: vec![
+                    PlannedPackage {
+                        name: "alpha".to_string(),
+                        version: "0.1.0".to_string(),
+                        manifest_path: td.path().join("alpha").join("Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "beta".to_string(),
+                        version: "0.2.0".to_string(),
+                        manifest_path: td.path().join("beta").join("Cargo.toml"),
+                    },
+                ],
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let opts = default_opts(PathBuf::from(".shipper"));
+        let state_dir = td.path().join(".shipper");
+        let mut packages = BTreeMap::new();
+        for p in &ws.plan.packages {
+            packages.insert(
+                engine::pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let st = Arc::new(Mutex::new(ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
+        }));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        let level = PublishLevel {
+            level: 0,
+            packages: ws.plan.packages.clone(),
+        };
+
+        let receipts = run_publish_level(
+            &level,
+            &ws,
+            &opts,
+            &reg,
+            &st,
+            &state_dir,
+            &event_log,
+            &events_path,
+            &reporter,
+        )
+        .expect("level publish");
+
+        assert_eq!(receipts.len(), 2);
+        for r in &receipts {
+            assert!(matches!(r.state, PackageState::Skipped { .. }));
+        }
+        server.join();
+    }
+
+    #[test]
+    fn test_update_state_locked_sets_state() {
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: "plan-test".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::from([(
+                "demo@0.1.0".to_string(),
+                PackageProgress {
+                    name: "demo".to_string(),
+                    version: "0.1.0".to_string(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            )]),
+        };
+
+        let before = st.updated_at;
+        // Small sleep to ensure timestamp differs
+        std::thread::sleep(Duration::from_millis(2));
+
+        update_state_locked(&mut st, "demo@0.1.0", PackageState::Published);
+
+        let progress = st.packages.get("demo@0.1.0").expect("pkg");
+        assert!(matches!(progress.state, PackageState::Published));
+        assert!(st.updated_at >= before);
+    }
+}
