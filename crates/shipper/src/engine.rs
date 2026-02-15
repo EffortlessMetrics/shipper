@@ -403,11 +403,15 @@ pub fn run_publish(
             event_log.write_to_file(&events_path)?;
             event_log.clear();
 
+            let progress = st
+                .packages
+                .get(&key)
+                .context("missing package progress in state for skipped package")?;
             receipts.push(PackageReceipt {
                 name: p.name.clone(),
                 version: p.version.clone(),
-                attempts: st.packages.get(&key).unwrap().attempts,
-                state: st.packages.get(&key).unwrap().state.clone(),
+                attempts: progress.attempts,
+                state: progress.state.clone(),
                 started_at,
                 finished_at: Utc::now(),
                 duration_ms: start_instant.elapsed().as_millis(),
@@ -421,7 +425,11 @@ pub fn run_publish(
 
         reporter.info(&format!("{}@{}: publishing...", p.name, p.version));
 
-        let mut attempt = st.packages.get(&key).unwrap().attempts;
+        let mut attempt = st
+            .packages
+            .get(&key)
+            .context("missing package progress in state for publish")?
+            .attempts;
         let mut last_err: Option<(ErrorClass, String)> = None;
         let mut attempt_evidence: Vec<AttemptEvidence> = Vec::new();
         let mut readiness_evidence: Vec<ReadinessEvidence> = Vec::new();
@@ -429,7 +437,10 @@ pub fn run_publish(
         while attempt < opts.max_attempts {
             attempt += 1;
             {
-                let pr = st.packages.get_mut(&key).unwrap();
+                let pr = st
+                    .packages
+                    .get_mut(&key)
+                    .context("missing package progress in state during attempt")?;
                 pr.attempts = attempt;
                 pr.last_updated_at = Utc::now();
                 state::save_state(&state_dir, &st)?;
@@ -610,11 +621,15 @@ pub fn run_publish(
                 event_log.write_to_file(&events_path)?;
                 event_log.clear();
 
+                let progress = st
+                    .packages
+                    .get(&key)
+                    .context("missing package progress in state for failed package")?;
                 receipts.push(PackageReceipt {
                     name: p.name.clone(),
                     version: p.version.clone(),
-                    attempts: st.packages.get(&key).unwrap().attempts,
-                    state: st.packages.get(&key).unwrap().state.clone(),
+                    attempts: progress.attempts,
+                    state: progress.state.clone(),
                     started_at,
                     finished_at,
                     duration_ms,
@@ -627,11 +642,15 @@ pub fn run_publish(
             }
         }
 
+        let progress = st
+            .packages
+            .get(&key)
+            .context("missing package progress in state for completed package")?;
         receipts.push(PackageReceipt {
             name: p.name.clone(),
             version: p.version.clone(),
-            attempts: st.packages.get(&key).unwrap().attempts,
-            state: st.packages.get(&key).unwrap().state.clone(),
+            attempts: progress.attempts,
+            state: progress.state.clone(),
             started_at,
             finished_at,
             duration_ms,

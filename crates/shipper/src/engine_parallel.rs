@@ -21,8 +21,6 @@ use crate::plan::PlannedWorkspace;
 /// Result of publishing a single package (for parallel execution)
 #[derive(Debug)]
 struct PackagePublishResult {
-    #[allow(dead_code)]
-    package: PlannedPackage,
     result: anyhow::Result<PackageReceipt>,
 }
 
@@ -93,7 +91,6 @@ fn publish_package(
         }
 
         return PackagePublishResult {
-            package: p.clone(),
             result: Ok(PackageReceipt {
                 name: p.name.clone(),
                 version: p.version.clone(),
@@ -174,10 +171,7 @@ fn publish_package(
                         p.name, p.version, e
                     ));
                 }
-                return PackagePublishResult {
-                    package: p.clone(),
-                    result: Err(e),
-                };
+                return PackagePublishResult { result: Err(e) };
             }
         };
 
@@ -315,7 +309,6 @@ fn publish_package(
                     }
 
                     return PackagePublishResult {
-                        package: p.clone(),
                         result: Err(anyhow::anyhow!(
                             "{}@{}: permanent failure: {}",
                             p.name,
@@ -354,7 +347,6 @@ fn publish_package(
             }
 
             return PackagePublishResult {
-                package: p.clone(),
                 result: Ok(PackageReceipt {
                     name: p.name.clone(),
                     version: p.version.clone(),
@@ -401,14 +393,12 @@ fn publish_package(
             }
 
             return PackagePublishResult {
-                package: p.clone(),
                 result: Err(anyhow::anyhow!("{}@{}: failed: {}", p.name, p.version, msg)),
             };
         }
     }
 
     PackagePublishResult {
-        package: p.clone(),
         result: Ok(PackageReceipt {
             name: p.name.clone(),
             version: p.version.clone(),
