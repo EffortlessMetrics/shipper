@@ -146,7 +146,6 @@ fn cargo_program() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -154,32 +153,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-
-    struct EnvGuard {
-        key: String,
-        old: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &str, value: &str) -> Self {
-            let old = env::var(key).ok();
-            unsafe { env::set_var(key, value) };
-            Self {
-                key: key.to_string(),
-                old,
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.old {
-                unsafe { env::set_var(&self.key, v) };
-            } else {
-                unsafe { env::remove_var(&self.key) };
-            }
-        }
-    }
 
     fn write_fake_cargo(bin_dir: &Path) -> PathBuf {
         #[cfg(windows)]
@@ -217,35 +190,42 @@ mod tests {
         let bin = td.path().join("bin");
         fs::create_dir_all(&bin).expect("mkdir");
         let fake_cargo = write_fake_cargo(&bin);
-        let _program = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo.to_str().expect("fake cargo utf8"),
-        );
 
         let args_log = td.path().join("args.txt");
         let cwd_log = td.path().join("cwd.txt");
-        let _a = EnvGuard::set("SHIPPER_ARGS_LOG", args_log.to_str().expect("utf8"));
-        let _b = EnvGuard::set("SHIPPER_CWD_LOG", cwd_log.to_str().expect("utf8"));
-        let _c = EnvGuard::set("SHIPPER_EXIT_CODE", "7");
 
         let ws = td.path().join("workspace");
         fs::create_dir_all(&ws).expect("mkdir ws");
 
-        let out = cargo_publish(&ws, "my-crate", "private-reg", true, true, 50).expect("publish");
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo.to_str().expect("fake cargo utf8")),
+                ),
+                ("SHIPPER_ARGS_LOG", Some(args_log.to_str().expect("utf8"))),
+                ("SHIPPER_CWD_LOG", Some(cwd_log.to_str().expect("utf8"))),
+                ("SHIPPER_EXIT_CODE", Some("7")),
+            ],
+            || {
+                let out =
+                    cargo_publish(&ws, "my-crate", "private-reg", true, true, 50).expect("publish");
 
-        assert_eq!(out.exit_code, 7);
-        assert!(out.stdout_tail.contains("fake-stdout"));
-        assert!(out.stderr_tail.contains("fake-stderr"));
+                assert_eq!(out.exit_code, 7);
+                assert!(out.stdout_tail.contains("fake-stdout"));
+                assert!(out.stderr_tail.contains("fake-stderr"));
 
-        let args = fs::read_to_string(args_log).expect("args");
-        assert!(args.contains("publish"));
-        assert!(args.contains("-p my-crate"));
-        assert!(args.contains("--registry private-reg"));
-        assert!(args.contains("--allow-dirty"));
-        assert!(args.contains("--no-verify"));
+                let args = fs::read_to_string(&args_log).expect("args");
+                assert!(args.contains("publish"));
+                assert!(args.contains("-p my-crate"));
+                assert!(args.contains("--registry private-reg"));
+                assert!(args.contains("--allow-dirty"));
+                assert!(args.contains("--no-verify"));
 
-        let cwd = fs::read_to_string(cwd_log).expect("cwd");
-        assert!(cwd.trim_end().ends_with("workspace"));
+                let cwd = fs::read_to_string(&cwd_log).expect("cwd");
+                assert!(cwd.trim_end().ends_with("workspace"));
+            },
+        );
     }
 
     #[test]
@@ -255,26 +235,33 @@ mod tests {
         let bin = td.path().join("bin");
         fs::create_dir_all(&bin).expect("mkdir");
         let fake_cargo = write_fake_cargo(&bin);
-        let _program = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo.to_str().expect("fake cargo utf8"),
-        );
 
         let args_log = td.path().join("args.txt");
         let cwd_log = td.path().join("cwd.txt");
-        let _a = EnvGuard::set("SHIPPER_ARGS_LOG", args_log.to_str().expect("utf8"));
-        let _b = EnvGuard::set("SHIPPER_CWD_LOG", cwd_log.to_str().expect("utf8"));
-        let _c = EnvGuard::set("SHIPPER_EXIT_CODE", "0");
 
         let ws = td.path().join("workspace");
         fs::create_dir_all(&ws).expect("mkdir ws");
 
-        let _ = cargo_publish(&ws, "my-crate", "crates-io", false, false, 50).expect("publish");
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo.to_str().expect("fake cargo utf8")),
+                ),
+                ("SHIPPER_ARGS_LOG", Some(args_log.to_str().expect("utf8"))),
+                ("SHIPPER_CWD_LOG", Some(cwd_log.to_str().expect("utf8"))),
+                ("SHIPPER_EXIT_CODE", Some("0")),
+            ],
+            || {
+                let _ =
+                    cargo_publish(&ws, "my-crate", "crates-io", false, false, 50).expect("publish");
 
-        let args = fs::read_to_string(args_log).expect("args");
-        assert!(!args.contains("--registry"));
-        assert!(!args.contains("--allow-dirty"));
-        assert!(!args.contains("--no-verify"));
+                let args = fs::read_to_string(&args_log).expect("args");
+                assert!(!args.contains("--registry"));
+                assert!(!args.contains("--allow-dirty"));
+                assert!(!args.contains("--no-verify"));
+            },
+        );
     }
 
     #[test]
@@ -282,11 +269,16 @@ mod tests {
     fn cargo_publish_errors_when_command_missing() {
         let td = tempdir().expect("tempdir");
         let missing = td.path().join("does-not-exist-cargo");
-        let _program = EnvGuard::set("SHIPPER_CARGO_BIN", missing.to_str().expect("utf8"));
 
-        let err =
-            cargo_publish(td.path(), "x", "crates-io", false, false, 50).expect_err("must fail");
-        assert!(format!("{err:#}").contains("failed to execute cargo publish"));
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(missing.to_str().expect("utf8")),
+            || {
+                let err = cargo_publish(td.path(), "x", "crates-io", false, false, 50)
+                    .expect_err("must fail");
+                assert!(format!("{err:#}").contains("failed to execute cargo publish"));
+            },
+        );
     }
 
     #[test]
@@ -296,47 +288,35 @@ mod tests {
         let bin = td.path().join("bin");
         fs::create_dir_all(&bin).expect("mkdir");
         let fake_cargo = write_fake_cargo(&bin);
-        let _program = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo.to_str().expect("fake cargo utf8"),
-        );
 
         let args_log = td.path().join("args.txt");
         let cwd_log = td.path().join("cwd.txt");
-        let _a = EnvGuard::set("SHIPPER_ARGS_LOG", args_log.to_str().expect("utf8"));
-        let _b = EnvGuard::set("SHIPPER_CWD_LOG", cwd_log.to_str().expect("utf8"));
-        let _c = EnvGuard::set("SHIPPER_EXIT_CODE", "0");
 
         let ws = td.path().join("workspace");
         fs::create_dir_all(&ws).expect("mkdir ws");
 
-        let out = cargo_publish_dry_run_package(&ws, "my-crate", "private-reg", true, 50)
-            .expect("dry-run");
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo.to_str().expect("fake cargo utf8")),
+                ),
+                ("SHIPPER_ARGS_LOG", Some(args_log.to_str().expect("utf8"))),
+                ("SHIPPER_CWD_LOG", Some(cwd_log.to_str().expect("utf8"))),
+                ("SHIPPER_EXIT_CODE", Some("0")),
+            ],
+            || {
+                let out = cargo_publish_dry_run_package(&ws, "my-crate", "private-reg", true, 50)
+                    .expect("dry-run");
 
-        assert_eq!(out.exit_code, 0);
-        let args = fs::read_to_string(args_log).expect("args");
-        assert!(args.contains("publish"));
-        assert!(args.contains("-p my-crate"));
-        assert!(args.contains("--dry-run"));
-        assert!(args.contains("--registry private-reg"));
-        assert!(args.contains("--allow-dirty"));
-    }
-
-    #[test]
-    #[serial]
-    fn env_guard_restores_existing_value() {
-        unsafe { env::set_var("SHIPPER_TMP_TEST_KEY", "old") };
-        {
-            let _guard = EnvGuard::set("SHIPPER_TMP_TEST_KEY", "new");
-            assert_eq!(
-                env::var("SHIPPER_TMP_TEST_KEY").expect("present"),
-                "new".to_string()
-            );
-        }
-        assert_eq!(
-            env::var("SHIPPER_TMP_TEST_KEY").expect("present"),
-            "old".to_string()
+                assert_eq!(out.exit_code, 0);
+                let args = fs::read_to_string(&args_log).expect("args");
+                assert!(args.contains("publish"));
+                assert!(args.contains("-p my-crate"));
+                assert!(args.contains("--dry-run"));
+                assert!(args.contains("--registry private-reg"));
+                assert!(args.contains("--allow-dirty"));
+            },
         );
-        unsafe { env::remove_var("SHIPPER_TMP_TEST_KEY") };
     }
 }

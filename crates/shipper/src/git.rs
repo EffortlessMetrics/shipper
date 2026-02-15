@@ -144,7 +144,6 @@ fn git_program() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -152,32 +151,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-
-    struct EnvGuard {
-        key: String,
-        old: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &str, value: &str) -> Self {
-            let old = env::var(key).ok();
-            unsafe { env::set_var(key, value) };
-            Self {
-                key: key.to_string(),
-                old,
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.old {
-                unsafe { env::set_var(&self.key, v) };
-            } else {
-                unsafe { env::remove_var(&self.key) };
-            }
-        }
-    }
 
     fn write_fake_git(bin_dir: &Path) -> PathBuf {
         #[cfg(windows)]
@@ -215,11 +188,17 @@ mod tests {
         let bin = td.path().join("bin");
         fs::create_dir_all(&bin).expect("mkdir");
         let fake_git = write_fake_git(&bin);
-        let _program = EnvGuard::set("SHIPPER_GIT_BIN", fake_git.to_str().expect("utf8"));
-        let _mode = EnvGuard::set("SHIPPER_GIT_MODE", "clean");
 
-        let ok = is_git_clean(td.path()).expect("git clean");
-        assert!(ok);
+        temp_env::with_vars(
+            [
+                ("SHIPPER_GIT_BIN", Some(fake_git.to_str().expect("utf8"))),
+                ("SHIPPER_GIT_MODE", Some("clean")),
+            ],
+            || {
+                let ok = is_git_clean(td.path()).expect("git clean");
+                assert!(ok);
+            },
+        );
     }
 
     #[test]
@@ -229,11 +208,17 @@ mod tests {
         let bin = td.path().join("bin");
         fs::create_dir_all(&bin).expect("mkdir");
         let fake_git = write_fake_git(&bin);
-        let _program = EnvGuard::set("SHIPPER_GIT_BIN", fake_git.to_str().expect("utf8"));
-        let _mode = EnvGuard::set("SHIPPER_GIT_MODE", "dirty");
 
-        let ok = is_git_clean(td.path()).expect("git clean");
-        assert!(!ok);
+        temp_env::with_vars(
+            [
+                ("SHIPPER_GIT_BIN", Some(fake_git.to_str().expect("utf8"))),
+                ("SHIPPER_GIT_MODE", Some("dirty")),
+            ],
+            || {
+                let ok = is_git_clean(td.path()).expect("git clean");
+                assert!(!ok);
+            },
+        );
     }
 
     #[test]
@@ -243,11 +228,17 @@ mod tests {
         let bin = td.path().join("bin");
         fs::create_dir_all(&bin).expect("mkdir");
         let fake_git = write_fake_git(&bin);
-        let _program = EnvGuard::set("SHIPPER_GIT_BIN", fake_git.to_str().expect("utf8"));
-        let _mode = EnvGuard::set("SHIPPER_GIT_MODE", "fail");
 
-        let err = is_git_clean(td.path()).expect_err("must fail");
-        assert!(format!("{err:#}").contains("git status failed"));
+        temp_env::with_vars(
+            [
+                ("SHIPPER_GIT_BIN", Some(fake_git.to_str().expect("utf8"))),
+                ("SHIPPER_GIT_MODE", Some("fail")),
+            ],
+            || {
+                let err = is_git_clean(td.path()).expect_err("must fail");
+                assert!(format!("{err:#}").contains("git status failed"));
+            },
+        );
     }
 
     #[test]
@@ -257,29 +248,17 @@ mod tests {
         let bin = td.path().join("bin");
         fs::create_dir_all(&bin).expect("mkdir");
         let fake_git = write_fake_git(&bin);
-        let _program = EnvGuard::set("SHIPPER_GIT_BIN", fake_git.to_str().expect("utf8"));
-        let _mode = EnvGuard::set("SHIPPER_GIT_MODE", "dirty");
 
-        let err = ensure_git_clean(td.path()).expect_err("must fail");
-        assert!(format!("{err:#}").contains("git working tree is not clean"));
-    }
-
-    #[test]
-    #[serial]
-    fn env_guard_restores_existing_value() {
-        unsafe { env::set_var("SHIPPER_GIT_TMP_TEST", "old") };
-        {
-            let _guard = EnvGuard::set("SHIPPER_GIT_TMP_TEST", "new");
-            assert_eq!(
-                env::var("SHIPPER_GIT_TMP_TEST").expect("present"),
-                "new".to_string()
-            );
-        }
-        assert_eq!(
-            env::var("SHIPPER_GIT_TMP_TEST").expect("present"),
-            "old".to_string()
+        temp_env::with_vars(
+            [
+                ("SHIPPER_GIT_BIN", Some(fake_git.to_str().expect("utf8"))),
+                ("SHIPPER_GIT_MODE", Some("dirty")),
+            ],
+            || {
+                let err = ensure_git_clean(td.path()).expect_err("must fail");
+                assert!(format!("{err:#}").contains("git working tree is not clean"));
+            },
         );
-        unsafe { env::remove_var("SHIPPER_GIT_TMP_TEST") };
     }
 
     #[test]
@@ -289,11 +268,17 @@ mod tests {
         let bin = td.path().join("bin");
         fs::create_dir_all(&bin).expect("mkdir");
         let fake_git = write_fake_git(&bin);
-        let _program = EnvGuard::set("SHIPPER_GIT_BIN", fake_git.to_str().expect("utf8"));
-        let _mode = EnvGuard::set("SHIPPER_GIT_MODE", "fail");
 
-        let context = collect_git_context();
-        assert!(context.is_none());
+        temp_env::with_vars(
+            [
+                ("SHIPPER_GIT_BIN", Some(fake_git.to_str().expect("utf8"))),
+                ("SHIPPER_GIT_MODE", Some("fail")),
+            ],
+            || {
+                let context = collect_git_context();
+                assert!(context.is_none());
+            },
+        );
     }
 
     #[test]
@@ -329,21 +314,22 @@ mod tests {
             fs::set_permissions(&path, perms).expect("chmod");
         }
 
-        let _program = EnvGuard::set(
-            "SHIPPER_GIT_BIN",
-            bin.join(if cfg!(windows) { "git.cmd" } else { "git" })
-                .to_str()
-                .expect("utf8"),
-        );
+        let git_bin_path = bin
+            .join(if cfg!(windows) { "git.cmd" } else { "git" })
+            .to_str()
+            .expect("utf8")
+            .to_string();
 
-        let context = collect_git_context();
-        assert!(context.is_some());
+        temp_env::with_var("SHIPPER_GIT_BIN", Some(&git_bin_path), || {
+            let context = collect_git_context();
+            assert!(context.is_some());
 
-        let ctx = context.unwrap();
-        assert_eq!(ctx.commit, Some("abc123def456".to_string()));
-        assert_eq!(ctx.branch, Some("main".to_string()));
-        assert_eq!(ctx.tag, None);
-        assert_eq!(ctx.dirty, Some(false));
+            let ctx = context.unwrap();
+            assert_eq!(ctx.commit, Some("abc123def456".to_string()));
+            assert_eq!(ctx.branch, Some("main".to_string()));
+            assert_eq!(ctx.tag, None);
+            assert_eq!(ctx.dirty, Some(false));
+        });
     }
 
     #[test]
@@ -379,21 +365,22 @@ mod tests {
             fs::set_permissions(&path, perms).expect("chmod");
         }
 
-        let _program = EnvGuard::set(
-            "SHIPPER_GIT_BIN",
-            bin.join(if cfg!(windows) { "git.cmd" } else { "git" })
-                .to_str()
-                .expect("utf8"),
-        );
+        let git_bin_path = bin
+            .join(if cfg!(windows) { "git.cmd" } else { "git" })
+            .to_str()
+            .expect("utf8")
+            .to_string();
 
-        let context = collect_git_context();
-        assert!(context.is_some());
+        temp_env::with_var("SHIPPER_GIT_BIN", Some(&git_bin_path), || {
+            let context = collect_git_context();
+            assert!(context.is_some());
 
-        let ctx = context.unwrap();
-        assert_eq!(ctx.commit, Some("abc123def456".to_string()));
-        assert_eq!(ctx.branch, Some("main".to_string()));
-        assert_eq!(ctx.tag, None);
-        assert_eq!(ctx.dirty, Some(true));
+            let ctx = context.unwrap();
+            assert_eq!(ctx.commit, Some("abc123def456".to_string()));
+            assert_eq!(ctx.branch, Some("main".to_string()));
+            assert_eq!(ctx.tag, None);
+            assert_eq!(ctx.dirty, Some(true));
+        });
     }
 
     #[test]
@@ -429,21 +416,22 @@ mod tests {
             fs::set_permissions(&path, perms).expect("chmod");
         }
 
-        let _program = EnvGuard::set(
-            "SHIPPER_GIT_BIN",
-            bin.join(if cfg!(windows) { "git.cmd" } else { "git" })
-                .to_str()
-                .expect("utf8"),
-        );
+        let git_bin_path = bin
+            .join(if cfg!(windows) { "git.cmd" } else { "git" })
+            .to_str()
+            .expect("utf8")
+            .to_string();
 
-        let context = collect_git_context();
-        assert!(context.is_some());
+        temp_env::with_var("SHIPPER_GIT_BIN", Some(&git_bin_path), || {
+            let context = collect_git_context();
+            assert!(context.is_some());
 
-        let ctx = context.unwrap();
-        assert_eq!(ctx.commit, Some("abc123def456".to_string()));
-        assert_eq!(ctx.branch, Some("main".to_string()));
-        assert_eq!(ctx.tag, Some("v1.0.0".to_string()));
-        assert_eq!(ctx.dirty, Some(false));
+            let ctx = context.unwrap();
+            assert_eq!(ctx.commit, Some("abc123def456".to_string()));
+            assert_eq!(ctx.branch, Some("main".to_string()));
+            assert_eq!(ctx.tag, Some("v1.0.0".to_string()));
+            assert_eq!(ctx.dirty, Some(false));
+        });
     }
 
     #[test]
@@ -479,22 +467,23 @@ mod tests {
             fs::set_permissions(&path, perms).expect("chmod");
         }
 
-        let _program = EnvGuard::set(
-            "SHIPPER_GIT_BIN",
-            bin.join(if cfg!(windows) { "git.cmd" } else { "git" })
-                .to_str()
-                .expect("utf8"),
-        );
+        let git_bin_path = bin
+            .join(if cfg!(windows) { "git.cmd" } else { "git" })
+            .to_str()
+            .expect("utf8")
+            .to_string();
 
-        let context = collect_git_context();
-        assert!(context.is_some());
+        temp_env::with_var("SHIPPER_GIT_BIN", Some(&git_bin_path), || {
+            let context = collect_git_context();
+            assert!(context.is_some());
 
-        let ctx = context.unwrap();
-        assert_eq!(ctx.commit, Some("abc123def456".to_string()));
-        // Branch should be None for detached HEAD
-        assert_eq!(ctx.branch, None);
-        assert_eq!(ctx.tag, None);
-        assert_eq!(ctx.dirty, Some(false));
+            let ctx = context.unwrap();
+            assert_eq!(ctx.commit, Some("abc123def456".to_string()));
+            // Branch should be None for detached HEAD
+            assert_eq!(ctx.branch, None);
+            assert_eq!(ctx.tag, None);
+            assert_eq!(ctx.dirty, Some(false));
+        });
     }
 
     #[test]
@@ -530,21 +519,22 @@ mod tests {
             fs::set_permissions(&path, perms).expect("chmod");
         }
 
-        let _program = EnvGuard::set(
-            "SHIPPER_GIT_BIN",
-            bin.join(if cfg!(windows) { "git.cmd" } else { "git" })
-                .to_str()
-                .expect("utf8"),
-        );
+        let git_bin_path = bin
+            .join(if cfg!(windows) { "git.cmd" } else { "git" })
+            .to_str()
+            .expect("utf8")
+            .to_string();
 
-        let context = collect_git_context();
-        assert!(context.is_some());
+        temp_env::with_var("SHIPPER_GIT_BIN", Some(&git_bin_path), || {
+            let context = collect_git_context();
+            assert!(context.is_some());
 
-        let ctx = context.unwrap();
-        // Commit should be None when git rev-parse fails
-        assert_eq!(ctx.commit, None);
-        assert_eq!(ctx.branch, Some("main".to_string()));
-        assert_eq!(ctx.tag, None);
-        assert_eq!(ctx.dirty, Some(false));
+            let ctx = context.unwrap();
+            // Commit should be None when git rev-parse fails
+            assert_eq!(ctx.commit, None);
+            assert_eq!(ctx.branch, Some("main".to_string()));
+            assert_eq!(ctx.tag, None);
+            assert_eq!(ctx.dirty, Some(false));
+        });
     }
 }

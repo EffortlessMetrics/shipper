@@ -599,7 +599,6 @@ pub fn run_publish_parallel(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::env;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -634,33 +633,6 @@ mod tests {
 
         fn error(&mut self, msg: &str) {
             self.errors.push(msg.to_string());
-        }
-    }
-
-    #[derive(Clone)]
-    struct EnvGuard {
-        key: String,
-        old: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &str, value: &str) -> Self {
-            let old = env::var(key).ok();
-            unsafe { env::set_var(key, value) };
-            Self {
-                key: key.to_string(),
-                old,
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.old {
-                unsafe { env::set_var(&self.key, v) };
-            } else {
-                unsafe { env::remove_var(&self.key) };
-            }
         }
     }
 
@@ -846,10 +818,6 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
-        let _cargo_bin = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo_path(&bin).to_str().expect("utf8"),
-        );
 
         // Registry returns 200 for version_exists (already published)
         let server = spawn_registry_server(
@@ -875,26 +843,32 @@ mod tests {
         let reporter: Arc<Mutex<dyn Reporter + Send>> =
             Arc::new(Mutex::new(CollectingReporter::default()));
 
-        let result = publish_package(
-            &ws.plan.packages[0],
-            &ws,
-            &opts,
-            &reg,
-            &st,
-            &state_dir,
-            &event_log,
-            &events_path,
-            &reporter,
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+
+                let receipt = result.result.expect("should succeed");
+                assert!(matches!(receipt.state, PackageState::Skipped { .. }));
+                assert_eq!(receipt.attempts, 0);
+
+                // State should be updated to Skipped
+                let state = st.lock().unwrap();
+                let progress = state.packages.get("demo@0.1.0").expect("pkg");
+                assert!(matches!(progress.state, PackageState::Skipped { .. }));
+            },
         );
-
-        let receipt = result.result.expect("should succeed");
-        assert!(matches!(receipt.state, PackageState::Skipped { .. }));
-        assert_eq!(receipt.attempts, 0);
-
-        // State should be updated to Skipped
-        let state = st.lock().unwrap();
-        let progress = state.packages.get("demo@0.1.0").expect("pkg");
-        assert!(matches!(progress.state, PackageState::Skipped { .. }));
         server.join();
     }
 
@@ -904,11 +878,6 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
-        let _cargo_bin = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo_path(&bin).to_str().expect("utf8"),
-        );
-        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "0");
 
         // version_exists returns 404 (not published), then readiness returns 200
         let server = spawn_registry_server(
@@ -934,21 +903,32 @@ mod tests {
         let reporter: Arc<Mutex<dyn Reporter + Send>> =
             Arc::new(Mutex::new(CollectingReporter::default()));
 
-        let result = publish_package(
-            &ws.plan.packages[0],
-            &ws,
-            &opts,
-            &reg,
-            &st,
-            &state_dir,
-            &event_log,
-            &events_path,
-            &reporter,
-        );
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+                ),
+                ("SHIPPER_CARGO_EXIT", Some("0")),
+            ],
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
 
-        let receipt = result.result.expect("should succeed");
-        assert!(matches!(receipt.state, PackageState::Published));
-        assert!(receipt.attempts >= 1);
+                let receipt = result.result.expect("should succeed");
+                assert!(matches!(receipt.state, PackageState::Published));
+                assert!(receipt.attempts >= 1);
+            },
+        );
         server.join();
     }
 
@@ -958,12 +938,6 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
-        let _cargo_bin = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo_path(&bin).to_str().expect("utf8"),
-        );
-        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "1");
-        let _cargo_err = EnvGuard::set("SHIPPER_CARGO_STDERR", "permission denied");
 
         // version_exists returns 404 both times (initial + after failure check)
         let server = spawn_registry_server(
@@ -989,32 +963,44 @@ mod tests {
         let reporter: Arc<Mutex<dyn Reporter + Send>> =
             Arc::new(Mutex::new(CollectingReporter::default()));
 
-        let result = publish_package(
-            &ws.plan.packages[0],
-            &ws,
-            &opts,
-            &reg,
-            &st,
-            &state_dir,
-            &event_log,
-            &events_path,
-            &reporter,
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+                ),
+                ("SHIPPER_CARGO_EXIT", Some("1")),
+                ("SHIPPER_CARGO_STDERR", Some("permission denied")),
+            ],
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+
+                assert!(result.result.is_err());
+                let err_msg = format!("{:#}", result.result.unwrap_err());
+                assert!(err_msg.contains("permanent failure"));
+
+                // State should be updated to Failed
+                let state = st.lock().unwrap();
+                let progress = state.packages.get("demo@0.1.0").expect("pkg");
+                assert!(matches!(
+                    progress.state,
+                    PackageState::Failed {
+                        class: ErrorClass::Permanent,
+                        ..
+                    }
+                ));
+            },
         );
-
-        assert!(result.result.is_err());
-        let err_msg = format!("{:#}", result.result.unwrap_err());
-        assert!(err_msg.contains("permanent failure"));
-
-        // State should be updated to Failed
-        let state = st.lock().unwrap();
-        let progress = state.packages.get("demo@0.1.0").expect("pkg");
-        assert!(matches!(
-            progress.state,
-            PackageState::Failed {
-                class: ErrorClass::Permanent,
-                ..
-            }
-        ));
         server.join();
     }
 
@@ -1024,12 +1010,6 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
-        let _cargo_bin = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo_path(&bin).to_str().expect("utf8"),
-        );
-        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "1");
-        let _cargo_err = EnvGuard::set("SHIPPER_CARGO_STDERR", "timeout talking to server");
 
         // version_exists: 404 (initial), 404 (after failure), 200 (found after retry)
         let server = spawn_registry_server(
@@ -1060,22 +1040,34 @@ mod tests {
         let reporter: Arc<Mutex<dyn Reporter + Send>> =
             Arc::new(Mutex::new(CollectingReporter::default()));
 
-        let result = publish_package(
-            &ws.plan.packages[0],
-            &ws,
-            &opts,
-            &reg,
-            &st,
-            &state_dir,
-            &event_log,
-            &events_path,
-            &reporter,
-        );
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+                ),
+                ("SHIPPER_CARGO_EXIT", Some("1")),
+                ("SHIPPER_CARGO_STDERR", Some("timeout talking to server")),
+            ],
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
 
-        // Should succeed because final registry check found the version
-        let receipt = result.result.expect("should succeed");
-        assert!(matches!(receipt.state, PackageState::Published));
-        assert_eq!(receipt.attempts, 2);
+                // Should succeed because final registry check found the version
+                let receipt = result.result.expect("should succeed");
+                assert!(matches!(receipt.state, PackageState::Published));
+                assert_eq!(receipt.attempts, 2);
+            },
+        );
         server.join();
     }
 
@@ -1085,10 +1077,6 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
-        let _cargo_bin = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo_path(&bin).to_str().expect("utf8"),
-        );
 
         // Two packages, both already published
         let server = spawn_registry_server(
@@ -1167,23 +1155,29 @@ mod tests {
             packages: ws.plan.packages.clone(),
         };
 
-        let receipts = run_publish_level(
-            &level,
-            &ws,
-            &opts,
-            &reg,
-            &st,
-            &state_dir,
-            &event_log,
-            &events_path,
-            &reporter,
-        )
-        .expect("level publish");
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts = run_publish_level(
+                    &level,
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                )
+                .expect("level publish");
 
-        assert_eq!(receipts.len(), 2);
-        for r in &receipts {
-            assert!(matches!(r.state, PackageState::Skipped { .. }));
-        }
+                assert_eq!(receipts.len(), 2);
+                for r in &receipts {
+                    assert!(matches!(r.state, PackageState::Skipped { .. }));
+                }
+            },
+        );
         server.join();
     }
 
