@@ -89,23 +89,57 @@ pub fn run_preflight(
         None
     };
 
-    // Run workspace dry-run (skipped by policy/flag)
-    let dry_run_passed = if effects.run_dry_run {
-        reporter.info("running workspace dry-run verification...");
-        let dry_run_result = cargo::cargo_publish_dry_run_workspace(
-            workspace_root,
-            &ws.plan.registry.name,
-            opts.allow_dirty,
-            opts.output_lines,
-        );
-        match &dry_run_result {
-            Ok(output) => output.exit_code == 0,
-            Err(_) => false,
-        }
-    } else {
-        reporter.info("skipping dry-run (policy or --no-verify)");
-        true
-    };
+    // Run dry-run verification based on VerifyMode and policy
+    use crate::types::VerifyMode;
+
+    // Workspace-level dry-run result (used for Workspace mode)
+    let workspace_dry_run_passed =
+        if effects.run_dry_run && opts.verify_mode == VerifyMode::Workspace {
+            reporter.info("running workspace dry-run verification...");
+            let dry_run_result = cargo::cargo_publish_dry_run_workspace(
+                workspace_root,
+                &ws.plan.registry.name,
+                opts.allow_dirty,
+                opts.output_lines,
+            );
+            match &dry_run_result {
+                Ok(output) => output.exit_code == 0,
+                Err(_) => false,
+            }
+        } else if !effects.run_dry_run || opts.verify_mode == VerifyMode::None {
+            reporter.info("skipping dry-run (policy, --no-verify, or verify_mode=none)");
+            true
+        } else {
+            // Package mode — handled per-package below
+            true
+        };
+
+    // Per-package dry-run results (used for Package mode)
+    let per_package_dry_run: std::collections::BTreeMap<String, bool> =
+        if effects.run_dry_run && opts.verify_mode == VerifyMode::Package {
+            reporter.info("running per-package dry-run verification...");
+            let mut results = std::collections::BTreeMap::new();
+            for p in &ws.plan.packages {
+                let result = cargo::cargo_publish_dry_run_package(
+                    workspace_root,
+                    &p.name,
+                    &ws.plan.registry.name,
+                    opts.allow_dirty,
+                    opts.output_lines,
+                );
+                let passed = match &result {
+                    Ok(output) => output.exit_code == 0,
+                    Err(_) => false,
+                };
+                if !passed {
+                    reporter.warn(&format!("{}@{}: dry-run failed", p.name, p.version));
+                }
+                results.insert(p.name.clone(), passed);
+            }
+            results
+        } else {
+            std::collections::BTreeMap::new()
+        };
 
     // Check each package
     reporter.info("checking packages against registry...");
@@ -115,6 +149,13 @@ pub fn run_preflight(
     for p in &ws.plan.packages {
         let already_published = reg.version_exists(&p.name, &p.version)?;
         let is_new_crate = reg.check_new_crate(&p.name)?;
+
+        // Determine dry-run result for this package
+        let dry_run_passed = if opts.verify_mode == VerifyMode::Package {
+            *per_package_dry_run.get(&p.name).unwrap_or(&true)
+        } else {
+            workspace_dry_run_passed
+        };
 
         // Ownership verification (best-effort), gated by policy
         let ownership_verified = if token_detected && effects.check_ownership {
@@ -154,8 +195,11 @@ pub fn run_preflight(
         });
     }
 
+    // For finishability: all packages must pass dry-run
+    let all_dry_run_passed = packages.iter().all(|p| p.dry_run_passed);
+
     // Determine finishability
-    let finishability = if !dry_run_passed {
+    let finishability = if !all_dry_run_passed {
         Finishability::Failed
     } else if any_ownership_unverified {
         Finishability::NotProven
@@ -2430,6 +2474,86 @@ mod tests {
         assert!(report.packages[0].dry_run_passed);
         assert!(report.packages[0].ownership_verified);
         assert_eq!(report.finishability, Finishability::Proven);
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_verify_mode_none_skips_dry_run() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let (_cargo_bin, _git_bin) = configure_fake_programs(&bin);
+        // Set cargo to fail — if dry-run ran, it would fail
+        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "1");
+
+        let server = spawn_registry_server(
+            std::collections::BTreeMap::from([
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+            ]),
+            2,
+        );
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.verify_mode = crate::types::VerifyMode::None;
+
+        let mut reporter = CollectingReporter::default();
+        let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+        // dry_run_passed is true because verify_mode=None skips it
+        assert!(report.packages[0].dry_run_passed);
+        assert!(
+            reporter
+                .infos
+                .iter()
+                .any(|i| i.contains("skipping dry-run"))
+        );
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_verify_mode_package_runs_per_package() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let (_cargo_bin, _git_bin) = configure_fake_programs(&bin);
+        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "0");
+
+        let server = spawn_registry_server(
+            std::collections::BTreeMap::from([
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+            ]),
+            2,
+        );
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.verify_mode = crate::types::VerifyMode::Package;
+
+        let mut reporter = CollectingReporter::default();
+        let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+        assert!(report.packages[0].dry_run_passed);
+        assert!(
+            reporter
+                .infos
+                .iter()
+                .any(|i| i.contains("per-package dry-run"))
+        );
         server.join();
     }
 }

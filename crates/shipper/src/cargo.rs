@@ -101,6 +101,45 @@ pub fn cargo_publish_dry_run_workspace(
     })
 }
 
+pub fn cargo_publish_dry_run_package(
+    workspace_root: &Path,
+    package_name: &str,
+    registry_name: &str,
+    allow_dirty: bool,
+    output_lines: usize,
+) -> Result<CargoOutput> {
+    let start = Instant::now();
+    let mut cmd = Command::new(cargo_program());
+    cmd.arg("publish")
+        .arg("-p")
+        .arg(package_name)
+        .arg("--dry-run");
+
+    if !registry_name.trim().is_empty() && registry_name != "crates-io" {
+        cmd.arg("--registry").arg(registry_name);
+    }
+
+    if allow_dirty {
+        cmd.arg("--allow-dirty");
+    }
+
+    let out = cmd.current_dir(workspace_root).output().with_context(|| {
+        format!("failed to execute cargo publish --dry-run -p {package_name}; is Cargo installed?")
+    })?;
+
+    let duration = start.elapsed();
+    let exit_code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    Ok(CargoOutput {
+        exit_code,
+        stdout_tail: tail_lines(&stdout, output_lines),
+        stderr_tail: tail_lines(&stderr, output_lines),
+        duration,
+    })
+}
+
 fn cargo_program() -> String {
     env::var("SHIPPER_CARGO_BIN").unwrap_or_else(|_| "cargo".to_string())
 }
@@ -248,6 +287,39 @@ mod tests {
         let err =
             cargo_publish(td.path(), "x", "crates-io", false, false, 50).expect_err("must fail");
         assert!(format!("{err:#}").contains("failed to execute cargo publish"));
+    }
+
+    #[test]
+    #[serial]
+    fn cargo_publish_dry_run_package_passes_flags() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        fs::create_dir_all(&bin).expect("mkdir");
+        let fake_cargo = write_fake_cargo(&bin);
+        let _program = EnvGuard::set(
+            "SHIPPER_CARGO_BIN",
+            fake_cargo.to_str().expect("fake cargo utf8"),
+        );
+
+        let args_log = td.path().join("args.txt");
+        let cwd_log = td.path().join("cwd.txt");
+        let _a = EnvGuard::set("SHIPPER_ARGS_LOG", args_log.to_str().expect("utf8"));
+        let _b = EnvGuard::set("SHIPPER_CWD_LOG", cwd_log.to_str().expect("utf8"));
+        let _c = EnvGuard::set("SHIPPER_EXIT_CODE", "0");
+
+        let ws = td.path().join("workspace");
+        fs::create_dir_all(&ws).expect("mkdir ws");
+
+        let out = cargo_publish_dry_run_package(&ws, "my-crate", "private-reg", true, 50)
+            .expect("dry-run");
+
+        assert_eq!(out.exit_code, 0);
+        let args = fs::read_to_string(args_log).expect("args");
+        assert!(args.contains("publish"));
+        assert!(args.contains("-p my-crate"));
+        assert!(args.contains("--dry-run"));
+        assert!(args.contains("--registry private-reg"));
+        assert!(args.contains("--allow-dirty"));
     }
 
     #[test]
