@@ -116,8 +116,20 @@ struct Cli {
     #[arg(long, default_value = "workspace")]
     verify_mode: String,
 
+    /// Enable parallel publishing (packages at the same dependency level are published concurrently)
+    #[arg(long)]
+    parallel: bool,
+
+    /// Maximum number of concurrent publish operations (implies --parallel)
+    #[arg(long)]
+    max_concurrent: Option<usize>,
+
+    /// Timeout per package publish operation when using parallel mode (e.g. 30m, 1h)
+    #[arg(long)]
+    per_package_timeout: Option<String>,
+
     /// Output format: text (default) or json
-    #[arg(long, default_value = "text")]
+    #[arg(long, default_value = "text", global = true)]
     format: String,
 
     #[command(subcommand)]
@@ -159,8 +171,10 @@ enum Commands {
 #[derive(Subcommand, Debug)]
 enum CiCommands {
     /// Print GitHub Actions workflow snippet.
+    #[command(name = "github-actions")]
     GitHubActions,
     /// Print GitLab CI workflow snippet.
+    #[command(name = "gitlab")]
     GitLab,
 }
 
@@ -263,9 +277,14 @@ fn main() -> Result<()> {
         },
         output_lines: cli.output_lines,
         parallel: shipper::types::ParallelConfig {
-            enabled: false,
-            max_concurrent: 4,
-            per_package_timeout: Duration::from_secs(1800),
+            enabled: cli.parallel || cli.max_concurrent.is_some(),
+            max_concurrent: cli.max_concurrent.unwrap_or(4),
+            per_package_timeout: cli
+                .per_package_timeout
+                .as_deref()
+                .map(parse_duration)
+                .transpose()?
+                .unwrap_or(Duration::from_secs(1800)),
         },
     };
 
@@ -314,7 +333,7 @@ fn main() -> Result<()> {
             run_inspect_events(&planned, &opts)?;
         }
         Commands::InspectReceipt => {
-            run_inspect_receipt(&planned, &opts)?;
+            run_inspect_receipt(&planned, &opts, &cli.format)?;
         }
         Commands::Ci(ci_cmd) => {
             run_ci(ci_cmd, &cli.state_dir, &planned.workspace_root)?;
@@ -604,7 +623,11 @@ fn run_inspect_events(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Res
     Ok(())
 }
 
-fn run_inspect_receipt(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Result<()> {
+fn run_inspect_receipt(
+    ws: &plan::PlannedWorkspace,
+    opts: &RuntimeOptions,
+    format: &str,
+) -> Result<()> {
     let state_dir = if opts.state_dir.is_absolute() {
         opts.state_dir.clone()
     } else {
@@ -617,6 +640,12 @@ fn run_inspect_receipt(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Re
 
     let receipt: shipper::types::Receipt = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse receipt from {}", receipt_path.display()))?;
+
+    if format == "json" {
+        let json = serde_json::to_string_pretty(&receipt).expect("serialize receipt");
+        println!("{}", json);
+        return Ok(());
+    }
 
     // Display receipt in human-readable format
     println!("Receipt");

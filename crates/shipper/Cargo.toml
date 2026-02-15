@@ -3,6 +3,13 @@ name = "shipper"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+description = "A publishing reliability layer for Rust workspaces"
+documentation = "https://docs.rs/shipper"
+homepage = "https://github.com/EffortlessMetrics/shipper"
+repository = "https://github.com/EffortlessMetrics/shipper"
+keywords = ["cargo", "publish", "workspace", "registry", "ci"]
+categories = ["development-tools::cargo-plugins"]
 
 [dependencies]
 anyhow = "1.0.101"

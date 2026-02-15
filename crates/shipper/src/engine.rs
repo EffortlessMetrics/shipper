@@ -9,13 +9,16 @@ use chrono::Utc;
 use crate::auth;
 use crate::cargo;
 use crate::environment;
+use crate::events;
 use crate::git;
+use crate::lock;
 use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
 use crate::state;
 use crate::types::{
-    AuthType, ErrorClass, ExecutionState, Finishability, PackageProgress, PackageReceipt,
-    PackageState, PreflightPackage, PreflightReport, Receipt, RuntimeOptions,
+    AttemptEvidence, AuthType, ErrorClass, EventType, ExecutionResult, ExecutionState,
+    Finishability, PackageProgress, PackageReceipt, PackageState, PreflightPackage,
+    PreflightReport, PublishEvent, ReadinessEvidence, Receipt, RuntimeOptions,
 };
 
 pub trait Reporter {
@@ -150,6 +153,16 @@ pub fn run_publish(
     let workspace_root = &ws.workspace_root;
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
 
+    // Acquire lock
+    let lock_timeout = if opts.force {
+        Duration::ZERO
+    } else {
+        opts.lock_timeout
+    };
+    let _lock = lock::LockFile::acquire_with_timeout(&state_dir, lock_timeout)
+        .context("failed to acquire publish lock")?;
+    _lock.set_plan_id(&ws.plan.plan_id)?;
+
     // Collect git context and environment fingerprint at start of execution
     let git_context = git::collect_git_context();
     let environment = environment::collect_environment_fingerprint();
@@ -159,6 +172,10 @@ pub fn run_publish(
     }
 
     let reg = RegistryClient::new(ws.plan.registry.clone())?;
+
+    // Initialize event log
+    let events_path = events::events_path(&state_dir);
+    let mut event_log = events::EventLog::new();
 
     // Load existing state (if any), or initialize.
     let mut st = match state::load_state(&state_dir)? {
@@ -183,6 +200,24 @@ pub fn run_publish(
     let mut receipts: Vec<PackageReceipt> = Vec::new();
     let run_started = Utc::now();
 
+    // Event: ExecutionStarted
+    event_log.record(PublishEvent {
+        timestamp: run_started,
+        event_type: EventType::ExecutionStarted,
+        package: "all".to_string(),
+    });
+    // Event: PlanCreated
+    event_log.record(PublishEvent {
+        timestamp: run_started,
+        event_type: EventType::PlanCreated {
+            plan_id: ws.plan.plan_id.clone(),
+            package_count: ws.plan.packages.len(),
+        },
+        package: "all".to_string(),
+    });
+    event_log.write_to_file(&events_path)?;
+    event_log.clear();
+
     // Ensure we have entries for all packages in plan.
     for p in &ws.plan.packages {
         let key = pkg_key(&p.name, &p.version);
@@ -197,8 +232,51 @@ pub fn run_publish(
     st.updated_at = Utc::now();
     state::save_state(&state_dir, &st)?;
 
+    // Check for parallel mode
+    if opts.parallel.enabled {
+        let parallel_receipts = crate::engine_parallel::run_publish_parallel(
+            ws, opts, &mut st, &state_dir, &reg, reporter,
+        )?;
+
+        // Event: ExecutionFinished
+        let exec_result = if parallel_receipts.iter().all(|r| {
+            matches!(
+                r.state,
+                PackageState::Published | PackageState::Skipped { .. }
+            )
+        }) {
+            ExecutionResult::Success
+        } else {
+            ExecutionResult::PartialFailure
+        };
+        event_log.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::ExecutionFinished {
+                result: exec_result,
+            },
+            package: "all".to_string(),
+        });
+        event_log.write_to_file(&events_path)?;
+
+        let receipt = Receipt {
+            receipt_version: "shipper.receipt.v2".to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            started_at: run_started,
+            finished_at: Utc::now(),
+            packages: parallel_receipts,
+            event_log_path: state_dir.join("events.jsonl"),
+            git_context,
+            environment,
+        };
+
+        state::write_receipt(&state_dir, &receipt)?;
+        return Ok(receipt);
+    }
+
     for p in &ws.plan.packages {
         let key = pkg_key(&p.name, &p.version);
+        let pkg_label = format!("{}@{}", p.name, p.version);
         let progress = st
             .packages
             .get(&key)
@@ -218,6 +296,16 @@ pub fn run_publish(
             _ => {}
         }
 
+        // Event: PackageStarted
+        event_log.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::PackageStarted {
+                name: p.name.clone(),
+                version: p.version.clone(),
+            },
+            package: pkg_label.clone(),
+        });
+
         let started_at = Utc::now();
         let start_instant = Instant::now();
 
@@ -231,6 +319,18 @@ pub fn run_publish(
                 reason: "already published".into(),
             };
             update_state(&mut st, &state_dir, &key, skipped)?;
+
+            // Event: PackageSkipped
+            event_log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::PackageSkipped {
+                    reason: "already published".to_string(),
+                },
+                package: pkg_label.clone(),
+            });
+            event_log.write_to_file(&events_path)?;
+            event_log.clear();
+
             receipts.push(PackageReceipt {
                 name: p.name.clone(),
                 version: p.version.clone(),
@@ -251,6 +351,8 @@ pub fn run_publish(
 
         let mut attempt = st.packages.get(&key).unwrap().attempts;
         let mut last_err: Option<(ErrorClass, String)> = None;
+        let mut attempt_evidence: Vec<AttemptEvidence> = Vec::new();
+        let mut readiness_evidence: Vec<ReadinessEvidence> = Vec::new();
 
         while attempt < opts.max_attempts {
             attempt += 1;
@@ -261,10 +363,25 @@ pub fn run_publish(
                 state::save_state(&state_dir, &st)?;
             }
 
+            let command = format!(
+                "cargo publish -p {} --registry {}",
+                p.name, ws.plan.registry.name
+            );
+
             reporter.info(&format!(
                 "{}@{}: attempt {}/{}",
                 p.name, p.version, attempt, opts.max_attempts
             ));
+
+            // Event: PackageAttempted
+            event_log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::PackageAttempted {
+                    attempt,
+                    command: command.clone(),
+                },
+                package: pkg_label.clone(),
+            });
 
             let out = cargo::cargo_publish(
                 workspace_root,
@@ -275,6 +392,27 @@ pub fn run_publish(
                 opts.output_lines,
             )?;
 
+            // Collect attempt evidence
+            attempt_evidence.push(AttemptEvidence {
+                attempt_number: attempt,
+                command: command.clone(),
+                exit_code: out.exit_code,
+                stdout_tail: out.stdout_tail.clone(),
+                stderr_tail: out.stderr_tail.clone(),
+                timestamp: Utc::now(),
+                duration: out.duration,
+            });
+
+            // Event: PackageOutput
+            event_log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::PackageOutput {
+                    stdout_tail: out.stdout_tail.clone(),
+                    stderr_tail: out.stderr_tail.clone(),
+                },
+                package: pkg_label.clone(),
+            });
+
             let success = out.exit_code == 0;
 
             if success {
@@ -282,17 +420,24 @@ pub fn run_publish(
                     "{}@{}: cargo publish exited successfully; verifying...",
                     p.name, p.version
                 ));
-                let visible = verify_published(
-                    &reg,
-                    &p.name,
-                    &p.version,
-                    opts.verify_timeout,
-                    opts.verify_poll_interval,
-                    reporter,
-                )?;
+                let (visible, checks) =
+                    verify_published(&reg, &p.name, &p.version, &opts.readiness, reporter)?;
+                readiness_evidence = checks;
                 if visible {
                     update_state(&mut st, &state_dir, &key, PackageState::Published)?;
                     last_err = None;
+
+                    // Event: PackagePublished
+                    event_log.record(PublishEvent {
+                        timestamp: Utc::now(),
+                        event_type: EventType::PackagePublished {
+                            duration_ms: start_instant.elapsed().as_millis() as u64,
+                        },
+                        package: pkg_label.clone(),
+                    });
+                    event_log.write_to_file(&events_path)?;
+                    event_log.clear();
+
                     break;
                 } else {
                     // Cargo itself may warn if the index isn't updated yet. Shipper extends the wait,
@@ -323,10 +468,23 @@ pub fn run_publish(
                 match class {
                     ErrorClass::Permanent => {
                         let failed = PackageState::Failed {
-                            class,
-                            message: msg,
+                            class: class.clone(),
+                            message: msg.clone(),
                         };
                         update_state(&mut st, &state_dir, &key, failed)?;
+
+                        // Event: PackageFailed
+                        event_log.record(PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::PackageFailed {
+                                class,
+                                message: msg,
+                            },
+                            package: pkg_label.clone(),
+                        });
+                        event_log.write_to_file(&events_path)?;
+                        event_log.clear();
+
                         return Err(anyhow::anyhow!(
                             "{}@{}: permanent failure: {}",
                             p.name,
@@ -363,6 +521,19 @@ pub fn run_publish(
                     message: msg.clone(),
                 };
                 update_state(&mut st, &state_dir, &key, failed)?;
+
+                // Event: PackageFailed
+                event_log.record(PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type: EventType::PackageFailed {
+                        class,
+                        message: msg.clone(),
+                    },
+                    package: pkg_label.clone(),
+                });
+                event_log.write_to_file(&events_path)?;
+                event_log.clear();
+
                 receipts.push(PackageReceipt {
                     name: p.name.clone(),
                     version: p.version.clone(),
@@ -372,8 +543,8 @@ pub fn run_publish(
                     finished_at,
                     duration_ms,
                     evidence: crate::types::PackageEvidence {
-                        attempts: vec![],
-                        readiness_checks: vec![],
+                        attempts: attempt_evidence,
+                        readiness_checks: readiness_evidence,
                     },
                 });
                 return Err(anyhow::anyhow!("{}@{}: failed: {}", p.name, p.version, msg));
@@ -389,11 +560,31 @@ pub fn run_publish(
             finished_at,
             duration_ms,
             evidence: crate::types::PackageEvidence {
-                attempts: vec![],
-                readiness_checks: vec![],
+                attempts: attempt_evidence,
+                readiness_checks: readiness_evidence,
             },
         });
     }
+
+    // Event: ExecutionFinished
+    let exec_result = if receipts.iter().all(|r| {
+        matches!(
+            r.state,
+            PackageState::Published | PackageState::Skipped { .. }
+        )
+    }) {
+        ExecutionResult::Success
+    } else {
+        ExecutionResult::PartialFailure
+    };
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ExecutionFinished {
+            result: exec_result,
+        },
+        package: "all".to_string(),
+    });
+    event_log.write_to_file(&events_path)?;
 
     let receipt = Receipt {
         receipt_version: "shipper.receipt.v2".to_string(),
@@ -428,7 +619,7 @@ pub fn run_resume(
     run_publish(ws, opts, reporter)
 }
 
-fn init_state(ws: &PlannedWorkspace, state_dir: &Path) -> Result<ExecutionState> {
+pub(crate) fn init_state(ws: &PlannedWorkspace, state_dir: &Path) -> Result<ExecutionState> {
     let mut packages: BTreeMap<String, PackageProgress> = BTreeMap::new();
     for p in &ws.plan.packages {
         packages.insert(
@@ -472,7 +663,7 @@ fn update_state(
     state::save_state(state_dir, st)
 }
 
-fn resolve_state_dir(workspace_root: &Path, state_dir: &PathBuf) -> PathBuf {
+pub(crate) fn resolve_state_dir(workspace_root: &Path, state_dir: &PathBuf) -> PathBuf {
     if state_dir.is_absolute() {
         state_dir.clone()
     } else {
@@ -480,11 +671,11 @@ fn resolve_state_dir(workspace_root: &Path, state_dir: &PathBuf) -> PathBuf {
     }
 }
 
-fn pkg_key(name: &str, version: &str) -> String {
+pub(crate) fn pkg_key(name: &str, version: &str) -> String {
     format!("{}@{}", name, version)
 }
 
-fn short_state(st: &PackageState) -> &'static str {
+pub(crate) fn short_state(st: &PackageState) -> &'static str {
     match st {
         PackageState::Pending => "pending",
         PackageState::Published => "published",
@@ -498,27 +689,33 @@ fn verify_published(
     reg: &RegistryClient,
     crate_name: &str,
     version: &str,
-    timeout: Duration,
-    poll: Duration,
+    config: &crate::types::ReadinessConfig,
     reporter: &mut dyn Reporter,
-) -> Result<bool> {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if reg.version_exists(crate_name, version)? {
-            return Ok(true);
-        }
+) -> Result<(bool, Vec<ReadinessEvidence>)> {
+    reporter.info(&format!(
+        "{}@{}: readiness check ({:?})...",
+        crate_name, version, config.method
+    ));
+    let (visible, evidence) = reg.is_version_visible_with_backoff(crate_name, version, config)?;
+    if visible {
         reporter.info(&format!(
-            "{}@{}: not visible yet; waiting {}",
+            "{}@{}: visible after {} checks",
             crate_name,
             version,
-            humantime::format_duration(poll)
+            evidence.len()
         ));
-        thread::sleep(poll);
+    } else {
+        reporter.warn(&format!(
+            "{}@{}: not visible after {} checks",
+            crate_name,
+            version,
+            evidence.len()
+        ));
     }
-    Ok(false)
+    Ok((visible, evidence))
 }
 
-fn classify_cargo_failure(stderr: &str, stdout: &str) -> (ErrorClass, String) {
+pub(crate) fn classify_cargo_failure(stderr: &str, stdout: &str) -> (ErrorClass, String) {
     let hay = format!("{}\n{}", stderr, stdout).to_lowercase();
 
     // Retryable: backpressure and transient network failures.
@@ -583,7 +780,7 @@ fn classify_cargo_failure(stderr: &str, stdout: &str) -> (ErrorClass, String) {
     )
 }
 
-fn backoff_delay(base: Duration, max: Duration, attempt: u32) -> Duration {
+pub(crate) fn backoff_delay(base: Duration, max: Duration, attempt: u32) -> Duration {
     let pow = attempt.saturating_sub(1).min(16);
     let mut delay = base.saturating_mul(2_u32.saturating_pow(pow));
     if delay > max {
@@ -861,7 +1058,17 @@ mod tests {
             force_resume: false,
             policy: crate::types::PublishPolicy::default(),
             verify_mode: crate::types::VerifyMode::default(),
-            readiness: crate::types::ReadinessConfig::default(),
+            readiness: crate::types::ReadinessConfig {
+                enabled: true,
+                method: crate::types::ReadinessMethod::Api,
+                initial_delay: Duration::from_millis(0),
+                max_delay: Duration::from_millis(20),
+                max_total_wait: Duration::from_millis(200),
+                poll_interval: Duration::from_millis(1),
+                jitter_factor: 0.0,
+                index_path: None,
+                prefer_index: false,
+            },
             output_lines: 100,
             force: false,
             lock_timeout: Duration::from_secs(3600),
@@ -960,18 +1167,24 @@ mod tests {
         })
         .expect("client");
 
+        let config = crate::types::ReadinessConfig {
+            enabled: true,
+            method: crate::types::ReadinessMethod::Api,
+            initial_delay: Duration::from_millis(0),
+            max_delay: Duration::from_millis(50),
+            max_total_wait: Duration::from_millis(500),
+            poll_interval: Duration::from_millis(1),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
         let mut reporter = CollectingReporter::default();
-        let ok = verify_published(
-            &reg,
-            "demo",
-            "0.1.0",
-            Duration::from_millis(500),
-            Duration::from_millis(1),
-            &mut reporter,
-        )
-        .expect("verify");
+        let (ok, evidence) =
+            verify_published(&reg, "demo", "0.1.0", &config, &mut reporter).expect("verify");
         assert!(ok);
         assert!(!reporter.infos.is_empty());
+        assert!(!evidence.is_empty());
         server.join();
     }
 
@@ -984,16 +1197,21 @@ mod tests {
         })
         .expect("client");
 
+        let config = crate::types::ReadinessConfig {
+            enabled: true,
+            method: crate::types::ReadinessMethod::Api,
+            initial_delay: Duration::from_millis(0),
+            max_delay: Duration::from_millis(10),
+            max_total_wait: Duration::from_millis(0),
+            poll_interval: Duration::from_millis(1),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
         let mut reporter = CollectingReporter::default();
-        let ok = verify_published(
-            &reg,
-            "demo",
-            "0.1.0",
-            Duration::from_millis(0),
-            Duration::from_millis(1),
-            &mut reporter,
-        )
-        .expect("verify");
+        let (ok, _evidence) =
+            verify_published(&reg, "demo", "0.1.0", &config, &mut reporter).expect("verify");
         assert!(!ok);
     }
 
@@ -1350,7 +1568,10 @@ mod tests {
 
     #[test]
     #[serial]
-    fn run_publish_errors_when_verify_check_returns_unexpected_status() {
+    fn run_publish_treats_500_as_not_visible_during_readiness() {
+        // With the readiness-driven verify, 500 errors are treated as "not visible"
+        // (graceful degradation). The publish succeeds via cargo but readiness times out,
+        // leading to an ambiguous failure on the final registry check.
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
@@ -1360,18 +1581,22 @@ mod tests {
         let server = spawn_registry_server(
             std::collections::BTreeMap::from([(
                 "/api/v1/crates/demo/0.1.0".to_string(),
-                vec![(404, "{}".to_string()), (500, "{}".to_string())],
+                vec![
+                    (404, "{}".to_string()),
+                    (500, "{}".to_string()),
+                    (404, "{}".to_string()),
+                ],
             )]),
-            2,
+            3,
         );
         let ws = planned_workspace(td.path(), server.base_url.clone());
         let mut opts = default_opts(PathBuf::from(".shipper"));
-        opts.verify_timeout = Duration::from_millis(200);
-        opts.verify_poll_interval = Duration::from_millis(1);
+        opts.max_attempts = 1;
+        opts.readiness.max_total_wait = Duration::from_millis(0);
 
         let mut reporter = CollectingReporter::default();
         let err = run_publish(&ws, &opts, &mut reporter).expect_err("must fail");
-        assert!(format!("{err:#}").contains("unexpected status while checking version existence"));
+        assert!(format!("{err:#}").contains("failed"));
         server.join();
     }
 
@@ -1512,18 +1737,18 @@ mod tests {
         let (_cargo_bin, _git_bin) = configure_fake_programs(&bin);
         let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "0");
 
+        // 3 requests: initial version_exists, readiness check, final chance check
         let server = spawn_registry_server(
             std::collections::BTreeMap::from([(
                 "/api/v1/crates/demo/0.1.0".to_string(),
                 vec![(404, "{}".to_string()), (404, "{}".to_string())],
             )]),
-            2,
+            3,
         );
         let ws = planned_workspace(td.path(), server.base_url.clone());
         let mut opts = default_opts(PathBuf::from(".shipper"));
         opts.max_attempts = 1;
-        opts.verify_timeout = Duration::from_millis(0);
-        opts.verify_poll_interval = Duration::from_millis(0);
+        opts.readiness.max_total_wait = Duration::from_millis(0);
 
         let mut reporter = CollectingReporter::default();
         let err = run_publish(&ws, &opts, &mut reporter).expect_err("must fail");
@@ -1562,8 +1787,7 @@ mod tests {
         let ws = planned_workspace(td.path(), server.base_url.clone());
         let mut opts = default_opts(PathBuf::from(".shipper"));
         opts.max_attempts = 1;
-        opts.verify_timeout = Duration::from_millis(0);
-        opts.verify_poll_interval = Duration::from_millis(0);
+        opts.readiness.max_total_wait = Duration::from_millis(0);
 
         let mut reporter = CollectingReporter::default();
         let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");

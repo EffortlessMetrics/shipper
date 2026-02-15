@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2024-02-10
+## [0.2.0] - 2026-02-14
 
 ### Added
 
@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced receipt format with embedded evidence
 - Schema versioning for state, plan, and receipt files
 
+#### Parallel Publishing
+
+- **Parallel publishing**: Packages at the same dependency level can now be published concurrently with `--parallel`
+- New CLI flags: `--parallel`, `--max-concurrent <N>`, `--per-package-timeout <duration>`
+- Configurable via `[parallel]` section in `.shipper.toml`
+
 ### Changed
 
 - Improved error messages with context and evidence references
@@ -84,7 +90,7 @@ If you're upgrading from v0.1.0:
 3. **Review readiness settings**: The default readiness timeout has increased; adjust if needed.
 4. **Test publish policies**: Try the different policy modes to find the best fit for your workflow.
 
-## [0.1.0] - 2024-01-XX
+## [0.1.0] - 2025-01-15
 
 ### Added
 

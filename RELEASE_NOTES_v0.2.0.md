@@ -156,6 +156,34 @@ shipper config init
 shipper config validate
 ```
 
+### 10. Parallel Publishing
+
+Publish packages concurrently when they have no dependency relationship:
+
+- **Wave-based execution**: Packages at the same dependency level are published in parallel
+- **Configurable concurrency**: Control max concurrent operations with `--max-concurrent`
+- **Per-package timeouts**: Set individual package timeouts with `--per-package-timeout`
+
+```bash
+# Enable parallel publishing
+shipper publish --parallel
+
+# Limit concurrency
+shipper publish --parallel --max-concurrent 2
+
+# Set per-package timeout
+shipper publish --parallel --per-package-timeout 10m
+```
+
+Or via configuration:
+
+```toml
+[parallel]
+enabled = true
+max_concurrent = 4
+per_package_timeout = "30m"
+```
+
 ## New CLI Commands
 
 ### Inspection Commands
@@ -206,6 +234,12 @@ shipper config validate
 ### Configuration Options
 
 - `--config <path>` - Path to a custom `.shipper.toml` configuration file
+
+### Parallel Options
+
+- `--parallel` - Enable parallel publishing of independent packages
+- `--max-concurrent <N>` - Maximum number of concurrent publish operations
+- `--per-package-timeout <duration>` - Timeout for each individual package publish
 
 ## Migration Guide from v0.1.0
 

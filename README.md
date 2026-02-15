@@ -24,6 +24,7 @@ Shipper is intentionally narrow: it focuses on making publishing **safe to start
 - Captures **evidence** for each operation (stdout, stderr, exit codes).
 - Maintains an **event log** for complete audit trails.
 - Performs **readiness checks** to ensure registry visibility before publishing dependent crates.
+- Supports **parallel publishing** for independent packages within the dependency graph.
 - Supports configurable **publish policies** for different safety levels.
 
 ## What shipper does not do (yet)
@@ -152,6 +153,12 @@ Use `--state-dir <path>` to redirect these elsewhere (for example, a CI artifact
 
 - `--output-lines <number>` — Number of output lines to capture for evidence (default: 50)
 
+### Parallel options
+
+- `--parallel` — Enable parallel publishing (packages at the same dependency level published concurrently)
+- `--max-concurrent <number>` — Maximum concurrent publish operations (default: 4, implies --parallel)
+- `--per-package-timeout <duration>` — Timeout per package in parallel mode (default: 30m)
+
 ### Resume options
 
 - `--force-resume` — Force resume even if the computed plan differs from the state file
@@ -243,6 +250,19 @@ shipper resume
 
 # Force resume if plan has changed
 shipper resume --force-resume
+```
+
+### Parallel publishing
+
+```bash
+# Publish independent packages concurrently
+shipper publish --parallel
+
+# Limit to 2 concurrent operations
+shipper publish --parallel --max-concurrent 2
+
+# With per-package timeout
+shipper publish --parallel --per-package-timeout 10m
 ```
 
 ### Cleaning state files

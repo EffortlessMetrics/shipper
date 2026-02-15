@@ -118,16 +118,28 @@ pub struct ReadinessConfig {
     /// Method for checking version visibility
     pub method: ReadinessMethod,
     /// Initial delay before first poll
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     pub initial_delay: Duration,
     /// Maximum delay between polls (capped)
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     pub max_delay: Duration,
     /// Maximum total time to wait for visibility
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     pub max_total_wait: Duration,
     /// Base poll interval
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     pub poll_interval: Duration,
     /// Jitter factor (±50% means 0.5)
     pub jitter_factor: f64,
@@ -163,7 +175,10 @@ pub struct ParallelConfig {
     /// Maximum number of concurrent publish operations (default: 4)
     pub max_concurrent: usize,
     /// Timeout per package publish operation (default: 30 minutes)
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     pub per_package_timeout: Duration,
 }
 

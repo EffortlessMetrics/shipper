@@ -1,10 +1,11 @@
 use anyhow::{Context, Result, bail};
+use chrono::Utc;
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 
-use crate::types::{ReadinessConfig, ReadinessMethod, Registry};
+use crate::types::{ReadinessConfig, ReadinessEvidence, ReadinessMethod, Registry};
 
 #[derive(Debug, Clone)]
 pub struct RegistryClient {
@@ -215,17 +216,26 @@ impl RegistryClient {
 
     /// Check if a version is visible with exponential backoff and jitter.
     ///
-    /// Returns Ok(true) if the version becomes visible within the timeout,
-    /// Ok(false) if the timeout is exceeded, or Err on other failures.
+    /// Returns Ok((true, evidence)) if the version becomes visible within the timeout,
+    /// Ok((false, evidence)) if the timeout is exceeded, or Err on other failures.
     pub fn is_version_visible_with_backoff(
         &self,
         crate_name: &str,
         version: &str,
         config: &ReadinessConfig,
-    ) -> Result<bool> {
+    ) -> Result<(bool, Vec<ReadinessEvidence>)> {
+        let mut evidence = Vec::new();
+
         if !config.enabled {
             // If readiness checks are disabled, just check once
-            return self.version_exists(crate_name, version);
+            let visible = self.version_exists(crate_name, version)?;
+            evidence.push(ReadinessEvidence {
+                attempt: 1,
+                visible,
+                timestamp: Utc::now(),
+                delay_before: Duration::ZERO,
+            });
+            return Ok((visible, evidence));
         }
 
         let start = Instant::now();
@@ -239,45 +249,57 @@ impl RegistryClient {
         loop {
             attempt += 1;
 
+            // Calculate delay for this iteration (used for evidence; applied after check)
+            let jittered_delay = if attempt == 1 {
+                Duration::ZERO
+            } else {
+                let base_delay = config.poll_interval;
+                let exponential_delay = base_delay
+                    .saturating_mul(2_u32.saturating_pow(attempt.saturating_sub(2).min(16)));
+                let capped_delay = exponential_delay.min(config.max_delay);
+                let jitter_range = config.jitter_factor;
+                let jitter = 1.0 + (rand::random::<f64>() * 2.0 * jitter_range - jitter_range);
+                Duration::from_millis((capped_delay.as_millis() as f64 * jitter).round() as u64)
+            };
+
             // Check visibility based on method
             // Errors are treated as "not visible" to allow backoff retries
             let visible = match config.method {
-                ReadinessMethod::Api => {
-                    self.version_exists(crate_name, version).unwrap_or(false)
-                }
-                ReadinessMethod::Index => {
-                    self.check_index_visibility(crate_name, version)
-                        .unwrap_or(false)
-                }
+                ReadinessMethod::Api => self.version_exists(crate_name, version).unwrap_or(false),
+                ReadinessMethod::Index => self
+                    .check_index_visibility(crate_name, version)
+                    .unwrap_or(false),
                 ReadinessMethod::Both => {
-                    // Check both API and index
-                    // Try the preferred method first, fall back to the other
                     if config.prefer_index {
-                        // Try index first, fall back to API
                         match self.check_index_visibility(crate_name, version) {
                             Ok(true) => true,
                             _ => self.version_exists(crate_name, version).unwrap_or(false),
                         }
                     } else {
-                        // Try API first, fall back to index
                         match self.version_exists(crate_name, version) {
                             Ok(true) => true,
-                            _ => {
-                                self.check_index_visibility(crate_name, version)
-                                    .unwrap_or(false)
-                            }
+                            _ => self
+                                .check_index_visibility(crate_name, version)
+                                .unwrap_or(false),
                         }
                     }
                 }
             };
 
+            evidence.push(ReadinessEvidence {
+                attempt,
+                visible,
+                timestamp: Utc::now(),
+                delay_before: jittered_delay,
+            });
+
             if visible {
-                return Ok(true);
+                return Ok((true, evidence));
             }
 
             // Check if we've exceeded max total wait
             if start.elapsed() >= config.max_total_wait {
-                return Ok(false);
+                return Ok((false, evidence));
             }
 
             // Calculate next delay with exponential backoff and jitter
@@ -286,14 +308,12 @@ impl RegistryClient {
                 base_delay.saturating_mul(2_u32.saturating_pow(attempt.saturating_sub(1).min(16)));
             let capped_delay = exponential_delay.min(config.max_delay);
 
-            // Apply jitter: delay * (1 ± jitter_factor)
-            // Using rand::random() like the existing backoff_delay function
             let jitter_range = config.jitter_factor;
             let jitter = 1.0 + (rand::random::<f64>() * 2.0 * jitter_range - jitter_range);
-            let jittered_delay =
+            let next_delay =
                 Duration::from_millis((capped_delay.as_millis() as f64 * jitter).round() as u64);
 
-            std::thread::sleep(jittered_delay);
+            std::thread::sleep(next_delay);
         }
     }
 
@@ -588,7 +608,10 @@ mod tests {
 
         let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
         assert!(result.is_ok());
-        assert!(result.unwrap());
+        let (visible, evidence) = result.unwrap();
+        assert!(visible);
+        assert_eq!(evidence.len(), 1);
+        assert!(evidence[0].visible);
         handle.join().expect("join");
     }
 
@@ -820,7 +843,9 @@ mod tests {
 
         let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
         assert!(result.is_ok());
-        assert!(result.unwrap());
+        let (visible, evidence) = result.unwrap();
+        assert!(visible);
+        assert!(!evidence.is_empty());
         handle.join().expect("join");
     }
 
@@ -856,7 +881,9 @@ mod tests {
 
         let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
         assert!(result.is_ok());
-        assert!(result.unwrap());
+        let (visible, evidence) = result.unwrap();
+        assert!(visible);
+        assert!(!evidence.is_empty());
         handle.join().expect("join");
     }
 
@@ -1002,7 +1029,9 @@ mod tests {
 
         let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
         assert!(result.is_ok());
-        assert!(result.unwrap());
+        let (visible, evidence) = result.unwrap();
+        assert!(visible);
+        assert!(!evidence.is_empty());
         handle.join().expect("join");
     }
 
@@ -1033,7 +1062,9 @@ mod tests {
 
         let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
         assert!(result.is_ok());
-        assert!(result.unwrap());
+        let (visible, evidence) = result.unwrap();
+        assert!(visible);
+        assert!(!evidence.is_empty());
         handle.join().expect("join");
     }
 
@@ -1063,7 +1094,10 @@ mod tests {
 
         let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
         assert!(result.is_ok());
-        assert!(!result.unwrap());
+        let (visible, evidence) = result.unwrap();
+        assert!(!visible);
+        assert!(!evidence.is_empty());
+        assert!(evidence.iter().all(|e| !e.visible));
         handle.join().expect("join");
     }
 
@@ -1091,7 +1125,8 @@ mod tests {
 
         let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
         assert!(result.is_ok());
-        assert!(!result.unwrap());
+        let (visible, _evidence) = result.unwrap();
+        assert!(!visible);
     }
 
     #[test]
@@ -1121,8 +1156,11 @@ mod tests {
             prefer_index: false,
         };
 
-        let _result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
+        let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
         let elapsed = start.elapsed();
+        let (visible, evidence) = result.unwrap();
+        assert!(visible);
+        assert!(!evidence.is_empty());
 
         // Should wait at least the initial delay
         assert!(elapsed >= Duration::from_millis(50));

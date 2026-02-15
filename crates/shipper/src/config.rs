@@ -39,12 +39,18 @@ pub struct RetryConfig {
     pub max_attempts: u32,
 
     /// Base backoff delay
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     #[serde(default = "default_base_delay")]
     pub base_delay: Duration,
 
     /// Max backoff delay
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     #[serde(default = "default_max_delay")]
     pub max_delay: Duration,
 }
@@ -61,7 +67,10 @@ pub struct OutputConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LockConfig {
     /// Lock timeout duration
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     #[serde(default = "default_lock_timeout")]
     pub timeout: Duration,
 }

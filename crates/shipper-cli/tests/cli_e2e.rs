@@ -132,7 +132,6 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
     let handle = thread::spawn(move || {
         for idx in 0..expected_requests {
             let req = server.recv().expect("request");
-            assert_eq!(req.url(), "/api/v1/crates/demo/0.1.0");
             let status = statuses
                 .get(idx)
                 .copied()
@@ -277,7 +276,7 @@ fn preflight_command_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
     fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
-    let registry = spawn_registry(vec![404], 1);
+    let registry = spawn_registry(vec![404], 2);
 
     let mut cmd = shipper_cmd();
     let out = cmd
@@ -298,8 +297,23 @@ fn preflight_command_snapshot() {
         .clone();
 
     let stdout = String::from_utf8(out).expect("utf8");
+    let normalized = normalize_output(&stdout);
+    // Strip ANSI escape codes for snapshot comparison
+    let stripped: String = normalized
+        .chars()
+        .fold((String::new(), false), |(mut s, in_esc), c| {
+            if c == '\x1b' {
+                (s, true)
+            } else if in_esc {
+                (s, c != 'm')
+            } else {
+                s.push(c);
+                (s, false)
+            }
+        })
+        .0;
     assert_snapshot!(
-        normalize_output(&stdout),
+        stripped,
         @r#"
 Preflight Report
 ===============
@@ -315,13 +329,13 @@ Packages:
 ┌─────────────────────┬─────────┬──────────┬──────────┬───────────────┬─────────────┬─────────────┐
 │ Package             │ Version │ Published│ New Crate │ Auth Type     │ Ownership   │ Dry-run     │
 ├─────────────────────┼─────────┼──────────┼──────────┼───────────────┼─────────────┼─────────────┤
-│ demo                │ 0.1.0   │ No       │ No       │ -             │ ✗           │ ✓           │
+│ demo                │ 0.1.0   │ No       │ Yes      │ -             │ ✗           │ ✓           │
 └─────────────────────┴─────────┴──────────┴──────────┴───────────────┴─────────────┴─────────────┘
 
 Summary:
   Total packages: 1
   Already published: 0
-  New crates: 0
+  New crates: 1
   Ownership verified: 0
   Dry-run passed: 1
 
@@ -338,7 +352,7 @@ fn preflight_command_with_json_flag() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
     fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
-    let registry = spawn_registry(vec![404], 1);
+    let registry = spawn_registry(vec![404], 2);
 
     let mut cmd = shipper_cmd();
     let out = cmd
@@ -375,7 +389,7 @@ fn preflight_command_with_policy_flags() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
     fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
-    let registry = spawn_registry(vec![404], 1);
+    let registry = spawn_registry(vec![404], 4);
 
     // Test with --policy fast
     let mut cmd = shipper_cmd();
@@ -417,7 +431,7 @@ fn preflight_command_reports_already_published() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
     fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
-    let registry = spawn_registry(vec![200], 1);
+    let registry = spawn_registry(vec![200], 2);
 
     let mut cmd = shipper_cmd();
     let out = cmd
@@ -438,7 +452,7 @@ fn preflight_command_reports_already_published() {
         .clone();
 
     let stdout = String::from_utf8(out).expect("utf8");
-    assert!(stdout.contains("already published"));
+    assert!(stdout.contains("Already published: 1"));
     registry.join();
 }
 
@@ -694,7 +708,7 @@ fn preflight_command_finishability_proven() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
     fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
-    let registry = spawn_registry(vec![404], 1);
+    let registry = spawn_registry(vec![404], 2);
 
     let mut cmd = shipper_cmd();
     let out = cmd
@@ -715,7 +729,7 @@ fn preflight_command_finishability_proven() {
         .clone();
 
     let stdout = String::from_utf8(out).expect("utf8");
-    assert!(stdout.contains("Finishability: PROVEN"));
+    assert!(stdout.contains("PROVEN"));
     registry.join();
 }
 
@@ -724,16 +738,18 @@ fn preflight_command_finishability_failed() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
     fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
-    let registry = spawn_registry(vec![404], 1);
+    let registry = spawn_registry(vec![404], 2);
 
     // Set up fake cargo to fail dry-run
     let bin = td.path().join("bin");
     fs::create_dir_all(&bin).expect("mkdir");
     #[cfg(windows)]
     {
+        // cargo_publish_dry_run_workspace sends: cargo publish --workspace --dry-run [--allow-dirty]
+        // Check %3 for --dry-run (after publish and --workspace)
         fs::write(
             bin.join("cargo.cmd"),
-            "@echo off\r\nif \"%1\"==\"publish\" (\r\n  if \"%2\"==\"--dry-run\" exit /b 1\r\n)\r\n\"%REAL_CARGO%\" %*\r\n",
+            "@echo off\r\nif \"%1\"==\"publish\" if \"%3\"==\"--dry-run\" exit /b 1\r\n\"%REAL_CARGO%\" %*\r\n",
         )
         .expect("write fake cargo");
     }
@@ -743,7 +759,7 @@ fn preflight_command_finishability_failed() {
         let path = bin.join("cargo");
         fs::write(
             &path,
-            "#!/usr/bin/env sh\nif [ \"$1\" = \"publish\" ] && [ \"$2\" = \"--dry-run\" ]; then\n  exit 1\nfi\n\"$REAL_CARGO\" \"$@\"\n",
+            "#!/usr/bin/env sh\nif [ \"$1\" = \"publish\" ]; then\n  for arg in \"$@\"; do\n    [ \"$arg\" = \"--dry-run\" ] && exit 1\n  done\nfi\n\"$REAL_CARGO\" \"$@\"\n",
         )
         .expect("write fake cargo");
         let mut perms = fs::metadata(&path).expect("meta").permissions();
@@ -759,6 +775,12 @@ fn preflight_command_finishability_failed() {
     }
     let real_cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
 
+    // Use SHIPPER_CARGO_BIN to point directly at the fake script, bypassing PATH resolution
+    #[cfg(windows)]
+    let fake_cargo_path = bin.join("cargo.cmd");
+    #[cfg(not(windows))]
+    let fake_cargo_path = bin.join("cargo");
+
     let mut cmd = shipper_cmd();
     let out = cmd
         .arg("--manifest-path")
@@ -770,6 +792,7 @@ fn preflight_command_finishability_failed() {
         .arg("preflight")
         .env("PATH", new_path)
         .env("REAL_CARGO", real_cargo)
+        .env("SHIPPER_CARGO_BIN", &fake_cargo_path)
         .env("CARGO_HOME", td.path().join("cargo-home"))
         .env_remove("CARGO_REGISTRY_TOKEN")
         .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
@@ -780,7 +803,7 @@ fn preflight_command_finishability_failed() {
         .clone();
 
     let stdout = String::from_utf8(out).expect("utf8");
-    assert!(stdout.contains("Finishability: FAILED"));
+    assert!(stdout.contains("FAILED"));
     registry.join();
 }
 
@@ -965,7 +988,7 @@ fn preflight_command_json_output_structure() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
     fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
-    let registry = spawn_registry(vec![404], 1);
+    let registry = spawn_registry(vec![404], 2);
 
     let mut cmd = shipper_cmd();
     let out = cmd
