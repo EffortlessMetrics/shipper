@@ -1,0 +1,25 @@
+stages:
+  - publish
+
+publish:
+  image: rust:1.75
+  stage: publish
+  rules:
+    - if: $CI_COMMIT_TAG
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - .shipper/
+      - target/
+  script:
+    - cargo install shipper-cli --locked
+    - shipper publish
+  variables:
+    # Configure this in GitLab CI/CD settings (masked, protected)
+    # CARGO_REGISTRY_TOKEN: "..."
+    CARGO_TERM_COLOR: "always"
+  artifacts:
+    paths:
+      - .shipper/
+    expire_in: 1 day
+    when: always

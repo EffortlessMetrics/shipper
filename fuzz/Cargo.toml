@@ -1,0 +1,27 @@
+[package]
+name = "shipper-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+shipper = { path = "../crates/shipper" }
+tempfile = "3"
+
+[[bin]]
+name = "load_state"
+path = "fuzz_targets/load_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "resolve_token"
+path = "fuzz_targets/resolve_token.rs"
+test = false
+doc = false
+bench = false

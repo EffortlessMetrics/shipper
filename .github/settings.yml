@@ -1,0 +1,5 @@
+# .github/settings.yml
+repository:
+  description: "Resumable, backoff-aware publishing reliability layer for Rust workspaces."
+  homepage: "https://effortlessmetrics.com/shipper"
+  topics: rust, cargo, publishing, workspace, devex, reliability
