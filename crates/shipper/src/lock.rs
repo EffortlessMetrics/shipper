@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::state::fsync_parent_dir;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -86,6 +87,8 @@ impl LockFile {
         fs::rename(&tmp_path, &lock_path)
             .with_context(|| format!("failed to rename lock file to {}", lock_path.display()))?;
 
+        fsync_parent_dir(&lock_path);
+
         Ok(Self {
             path: lock_path,
             file: None,
@@ -158,6 +161,8 @@ impl LockFile {
 
         fs::rename(&tmp_path, &self.path)
             .with_context(|| format!("failed to rename lock file to {}", self.path.display()))?;
+
+        fsync_parent_dir(&self.path);
 
         Ok(())
     }

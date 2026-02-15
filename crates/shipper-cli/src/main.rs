@@ -978,7 +978,6 @@ fn run_config(cmd: ConfigCommands) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::fs;
 
     use serial_test::serial;
@@ -1006,7 +1005,6 @@ mod tests {
             self.errors.push(msg.to_string());
         }
     }
-
 
     #[test]
     fn parse_duration_handles_valid_and_invalid_inputs() {

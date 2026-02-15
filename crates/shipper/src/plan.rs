@@ -67,38 +67,6 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
         .as_ref()
         .context("cargo metadata did not include a resolve graph")?;
 
-    // Validate: publishable crates must not have normal/build deps on non-publishable workspace members.
-    for node in &resolve.nodes {
-        if !publishable.contains(&node.id) {
-            continue;
-        }
-        for dep in &node.deps {
-            // Skip deps that are publishable or not workspace members
-            if publishable.contains(&dep.pkg) || !workspace_ids.contains(&dep.pkg) {
-                continue;
-            }
-            let is_normal_or_build = dep
-                .dep_kinds
-                .iter()
-                .any(|k| matches!(k.kind, DependencyKind::Normal | DependencyKind::Build));
-            if is_normal_or_build {
-                let pkg_name = pkg_map
-                    .get(&node.id)
-                    .map(|p| p.name.as_str())
-                    .unwrap_or("unknown");
-                let dep_name = pkg_map
-                    .get(&dep.pkg)
-                    .map(|p| p.name.as_str())
-                    .unwrap_or("unknown");
-                bail!(
-                    "publishable package '{}' depends on non-publishable workspace member '{}'",
-                    pkg_name,
-                    dep_name
-                );
-            }
-        }
-    }
-
     let mut deps_of: BTreeMap<PackageId, BTreeSet<PackageId>> = BTreeMap::new();
     let mut dependents_of: BTreeMap<PackageId, BTreeSet<PackageId>> = BTreeMap::new();
 
@@ -169,6 +137,38 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     } else {
         publishable.clone()
     };
+
+    // Validate: included crates must not have normal/build deps on non-publishable workspace members.
+    for node in &resolve.nodes {
+        if !included.contains(&node.id) {
+            continue;
+        }
+        for dep in &node.deps {
+            // Skip deps that are publishable or not workspace members
+            if publishable.contains(&dep.pkg) || !workspace_ids.contains(&dep.pkg) {
+                continue;
+            }
+            let is_normal_or_build = dep
+                .dep_kinds
+                .iter()
+                .any(|k| matches!(k.kind, DependencyKind::Normal | DependencyKind::Build));
+            if is_normal_or_build {
+                let pkg_name = pkg_map
+                    .get(&node.id)
+                    .map(|p| p.name.as_str())
+                    .unwrap_or("unknown");
+                let dep_name = pkg_map
+                    .get(&dep.pkg)
+                    .map(|p| p.name.as_str())
+                    .unwrap_or("unknown");
+                bail!(
+                    "publishable package '{}' depends on non-publishable workspace member '{}'",
+                    pkg_name,
+                    dep_name
+                );
+            }
+        }
+    }
 
     // Topological sort on included nodes.
     let order = topo_sort(&included, &deps_of, &dependents_of, &pkg_map)?;
@@ -530,12 +530,41 @@ c = { path = "../c", version = "0.1.0" }
         let td = tempdir().expect("tempdir");
         create_workspace_with_npdep(td.path(), true);
 
+        // When npdep is included (all packages selected), the error should fire.
         let err = build_plan(&spec_for(td.path())).expect_err("must fail");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("publishable package 'npdep' depends on non-publishable workspace member 'c'"),
+            msg.contains(
+                "publishable package 'npdep' depends on non-publishable workspace member 'c'"
+            ),
             "unexpected error: {msg}"
         );
+
+        // When only npdep is explicitly selected, the error should still fire.
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["npdep".to_string()]);
+        let err2 = build_plan(&spec).expect_err("must fail for selected npdep");
+        let msg2 = format!("{err2:#}");
+        assert!(
+            msg2.contains(
+                "publishable package 'npdep' depends on non-publishable workspace member 'c'"
+            ),
+            "unexpected error: {msg2}"
+        );
+    }
+
+    #[test]
+    fn build_plan_package_selection_ignores_unrelated_invalid_deps() {
+        let td = tempdir().expect("tempdir");
+        create_workspace_with_npdep(td.path(), true);
+
+        // Selecting only "a" should succeed even though "npdep" (not selected)
+        // depends on non-publishable "c".
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["a".to_string()]);
+        let ws = build_plan(&spec).expect("plan should succeed");
+        let names: Vec<String> = ws.plan.packages.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, vec!["a".to_string()]);
     }
 
     #[test]

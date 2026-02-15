@@ -61,7 +61,9 @@ pub fn cargo_publish(
         loop {
             match child.try_wait().context("failed to poll cargo process")? {
                 Some(status) => {
-                    let out = child.wait_with_output().context("failed to read cargo output")?;
+                    let out = child
+                        .wait_with_output()
+                        .context("failed to read cargo output")?;
                     break (
                         status.code().unwrap_or(-1),
                         String::from_utf8_lossy(&out.stdout).to_string(),
@@ -246,9 +248,8 @@ mod tests {
                 ("SHIPPER_EXIT_CODE", Some("7")),
             ],
             || {
-                let out =
-                    cargo_publish(&ws, "my-crate", "private-reg", true, true, 50, None)
-                        .expect("publish");
+                let out = cargo_publish(&ws, "my-crate", "private-reg", true, true, 50, None)
+                    .expect("publish");
 
                 assert_eq!(out.exit_code, 7);
                 assert!(out.stdout_tail.contains("fake-stdout"));
@@ -292,9 +293,8 @@ mod tests {
                 ("SHIPPER_EXIT_CODE", Some("0")),
             ],
             || {
-                let _ =
-                    cargo_publish(&ws, "my-crate", "crates-io", false, false, 50, None)
-                        .expect("publish");
+                let _ = cargo_publish(&ws, "my-crate", "crates-io", false, false, 50, None)
+                    .expect("publish");
 
                 let args = fs::read_to_string(&args_log).expect("args");
                 assert!(!args.contains("--registry"));

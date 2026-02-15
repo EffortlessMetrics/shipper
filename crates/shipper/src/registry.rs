@@ -139,7 +139,7 @@ impl RegistryClient {
     ///
     /// All names are lowercased per Cargo convention.
     fn calculate_index_path(&self, crate_name: &str) -> String {
-        let lower = crate_name.to_lowercase();
+        let lower = crate_name.to_ascii_lowercase();
         match lower.len() {
             1 => format!("1/{}", lower),
             2 => format!("2/{}", lower),
@@ -929,8 +929,7 @@ mod tests {
 
     #[test]
     fn check_index_visibility_with_multiple_versions_finds_correct() {
-        let index_content =
-            "{\"vers\":\"0.1.0\"}\n{\"vers\":\"0.2.0\"}\n{\"vers\":\"1.0.0\"}\n{\"vers\":\"1.1.0\"}\n";
+        let index_content = "{\"vers\":\"0.1.0\"}\n{\"vers\":\"0.2.0\"}\n{\"vers\":\"1.0.0\"}\n{\"vers\":\"1.1.0\"}\n";
 
         let (api_base, handle) = with_multi_server(
             move |req| {

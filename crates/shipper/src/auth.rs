@@ -201,10 +201,14 @@ mod tests {
     #[test]
     #[serial]
     fn token_from_env_reads_named_registry_var_when_non_empty() {
-        temp_env::with_var("CARGO_REGISTRIES_ALT_REG_TOKEN", Some("named-token"), || {
-            let tok = token_from_env("alt-reg");
-            assert_eq!(tok.as_deref(), Some("named-token"));
-        });
+        temp_env::with_var(
+            "CARGO_REGISTRIES_ALT_REG_TOKEN",
+            Some("named-token"),
+            || {
+                let tok = token_from_env("alt-reg");
+                assert_eq!(tok.as_deref(), Some("named-token"));
+            },
+        );
     }
 
     #[test]

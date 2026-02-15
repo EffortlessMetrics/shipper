@@ -283,8 +283,7 @@ fn publish_package(
                         };
                     }
                     ErrorClass::Retryable | ErrorClass::Ambiguous => {
-                        let delay =
-                            engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                        let delay = engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
                         {
                             let mut rep = reporter.lock().unwrap();
                             rep.warn(&format!(
