@@ -18,7 +18,7 @@ use crate::state;
 use crate::types::{
     AttemptEvidence, AuthType, ErrorClass, EventType, ExecutionResult, ExecutionState,
     Finishability, PackageProgress, PackageReceipt, PackageState, PreflightPackage,
-    PreflightReport, PublishEvent, ReadinessEvidence, Receipt, RuntimeOptions,
+    PreflightReport, PublishEvent, PublishPolicy, ReadinessEvidence, Receipt, RuntimeOptions,
 };
 
 pub trait Reporter {
@@ -27,12 +27,43 @@ pub trait Reporter {
     fn error(&mut self, msg: &str);
 }
 
+struct PolicyEffects {
+    run_dry_run: bool,
+    check_ownership: bool,
+    strict_ownership: bool,
+    readiness_enabled: bool,
+}
+
+fn apply_policy(opts: &RuntimeOptions) -> PolicyEffects {
+    match opts.policy {
+        PublishPolicy::Safe => PolicyEffects {
+            run_dry_run: !opts.no_verify,
+            check_ownership: !opts.skip_ownership_check,
+            strict_ownership: opts.strict_ownership,
+            readiness_enabled: opts.readiness.enabled,
+        },
+        PublishPolicy::Balanced => PolicyEffects {
+            run_dry_run: !opts.no_verify,
+            check_ownership: false,
+            strict_ownership: false,
+            readiness_enabled: opts.readiness.enabled,
+        },
+        PublishPolicy::Fast => PolicyEffects {
+            run_dry_run: false,
+            check_ownership: false,
+            strict_ownership: false,
+            readiness_enabled: false,
+        },
+    }
+}
+
 pub fn run_preflight(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
 ) -> Result<PreflightReport> {
     let workspace_root = &ws.workspace_root;
+    let effects = apply_policy(opts);
 
     if !opts.allow_dirty {
         reporter.info("checking git cleanliness...");
@@ -45,7 +76,7 @@ pub fn run_preflight(
     let token = auth::resolve_token(&ws.plan.registry.name)?;
     let token_detected = token.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
 
-    if opts.strict_ownership && !token_detected {
+    if effects.strict_ownership && !token_detected {
         bail!(
             "strict ownership requested but no token found (set CARGO_REGISTRY_TOKEN or run cargo login)"
         );
@@ -58,26 +89,22 @@ pub fn run_preflight(
         None
     };
 
-    // Run workspace dry-run
-    reporter.info("running workspace dry-run verification...");
-    let dry_run_result = cargo::cargo_publish_dry_run_workspace(
-        workspace_root,
-        &ws.plan.registry.name,
-        opts.allow_dirty,
-        opts.output_lines,
-    );
-    let dry_run_passed = match &dry_run_result {
-        Ok(output) => output.exit_code == 0,
-        Err(_) => false,
-    };
-    let _dry_run_output = match &dry_run_result {
-        Ok(output) => {
-            format!(
-                "stdout: {}\nstderr: {}",
-                output.stdout_tail, output.stderr_tail
-            )
+    // Run workspace dry-run (skipped by policy/flag)
+    let dry_run_passed = if effects.run_dry_run {
+        reporter.info("running workspace dry-run verification...");
+        let dry_run_result = cargo::cargo_publish_dry_run_workspace(
+            workspace_root,
+            &ws.plan.registry.name,
+            opts.allow_dirty,
+            opts.output_lines,
+        );
+        match &dry_run_result {
+            Ok(output) => output.exit_code == 0,
+            Err(_) => false,
         }
-        Err(e) => e.to_string(),
+    } else {
+        reporter.info("skipping dry-run (policy or --no-verify)");
+        true
     };
 
     // Check each package
@@ -89,9 +116,9 @@ pub fn run_preflight(
         let already_published = reg.version_exists(&p.name, &p.version)?;
         let is_new_crate = reg.check_new_crate(&p.name)?;
 
-        // Ownership verification (best-effort)
-        let ownership_verified = if token_detected && !opts.skip_ownership_check {
-            if opts.strict_ownership {
+        // Ownership verification (best-effort), gated by policy
+        let ownership_verified = if token_detected && effects.check_ownership {
+            if effects.strict_ownership {
                 // In strict mode, ownership errors are fatal
                 reg.list_owners(&p.name, token.as_deref().unwrap())?;
                 true
@@ -108,7 +135,7 @@ pub fn run_preflight(
                 result
             }
         } else {
-            // No token or ownership check skipped
+            // No token, ownership check skipped, or policy disabled it
             false
         };
 
@@ -152,6 +179,7 @@ pub fn run_publish(
 ) -> Result<Receipt> {
     let workspace_root = &ws.workspace_root;
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
+    let effects = apply_policy(opts);
 
     // Acquire lock
     let lock_timeout = if opts.force {
@@ -420,8 +448,12 @@ pub fn run_publish(
                     "{}@{}: cargo publish exited successfully; verifying...",
                     p.name, p.version
                 ));
+                let readiness_config = crate::types::ReadinessConfig {
+                    enabled: effects.readiness_enabled,
+                    ..opts.readiness.clone()
+                };
                 let (visible, checks) =
-                    verify_published(&reg, &p.name, &p.version, &opts.readiness, reporter)?;
+                    verify_published(&reg, &p.name, &p.version, &readiness_config, reporter)?;
                 readiness_evidence = checks;
                 if visible {
                     update_state(&mut st, &state_dir, &key, PackageState::Published)?;
@@ -2269,6 +2301,134 @@ mod tests {
         assert_eq!(report.packages.len(), 1);
         assert!(report.packages[0].ownership_verified);
         assert!(report.packages[0].dry_run_passed);
+        assert_eq!(report.finishability, Finishability::Proven);
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_fast_policy_skips_dry_run() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let (_cargo_bin, _git_bin) = configure_fake_programs(&bin);
+        // Deliberately set cargo to fail — if dry-run runs, it would fail
+        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "1");
+
+        // Only need version_exists + check_new_crate
+        let server = spawn_registry_server(
+            std::collections::BTreeMap::from([
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+            ]),
+            2,
+        );
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.policy = crate::types::PublishPolicy::Fast;
+
+        let mut reporter = CollectingReporter::default();
+        let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+        // dry_run_passed should be true (skipped), not false (cargo would have failed)
+        assert!(report.packages[0].dry_run_passed);
+        // ownership_verified should be false (skipped by Fast policy)
+        assert!(!report.packages[0].ownership_verified);
+        // Finishability is NotProven because ownership unverified
+        assert_eq!(report.finishability, Finishability::NotProven);
+        assert!(
+            reporter
+                .infos
+                .iter()
+                .any(|i| i.contains("skipping dry-run"))
+        );
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_balanced_policy_skips_ownership() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let (_cargo_bin, _git_bin) = configure_fake_programs(&bin);
+        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "0");
+        let _token = EnvGuard::set("CARGO_REGISTRY_TOKEN", "fake-token");
+
+        // Only need version_exists + check_new_crate (no ownership endpoint)
+        let server = spawn_registry_server(
+            std::collections::BTreeMap::from([
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+            ]),
+            2,
+        );
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.policy = crate::types::PublishPolicy::Balanced;
+        opts.skip_ownership_check = false; // would check in Safe, but Balanced overrides
+
+        let mut reporter = CollectingReporter::default();
+        let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+        // ownership_verified false (Balanced skips ownership)
+        assert!(!report.packages[0].ownership_verified);
+        // dry_run_passed true (Balanced still runs dry-run)
+        assert!(report.packages[0].dry_run_passed);
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_safe_policy_runs_all_checks() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let (_cargo_bin, _git_bin) = configure_fake_programs(&bin);
+        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "0");
+        let _token = EnvGuard::set("CARGO_REGISTRY_TOKEN", "fake-token");
+
+        // Need version_exists + check_new_crate + ownership
+        let server = spawn_registry_server(
+            std::collections::BTreeMap::from([
+                (
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/demo/owners".to_string(),
+                    vec![(200, r#"{"users":[]}"#.to_string())],
+                ),
+            ]),
+            3,
+        );
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.policy = crate::types::PublishPolicy::Safe;
+        opts.skip_ownership_check = false;
+
+        let mut reporter = CollectingReporter::default();
+        let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+        // All checks ran
+        assert!(report.packages[0].dry_run_passed);
+        assert!(report.packages[0].ownership_verified);
         assert_eq!(report.finishability, Finishability::Proven);
         server.join();
     }
