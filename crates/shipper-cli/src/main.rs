@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use shipper::config::ShipperConfig;
+use shipper::config::{CliOverrides, ShipperConfig};
 use shipper::engine::{self, Reporter};
 use shipper::plan;
 use shipper::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
@@ -23,24 +23,24 @@ struct Cli {
     manifest_path: PathBuf,
 
     /// Cargo registry name (default: crates-io)
-    #[arg(long, default_value = "crates-io")]
-    registry: String,
+    #[arg(long)]
+    registry: Option<String>,
 
     /// Registry API base URL (default: https://crates.io)
-    #[arg(long, default_value = "https://crates.io")]
-    api_base: String,
+    #[arg(long)]
+    api_base: Option<String>,
 
     /// Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members.
     #[arg(long = "package")]
     packages: Vec<String>,
 
     /// Directory for shipper state and receipts (default: .shipper)
-    #[arg(long, default_value = ".shipper")]
-    state_dir: PathBuf,
+    #[arg(long)]
+    state_dir: Option<PathBuf>,
 
     /// Number of output lines to capture for evidence (default: 50)
-    #[arg(long, default_value_t = 50)]
-    output_lines: usize,
+    #[arg(long)]
+    output_lines: Option<usize>,
 
     /// Allow publishing from a dirty git working tree.
     #[arg(long)]
@@ -60,37 +60,37 @@ struct Cli {
     #[arg(long)]
     no_verify: bool,
 
-    /// Max attempts per crate publish step.
-    #[arg(long, default_value_t = 6)]
-    max_attempts: u32,
+    /// Max attempts per crate publish step (default: 6)
+    #[arg(long)]
+    max_attempts: Option<u32>,
 
-    /// Base backoff delay (e.g. 2s, 500ms)
-    #[arg(long, default_value = "2s")]
-    base_delay: String,
+    /// Base backoff delay (e.g. 2s, 500ms; default: 2s)
+    #[arg(long)]
+    base_delay: Option<String>,
 
-    /// Max backoff delay (e.g. 2m)
-    #[arg(long, default_value = "2m")]
-    max_delay: String,
+    /// Max backoff delay (e.g. 2m; default: 2m)
+    #[arg(long)]
+    max_delay: Option<String>,
 
-    /// How long to wait for registry visibility after a successful publish.
-    #[arg(long, default_value = "2m")]
-    verify_timeout: String,
+    /// How long to wait for registry visibility after a successful publish (default: 2m)
+    #[arg(long)]
+    verify_timeout: Option<String>,
 
-    /// Poll interval for checking registry visibility.
-    #[arg(long, default_value = "5s")]
-    verify_poll: String,
+    /// Poll interval for checking registry visibility (default: 5s)
+    #[arg(long)]
+    verify_poll: Option<String>,
 
     /// Readiness check method: api (default, fast), index (slower, more accurate), both (slowest, most reliable)
-    #[arg(long, default_value = "api")]
-    readiness_method: String,
+    #[arg(long)]
+    readiness_method: Option<String>,
 
-    /// How long to wait for registry visibility during readiness checks.
-    #[arg(long, default_value = "5m")]
-    readiness_timeout: String,
+    /// How long to wait for registry visibility during readiness checks (default: 5m)
+    #[arg(long)]
+    readiness_timeout: Option<String>,
 
-    /// Poll interval for readiness checks.
-    #[arg(long, default_value = "2s")]
-    readiness_poll: String,
+    /// Poll interval for readiness checks (default: 2s)
+    #[arg(long)]
+    readiness_poll: Option<String>,
 
     /// Disable readiness checks (for advanced users).
     #[arg(long)]
@@ -104,17 +104,17 @@ struct Cli {
     #[arg(long)]
     force: bool,
 
-    /// Lock timeout duration (e.g. 1h, 30m). Locks older than this are considered stale.
-    #[arg(long, default_value = "1h")]
-    lock_timeout: String,
+    /// Lock timeout duration (e.g. 1h, 30m; default: 1h). Locks older than this are considered stale.
+    #[arg(long)]
+    lock_timeout: Option<String>,
 
-    /// Publish policy: safe (verify+strict), balanced (verify when needed), fast (no verify)
-    #[arg(long, default_value = "safe")]
-    policy: String,
+    /// Publish policy: safe (verify+strict), balanced (verify when needed), fast (no verify; default: safe)
+    #[arg(long)]
+    policy: Option<String>,
 
     /// Verify mode: workspace (default), package (per-crate), none (no verify)
-    #[arg(long, default_value = "workspace")]
-    verify_mode: String,
+    #[arg(long)]
+    verify_mode: Option<String>,
 
     /// Enable parallel publishing (packages at the same dependency level are published concurrently)
     #[arg(long)]
@@ -221,8 +221,14 @@ fn main() -> Result<()> {
     let spec = ReleaseSpec {
         manifest_path: cli.manifest_path.clone(),
         registry: Registry {
-            name: cli.registry.clone(),
-            api_base: cli.api_base.clone(),
+            name: cli
+                .registry
+                .clone()
+                .unwrap_or_else(|| "crates-io".to_string()),
+            api_base: cli
+                .api_base
+                .clone()
+                .unwrap_or_else(|| "https://crates.io".to_string()),
             index_base: None,
         },
         selected_packages: if cli.packages.is_empty() {
@@ -232,7 +238,7 @@ fn main() -> Result<()> {
         },
     };
 
-    let planned = plan::build_plan(&spec)?;
+    let mut planned = plan::build_plan(&spec)?;
 
     // Load configuration file
     let config =
@@ -247,53 +253,76 @@ fn main() -> Result<()> {
                 .with_context(|| "Failed to load config from workspace")?
         };
 
-    // Build RuntimeOptions, merging config values where appropriate
-    let opts = RuntimeOptions {
+    // Apply registry from config if CLI didn't set it
+    if let Some(ref cfg) = config
+        && let Some(ref reg_config) = cfg.registry
+    {
+        if cli.registry.is_none() {
+            planned.plan.registry.name = reg_config.name.clone();
+        }
+        if cli.api_base.is_none() {
+            planned.plan.registry.api_base = reg_config.api_base.clone();
+        }
+    }
+
+    // Build CLI overrides
+    let cli_overrides = CliOverrides {
+        policy: cli.policy.as_deref().map(parse_policy).transpose()?,
+        verify_mode: cli
+            .verify_mode
+            .as_deref()
+            .map(parse_verify_mode)
+            .transpose()?,
+        max_attempts: cli.max_attempts,
+        base_delay: cli.base_delay.as_deref().map(parse_duration).transpose()?,
+        max_delay: cli.max_delay.as_deref().map(parse_duration).transpose()?,
+        verify_timeout: cli
+            .verify_timeout
+            .as_deref()
+            .map(parse_duration)
+            .transpose()?,
+        verify_poll_interval: cli.verify_poll.as_deref().map(parse_duration).transpose()?,
+        output_lines: cli.output_lines,
+        lock_timeout: cli
+            .lock_timeout
+            .as_deref()
+            .map(parse_duration)
+            .transpose()?,
+        state_dir: cli.state_dir.clone(),
+        readiness_method: cli
+            .readiness_method
+            .as_deref()
+            .map(parse_readiness_method)
+            .transpose()?,
+        readiness_timeout: cli
+            .readiness_timeout
+            .as_deref()
+            .map(parse_duration)
+            .transpose()?,
+        readiness_poll: cli
+            .readiness_poll
+            .as_deref()
+            .map(parse_duration)
+            .transpose()?,
         allow_dirty: cli.allow_dirty,
         skip_ownership_check: cli.skip_ownership_check,
         strict_ownership: cli.strict_ownership,
         no_verify: cli.no_verify,
-        max_attempts: cli.max_attempts,
-        base_delay: parse_duration(&cli.base_delay)?,
-        max_delay: parse_duration(&cli.max_delay)?,
-        verify_timeout: parse_duration(&cli.verify_timeout)?,
-        verify_poll_interval: parse_duration(&cli.verify_poll)?,
-        state_dir: cli.state_dir.clone(),
-        force_resume: cli.force_resume,
+        no_readiness: cli.no_readiness,
         force: cli.force,
-        lock_timeout: parse_duration(&cli.lock_timeout)?,
-        policy: parse_policy(&cli.policy)?,
-        verify_mode: parse_verify_mode(&cli.verify_mode)?,
-        readiness: shipper::types::ReadinessConfig {
-            enabled: !cli.no_readiness,
-            method: parse_readiness_method(&cli.readiness_method)?,
-            initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
-            max_total_wait: parse_duration(&cli.readiness_timeout)?,
-            poll_interval: parse_duration(&cli.readiness_poll)?,
-            jitter_factor: 0.5,
-            index_path: None,
-            prefer_index: false,
-        },
-        output_lines: cli.output_lines,
-        parallel: shipper::types::ParallelConfig {
-            enabled: cli.parallel || cli.max_concurrent.is_some(),
-            max_concurrent: cli.max_concurrent.unwrap_or(4),
-            per_package_timeout: cli
-                .per_package_timeout
-                .as_deref()
-                .map(parse_duration)
-                .transpose()?
-                .unwrap_or(Duration::from_secs(1800)),
-        },
+        force_resume: cli.force_resume,
+        parallel_enabled: cli.parallel || cli.max_concurrent.is_some(),
+        max_concurrent: cli.max_concurrent,
+        per_package_timeout: cli
+            .per_package_timeout
+            .as_deref()
+            .map(parse_duration)
+            .transpose()?,
     };
 
-    // Merge with config if present (CLI values take precedence)
-    let opts = if let Some(ref config) = config {
-        config.merge_with_cli_opts(opts)
-    } else {
-        opts
-    };
+    // Merge CLI overrides with config (or defaults if no config)
+    let config_for_merge = config.clone().unwrap_or_default();
+    let opts = config_for_merge.build_runtime_options(cli_overrides);
 
     let mut reporter = CliReporter;
 
@@ -336,10 +365,10 @@ fn main() -> Result<()> {
             run_inspect_receipt(&planned, &opts, &cli.format)?;
         }
         Commands::Ci(ci_cmd) => {
-            run_ci(ci_cmd, &cli.state_dir, &planned.workspace_root)?;
+            run_ci(ci_cmd, &opts.state_dir, &planned.workspace_root)?;
         }
         Commands::Clean { keep_receipt } => {
-            run_clean(&cli.state_dir, &planned.workspace_root, keep_receipt)?;
+            run_clean(&opts.state_dir, &planned.workspace_root, keep_receipt)?;
         }
         Commands::Config(_) => {
             // This should never be reached since we handle Config commands early
@@ -1333,7 +1362,7 @@ mode = "fast"
     }
 
     #[test]
-    fn config_merge_with_cli_opts() {
+    fn config_merge_with_cli_overrides() {
         let config = ShipperConfig {
             policy: shipper::config::PolicyConfig {
                 mode: shipper::types::PublishPolicy::Safe,
@@ -1361,30 +1390,19 @@ mode = "fast"
             parallel: shipper::types::ParallelConfig::default(),
         };
 
-        let opts = RuntimeOptions {
+        // CLI overrides some values, leaves others as None
+        let cli = CliOverrides {
             allow_dirty: true,
-            skip_ownership_check: false,
-            strict_ownership: false,
-            no_verify: false,
-            max_attempts: 3,
-            base_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
-            verify_timeout: Duration::from_secs(120),
-            verify_poll_interval: Duration::from_secs(5),
-            state_dir: PathBuf::from(".shipper"),
-            force_resume: false,
-            force: false,
-            lock_timeout: Duration::from_secs(3600),
-            policy: shipper::types::PublishPolicy::Fast,
-            verify_mode: shipper::types::VerifyMode::None,
-            readiness: shipper::types::ReadinessConfig::default(),
-            output_lines: 50,
-            parallel: shipper::types::ParallelConfig::default(),
+            max_attempts: Some(3),
+            output_lines: Some(50),
+            policy: Some(shipper::types::PublishPolicy::Fast),
+            verify_mode: Some(shipper::types::VerifyMode::None),
+            ..Default::default()
         };
 
-        let merged = config.merge_with_cli_opts(opts);
+        let merged = config.build_runtime_options(cli);
 
-        // CLI values should win
+        // CLI values should win where set
         assert!(merged.allow_dirty, "CLI allow_dirty should win");
         assert_eq!(merged.max_attempts, 3, "CLI max_attempts should win");
         assert_eq!(merged.output_lines, 50, "CLI output_lines should win");
@@ -1392,6 +1410,28 @@ mode = "fast"
             merged.policy,
             shipper::types::PublishPolicy::Fast,
             "CLI policy should win"
+        );
+        assert_eq!(
+            merged.verify_mode,
+            shipper::types::VerifyMode::None,
+            "CLI verify_mode should win"
+        );
+
+        // Config values should apply where CLI is None
+        assert_eq!(
+            merged.base_delay,
+            Duration::from_secs(5),
+            "config base_delay should apply"
+        );
+        assert_eq!(
+            merged.max_delay,
+            Duration::from_secs(300),
+            "config max_delay should apply"
+        );
+        assert_eq!(
+            merged.lock_timeout,
+            Duration::from_secs(1800),
+            "config lock_timeout should apply"
         );
     }
 }

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::types::{
-    ParallelConfig, PublishPolicy, ReadinessConfig, RuntimeOptions, VerifyMode,
+    ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, RuntimeOptions, VerifyMode,
     deserialize_duration, serialize_duration,
 };
 
@@ -144,6 +144,37 @@ pub struct RegistryConfig {
 
     /// Base URL for registry web API (e.g., https://crates.io)
     pub api_base: String,
+}
+
+/// CLI overrides for merging with config file values.
+///
+/// `Option` fields mean "user did not pass this flag" when `None`.
+/// `bool` fields mean "user explicitly enabled this" when `true`.
+#[derive(Debug, Default)]
+pub struct CliOverrides {
+    pub policy: Option<PublishPolicy>,
+    pub verify_mode: Option<VerifyMode>,
+    pub max_attempts: Option<u32>,
+    pub base_delay: Option<Duration>,
+    pub max_delay: Option<Duration>,
+    pub verify_timeout: Option<Duration>,
+    pub verify_poll_interval: Option<Duration>,
+    pub output_lines: Option<usize>,
+    pub lock_timeout: Option<Duration>,
+    pub state_dir: Option<PathBuf>,
+    pub readiness_method: Option<ReadinessMethod>,
+    pub readiness_timeout: Option<Duration>,
+    pub readiness_poll: Option<Duration>,
+    pub allow_dirty: bool,
+    pub skip_ownership_check: bool,
+    pub strict_ownership: bool,
+    pub no_verify: bool,
+    pub no_readiness: bool,
+    pub force: bool,
+    pub force_resume: bool,
+    pub parallel_enabled: bool,
+    pub max_concurrent: Option<usize>,
+    pub per_package_timeout: Option<Duration>,
 }
 
 impl Default for ShipperConfig {
@@ -283,31 +314,52 @@ impl ShipperConfig {
         Ok(())
     }
 
-    /// Merge this configuration with CLI options.
+    /// Build `RuntimeOptions` by merging CLI overrides with config file values.
     ///
-    /// CLI options take precedence over config file values.
-    /// This function applies config values only where CLI options weren't explicitly set.
-    pub fn merge_with_cli_opts(&self, opts: RuntimeOptions) -> RuntimeOptions {
+    /// For `Option` fields: CLI value takes precedence; falls back to config.
+    /// For `bool` flags: `true` if either CLI or config enables it (OR).
+    pub fn build_runtime_options(&self, cli: CliOverrides) -> RuntimeOptions {
         RuntimeOptions {
-            // CLI values always take precedence
-            allow_dirty: opts.allow_dirty,
-            skip_ownership_check: opts.skip_ownership_check,
-            strict_ownership: opts.strict_ownership,
-            no_verify: opts.no_verify,
-            max_attempts: opts.max_attempts,
-            base_delay: opts.base_delay,
-            max_delay: opts.max_delay,
-            verify_timeout: opts.verify_timeout,
-            verify_poll_interval: opts.verify_poll_interval,
-            state_dir: opts.state_dir,
-            force_resume: opts.force_resume,
-            force: opts.force,
-            policy: opts.policy,
-            verify_mode: opts.verify_mode,
-            readiness: opts.readiness,
-            output_lines: opts.output_lines,
-            lock_timeout: opts.lock_timeout,
-            parallel: opts.parallel,
+            allow_dirty: cli.allow_dirty || self.flags.allow_dirty,
+            skip_ownership_check: cli.skip_ownership_check || self.flags.skip_ownership_check,
+            strict_ownership: cli.strict_ownership || self.flags.strict_ownership,
+            no_verify: cli.no_verify,
+            max_attempts: cli.max_attempts.unwrap_or(self.retry.max_attempts),
+            base_delay: cli.base_delay.unwrap_or(self.retry.base_delay),
+            max_delay: cli.max_delay.unwrap_or(self.retry.max_delay),
+            verify_timeout: cli.verify_timeout.unwrap_or(Duration::from_secs(120)),
+            verify_poll_interval: cli.verify_poll_interval.unwrap_or(Duration::from_secs(5)),
+            state_dir: cli.state_dir.unwrap_or_else(|| {
+                self.state_dir
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(".shipper"))
+            }),
+            force_resume: cli.force_resume,
+            force: cli.force,
+            lock_timeout: cli.lock_timeout.unwrap_or(self.lock.timeout),
+            policy: cli.policy.unwrap_or(self.policy.mode),
+            verify_mode: cli.verify_mode.unwrap_or(self.verify.mode),
+            readiness: ReadinessConfig {
+                enabled: !cli.no_readiness && self.readiness.enabled,
+                method: cli.readiness_method.unwrap_or(self.readiness.method),
+                initial_delay: self.readiness.initial_delay,
+                max_delay: self.readiness.max_delay,
+                max_total_wait: cli
+                    .readiness_timeout
+                    .unwrap_or(self.readiness.max_total_wait),
+                poll_interval: cli.readiness_poll.unwrap_or(self.readiness.poll_interval),
+                jitter_factor: self.readiness.jitter_factor,
+                index_path: self.readiness.index_path.clone(),
+                prefer_index: self.readiness.prefer_index,
+            },
+            output_lines: cli.output_lines.unwrap_or(self.output.lines),
+            parallel: ParallelConfig {
+                enabled: cli.parallel_enabled || self.parallel.enabled,
+                max_concurrent: cli.max_concurrent.unwrap_or(self.parallel.max_concurrent),
+                per_package_timeout: cli
+                    .per_package_timeout
+                    .unwrap_or(self.parallel.per_package_timeout),
+            },
         }
     }
 
@@ -524,5 +576,153 @@ per_package_timeout = "1h"
             config.parallel.per_package_timeout,
             Duration::from_secs(3600)
         );
+    }
+
+    #[test]
+    fn test_build_runtime_options_cli_overrides_config() {
+        let config = ShipperConfig {
+            retry: RetryConfig {
+                max_attempts: 10,
+                base_delay: Duration::from_secs(5),
+                max_delay: Duration::from_secs(300),
+            },
+            output: OutputConfig { lines: 100 },
+            policy: PolicyConfig {
+                mode: PublishPolicy::Balanced,
+            },
+            ..Default::default()
+        };
+
+        let cli = CliOverrides {
+            max_attempts: Some(3),
+            policy: Some(PublishPolicy::Fast),
+            output_lines: Some(25),
+            ..Default::default()
+        };
+
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.max_attempts, 3, "CLI max_attempts should win");
+        assert_eq!(opts.policy, PublishPolicy::Fast, "CLI policy should win");
+        assert_eq!(opts.output_lines, 25, "CLI output_lines should win");
+    }
+
+    #[test]
+    fn test_build_runtime_options_config_used_when_cli_none() {
+        let config = ShipperConfig {
+            retry: RetryConfig {
+                max_attempts: 10,
+                base_delay: Duration::from_secs(5),
+                max_delay: Duration::from_secs(300),
+            },
+            output: OutputConfig { lines: 100 },
+            policy: PolicyConfig {
+                mode: PublishPolicy::Balanced,
+            },
+            verify: VerifyConfig {
+                mode: VerifyMode::Package,
+            },
+            lock: LockConfig {
+                timeout: Duration::from_secs(1800),
+            },
+            state_dir: Some(PathBuf::from("custom-state")),
+            ..Default::default()
+        };
+
+        let cli = CliOverrides::default();
+
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.max_attempts, 10, "config max_attempts should apply");
+        assert_eq!(opts.base_delay, Duration::from_secs(5));
+        assert_eq!(opts.max_delay, Duration::from_secs(300));
+        assert_eq!(opts.output_lines, 100);
+        assert_eq!(opts.policy, PublishPolicy::Balanced);
+        assert_eq!(opts.verify_mode, VerifyMode::Package);
+        assert_eq!(opts.lock_timeout, Duration::from_secs(1800));
+        assert_eq!(opts.state_dir, PathBuf::from("custom-state"));
+    }
+
+    #[test]
+    fn test_build_runtime_options_booleans_are_ored() {
+        // Config sets allow_dirty, CLI doesn't
+        let config = ShipperConfig {
+            flags: FlagsConfig {
+                allow_dirty: true,
+                skip_ownership_check: false,
+                strict_ownership: true,
+            },
+            ..Default::default()
+        };
+
+        let cli = CliOverrides {
+            skip_ownership_check: true,
+            ..Default::default()
+        };
+
+        let opts = config.build_runtime_options(cli);
+        assert!(opts.allow_dirty, "config allow_dirty should apply");
+        assert!(opts.skip_ownership_check, "CLI skip_ownership should apply");
+        assert!(
+            opts.strict_ownership,
+            "config strict_ownership should apply"
+        );
+    }
+
+    #[test]
+    fn test_build_runtime_options_defaults_when_no_config() {
+        let config = ShipperConfig::default();
+        let cli = CliOverrides::default();
+
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.max_attempts, 6);
+        assert_eq!(opts.base_delay, Duration::from_secs(2));
+        assert_eq!(opts.max_delay, Duration::from_secs(120));
+        assert_eq!(opts.policy, PublishPolicy::Safe);
+        assert_eq!(opts.verify_mode, VerifyMode::Workspace);
+        assert_eq!(opts.output_lines, 50);
+        assert_eq!(opts.state_dir, PathBuf::from(".shipper"));
+        assert!(!opts.allow_dirty);
+        assert!(!opts.no_verify);
+        assert!(opts.readiness.enabled);
+    }
+
+    #[test]
+    fn test_build_runtime_options_no_readiness_disables() {
+        let config = ShipperConfig::default(); // readiness.enabled = true
+
+        let cli = CliOverrides {
+            no_readiness: true,
+            ..Default::default()
+        };
+
+        let opts = config.build_runtime_options(cli);
+        assert!(!opts.readiness.enabled);
+    }
+
+    #[test]
+    fn test_build_runtime_options_parallel_merge() {
+        let config = ShipperConfig {
+            parallel: ParallelConfig {
+                enabled: true,
+                max_concurrent: 8,
+                per_package_timeout: Duration::from_secs(7200),
+            },
+            ..Default::default()
+        };
+
+        // CLI doesn't set parallel, but config enables it
+        let cli = CliOverrides::default();
+        let opts = config.build_runtime_options(cli);
+        assert!(opts.parallel.enabled);
+        assert_eq!(opts.parallel.max_concurrent, 8);
+        assert_eq!(opts.parallel.per_package_timeout, Duration::from_secs(7200));
+
+        // CLI overrides max_concurrent
+        let cli2 = CliOverrides {
+            max_concurrent: Some(2),
+            ..Default::default()
+        };
+        let opts2 = config.build_runtime_options(cli2);
+        assert!(opts2.parallel.enabled); // from config
+        assert_eq!(opts2.parallel.max_concurrent, 2); // from CLI
     }
 }
