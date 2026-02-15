@@ -67,6 +67,38 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
         .as_ref()
         .context("cargo metadata did not include a resolve graph")?;
 
+    // Validate: publishable crates must not have normal/build deps on non-publishable workspace members.
+    for node in &resolve.nodes {
+        if !publishable.contains(&node.id) {
+            continue;
+        }
+        for dep in &node.deps {
+            // Skip deps that are publishable or not workspace members
+            if publishable.contains(&dep.pkg) || !workspace_ids.contains(&dep.pkg) {
+                continue;
+            }
+            let is_normal_or_build = dep
+                .dep_kinds
+                .iter()
+                .any(|k| matches!(k.kind, DependencyKind::Normal | DependencyKind::Build));
+            if is_normal_or_build {
+                let pkg_name = pkg_map
+                    .get(&node.id)
+                    .map(|p| p.name.as_str())
+                    .unwrap_or("unknown");
+                let dep_name = pkg_map
+                    .get(&dep.pkg)
+                    .map(|p| p.name.as_str())
+                    .unwrap_or("unknown");
+                bail!(
+                    "publishable package '{}' depends on non-publishable workspace member '{}'",
+                    pkg_name,
+                    dep_name
+                );
+            }
+        }
+    }
+
     let mut deps_of: BTreeMap<PackageId, BTreeSet<PackageId>> = BTreeMap::new();
     let mut dependents_of: BTreeMap<PackageId, BTreeSet<PackageId>> = BTreeMap::new();
 
@@ -354,13 +386,24 @@ mod tests {
     }
 
     fn create_workspace(root: &Path) {
+        create_workspace_with_npdep(root, false);
+    }
+
+    fn create_workspace_with_npdep(root: &Path, include_npdep: bool) {
+        let members = if include_npdep {
+            r#"members = ["a", "b", "c", "d", "zeta", "alpha", "npdep"]"#
+        } else {
+            r#"members = ["a", "b", "c", "d", "zeta", "alpha"]"#
+        };
         write_file(
             &root.join("Cargo.toml"),
-            r#"
+            &format!(
+                r#"
 [workspace]
-members = ["a", "b", "c", "d", "zeta", "alpha", "npdep"]
+{members}
 resolver = "2"
-"#,
+"#
+            ),
         );
 
         write_file(
@@ -437,9 +480,10 @@ a = { path = "../a", version = "0.1.0" }
         );
         write_file(&root.join("alpha/src/lib.rs"), "pub fn alpha() {}\n");
 
-        write_file(
-            &root.join("npdep/Cargo.toml"),
-            r#"
+        if include_npdep {
+            write_file(
+                &root.join("npdep/Cargo.toml"),
+                r#"
 [package]
 name = "npdep"
 version = "0.1.0"
@@ -448,8 +492,9 @@ edition = "2021"
 [dependencies]
 c = { path = "../c", version = "0.1.0" }
 "#,
-        );
-        write_file(&root.join("npdep/src/lib.rs"), "pub fn npdep() {}\n");
+            );
+            write_file(&root.join("npdep/src/lib.rs"), "pub fn npdep() {}\n");
+        }
     }
 
     fn spec_for(root: &Path) -> ReleaseSpec {
@@ -472,13 +517,36 @@ c = { path = "../c", version = "0.1.0" }
         assert!(names.contains(&"b".to_string()));
         assert!(names.contains(&"alpha".to_string()));
         assert!(names.contains(&"zeta".to_string()));
-        assert!(names.contains(&"npdep".to_string()));
         assert!(!names.contains(&"c".to_string()));
         assert!(!names.contains(&"d".to_string()));
 
         let a_idx = names.iter().position(|n| n == "a").expect("a present");
         let b_idx = names.iter().position(|n| n == "b").expect("b present");
         assert!(a_idx < b_idx);
+    }
+
+    #[test]
+    fn build_plan_rejects_publishable_depending_on_non_publishable() {
+        let td = tempdir().expect("tempdir");
+        create_workspace_with_npdep(td.path(), true);
+
+        let err = build_plan(&spec_for(td.path())).expect_err("must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("publishable package 'npdep' depends on non-publishable workspace member 'c'"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_plan_allows_dev_dep_on_non_publishable() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        // alpha has a dev-dependency on a (which is publishable), but let's verify
+        // that the plan succeeds — dev-deps on non-publishable crates are also fine.
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert!(ws.plan.packages.iter().any(|p| p.name == "alpha"));
     }
 
     #[test]

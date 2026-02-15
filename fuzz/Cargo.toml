@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 shipper = { path = "../crates/shipper" }
 tempfile = "3"
+temp-env = "0.3"
 
 [[bin]]
 name = "load_state"

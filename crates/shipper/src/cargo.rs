@@ -29,6 +29,7 @@ pub fn cargo_publish(
     allow_dirty: bool,
     no_verify: bool,
     output_lines: usize,
+    timeout: Option<Duration>,
 ) -> Result<CargoOutput> {
     let start = Instant::now();
     let mut cmd = Command::new(cargo_program());
@@ -46,15 +47,52 @@ pub fn cargo_publish(
         cmd.arg("--no-verify");
     }
 
-    let out = cmd
-        .current_dir(workspace_root)
-        .output()
-        .context("failed to execute cargo publish; is Cargo installed?")?;
+    cmd.current_dir(workspace_root);
+
+    let (exit_code, stdout, stderr) = if let Some(timeout_dur) = timeout {
+        // Use spawn + polling to enforce timeout
+        let mut child = cmd
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .context("failed to execute cargo publish; is Cargo installed?")?;
+
+        let deadline = Instant::now() + timeout_dur;
+        loop {
+            match child.try_wait().context("failed to poll cargo process")? {
+                Some(status) => {
+                    let out = child.wait_with_output().context("failed to read cargo output")?;
+                    break (
+                        status.code().unwrap_or(-1),
+                        String::from_utf8_lossy(&out.stdout).to_string(),
+                        String::from_utf8_lossy(&out.stderr).to_string(),
+                    );
+                }
+                None => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        anyhow::bail!(
+                            "cargo publish timed out after {}",
+                            humantime::format_duration(timeout_dur)
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    } else {
+        let out = cmd
+            .output()
+            .context("failed to execute cargo publish; is Cargo installed?")?;
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
 
     let duration = start.elapsed();
-    let exit_code = out.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
 
     Ok(CargoOutput {
         exit_code,
@@ -209,7 +247,8 @@ mod tests {
             ],
             || {
                 let out =
-                    cargo_publish(&ws, "my-crate", "private-reg", true, true, 50).expect("publish");
+                    cargo_publish(&ws, "my-crate", "private-reg", true, true, 50, None)
+                        .expect("publish");
 
                 assert_eq!(out.exit_code, 7);
                 assert!(out.stdout_tail.contains("fake-stdout"));
@@ -254,7 +293,8 @@ mod tests {
             ],
             || {
                 let _ =
-                    cargo_publish(&ws, "my-crate", "crates-io", false, false, 50).expect("publish");
+                    cargo_publish(&ws, "my-crate", "crates-io", false, false, 50, None)
+                        .expect("publish");
 
                 let args = fs::read_to_string(&args_log).expect("args");
                 assert!(!args.contains("--registry"));
@@ -274,7 +314,7 @@ mod tests {
             "SHIPPER_CARGO_BIN",
             Some(missing.to_str().expect("utf8")),
             || {
-                let err = cargo_publish(td.path(), "x", "crates-io", false, false, 50)
+                let err = cargo_publish(td.path(), "x", "crates-io", false, false, 50, None)
                     .expect_err("must fail");
                 assert!(format!("{err:#}").contains("failed to execute cargo publish"));
             },

@@ -116,6 +116,14 @@ fn publish_package(
     let mut last_err: Option<(ErrorClass, String)> = None;
     let mut attempt_evidence: Vec<AttemptEvidence> = Vec::new();
     let mut readiness_evidence: Vec<ReadinessEvidence> = Vec::new();
+    let mut cargo_succeeded = false;
+
+    // Apply policy effects for readiness (Fix 7: parallel mode must respect PublishPolicy::Fast)
+    let effects = crate::engine::apply_policy(opts);
+    let readiness_config = types::ReadinessConfig {
+        enabled: effects.readiness_enabled,
+        ..opts.readiness.clone()
+    };
 
     while attempt < opts.max_attempts {
         attempt += 1;
@@ -141,195 +149,206 @@ fn publish_package(
             ));
         }
 
-        // Event: PackageAttempted
-        {
-            let mut log = event_log.lock().unwrap();
-            log.record(PublishEvent {
-                timestamp: Utc::now(),
-                event_type: EventType::PackageAttempted {
-                    attempt,
-                    command: command.clone(),
-                },
-                package: pkg_label.clone(),
-            });
-        }
-
-        let out = match cargo::cargo_publish(
-            &ws.workspace_root,
-            &p.name,
-            &ws.plan.registry.name,
-            opts.allow_dirty,
-            opts.no_verify,
-            opts.output_lines,
-        ) {
-            Ok(o) => o,
-            Err(e) => {
-                {
-                    let mut rep = reporter.lock().unwrap();
-                    rep.error(&format!(
-                        "{}@{}: cargo publish failed to execute: {}",
-                        p.name, p.version, e
-                    ));
-                }
-                return PackagePublishResult { result: Err(e) };
-            }
-        };
-
-        // Collect attempt evidence
-        attempt_evidence.push(AttemptEvidence {
-            attempt_number: attempt,
-            command: command.clone(),
-            exit_code: out.exit_code,
-            stdout_tail: out.stdout_tail.clone(),
-            stderr_tail: out.stderr_tail.clone(),
-            timestamp: Utc::now(),
-            duration: out.duration,
-        });
-
-        // Event: PackageOutput
-        {
-            let mut log = event_log.lock().unwrap();
-            log.record(PublishEvent {
-                timestamp: Utc::now(),
-                event_type: EventType::PackageOutput {
-                    stdout_tail: out.stdout_tail.clone(),
-                    stderr_tail: out.stderr_tail.clone(),
-                },
-                package: pkg_label.clone(),
-            });
-        }
-
-        let success = out.exit_code == 0;
-
-        if success {
-            {
-                let mut rep = reporter.lock().unwrap();
-                rep.info(&format!(
-                    "{}@{}: cargo publish exited successfully; verifying...",
-                    p.name, p.version
-                ));
-            }
-
-            let verify_result =
-                reg.is_version_visible_with_backoff(&p.name, &p.version, &opts.readiness);
-
-            match verify_result {
-                Ok((visible, checks)) => {
-                    readiness_evidence = checks;
-                    if visible {
-                        {
-                            let mut state = st.lock().unwrap();
-                            update_state_locked(&mut state, &key, PackageState::Published);
-                            let _ = state::save_state(state_dir, &state);
-                        }
-                        last_err = None;
-
-                        // Event: PackagePublished
-                        {
-                            let mut log = event_log.lock().unwrap();
-                            log.record(PublishEvent {
-                                timestamp: Utc::now(),
-                                event_type: EventType::PackagePublished {
-                                    duration_ms: start_instant.elapsed().as_millis() as u64,
-                                },
-                                package: pkg_label.clone(),
-                            });
-                            let _ = log.write_to_file(events_path);
-                            log.clear();
-                        }
-
-                        break;
-                    } else {
-                        last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
-                    }
-                }
-                Err(_) => {
-                    last_err = Some((ErrorClass::Ambiguous, "readiness check failed".into()));
-                }
-            }
-        } else {
-            // Cargo failed, check registry
-            {
-                let mut rep = reporter.lock().unwrap();
-                rep.warn(&format!(
-                    "{}@{}: cargo publish failed (exit={}); checking registry...",
-                    p.name, p.version, out.exit_code
-                ));
-            }
-
-            if reg.version_exists(&p.name, &p.version).unwrap_or(false) {
-                {
-                    let mut rep = reporter.lock().unwrap();
-                    rep.info(&format!(
-                        "{}@{}: version is present on registry; treating as published",
-                        p.name, p.version
-                    ));
-                }
-
-                {
-                    let mut state = st.lock().unwrap();
-                    update_state_locked(&mut state, &key, PackageState::Published);
-                    let _ = state::save_state(state_dir, &state);
-                }
-                last_err = None;
-                break;
-            }
-
-            let (class, msg) = engine::classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
-            last_err = Some((class.clone(), msg.clone()));
-
-            // Event: PackageFailed
+        if !cargo_succeeded {
+            // Event: PackageAttempted
             {
                 let mut log = event_log.lock().unwrap();
                 log.record(PublishEvent {
                     timestamp: Utc::now(),
-                    event_type: EventType::PackageFailed {
-                        class: class.clone(),
-                        message: msg.clone(),
+                    event_type: EventType::PackageAttempted {
+                        attempt,
+                        command: command.clone(),
                     },
                     package: pkg_label.clone(),
                 });
             }
 
-            match class {
-                ErrorClass::Permanent => {
-                    let failed = PackageState::Failed {
-                        class,
-                        message: msg.clone(),
-                    };
+            let out = match cargo::cargo_publish(
+                &ws.workspace_root,
+                &p.name,
+                &ws.plan.registry.name,
+                opts.allow_dirty,
+                opts.no_verify,
+                opts.output_lines,
+                Some(opts.parallel.per_package_timeout),
+            ) {
+                Ok(o) => o,
+                Err(e) => {
+                    {
+                        let mut rep = reporter.lock().unwrap();
+                        rep.error(&format!(
+                            "{}@{}: cargo publish failed to execute: {}",
+                            p.name, p.version, e
+                        ));
+                    }
+                    return PackagePublishResult { result: Err(e) };
+                }
+            };
+
+            // Collect attempt evidence
+            attempt_evidence.push(AttemptEvidence {
+                attempt_number: attempt,
+                command: command.clone(),
+                exit_code: out.exit_code,
+                stdout_tail: out.stdout_tail.clone(),
+                stderr_tail: out.stderr_tail.clone(),
+                timestamp: Utc::now(),
+                duration: out.duration,
+            });
+
+            // Event: PackageOutput
+            {
+                let mut log = event_log.lock().unwrap();
+                log.record(PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type: EventType::PackageOutput {
+                        stdout_tail: out.stdout_tail.clone(),
+                        stderr_tail: out.stderr_tail.clone(),
+                    },
+                    package: pkg_label.clone(),
+                });
+            }
+
+            if out.exit_code == 0 {
+                cargo_succeeded = true;
+            } else {
+                // Cargo failed, check registry
+                {
+                    let mut rep = reporter.lock().unwrap();
+                    rep.warn(&format!(
+                        "{}@{}: cargo publish failed (exit={}); checking registry...",
+                        p.name, p.version, out.exit_code
+                    ));
+                }
+
+                if reg.version_exists(&p.name, &p.version).unwrap_or(false) {
+                    {
+                        let mut rep = reporter.lock().unwrap();
+                        rep.info(&format!(
+                            "{}@{}: version is present on registry; treating as published",
+                            p.name, p.version
+                        ));
+                    }
+
                     {
                         let mut state = st.lock().unwrap();
-                        update_state_locked(&mut state, &key, failed);
+                        update_state_locked(&mut state, &key, PackageState::Published);
                         let _ = state::save_state(state_dir, &state);
                     }
+                    last_err = None;
+                    break;
+                }
+
+                let (class, msg) =
+                    engine::classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
+                last_err = Some((class.clone(), msg.clone()));
+
+                // Event: PackageFailed
+                {
+                    let mut log = event_log.lock().unwrap();
+                    log.record(PublishEvent {
+                        timestamp: Utc::now(),
+                        event_type: EventType::PackageFailed {
+                            class: class.clone(),
+                            message: msg.clone(),
+                        },
+                        package: pkg_label.clone(),
+                    });
+                }
+
+                match class {
+                    ErrorClass::Permanent => {
+                        let failed = PackageState::Failed {
+                            class,
+                            message: msg.clone(),
+                        };
+                        {
+                            let mut state = st.lock().unwrap();
+                            update_state_locked(&mut state, &key, failed);
+                            let _ = state::save_state(state_dir, &state);
+                        }
+                        {
+                            let mut log = event_log.lock().unwrap();
+                            let _ = log.write_to_file(events_path);
+                            log.clear();
+                        }
+
+                        return PackagePublishResult {
+                            result: Err(anyhow::anyhow!(
+                                "{}@{}: permanent failure: {}",
+                                p.name,
+                                p.version,
+                                msg
+                            )),
+                        };
+                    }
+                    ErrorClass::Retryable | ErrorClass::Ambiguous => {
+                        let delay =
+                            engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                        {
+                            let mut rep = reporter.lock().unwrap();
+                            rep.warn(&format!(
+                                "{}@{}: retrying in {}",
+                                p.name,
+                                p.version,
+                                humantime::format_duration(delay)
+                            ));
+                        }
+                        thread::sleep(delay);
+                    }
+                }
+                continue;
+            }
+        }
+
+        // Readiness verification (runs after first cargo success + all retries)
+        {
+            let mut rep = reporter.lock().unwrap();
+            rep.info(&format!(
+                "{}@{}: cargo publish exited successfully; verifying...",
+                p.name, p.version
+            ));
+        }
+
+        let verify_result =
+            reg.is_version_visible_with_backoff(&p.name, &p.version, &readiness_config);
+
+        match verify_result {
+            Ok((visible, checks)) => {
+                readiness_evidence = checks;
+                if visible {
+                    {
+                        let mut state = st.lock().unwrap();
+                        update_state_locked(&mut state, &key, PackageState::Published);
+                        let _ = state::save_state(state_dir, &state);
+                    }
+                    last_err = None;
+
+                    // Event: PackagePublished
                     {
                         let mut log = event_log.lock().unwrap();
+                        log.record(PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::PackagePublished {
+                                duration_ms: start_instant.elapsed().as_millis() as u64,
+                            },
+                            package: pkg_label.clone(),
+                        });
                         let _ = log.write_to_file(events_path);
                         log.clear();
                     }
 
-                    return PackagePublishResult {
-                        result: Err(anyhow::anyhow!(
-                            "{}@{}: permanent failure: {}",
-                            p.name,
-                            p.version,
-                            msg
-                        )),
-                    };
-                }
-                ErrorClass::Retryable | ErrorClass::Ambiguous => {
+                    break;
+                } else {
+                    last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
                     let delay = engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
-                    {
-                        let mut rep = reporter.lock().unwrap();
-                        rep.warn(&format!(
-                            "{}@{}: retrying in {}",
-                            p.name,
-                            p.version,
-                            humantime::format_duration(delay)
-                        ));
-                    }
                     thread::sleep(delay);
                 }
+            }
+            Err(_) => {
+                last_err = Some((ErrorClass::Ambiguous, "readiness check failed".into()));
+                let delay = engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                thread::sleep(delay);
             }
         }
     }

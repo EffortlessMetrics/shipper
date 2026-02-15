@@ -1007,13 +1007,6 @@ mod tests {
         }
     }
 
-    fn restore_env(key: &str, value: Option<String>) {
-        if let Some(v) = value {
-            unsafe { env::set_var(key, v) };
-        } else {
-            unsafe { env::remove_var(key) };
-        }
-    }
 
     #[test]
     fn parse_duration_handles_valid_and_invalid_inputs() {
@@ -1130,25 +1123,28 @@ mod tests {
             parallel: shipper::types::ParallelConfig::default(),
         };
 
-        unsafe { env::set_var("CARGO_REGISTRY_TOKEN", "orig-reg-token") };
-        unsafe { env::set_var("CARGO_REGISTRIES_CRATES_IO_TOKEN", "orig-named-token") };
-        unsafe { env::remove_var("CARGO_HOME") };
-
-        let old_registry = env::var("CARGO_REGISTRY_TOKEN").ok();
-        let old_named = env::var("CARGO_REGISTRIES_CRATES_IO_TOKEN").ok();
-        let old_home = env::var("CARGO_HOME").ok();
-
-        unsafe { env::remove_var("CARGO_REGISTRY_TOKEN") };
-        unsafe { env::remove_var("CARGO_REGISTRIES_CRATES_IO_TOKEN") };
-        unsafe { env::set_var("CARGO_HOME", td.path().join("cargo-home")) };
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
 
-        let mut reporter = TestReporter::default();
-        run_doctor(&ws, &opts, &mut reporter).expect("doctor");
-
-        restore_env("CARGO_REGISTRY_TOKEN", old_registry);
-        restore_env("CARGO_REGISTRIES_CRATES_IO_TOKEN", old_named);
-        restore_env("CARGO_HOME", old_home);
+        temp_env::with_vars(
+            [
+                ("CARGO_REGISTRY_TOKEN", None::<String>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<String>),
+                (
+                    "CARGO_HOME",
+                    Some(
+                        td.path()
+                            .join("cargo-home")
+                            .to_str()
+                            .expect("utf8")
+                            .to_string(),
+                    ),
+                ),
+            ],
+            || {
+                let mut reporter = TestReporter::default();
+                run_doctor(&ws, &opts, &mut reporter).expect("doctor");
+            },
+        );
     }
 
     #[test]
@@ -1189,26 +1185,28 @@ mod tests {
             parallel: shipper::types::ParallelConfig::default(),
         };
 
-        unsafe { env::remove_var("CARGO_REGISTRY_TOKEN") };
-        unsafe { env::remove_var("CARGO_REGISTRIES_CRATES_IO_TOKEN") };
-        unsafe { env::set_var("CARGO_HOME", td.path().join("orig-home")) };
-        fs::create_dir_all(td.path().join("orig-home")).expect("mkdir");
-
-        let old_registry = env::var("CARGO_REGISTRY_TOKEN").ok();
-        let old_named = env::var("CARGO_REGISTRIES_CRATES_IO_TOKEN").ok();
-        let old_home = env::var("CARGO_HOME").ok();
-
-        unsafe { env::remove_var("CARGO_REGISTRY_TOKEN") };
-        unsafe { env::remove_var("CARGO_REGISTRIES_CRATES_IO_TOKEN") };
-        unsafe { env::set_var("CARGO_HOME", td.path().join("cargo-home")) };
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
 
-        let mut reporter = TestReporter::default();
-        run_doctor(&ws, &opts, &mut reporter).expect("doctor");
-
-        restore_env("CARGO_REGISTRY_TOKEN", old_registry);
-        restore_env("CARGO_REGISTRIES_CRATES_IO_TOKEN", old_named);
-        restore_env("CARGO_HOME", old_home);
+        temp_env::with_vars(
+            [
+                ("CARGO_REGISTRY_TOKEN", None::<String>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<String>),
+                (
+                    "CARGO_HOME",
+                    Some(
+                        td.path()
+                            .join("cargo-home")
+                            .to_str()
+                            .expect("utf8")
+                            .to_string(),
+                    ),
+                ),
+            ],
+            || {
+                let mut reporter = TestReporter::default();
+                run_doctor(&ws, &opts, &mut reporter).expect("doctor");
+            },
+        );
     }
 
     #[test]

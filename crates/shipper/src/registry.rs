@@ -130,24 +130,22 @@ impl RegistryClient {
         }
     }
 
-    /// Calculate the index path for a crate using the 2+2+N scheme.
+    /// Calculate the index path for a crate using Cargo's sparse index scheme.
     ///
-    /// For example, "serde" becomes "s/e/serde"
-    /// and "tokio" becomes "t/o/tokio"
+    /// - 1 char  → `1/{name}`
+    /// - 2 chars → `2/{name}`
+    /// - 3 chars → `3/{name[0]}/{name}`
+    /// - 4+ chars → `{name[0..2]}/{name[2..4]}/{name}`
+    ///
+    /// All names are lowercased per Cargo convention.
     fn calculate_index_path(&self, crate_name: &str) -> String {
-        let chars: Vec<char> = crate_name.chars().collect();
-        let first = if !chars.is_empty() { chars[0] } else { '_' };
-        let second = if chars.len() > 1 { chars[1] } else { '_' };
-
-        // Handle special cases: crates starting with non-alphanumeric characters
-        let first = if first.is_alphanumeric() { first } else { '_' };
-        let second = if second.is_alphanumeric() {
-            second
-        } else {
-            '_'
-        };
-
-        format!("{}/{}/{}", first, second, crate_name)
+        let lower = crate_name.to_lowercase();
+        match lower.len() {
+            1 => format!("1/{}", lower),
+            2 => format!("2/{}", lower),
+            3 => format!("3/{}/{}", &lower[..1], lower),
+            _ => format!("{}/{}/{}", &lower[..2], &lower[2..4], lower),
+        }
     }
 
     /// Fetch the index file content from the registry.
@@ -170,21 +168,18 @@ impl RegistryClient {
         }
     }
 
-    /// Parse the index JSON and check if the version exists.
+    /// Parse the index content (line-delimited JSON) and check if the version exists.
     fn parse_version_from_index(&self, content: &str, version: &str) -> Result<bool> {
-        // The sparse index format is a JSON array of version objects
         #[derive(Deserialize)]
         struct IndexVersion {
-            #[allow(dead_code)]
-            #[serde(rename = "name")]
-            _name: String,
             vers: String,
         }
 
-        let versions: Vec<IndexVersion> = serde_json::from_str(content)
-            .with_context(|| format!("failed to parse index JSON for version {}", version))?;
-
-        Ok(versions.iter().any(|v| v.vers == version))
+        Ok(content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str::<IndexVersion>(l).ok())
+            .any(|v| v.vers == version))
     }
 
     /// Attempt ownership verification for a crate.
@@ -626,11 +621,11 @@ mod tests {
 
         let cli = RegistryClient::new(test_registry(api_base)).expect("client");
 
-        // Test standard crate names
-        assert_eq!(cli.calculate_index_path("serde"), "s/e/serde");
-        assert_eq!(cli.calculate_index_path("tokio"), "t/o/tokio");
-        assert_eq!(cli.calculate_index_path("rand"), "r/a/rand");
-        assert_eq!(cli.calculate_index_path("http"), "h/t/http");
+        // Test standard crate names (4+ chars use first_two/chars_2_4/name)
+        assert_eq!(cli.calculate_index_path("serde"), "se/rd/serde");
+        assert_eq!(cli.calculate_index_path("tokio"), "to/ki/tokio");
+        assert_eq!(cli.calculate_index_path("rand"), "ra/nd/rand");
+        assert_eq!(cli.calculate_index_path("http"), "ht/tp/http");
     }
 
     #[test]
@@ -643,10 +638,13 @@ mod tests {
         let cli = RegistryClient::new(test_registry(api_base)).expect("client");
 
         // Test single-character crate name
-        assert_eq!(cli.calculate_index_path("a"), "a/_/a");
+        assert_eq!(cli.calculate_index_path("a"), "1/a");
 
         // Test two-character crate name
-        assert_eq!(cli.calculate_index_path("ab"), "a/b/ab");
+        assert_eq!(cli.calculate_index_path("ab"), "2/ab");
+
+        // Test three-character crate name
+        assert_eq!(cli.calculate_index_path("abc"), "3/a/abc");
     }
 
     #[test]
@@ -658,9 +656,11 @@ mod tests {
 
         let cli = RegistryClient::new(test_registry(api_base)).expect("client");
 
-        // Test crate names starting with special characters
-        assert_eq!(cli.calculate_index_path("_serde"), "_/s/_serde");
-        assert_eq!(cli.calculate_index_path("-tokio"), "_/t/-tokio");
+        // Test crate names with special characters (lowercased, using length-based scheme)
+        assert_eq!(cli.calculate_index_path("_serde"), "_s/er/_serde");
+        assert_eq!(cli.calculate_index_path("-tokio"), "-t/ok/-tokio");
+        // Test uppercase is lowercased
+        assert_eq!(cli.calculate_index_path("Serde"), "se/rd/serde");
     }
 
     #[test]
@@ -672,11 +672,7 @@ mod tests {
 
         let cli = RegistryClient::new(test_registry(api_base)).expect("client");
 
-        let index_content = r#"[
-            {"name":"serde","vers":"1.0.0","deps":[],"cksum":"abc123"},
-            {"name":"serde","vers":"1.0.1","deps":[],"cksum":"def456"},
-            {"name":"serde","vers":"2.0.0","deps":[],"cksum":"ghi789"}
-        ]"#;
+        let index_content = "{\"vers\":\"1.0.0\"}\n{\"vers\":\"1.0.1\"}\n{\"vers\":\"2.0.0\"}\n";
 
         let found = cli.parse_version_from_index(index_content, "1.0.1");
         assert!(found.is_ok());
@@ -692,10 +688,7 @@ mod tests {
 
         let cli = RegistryClient::new(test_registry(api_base)).expect("client");
 
-        let index_content = r#"[
-            {"name":"serde","vers":"1.0.0","deps":[],"cksum":"abc123"},
-            {"name":"serde","vers":"1.0.1","deps":[],"cksum":"def456"}
-        ]"#;
+        let index_content = "{\"vers\":\"1.0.0\"}\n{\"vers\":\"1.0.1\"}\n";
 
         let found = cli.parse_version_from_index(index_content, "2.0.0");
         assert!(found.is_ok());
@@ -714,18 +707,16 @@ mod tests {
         let invalid_json = "not valid json";
 
         let found = cli.parse_version_from_index(invalid_json, "1.0.0");
-        assert!(found.is_err());
+        assert!(found.is_ok());
+        assert!(!found.unwrap());
     }
 
     #[test]
     fn check_index_visibility_returns_true_for_existing_version() {
-        let index_content = r#"[
-            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"abc123"},
-            {"name":"demo","vers":"1.0.1","deps":[],"cksum":"def456"}
-        ]"#;
+        let index_content = "{\"vers\":\"1.0.0\"}\n{\"vers\":\"1.0.1\"}\n";
 
         let (api_base, handle) = with_server(move |req| {
-            assert_eq!(req.url(), "/d/e/demo");
+            assert_eq!(req.url(), "/de/mo/demo");
             let resp = Response::from_string(index_content)
                 .with_status_code(StatusCode(200))
                 .with_header(
@@ -743,12 +734,10 @@ mod tests {
 
     #[test]
     fn check_index_visibility_returns_false_for_missing_version() {
-        let index_content = r#"[
-            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"abc123"}
-        ]"#;
+        let index_content = "{\"vers\":\"1.0.0\"}\n";
 
         let (api_base, handle) = with_server(move |req| {
-            assert_eq!(req.url(), "/d/e/demo");
+            assert_eq!(req.url(), "/de/mo/demo");
             let resp = Response::from_string(index_content)
                 .with_status_code(StatusCode(200))
                 .with_header(
@@ -813,12 +802,10 @@ mod tests {
 
     #[test]
     fn is_version_visible_with_backoff_uses_index_method() {
-        let index_content = r#"[
-            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"abc123"}
-        ]"#;
+        let index_content = "{\"vers\":\"1.0.0\"}\n";
 
         let (api_base, handle) = with_server(move |req| {
-            assert_eq!(req.url(), "/d/e/demo");
+            assert_eq!(req.url(), "/de/mo/demo");
             let resp = Response::from_string(index_content)
                 .with_status_code(StatusCode(200))
                 .with_header(
@@ -851,12 +838,10 @@ mod tests {
 
     #[test]
     fn is_version_visible_with_backoff_uses_both_method_prefer_index() {
-        let index_content = r#"[
-            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"abc123"}
-        ]"#;
+        let index_content = "{\"vers\":\"1.0.0\"}\n";
 
         let (api_base, handle) = with_server(move |req| {
-            assert_eq!(req.url(), "/d/e/demo");
+            assert_eq!(req.url(), "/de/mo/demo");
             let resp = Response::from_string(index_content)
                 .with_status_code(StatusCode(200))
                 .with_header(
@@ -924,7 +909,7 @@ mod tests {
 
     #[test]
     fn check_index_visibility_with_empty_index_returns_false() {
-        let index_content = "[]";
+        let index_content = "";
 
         let (api_base, handle) = with_server(move |req| {
             let resp = Response::from_string(index_content)
@@ -944,12 +929,8 @@ mod tests {
 
     #[test]
     fn check_index_visibility_with_multiple_versions_finds_correct() {
-        let index_content = r#"[
-            {"name":"demo","vers":"0.1.0","deps":[],"cksum":"abc123"},
-            {"name":"demo","vers":"0.2.0","deps":[],"cksum":"def456"},
-            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"ghi789"},
-            {"name":"demo","vers":"1.1.0","deps":[],"cksum":"jkl012"}
-        ]"#;
+        let index_content =
+            "{\"vers\":\"0.1.0\"}\n{\"vers\":\"0.2.0\"}\n{\"vers\":\"1.0.0\"}\n{\"vers\":\"1.1.0\"}\n";
 
         let (api_base, handle) = with_multi_server(
             move |req| {
@@ -980,10 +961,8 @@ mod tests {
 
     #[test]
     fn check_index_visibility_handles_malformed_json_gracefully() {
-        let malformed_json = r#"[
-            {"name":"demo","vers":"1.0.0","deps":[],"cksum":"abc123"},
-            {"invalid":"entry"}
-        ]"#;
+        // JSONL with one valid line and one invalid line; valid line should still be found
+        let malformed_json = "{\"vers\":\"1.0.0\"}\n{\"invalid\":\"entry\"}\n";
 
         let (api_base, handle) = with_server(move |req| {
             let resp = Response::from_string(malformed_json)
@@ -996,9 +975,9 @@ mod tests {
         });
 
         let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
-        // Should return false for malformed JSON (graceful degradation)
+        // Valid lines are still parsed; invalid lines are skipped
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
-        assert!(!visible);
+        assert!(visible);
         handle.join().expect("join");
     }
 
