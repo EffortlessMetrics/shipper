@@ -219,7 +219,7 @@ fn publish_package(
                 });
             }
 
-            if out.exit_code == 0 {
+            if out.exit_code == 0 && !out.timed_out {
                 cargo_succeeded = true;
                 // Persist Uploaded state so resume skips cargo publish
                 {
@@ -364,6 +364,30 @@ fn publish_package(
                 last_err = Some((ErrorClass::Ambiguous, "readiness check failed".into()));
                 let delay = engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
                 thread::sleep(delay);
+            }
+        }
+    }
+
+    // If package is still Uploaded (loop didn't run or readiness never checked), force a final check
+    if last_err.is_none() {
+        let current_state = st
+            .lock()
+            .unwrap()
+            .packages
+            .get(&key)
+            .map(|p| p.state.clone());
+        if matches!(current_state, Some(PackageState::Uploaded)) {
+            if reg.version_exists(&p.name, &p.version).unwrap_or(false) {
+                {
+                    let mut state = st.lock().unwrap();
+                    update_state_locked(&mut state, &key, PackageState::Published);
+                    let _ = state::save_state(state_dir, &state);
+                }
+            } else {
+                last_err = Some((
+                    ErrorClass::Ambiguous,
+                    "package was uploaded but not confirmed visible on registry".into(),
+                ));
             }
         }
     }
