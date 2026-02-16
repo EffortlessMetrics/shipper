@@ -255,6 +255,7 @@ pub struct ReleasePlan {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum PackageState {
     Pending,
+    Uploaded,
     Published,
     Skipped { reason: String },
     Failed { class: ErrorClass, message: String },
@@ -508,6 +509,15 @@ mod tests {
         let reg = Registry::crates_io();
         assert_eq!(reg.name, "crates-io");
         assert_eq!(reg.api_base, "https://crates.io");
+    }
+
+    #[test]
+    fn uploaded_state_serde_roundtrip() {
+        let st = PackageState::Uploaded;
+        let json = serde_json::to_string(&st).expect("serialize");
+        assert_eq!(json, r#"{"state":"uploaded"}"#);
+        let rt: PackageState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt, PackageState::Uploaded);
     }
 
     #[test]

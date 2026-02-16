@@ -739,6 +739,7 @@ fn run_inspect_receipt(
         let state_str = match &p.state {
             shipper::types::PackageState::Published => "\x1b[32mPublished\x1b[0m",
             shipper::types::PackageState::Pending => "Pending",
+            shipper::types::PackageState::Uploaded => "\x1b[33mUploaded\x1b[0m",
             shipper::types::PackageState::Skipped { reason } => &format!("Skipped: {}", reason),
             shipper::types::PackageState::Failed { class, message } => {
                 &format!("\x1b[31mFailed ({:?}): {}\x1b[0m", class, message)

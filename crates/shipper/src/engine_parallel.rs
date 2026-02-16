@@ -118,6 +118,16 @@ fn publish_package(
     let mut readiness_evidence: Vec<ReadinessEvidence> = Vec::new();
     let mut cargo_succeeded = false;
 
+    // Check if resuming from Uploaded state (cargo publish succeeded previously)
+    {
+        let state = st.lock().unwrap();
+        if let Some(pr) = state.packages.get(&key)
+            && matches!(pr.state, PackageState::Uploaded)
+        {
+            cargo_succeeded = true;
+        }
+    }
+
     // Apply policy effects for readiness (Fix 7: parallel mode must respect PublishPolicy::Fast)
     let effects = crate::engine::apply_policy(opts);
     let readiness_config = types::ReadinessConfig {
@@ -211,6 +221,12 @@ fn publish_package(
 
             if out.exit_code == 0 {
                 cargo_succeeded = true;
+                // Persist Uploaded state so resume skips cargo publish
+                {
+                    let mut state = st.lock().unwrap();
+                    update_state_locked(&mut state, &key, PackageState::Uploaded);
+                    let _ = state::save_state(state_dir, &state);
+                }
             } else {
                 // Cargo failed, check registry
                 {

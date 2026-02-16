@@ -320,7 +320,7 @@ pub fn run_publish(
         let exec_result = if parallel_receipts.iter().all(|r| {
             matches!(
                 r.state,
-                PackageState::Published | PackageState::Skipped { .. }
+                PackageState::Published | PackageState::Uploaded | PackageState::Skipped { .. }
             )
         }) {
             ExecutionResult::Success
@@ -361,6 +361,9 @@ pub fn run_publish(
             .context("missing package progress in state")?
             .clone();
 
+        // Track whether cargo publish already succeeded (e.g. from Uploaded state on resume)
+        let mut cargo_succeeded = false;
+
         match progress.state {
             PackageState::Published | PackageState::Skipped { .. } => {
                 reporter.info(&format!(
@@ -370,6 +373,13 @@ pub fn run_publish(
                     short_state(&progress.state)
                 ));
                 continue;
+            }
+            PackageState::Uploaded => {
+                reporter.info(&format!(
+                    "{}@{}: resuming from uploaded (skipping cargo publish)",
+                    p.name, p.version
+                ));
+                cargo_succeeded = true;
             }
             _ => {}
         }
@@ -439,7 +449,6 @@ pub fn run_publish(
         let mut last_err: Option<(ErrorClass, String)> = None;
         let mut attempt_evidence: Vec<AttemptEvidence> = Vec::new();
         let mut readiness_evidence: Vec<ReadinessEvidence> = Vec::new();
-        let mut cargo_succeeded = false;
 
         while attempt < opts.max_attempts {
             attempt += 1;
@@ -507,6 +516,8 @@ pub fn run_publish(
 
                 if out.exit_code == 0 {
                     cargo_succeeded = true;
+                    // Persist Uploaded state so resume skips cargo publish
+                    update_state(&mut st, &state_dir, &key, PackageState::Uploaded)?;
                 } else {
                     // Even if cargo fails, the publish may have succeeded (timeouts, network splits).
                     // Always check the registry before deciding.
@@ -675,7 +686,7 @@ pub fn run_publish(
     let exec_result = if receipts.iter().all(|r| {
         matches!(
             r.state,
-            PackageState::Published | PackageState::Skipped { .. }
+            PackageState::Published | PackageState::Uploaded | PackageState::Skipped { .. }
         )
     }) {
         ExecutionResult::Success
@@ -783,6 +794,7 @@ pub(crate) fn pkg_key(name: &str, version: &str) -> String {
 pub(crate) fn short_state(st: &PackageState) -> &'static str {
     match st {
         PackageState::Pending => "pending",
+        PackageState::Uploaded => "uploaded",
         PackageState::Published => "published",
         PackageState::Skipped { .. } => "skipped",
         PackageState::Failed { .. } => "failed",
@@ -1193,6 +1205,7 @@ mod tests {
 
         assert_eq!(pkg_key("a", "1.2.3"), "a@1.2.3");
         assert_eq!(short_state(&PackageState::Pending), "pending");
+        assert_eq!(short_state(&PackageState::Uploaded), "uploaded");
         assert_eq!(short_state(&PackageState::Published), "published");
         assert_eq!(
             short_state(&PackageState::Skipped {
@@ -2725,5 +2738,95 @@ mod tests {
                 server.join();
             },
         );
+    }
+
+    #[test]
+    #[serial]
+    fn resume_from_uploaded_skips_cargo_publish_and_reaches_published() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let args_log = td.path().join("cargo_args.txt");
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+            (
+                "SHIPPER_CARGO_ARGS_LOG",
+                Some(args_log.to_str().expect("utf8").to_string()),
+            ),
+        ]);
+        temp_env::with_vars(env_vars, || {
+            // Readiness check returns 200 (version is visible)
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([(
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                )]),
+                1,
+            );
+
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let state_dir = td.path().join(".shipper");
+
+            // Pre-create state with Uploaded + attempts=1
+            let mut packages = std::collections::BTreeMap::new();
+            packages.insert(
+                "demo@0.1.0".to_string(),
+                PackageProgress {
+                    name: "demo".to_string(),
+                    version: "0.1.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Uploaded,
+                    last_updated_at: Utc::now(),
+                },
+            );
+            let st = ExecutionState {
+                state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+                plan_id: ws.plan.plan_id.clone(),
+                registry: ws.plan.registry.clone(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                packages,
+            };
+            state::save_state(&state_dir, &st).expect("save");
+
+            let opts = default_opts(PathBuf::from(".shipper"));
+            let mut reporter = CollectingReporter::default();
+            let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
+
+            // Package should reach Published (via version_exists check -> Skipped)
+            assert_eq!(receipt.packages.len(), 1);
+            assert!(
+                matches!(
+                    receipt.packages[0].state,
+                    PackageState::Published | PackageState::Skipped { .. }
+                ),
+                "expected Published or Skipped, got {:?}",
+                receipt.packages[0].state
+            );
+
+            // Cargo publish should NOT have been invoked
+            // (args_log should not exist or be empty — no cargo publish calls)
+            let cargo_invoked = args_log.exists()
+                && fs::read_to_string(&args_log)
+                    .unwrap_or_default()
+                    .contains("publish");
+            assert!(
+                !cargo_invoked,
+                "cargo publish should not have been invoked on resume from Uploaded"
+            );
+
+            // Verify reporter got the resume message
+            assert!(
+                reporter
+                    .infos
+                    .iter()
+                    .any(|i| i.contains("resuming from uploaded")
+                        || i.contains("already published")
+                        || i.contains("already complete"))
+            );
+
+            server.join();
+        });
     }
 }
