@@ -320,7 +320,7 @@ pub fn run_publish(
         let exec_result = if parallel_receipts.iter().all(|r| {
             matches!(
                 r.state,
-                PackageState::Published | PackageState::Uploaded | PackageState::Skipped { .. }
+                PackageState::Published | PackageState::Skipped { .. }
             )
         }) {
             ExecutionResult::Success
@@ -613,6 +613,21 @@ pub fn run_publish(
                 last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
                 let delay = backoff_delay(opts.base_delay, opts.max_delay, attempt);
                 thread::sleep(delay);
+            }
+        }
+
+        // If package is still Uploaded (loop didn't run or readiness never checked), force a final check
+        if last_err.is_none() {
+            let current_state = st.packages.get(&key).map(|p| &p.state);
+            if matches!(current_state, Some(PackageState::Uploaded)) {
+                if reg.version_exists(&p.name, &p.version)? {
+                    update_state(&mut st, &state_dir, &key, PackageState::Published)?;
+                } else {
+                    last_err = Some((
+                        ErrorClass::Ambiguous,
+                        "package was uploaded but not confirmed visible on registry".into(),
+                    ));
+                }
             }
         }
 
@@ -2756,13 +2771,13 @@ mod tests {
             ),
         ]);
         temp_env::with_vars(env_vars, || {
-            // Readiness check returns 200 (version is visible)
+            // First request (early check) returns 404, second (readiness) returns 200
             let server = spawn_registry_server(
                 std::collections::BTreeMap::from([(
                     "/api/v1/crates/demo/0.1.0".to_string(),
-                    vec![(200, "{}".to_string())],
+                    vec![(404, "{}".to_string()), (200, "{}".to_string())],
                 )]),
-                1,
+                2,
             );
 
             let ws = planned_workspace(td.path(), server.base_url.clone());
@@ -2794,14 +2809,11 @@ mod tests {
             let mut reporter = CollectingReporter::default();
             let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
 
-            // Package should reach Published (via version_exists check -> Skipped)
+            // Package should reach Published via the readiness verification path
             assert_eq!(receipt.packages.len(), 1);
             assert!(
-                matches!(
-                    receipt.packages[0].state,
-                    PackageState::Published | PackageState::Skipped { .. }
-                ),
-                "expected Published or Skipped, got {:?}",
+                matches!(receipt.packages[0].state, PackageState::Published),
+                "expected Published, got {:?}",
                 receipt.packages[0].state
             );
 
@@ -2824,6 +2836,15 @@ mod tests {
                     .any(|i| i.contains("resuming from uploaded")
                         || i.contains("already published")
                         || i.contains("already complete"))
+            );
+
+            // Verify the readiness path was exercised
+            assert!(
+                reporter.infos.iter().any(|i| i.contains("verifying")
+                    || i.contains("visible")
+                    || i.contains("readiness")),
+                "expected readiness verification to be exercised, reporter infos: {:?}",
+                reporter.infos
             );
 
             server.join();

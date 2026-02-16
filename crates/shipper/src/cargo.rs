@@ -1,4 +1,5 @@
 use std::env;
+use std::io::Read as _;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -11,6 +12,7 @@ pub struct CargoOutput {
     pub stdout_tail: String, // Last N lines (configurable, default 50)
     pub stderr_tail: String,
     pub duration: Duration,
+    pub timed_out: bool,
 }
 
 fn tail_lines(s: &str, n: usize) -> String {
@@ -44,27 +46,25 @@ fn redact_line(line: &str) -> String {
     let mut out = line.to_string();
 
     // Authorization: Bearer <token>
-    if let Some(pos) = out.to_lowercase().find("authorization:") {
+    if let Some(pos) = out.to_ascii_lowercase().find("authorization:") {
         let after = &out[pos..];
-        if let Some(bearer_pos) = after.to_lowercase().find("bearer ") {
+        if let Some(bearer_pos) = after.to_ascii_lowercase().find("bearer ") {
             let redact_start = pos + bearer_pos + "bearer ".len();
             out = format!("{}[REDACTED]", &out[..redact_start]);
         }
     }
 
     // token = "<value>" or token = '<value>' or token = <value>
-    if let Some(pos) = out.find("token") {
+    if let Some(pos) = out.to_ascii_lowercase().find("token") {
         let after_key = &out[pos + "token".len()..];
         let trimmed = after_key.trim_start();
         if trimmed.starts_with("= ") || trimmed.starts_with("=") {
             let eq_offset = pos + "token".len() + (after_key.len() - trimmed.len());
             let after_eq = trimmed.trim_start_matches('=').trim_start();
-            let val_offset = eq_offset + 1 + (trimmed.len() - 1 - after_eq.len());
             // Check for quoted or unquoted value
             if after_eq.starts_with('"') || after_eq.starts_with('\'') {
                 out = format!("{}= \"[REDACTED]\"", &out[..eq_offset]);
             } else if !after_eq.is_empty() {
-                let _ = val_offset; // suppress unused
                 out = format!("{}= [REDACTED]", &out[..eq_offset]);
             }
         }
@@ -124,7 +124,7 @@ pub fn cargo_publish(
 
     cmd.current_dir(workspace_root);
 
-    let (exit_code, stdout, stderr) = if let Some(timeout_dur) = timeout {
+    let (exit_code, stdout, stderr, timed_out) = if let Some(timeout_dur) = timeout {
         // Use spawn + polling to enforce timeout
         let mut child = cmd
             .stdout(std::process::Stdio::piped())
@@ -136,22 +136,43 @@ pub fn cargo_publish(
         loop {
             match child.try_wait().context("failed to poll cargo process")? {
                 Some(status) => {
-                    let out = child
-                        .wait_with_output()
-                        .context("failed to read cargo output")?;
+                    let mut stdout_bytes = Vec::new();
+                    let mut stderr_bytes = Vec::new();
+                    if let Some(mut out) = child.stdout.take() {
+                        let _ = out.read_to_end(&mut stdout_bytes);
+                    }
+                    if let Some(mut err) = child.stderr.take() {
+                        let _ = err.read_to_end(&mut stderr_bytes);
+                    }
                     break (
                         status.code().unwrap_or(-1),
-                        String::from_utf8_lossy(&out.stdout).to_string(),
-                        String::from_utf8_lossy(&out.stderr).to_string(),
+                        String::from_utf8_lossy(&stdout_bytes).to_string(),
+                        String::from_utf8_lossy(&stderr_bytes).to_string(),
+                        false,
                     );
                 }
                 None => {
                     if Instant::now() >= deadline {
                         let _ = child.kill();
                         let _ = child.wait();
-                        anyhow::bail!(
-                            "cargo publish timed out after {}",
+                        let mut stdout_bytes = Vec::new();
+                        let mut stderr_bytes = Vec::new();
+                        if let Some(mut out) = child.stdout.take() {
+                            let _ = out.read_to_end(&mut stdout_bytes);
+                        }
+                        if let Some(mut err) = child.stderr.take() {
+                            let _ = err.read_to_end(&mut stderr_bytes);
+                        }
+                        let mut stderr_str = String::from_utf8_lossy(&stderr_bytes).to_string();
+                        stderr_str.push_str(&format!(
+                            "\ncargo publish timed out after {}",
                             humantime::format_duration(timeout_dur)
+                        ));
+                        break (
+                            -1,
+                            String::from_utf8_lossy(&stdout_bytes).to_string(),
+                            stderr_str,
+                            true,
                         );
                     }
                     std::thread::sleep(Duration::from_millis(100));
@@ -166,6 +187,7 @@ pub fn cargo_publish(
             out.status.code().unwrap_or(-1),
             String::from_utf8_lossy(&out.stdout).to_string(),
             String::from_utf8_lossy(&out.stderr).to_string(),
+            false,
         )
     };
 
@@ -176,6 +198,7 @@ pub fn cargo_publish(
         stdout_tail: tail_lines(&stdout, output_lines),
         stderr_tail: tail_lines(&stderr, output_lines),
         duration,
+        timed_out,
     })
 }
 
@@ -213,6 +236,7 @@ pub fn cargo_publish_dry_run_workspace(
         stdout_tail: tail_lines(&stdout, output_lines),
         stderr_tail: tail_lines(&stderr, output_lines),
         duration,
+        timed_out: false,
     })
 }
 
@@ -252,6 +276,7 @@ pub fn cargo_publish_dry_run_package(
         stdout_tail: tail_lines(&stdout, output_lines),
         stderr_tail: tail_lines(&stderr, output_lines),
         duration,
+        timed_out: false,
     })
 }
 
@@ -494,5 +519,30 @@ mod tests {
         let result = tail_lines(input, 50);
         assert!(result.contains("Bearer [REDACTED]"));
         assert!(!result.contains("secret_token"));
+    }
+
+    #[test]
+    fn redact_mixed_case_authorization() {
+        let input = "AUTHORIZATION: Bearer supersecret";
+        let out = redact_sensitive(input);
+        assert_eq!(out, "AUTHORIZATION: Bearer [REDACTED]");
+        assert!(!out.contains("supersecret"));
+    }
+
+    #[test]
+    fn redact_mixed_case_token() {
+        let input = r#"Token = "mysecret""#;
+        let out = redact_sensitive(input);
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("mysecret"));
+    }
+
+    #[test]
+    fn redact_non_ascii_near_sensitive_pattern_no_panic() {
+        // Non-ASCII characters near the pattern should not cause a panic
+        let input = "some data \u{00e9}\u{00f1} Authorization: Bearer secret123";
+        let out = redact_sensitive(input);
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("secret123"));
     }
 }
