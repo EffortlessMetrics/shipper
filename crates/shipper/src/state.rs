@@ -196,6 +196,17 @@ pub fn load_receipt(state_dir: &Path) -> Result<Option<Receipt>> {
     migrate_receipt(&path).map(Some)
 }
 
+/// Best-effort fsync of the parent directory after a rename, ensuring the
+/// directory entry update is durable on crash.  Errors are silently ignored
+/// because not all platforms support opening a directory for sync (e.g. Windows).
+pub(crate) fn fsync_parent_dir(path: &Path) {
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+}
+
 fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     let tmp = path.with_extension("tmp");
     let data = serde_json::to_vec_pretty(value).context("failed to serialize JSON")?;
@@ -215,6 +226,8 @@ fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> 
             path.display()
         )
     })?;
+
+    fsync_parent_dir(path);
 
     Ok(())
 }

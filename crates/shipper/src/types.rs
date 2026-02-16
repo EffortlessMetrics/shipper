@@ -55,9 +55,13 @@ impl Registry {
     }
 
     /// Get the index base URL, deriving it from the API base if not explicitly set.
+    /// Strips the `sparse+` prefix if present (used by Cargo's sparse index config).
     pub fn get_index_base(&self) -> String {
         if let Some(index_base) = &self.index_base {
-            index_base.clone()
+            index_base
+                .strip_prefix("sparse+")
+                .unwrap_or(index_base)
+                .to_string()
         } else {
             // Default: derive from API base (e.g., https://crates.io -> https://index.crates.io)
             self.api_base
@@ -251,6 +255,7 @@ pub struct ReleasePlan {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum PackageState {
     Pending,
+    Uploaded,
     Published,
     Skipped { reason: String },
     Failed { class: ErrorClass, message: String },
@@ -507,6 +512,15 @@ mod tests {
     }
 
     #[test]
+    fn uploaded_state_serde_roundtrip() {
+        let st = PackageState::Uploaded;
+        let json = serde_json::to_string(&st).expect("serialize");
+        assert_eq!(json, r#"{"state":"uploaded"}"#);
+        let rt: PackageState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt, PackageState::Uploaded);
+    }
+
+    #[test]
     fn package_state_serializes_with_tagged_representation() {
         let st = PackageState::Failed {
             class: ErrorClass::Permanent,
@@ -548,6 +562,17 @@ mod tests {
         let parsed: ExecutionState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.plan_id, "plan-1");
         assert!(parsed.packages.contains_key("demo@1.2.3"));
+    }
+
+    #[test]
+    fn registry_get_index_base_strips_sparse_prefix() {
+        let registry = Registry {
+            name: "crates-io".to_string(),
+            api_base: "https://crates.io".to_string(),
+            index_base: Some("sparse+https://index.crates.io".to_string()),
+        };
+
+        assert_eq!(registry.get_index_base(), "https://index.crates.io");
     }
 
     #[test]
@@ -857,27 +882,28 @@ mod tests {
                 assert_eq!(first, second, "Index path calculation should be deterministic");
             }
 
-            // Index path follows 2+2+N pattern
+            // Index path follows Cargo's sparse index scheme
             #[test]
             fn index_path_follows_pattern(crate_name in "[a-z0-9-]{3,20}") {
                 let path = calculate_index_path_for_crate(&crate_name);
+                let lower = crate_name.to_lowercase();
                 let parts: Vec<&str> = path.split('/').collect();
 
-                // Should have exactly 3 parts
-                assert_eq!(parts.len(), 3, "Index path should have 3 parts");
-
-                // First part should be the first character or underscore
-                let first_char = crate_name.chars().next().unwrap_or('_');
-                let expected_first = if first_char.is_alphanumeric() { first_char } else { '_' };
-                assert_eq!(parts[0], expected_first.to_string());
-
-                // Second part should be the second character or underscore
-                let second_char = crate_name.chars().nth(1).unwrap_or('_');
-                let expected_second = if second_char.is_alphanumeric() { second_char } else { '_' };
-                assert_eq!(parts[1], expected_second.to_string());
-
-                // Third part should be the full crate name
-                assert_eq!(parts[2], crate_name);
+                match lower.len() {
+                    3 => {
+                        assert_eq!(parts.len(), 3, "3-char crate should have 3 parts");
+                        assert_eq!(parts[0], "3");
+                        assert_eq!(parts[1], &lower[..1]);
+                        assert_eq!(parts[2], lower);
+                    }
+                    n if n >= 4 => {
+                        assert_eq!(parts.len(), 3, "4+ char crate should have 3 parts");
+                        assert_eq!(parts[0], &lower[..2]);
+                        assert_eq!(parts[1], &lower[2..4]);
+                        assert_eq!(parts[2], lower);
+                    }
+                    _ => unreachable!("regex guarantees at least 3 chars"),
+                }
             }
 
             // Schema version parsing is deterministic
@@ -899,18 +925,13 @@ mod tests {
         // Helper functions for property-based tests
 
         fn calculate_index_path_for_crate(crate_name: &str) -> String {
-            let chars: Vec<char> = crate_name.chars().collect();
-            let first = if !chars.is_empty() { chars[0] } else { '_' };
-            let second = if chars.len() > 1 { chars[1] } else { '_' };
-
-            let first = if first.is_alphanumeric() { first } else { '_' };
-            let second = if second.is_alphanumeric() {
-                second
-            } else {
-                '_'
-            };
-
-            format!("{}/{}/{}", first, second, crate_name)
+            let lower = crate_name.to_lowercase();
+            match lower.len() {
+                1 => format!("1/{}", lower),
+                2 => format!("2/{}", lower),
+                3 => format!("3/{}/{}", &lower[..1], lower),
+                _ => format!("{}/{}/{}", &lower[..2], &lower[2..4], lower),
+            }
         }
 
         fn parse_schema_version_for_test(version: &str) -> Result<u32, String> {

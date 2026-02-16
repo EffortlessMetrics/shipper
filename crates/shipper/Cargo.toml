@@ -28,9 +28,13 @@ hex = "0.4.3"
 gethostname = "0.5.0"
 tokio = { version = "1.42", features = ["rt", "time", "sync", "macros"] }
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 tempfile = "3.25.0"
 insta = "1.46.3"
 proptest = "1.10.0"
 serial_test = "3.3.1"
 tiny_http = "0.12.0"
+temp-env = "0.3"

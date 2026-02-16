@@ -116,6 +116,24 @@ fn publish_package(
     let mut last_err: Option<(ErrorClass, String)> = None;
     let mut attempt_evidence: Vec<AttemptEvidence> = Vec::new();
     let mut readiness_evidence: Vec<ReadinessEvidence> = Vec::new();
+    let mut cargo_succeeded = false;
+
+    // Check if resuming from Uploaded state (cargo publish succeeded previously)
+    {
+        let state = st.lock().unwrap();
+        if let Some(pr) = state.packages.get(&key)
+            && matches!(pr.state, PackageState::Uploaded)
+        {
+            cargo_succeeded = true;
+        }
+    }
+
+    // Apply policy effects for readiness (Fix 7: parallel mode must respect PublishPolicy::Fast)
+    let effects = crate::engine::apply_policy(opts);
+    let readiness_config = types::ReadinessConfig {
+        enabled: effects.readiness_enabled,
+        ..opts.readiness.clone()
+    };
 
     while attempt < opts.max_attempts {
         attempt += 1;
@@ -141,195 +159,211 @@ fn publish_package(
             ));
         }
 
-        // Event: PackageAttempted
-        {
-            let mut log = event_log.lock().unwrap();
-            log.record(PublishEvent {
-                timestamp: Utc::now(),
-                event_type: EventType::PackageAttempted {
-                    attempt,
-                    command: command.clone(),
-                },
-                package: pkg_label.clone(),
-            });
-        }
-
-        let out = match cargo::cargo_publish(
-            &ws.workspace_root,
-            &p.name,
-            &ws.plan.registry.name,
-            opts.allow_dirty,
-            opts.no_verify,
-            opts.output_lines,
-        ) {
-            Ok(o) => o,
-            Err(e) => {
-                {
-                    let mut rep = reporter.lock().unwrap();
-                    rep.error(&format!(
-                        "{}@{}: cargo publish failed to execute: {}",
-                        p.name, p.version, e
-                    ));
-                }
-                return PackagePublishResult { result: Err(e) };
-            }
-        };
-
-        // Collect attempt evidence
-        attempt_evidence.push(AttemptEvidence {
-            attempt_number: attempt,
-            command: command.clone(),
-            exit_code: out.exit_code,
-            stdout_tail: out.stdout_tail.clone(),
-            stderr_tail: out.stderr_tail.clone(),
-            timestamp: Utc::now(),
-            duration: out.duration,
-        });
-
-        // Event: PackageOutput
-        {
-            let mut log = event_log.lock().unwrap();
-            log.record(PublishEvent {
-                timestamp: Utc::now(),
-                event_type: EventType::PackageOutput {
-                    stdout_tail: out.stdout_tail.clone(),
-                    stderr_tail: out.stderr_tail.clone(),
-                },
-                package: pkg_label.clone(),
-            });
-        }
-
-        let success = out.exit_code == 0;
-
-        if success {
-            {
-                let mut rep = reporter.lock().unwrap();
-                rep.info(&format!(
-                    "{}@{}: cargo publish exited successfully; verifying...",
-                    p.name, p.version
-                ));
-            }
-
-            let verify_result =
-                reg.is_version_visible_with_backoff(&p.name, &p.version, &opts.readiness);
-
-            match verify_result {
-                Ok((visible, checks)) => {
-                    readiness_evidence = checks;
-                    if visible {
-                        {
-                            let mut state = st.lock().unwrap();
-                            update_state_locked(&mut state, &key, PackageState::Published);
-                            let _ = state::save_state(state_dir, &state);
-                        }
-                        last_err = None;
-
-                        // Event: PackagePublished
-                        {
-                            let mut log = event_log.lock().unwrap();
-                            log.record(PublishEvent {
-                                timestamp: Utc::now(),
-                                event_type: EventType::PackagePublished {
-                                    duration_ms: start_instant.elapsed().as_millis() as u64,
-                                },
-                                package: pkg_label.clone(),
-                            });
-                            let _ = log.write_to_file(events_path);
-                            log.clear();
-                        }
-
-                        break;
-                    } else {
-                        last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
-                    }
-                }
-                Err(_) => {
-                    last_err = Some((ErrorClass::Ambiguous, "readiness check failed".into()));
-                }
-            }
-        } else {
-            // Cargo failed, check registry
-            {
-                let mut rep = reporter.lock().unwrap();
-                rep.warn(&format!(
-                    "{}@{}: cargo publish failed (exit={}); checking registry...",
-                    p.name, p.version, out.exit_code
-                ));
-            }
-
-            if reg.version_exists(&p.name, &p.version).unwrap_or(false) {
-                {
-                    let mut rep = reporter.lock().unwrap();
-                    rep.info(&format!(
-                        "{}@{}: version is present on registry; treating as published",
-                        p.name, p.version
-                    ));
-                }
-
-                {
-                    let mut state = st.lock().unwrap();
-                    update_state_locked(&mut state, &key, PackageState::Published);
-                    let _ = state::save_state(state_dir, &state);
-                }
-                last_err = None;
-                break;
-            }
-
-            let (class, msg) = engine::classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
-            last_err = Some((class.clone(), msg.clone()));
-
-            // Event: PackageFailed
+        if !cargo_succeeded {
+            // Event: PackageAttempted
             {
                 let mut log = event_log.lock().unwrap();
                 log.record(PublishEvent {
                     timestamp: Utc::now(),
-                    event_type: EventType::PackageFailed {
-                        class: class.clone(),
-                        message: msg.clone(),
+                    event_type: EventType::PackageAttempted {
+                        attempt,
+                        command: command.clone(),
                     },
                     package: pkg_label.clone(),
                 });
             }
 
-            match class {
-                ErrorClass::Permanent => {
-                    let failed = PackageState::Failed {
-                        class,
-                        message: msg.clone(),
-                    };
+            let out = match cargo::cargo_publish(
+                &ws.workspace_root,
+                &p.name,
+                &ws.plan.registry.name,
+                opts.allow_dirty,
+                opts.no_verify,
+                opts.output_lines,
+                Some(opts.parallel.per_package_timeout),
+            ) {
+                Ok(o) => o,
+                Err(e) => {
+                    {
+                        let mut rep = reporter.lock().unwrap();
+                        rep.error(&format!(
+                            "{}@{}: cargo publish failed to execute: {}",
+                            p.name, p.version, e
+                        ));
+                    }
+                    return PackagePublishResult { result: Err(e) };
+                }
+            };
+
+            // Collect attempt evidence
+            attempt_evidence.push(AttemptEvidence {
+                attempt_number: attempt,
+                command: command.clone(),
+                exit_code: out.exit_code,
+                stdout_tail: out.stdout_tail.clone(),
+                stderr_tail: out.stderr_tail.clone(),
+                timestamp: Utc::now(),
+                duration: out.duration,
+            });
+
+            // Event: PackageOutput
+            {
+                let mut log = event_log.lock().unwrap();
+                log.record(PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type: EventType::PackageOutput {
+                        stdout_tail: out.stdout_tail.clone(),
+                        stderr_tail: out.stderr_tail.clone(),
+                    },
+                    package: pkg_label.clone(),
+                });
+            }
+
+            if out.exit_code == 0 {
+                cargo_succeeded = true;
+                // Persist Uploaded state so resume skips cargo publish
+                {
+                    let mut state = st.lock().unwrap();
+                    update_state_locked(&mut state, &key, PackageState::Uploaded);
+                    let _ = state::save_state(state_dir, &state);
+                }
+            } else {
+                // Cargo failed, check registry
+                {
+                    let mut rep = reporter.lock().unwrap();
+                    rep.warn(&format!(
+                        "{}@{}: cargo publish failed (exit={}); checking registry...",
+                        p.name, p.version, out.exit_code
+                    ));
+                }
+
+                if reg.version_exists(&p.name, &p.version).unwrap_or(false) {
+                    {
+                        let mut rep = reporter.lock().unwrap();
+                        rep.info(&format!(
+                            "{}@{}: version is present on registry; treating as published",
+                            p.name, p.version
+                        ));
+                    }
+
                     {
                         let mut state = st.lock().unwrap();
-                        update_state_locked(&mut state, &key, failed);
+                        update_state_locked(&mut state, &key, PackageState::Published);
                         let _ = state::save_state(state_dir, &state);
                     }
+                    last_err = None;
+                    break;
+                }
+
+                let (class, msg) =
+                    engine::classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
+                last_err = Some((class.clone(), msg.clone()));
+
+                // Event: PackageFailed
+                {
+                    let mut log = event_log.lock().unwrap();
+                    log.record(PublishEvent {
+                        timestamp: Utc::now(),
+                        event_type: EventType::PackageFailed {
+                            class: class.clone(),
+                            message: msg.clone(),
+                        },
+                        package: pkg_label.clone(),
+                    });
+                }
+
+                match class {
+                    ErrorClass::Permanent => {
+                        let failed = PackageState::Failed {
+                            class,
+                            message: msg.clone(),
+                        };
+                        {
+                            let mut state = st.lock().unwrap();
+                            update_state_locked(&mut state, &key, failed);
+                            let _ = state::save_state(state_dir, &state);
+                        }
+                        {
+                            let mut log = event_log.lock().unwrap();
+                            let _ = log.write_to_file(events_path);
+                            log.clear();
+                        }
+
+                        return PackagePublishResult {
+                            result: Err(anyhow::anyhow!(
+                                "{}@{}: permanent failure: {}",
+                                p.name,
+                                p.version,
+                                msg
+                            )),
+                        };
+                    }
+                    ErrorClass::Retryable | ErrorClass::Ambiguous => {
+                        let delay = engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                        {
+                            let mut rep = reporter.lock().unwrap();
+                            rep.warn(&format!(
+                                "{}@{}: retrying in {}",
+                                p.name,
+                                p.version,
+                                humantime::format_duration(delay)
+                            ));
+                        }
+                        thread::sleep(delay);
+                    }
+                }
+                continue;
+            }
+        }
+
+        // Readiness verification (runs after first cargo success + all retries)
+        {
+            let mut rep = reporter.lock().unwrap();
+            rep.info(&format!(
+                "{}@{}: cargo publish exited successfully; verifying...",
+                p.name, p.version
+            ));
+        }
+
+        let verify_result =
+            reg.is_version_visible_with_backoff(&p.name, &p.version, &readiness_config);
+
+        match verify_result {
+            Ok((visible, checks)) => {
+                readiness_evidence = checks;
+                if visible {
+                    {
+                        let mut state = st.lock().unwrap();
+                        update_state_locked(&mut state, &key, PackageState::Published);
+                        let _ = state::save_state(state_dir, &state);
+                    }
+                    last_err = None;
+
+                    // Event: PackagePublished
                     {
                         let mut log = event_log.lock().unwrap();
+                        log.record(PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::PackagePublished {
+                                duration_ms: start_instant.elapsed().as_millis() as u64,
+                            },
+                            package: pkg_label.clone(),
+                        });
                         let _ = log.write_to_file(events_path);
                         log.clear();
                     }
 
-                    return PackagePublishResult {
-                        result: Err(anyhow::anyhow!(
-                            "{}@{}: permanent failure: {}",
-                            p.name,
-                            p.version,
-                            msg
-                        )),
-                    };
-                }
-                ErrorClass::Retryable | ErrorClass::Ambiguous => {
+                    break;
+                } else {
+                    last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
                     let delay = engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
-                    {
-                        let mut rep = reporter.lock().unwrap();
-                        rep.warn(&format!(
-                            "{}@{}: retrying in {}",
-                            p.name,
-                            p.version,
-                            humantime::format_duration(delay)
-                        ));
-                    }
                     thread::sleep(delay);
                 }
+            }
+            Err(_) => {
+                last_err = Some((ErrorClass::Ambiguous, "readiness check failed".into()));
+                let delay = engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                thread::sleep(delay);
             }
         }
     }
@@ -599,7 +633,6 @@ pub fn run_publish_parallel(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::env;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -634,33 +667,6 @@ mod tests {
 
         fn error(&mut self, msg: &str) {
             self.errors.push(msg.to_string());
-        }
-    }
-
-    #[derive(Clone)]
-    struct EnvGuard {
-        key: String,
-        old: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &str, value: &str) -> Self {
-            let old = env::var(key).ok();
-            unsafe { env::set_var(key, value) };
-            Self {
-                key: key.to_string(),
-                old,
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.old {
-                unsafe { env::set_var(&self.key, v) };
-            } else {
-                unsafe { env::remove_var(&self.key) };
-            }
         }
     }
 
@@ -846,10 +852,6 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
-        let _cargo_bin = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo_path(&bin).to_str().expect("utf8"),
-        );
 
         // Registry returns 200 for version_exists (already published)
         let server = spawn_registry_server(
@@ -875,26 +877,32 @@ mod tests {
         let reporter: Arc<Mutex<dyn Reporter + Send>> =
             Arc::new(Mutex::new(CollectingReporter::default()));
 
-        let result = publish_package(
-            &ws.plan.packages[0],
-            &ws,
-            &opts,
-            &reg,
-            &st,
-            &state_dir,
-            &event_log,
-            &events_path,
-            &reporter,
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+
+                let receipt = result.result.expect("should succeed");
+                assert!(matches!(receipt.state, PackageState::Skipped { .. }));
+                assert_eq!(receipt.attempts, 0);
+
+                // State should be updated to Skipped
+                let state = st.lock().unwrap();
+                let progress = state.packages.get("demo@0.1.0").expect("pkg");
+                assert!(matches!(progress.state, PackageState::Skipped { .. }));
+            },
         );
-
-        let receipt = result.result.expect("should succeed");
-        assert!(matches!(receipt.state, PackageState::Skipped { .. }));
-        assert_eq!(receipt.attempts, 0);
-
-        // State should be updated to Skipped
-        let state = st.lock().unwrap();
-        let progress = state.packages.get("demo@0.1.0").expect("pkg");
-        assert!(matches!(progress.state, PackageState::Skipped { .. }));
         server.join();
     }
 
@@ -904,11 +912,6 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
-        let _cargo_bin = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo_path(&bin).to_str().expect("utf8"),
-        );
-        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "0");
 
         // version_exists returns 404 (not published), then readiness returns 200
         let server = spawn_registry_server(
@@ -934,21 +937,32 @@ mod tests {
         let reporter: Arc<Mutex<dyn Reporter + Send>> =
             Arc::new(Mutex::new(CollectingReporter::default()));
 
-        let result = publish_package(
-            &ws.plan.packages[0],
-            &ws,
-            &opts,
-            &reg,
-            &st,
-            &state_dir,
-            &event_log,
-            &events_path,
-            &reporter,
-        );
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+                ),
+                ("SHIPPER_CARGO_EXIT", Some("0")),
+            ],
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
 
-        let receipt = result.result.expect("should succeed");
-        assert!(matches!(receipt.state, PackageState::Published));
-        assert!(receipt.attempts >= 1);
+                let receipt = result.result.expect("should succeed");
+                assert!(matches!(receipt.state, PackageState::Published));
+                assert!(receipt.attempts >= 1);
+            },
+        );
         server.join();
     }
 
@@ -958,12 +972,6 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
-        let _cargo_bin = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo_path(&bin).to_str().expect("utf8"),
-        );
-        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "1");
-        let _cargo_err = EnvGuard::set("SHIPPER_CARGO_STDERR", "permission denied");
 
         // version_exists returns 404 both times (initial + after failure check)
         let server = spawn_registry_server(
@@ -989,32 +997,44 @@ mod tests {
         let reporter: Arc<Mutex<dyn Reporter + Send>> =
             Arc::new(Mutex::new(CollectingReporter::default()));
 
-        let result = publish_package(
-            &ws.plan.packages[0],
-            &ws,
-            &opts,
-            &reg,
-            &st,
-            &state_dir,
-            &event_log,
-            &events_path,
-            &reporter,
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+                ),
+                ("SHIPPER_CARGO_EXIT", Some("1")),
+                ("SHIPPER_CARGO_STDERR", Some("permission denied")),
+            ],
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+
+                assert!(result.result.is_err());
+                let err_msg = format!("{:#}", result.result.unwrap_err());
+                assert!(err_msg.contains("permanent failure"));
+
+                // State should be updated to Failed
+                let state = st.lock().unwrap();
+                let progress = state.packages.get("demo@0.1.0").expect("pkg");
+                assert!(matches!(
+                    progress.state,
+                    PackageState::Failed {
+                        class: ErrorClass::Permanent,
+                        ..
+                    }
+                ));
+            },
         );
-
-        assert!(result.result.is_err());
-        let err_msg = format!("{:#}", result.result.unwrap_err());
-        assert!(err_msg.contains("permanent failure"));
-
-        // State should be updated to Failed
-        let state = st.lock().unwrap();
-        let progress = state.packages.get("demo@0.1.0").expect("pkg");
-        assert!(matches!(
-            progress.state,
-            PackageState::Failed {
-                class: ErrorClass::Permanent,
-                ..
-            }
-        ));
         server.join();
     }
 
@@ -1024,12 +1044,6 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
-        let _cargo_bin = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo_path(&bin).to_str().expect("utf8"),
-        );
-        let _cargo_exit = EnvGuard::set("SHIPPER_CARGO_EXIT", "1");
-        let _cargo_err = EnvGuard::set("SHIPPER_CARGO_STDERR", "timeout talking to server");
 
         // version_exists: 404 (initial), 404 (after failure), 200 (found after retry)
         let server = spawn_registry_server(
@@ -1060,22 +1074,34 @@ mod tests {
         let reporter: Arc<Mutex<dyn Reporter + Send>> =
             Arc::new(Mutex::new(CollectingReporter::default()));
 
-        let result = publish_package(
-            &ws.plan.packages[0],
-            &ws,
-            &opts,
-            &reg,
-            &st,
-            &state_dir,
-            &event_log,
-            &events_path,
-            &reporter,
-        );
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+                ),
+                ("SHIPPER_CARGO_EXIT", Some("1")),
+                ("SHIPPER_CARGO_STDERR", Some("timeout talking to server")),
+            ],
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
 
-        // Should succeed because final registry check found the version
-        let receipt = result.result.expect("should succeed");
-        assert!(matches!(receipt.state, PackageState::Published));
-        assert_eq!(receipt.attempts, 2);
+                // Should succeed because final registry check found the version
+                let receipt = result.result.expect("should succeed");
+                assert!(matches!(receipt.state, PackageState::Published));
+                assert_eq!(receipt.attempts, 2);
+            },
+        );
         server.join();
     }
 
@@ -1085,10 +1111,6 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
-        let _cargo_bin = EnvGuard::set(
-            "SHIPPER_CARGO_BIN",
-            fake_cargo_path(&bin).to_str().expect("utf8"),
-        );
 
         // Two packages, both already published
         let server = spawn_registry_server(
@@ -1167,23 +1189,29 @@ mod tests {
             packages: ws.plan.packages.clone(),
         };
 
-        let receipts = run_publish_level(
-            &level,
-            &ws,
-            &opts,
-            &reg,
-            &st,
-            &state_dir,
-            &event_log,
-            &events_path,
-            &reporter,
-        )
-        .expect("level publish");
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts = run_publish_level(
+                    &level,
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                )
+                .expect("level publish");
 
-        assert_eq!(receipts.len(), 2);
-        for r in &receipts {
-            assert!(matches!(r.state, PackageState::Skipped { .. }));
-        }
+                assert_eq!(receipts.len(), 2);
+                for r in &receipts {
+                    assert!(matches!(r.state, PackageState::Skipped { .. }));
+                }
+            },
+        );
         server.join();
     }
 

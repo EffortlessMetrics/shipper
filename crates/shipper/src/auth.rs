@@ -146,41 +146,6 @@ mod tests {
 
     use super::*;
 
-    struct EnvGuard {
-        key: String,
-        old: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &str, value: &str) -> Self {
-            let old = env::var(key).ok();
-            unsafe { env::set_var(key, value) };
-            Self {
-                key: key.to_string(),
-                old,
-            }
-        }
-
-        fn unset(key: &str) -> Self {
-            let old = env::var(key).ok();
-            unsafe { env::remove_var(key) };
-            Self {
-                key: key.to_string(),
-                old,
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.old {
-                unsafe { env::set_var(&self.key, v) };
-            } else {
-                unsafe { env::remove_var(&self.key) };
-            }
-        }
-    }
-
     #[test]
     fn normalize_registry_name_for_env() {
         assert_eq!(normalize_registry_for_env("my-registry"), "MY_REGISTRY");
@@ -191,74 +156,115 @@ mod tests {
     #[test]
     #[serial]
     fn token_from_env_prefers_crates_io_default_var() {
-        let _a = EnvGuard::set("CARGO_REGISTRY_TOKEN", "token-a");
-        let _b = EnvGuard::set("CARGO_REGISTRIES_CRATES_IO_TOKEN", "token-b");
-        let tok = token_from_env("crates-io");
-        assert_eq!(tok.as_deref(), Some("token-a"));
+        temp_env::with_vars(
+            [
+                ("CARGO_REGISTRY_TOKEN", Some("token-a")),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", Some("token-b")),
+            ],
+            || {
+                let tok = token_from_env("crates-io");
+                assert_eq!(tok.as_deref(), Some("token-a"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn token_from_env_uses_registry_specific_var() {
-        let _a = EnvGuard::unset("CARGO_REGISTRY_TOKEN");
-        let _b = EnvGuard::set("CARGO_REGISTRIES_PRIVATE_REG_TOKEN", "abc123");
-        let tok = token_from_env("private-reg");
-        assert_eq!(tok.as_deref(), Some("abc123"));
+        temp_env::with_vars(
+            [
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("CARGO_REGISTRIES_PRIVATE_REG_TOKEN", Some("abc123")),
+            ],
+            || {
+                let tok = token_from_env("private-reg");
+                assert_eq!(tok.as_deref(), Some("abc123"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn token_from_env_reads_crates_io_var_when_only_default_is_set() {
-        let _a = EnvGuard::set("CARGO_REGISTRY_TOKEN", "solo-token");
-        let _b = EnvGuard::unset("CARGO_REGISTRIES_CRATES_IO_TOKEN");
-        let tok = token_from_env("crates-io");
-        assert_eq!(tok.as_deref(), Some("solo-token"));
+        temp_env::with_vars(
+            [
+                ("CARGO_REGISTRY_TOKEN", Some("solo-token")),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+            ],
+            || {
+                let tok = token_from_env("crates-io");
+                assert_eq!(tok.as_deref(), Some("solo-token"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn token_from_env_reads_named_registry_var_when_non_empty() {
-        let _a = EnvGuard::set("CARGO_REGISTRIES_ALT_REG_TOKEN", "named-token");
-        let tok = token_from_env("alt-reg");
-        assert_eq!(tok.as_deref(), Some("named-token"));
+        temp_env::with_var(
+            "CARGO_REGISTRIES_ALT_REG_TOKEN",
+            Some("named-token"),
+            || {
+                let tok = token_from_env("alt-reg");
+                assert_eq!(tok.as_deref(), Some("named-token"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn token_from_env_ignores_empty_values() {
-        let _a = EnvGuard::set("CARGO_REGISTRY_TOKEN", "   ");
-        let _b = EnvGuard::set("CARGO_REGISTRIES_ALT_REG_TOKEN", " ");
-        let crates_io = token_from_env("crates-io");
-        let alt = token_from_env("alt-reg");
-        assert!(crates_io.is_none());
-        assert!(alt.is_none());
+        temp_env::with_vars(
+            [
+                ("CARGO_REGISTRY_TOKEN", Some("   ")),
+                ("CARGO_REGISTRIES_ALT_REG_TOKEN", Some(" ")),
+            ],
+            || {
+                let crates_io = token_from_env("crates-io");
+                let alt = token_from_env("alt-reg");
+                assert!(crates_io.is_none());
+                assert!(alt.is_none());
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn cargo_home_dir_prefers_cargo_home_env() {
-        let _a = EnvGuard::set("CARGO_HOME", "X:\\cargo-home");
-        let _b = EnvGuard::set("HOME", "X:\\home");
-        let p = cargo_home_dir().expect("cargo home");
-        assert_eq!(p, PathBuf::from("X:\\cargo-home"));
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some("X:\\cargo-home")),
+                ("HOME", Some("X:\\home")),
+            ],
+            || {
+                let p = cargo_home_dir().expect("cargo home");
+                assert_eq!(p, PathBuf::from("X:\\cargo-home"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn cargo_home_dir_falls_back_to_home() {
-        let _a = EnvGuard::unset("CARGO_HOME");
-        let _b = EnvGuard::set("HOME", "X:\\home");
-        let p = cargo_home_dir().expect("cargo home");
-        assert_eq!(p, PathBuf::from("X:\\home").join(".cargo"));
+        temp_env::with_vars(
+            [("CARGO_HOME", None::<&str>), ("HOME", Some("X:\\home"))],
+            || {
+                let p = cargo_home_dir().expect("cargo home");
+                assert_eq!(p, PathBuf::from("X:\\home").join(".cargo"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn cargo_home_dir_errors_without_envs() {
-        let _a = EnvGuard::unset("CARGO_HOME");
-        let _b = EnvGuard::unset("HOME");
-        let err = cargo_home_dir().expect_err("must fail");
-        assert!(format!("{err:#}").contains("HOME env var not set"));
+        temp_env::with_vars(
+            [("CARGO_HOME", None::<&str>), ("HOME", None::<&str>)],
+            || {
+                let err = cargo_home_dir().expect_err("must fail");
+                assert!(format!("{err:#}").contains("HOME env var not set"));
+            },
+        );
     }
 
     #[test]
@@ -369,8 +375,6 @@ token = "  "
     #[serial]
     fn resolve_token_prefers_env_then_credentials() {
         let td = tempdir().expect("tempdir");
-        let _a = EnvGuard::set("CARGO_HOME", td.path().to_str().expect("utf8"));
-        let _b = EnvGuard::set("CARGO_REGISTRY_TOKEN", "env-token");
 
         fs::write(
             td.path().join("credentials.toml"),
@@ -380,17 +384,22 @@ token = "file-token"
         )
         .expect("write");
 
-        let tok = resolve_token("crates-io").expect("resolve");
-        assert_eq!(tok.as_deref(), Some("env-token"));
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", Some("env-token")),
+            ],
+            || {
+                let tok = resolve_token("crates-io").expect("resolve");
+                assert_eq!(tok.as_deref(), Some("env-token"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn resolve_token_reads_credentials_when_env_missing() {
         let td = tempdir().expect("tempdir");
-        let _a = EnvGuard::set("CARGO_HOME", td.path().to_str().expect("utf8"));
-        let _b = EnvGuard::unset("CARGO_REGISTRY_TOKEN");
-        let _c = EnvGuard::unset("CARGO_REGISTRIES_PRIVATE_REG_TOKEN");
         fs::write(
             td.path().join("credentials"),
             r#"[registries.private-reg]
@@ -399,17 +408,23 @@ token = "legacy-token"
         )
         .expect("write");
 
-        let tok = resolve_token("private-reg").expect("resolve");
-        assert_eq!(tok.as_deref(), Some("legacy-token"));
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("CARGO_REGISTRIES_PRIVATE_REG_TOKEN", None::<&str>),
+            ],
+            || {
+                let tok = resolve_token("private-reg").expect("resolve");
+                assert_eq!(tok.as_deref(), Some("legacy-token"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn resolve_token_reads_credentials_toml_before_legacy_file() {
         let td = tempdir().expect("tempdir");
-        let _a = EnvGuard::set("CARGO_HOME", td.path().to_str().expect("utf8"));
-        let _b = EnvGuard::unset("CARGO_REGISTRY_TOKEN");
-        let _c = EnvGuard::unset("CARGO_REGISTRIES_CRATES_IO_TOKEN");
 
         fs::write(
             td.path().join("credentials.toml"),
@@ -426,17 +441,23 @@ token = "legacy-token"
         )
         .expect("write");
 
-        let tok = resolve_token("crates-io").expect("resolve");
-        assert_eq!(tok.as_deref(), Some("toml-token"));
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+            ],
+            || {
+                let tok = resolve_token("crates-io").expect("resolve");
+                assert_eq!(tok.as_deref(), Some("toml-token"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn resolve_token_skips_empty_primary_credentials_and_uses_legacy() {
         let td = tempdir().expect("tempdir");
-        let _a = EnvGuard::set("CARGO_HOME", td.path().to_str().expect("utf8"));
-        let _b = EnvGuard::unset("CARGO_REGISTRY_TOKEN");
-        let _c = EnvGuard::unset("CARGO_REGISTRIES_CRATES_IO_TOKEN");
 
         fs::write(
             td.path().join("credentials.toml"),
@@ -453,18 +474,33 @@ token = "fallback-token"
         )
         .expect("write");
 
-        let tok = resolve_token("crates-io").expect("resolve");
-        assert_eq!(tok.as_deref(), Some("fallback-token"));
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+            ],
+            || {
+                let tok = resolve_token("crates-io").expect("resolve");
+                assert_eq!(tok.as_deref(), Some("fallback-token"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn resolve_token_returns_none_when_unconfigured() {
         let td = tempdir().expect("tempdir");
-        let _a = EnvGuard::set("CARGO_HOME", td.path().to_str().expect("utf8"));
-        let _b = EnvGuard::unset("CARGO_REGISTRY_TOKEN");
-        let _c = EnvGuard::unset("CARGO_REGISTRIES_PRIVATE_REG_TOKEN");
-        let tok = resolve_token("private-reg").expect("resolve");
-        assert!(tok.is_none());
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("CARGO_REGISTRIES_PRIVATE_REG_TOKEN", None::<&str>),
+            ],
+            || {
+                let tok = resolve_token("private-reg").expect("resolve");
+                assert!(tok.is_none());
+            },
+        );
     }
 }

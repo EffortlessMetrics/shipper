@@ -17,9 +17,17 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    unsafe { std::env::set_var("CARGO_HOME", td.path()) };
-    unsafe { std::env::remove_var("CARGO_REGISTRY_TOKEN") };
-    unsafe { std::env::remove_var("CARGO_REGISTRIES_CRATES_IO_TOKEN") };
-
-    let _ = resolve_token("crates-io");
+    temp_env::with_vars(
+        [
+            (
+                "CARGO_HOME",
+                Some(td.path().to_str().unwrap_or_default()),
+            ),
+            ("CARGO_REGISTRY_TOKEN", None::<&str>),
+            ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+        ],
+        || {
+            let _ = resolve_token("crates-io");
+        },
+    );
 });
