@@ -84,7 +84,6 @@ fn get_git_tag(repo_root: &Path) -> Option<String> {
         .arg("describe")
         .arg("--tags")
         .arg("--exact-match")
-        .arg("2>/dev/null")
         .current_dir(repo_root)
         .output()
         .ok()?;
@@ -396,7 +395,7 @@ mod tests {
             let path = bin.join("git.cmd");
             fs::write(
                 &path,
-                "@echo off\r\nif not \"%1\"==\"rev-parse\" goto :not_revparse\r\nif \"%2\"==\"--git-dir\" exit /b 0\r\nif \"%2\"==\"HEAD\" (\r\n  echo abc123def456\r\n  exit /b 0\r\n)\r\nif \"%2\"==\"--abbrev-ref\" (\r\n  echo main\r\n  exit /b 0\r\n)\r\nexit /b 0\r\n:not_revparse\r\nif not \"%1\"==\"describe\" goto :not_describe\r\nif \"%2\"==\"--tags\" if \"%3\"==\"--exact-match\" (\r\n  echo v1.0.0\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n:not_describe\r\nif \"%1\"==\"status\" exit /b 0\r\n",
+                "@echo off\r\nif not \"%1\"==\"rev-parse\" goto :not_revparse\r\nif \"%2\"==\"--git-dir\" exit /b 0\r\nif \"%2\"==\"HEAD\" (\r\n  echo abc123def456\r\n  exit /b 0\r\n)\r\nif \"%2\"==\"--abbrev-ref\" (\r\n  echo main\r\n  exit /b 0\r\n)\r\nexit /b 0\r\n:not_revparse\r\nif not \"%1\"==\"describe\" goto :not_describe\r\nif not \"%4\"==\"\" exit /b 1\r\nif \"%2\"==\"--tags\" if \"%3\"==\"--exact-match\" (\r\n  echo v1.0.0\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n:not_describe\r\nif \"%1\"==\"status\" exit /b 0\r\n",
             )
             .expect("write fake git");
         }
@@ -408,7 +407,7 @@ mod tests {
             let path = bin.join("git");
             fs::write(
                 &path,
-                "#!/usr/bin/env sh\nif [ \"$1\" = \"rev-parse\" ]; then\n  if [ \"$2\" = \"--git-dir\" ]; then\n    exit 0\n  fi\n  if [ \"$2\" = \"HEAD\" ]; then\n    echo \"abc123def456\"\n    exit 0\n  fi\n  if [ \"$2\" = \"--abbrev-ref\" ]; then\n    echo \"main\"\n    exit 0\n  fi\nfi\nif [ \"$1\" = \"describe\" ]; then\n  if [ \"$2\" = \"--tags\" ] && [ \"$3\" = \"--exact-match\" ]; then\n    echo \"v1.0.0\"\n    exit 0\n  fi\n  exit 1\nfi\nif [ \"$1\" = \"status\" ]; then\n  exit 0\nfi\n",
+                "#!/usr/bin/env sh\nif [ \"$1\" = \"rev-parse\" ]; then\n  if [ \"$2\" = \"--git-dir\" ]; then\n    exit 0\n  fi\n  if [ \"$2\" = \"HEAD\" ]; then\n    echo \"abc123def456\"\n    exit 0\n  fi\n  if [ \"$2\" = \"--abbrev-ref\" ]; then\n    echo \"main\"\n    exit 0\n  fi\nfi\nif [ \"$1\" = \"describe\" ]; then\n  if [ \"$2\" = \"--tags\" ] && [ \"$3\" = \"--exact-match\" ] && [ -z \"$4\" ]; then\n    echo \"v1.0.0\"\n    exit 0\n  fi\n  exit 1\nfi\nif [ \"$1\" = \"status\" ]; then\n  exit 0\nfi\n",
             )
             .expect("write fake git");
             let mut perms = fs::metadata(&path).expect("meta").permissions();

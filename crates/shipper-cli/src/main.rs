@@ -15,117 +15,117 @@ use shipper::types::{Finishability, PreflightReport, Registry, ReleaseSpec, Runt
 #[command(about = "Resumable, backoff-aware crates.io publishing for workspaces")]
 struct Cli {
     /// Path to a custom configuration file (.shipper.toml)
-    #[arg(long)]
+    #[arg(long, global = true)]
     config: Option<PathBuf>,
 
     /// Path to the workspace Cargo.toml
-    #[arg(long, default_value = "Cargo.toml")]
+    #[arg(long, default_value = "Cargo.toml", global = true)]
     manifest_path: PathBuf,
 
     /// Cargo registry name (default: crates-io)
-    #[arg(long)]
+    #[arg(long, global = true)]
     registry: Option<String>,
 
     /// Registry API base URL (default: https://crates.io)
-    #[arg(long)]
+    #[arg(long, global = true)]
     api_base: Option<String>,
 
     /// Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members.
-    #[arg(long = "package")]
+    #[arg(long = "package", global = true)]
     packages: Vec<String>,
 
     /// Directory for shipper state and receipts (default: .shipper)
-    #[arg(long)]
+    #[arg(long, global = true)]
     state_dir: Option<PathBuf>,
 
     /// Number of output lines to capture for evidence (default: 50)
-    #[arg(long)]
+    #[arg(long, global = true)]
     output_lines: Option<usize>,
 
     /// Allow publishing from a dirty git working tree.
-    #[arg(long)]
+    #[arg(long, global = true)]
     allow_dirty: bool,
 
     /// Skip owners/permissions preflight.
-    #[arg(long)]
+    #[arg(long, global = true)]
     skip_ownership_check: bool,
 
     /// Fail preflight if ownership checks fail or if no token is available.
     ///
     /// Note: crates.io token scopes may not allow querying owners; this is best-effort.
-    #[arg(long)]
+    #[arg(long, global = true)]
     strict_ownership: bool,
 
     /// Pass --no-verify to cargo publish.
-    #[arg(long)]
+    #[arg(long, global = true)]
     no_verify: bool,
 
     /// Max attempts per crate publish step (default: 6)
-    #[arg(long)]
+    #[arg(long, global = true)]
     max_attempts: Option<u32>,
 
     /// Base backoff delay (e.g. 2s, 500ms; default: 2s)
-    #[arg(long)]
+    #[arg(long, global = true)]
     base_delay: Option<String>,
 
     /// Max backoff delay (e.g. 2m; default: 2m)
-    #[arg(long)]
+    #[arg(long, global = true)]
     max_delay: Option<String>,
 
     /// How long to wait for registry visibility after a successful publish (default: 2m)
-    #[arg(long)]
+    #[arg(long, global = true)]
     verify_timeout: Option<String>,
 
     /// Poll interval for checking registry visibility (default: 5s)
-    #[arg(long)]
+    #[arg(long, global = true)]
     verify_poll: Option<String>,
 
     /// Readiness check method: api (default, fast), index (slower, more accurate), both (slowest, most reliable)
-    #[arg(long)]
+    #[arg(long, global = true)]
     readiness_method: Option<String>,
 
     /// How long to wait for registry visibility during readiness checks (default: 5m)
-    #[arg(long)]
+    #[arg(long, global = true)]
     readiness_timeout: Option<String>,
 
     /// Poll interval for readiness checks (default: 2s)
-    #[arg(long)]
+    #[arg(long, global = true)]
     readiness_poll: Option<String>,
 
     /// Disable readiness checks (for advanced users).
-    #[arg(long)]
+    #[arg(long, global = true)]
     no_readiness: bool,
 
     /// Force resume even if the computed plan differs from the state file.
-    #[arg(long)]
+    #[arg(long, global = true)]
     force_resume: bool,
 
     /// Force override of existing locks (use with caution)
-    #[arg(long)]
+    #[arg(long, global = true)]
     force: bool,
 
     /// Lock timeout duration (e.g. 1h, 30m; default: 1h). Locks older than this are considered stale.
-    #[arg(long)]
+    #[arg(long, global = true)]
     lock_timeout: Option<String>,
 
     /// Publish policy: safe (verify+strict), balanced (verify when needed), fast (no verify; default: safe)
-    #[arg(long)]
+    #[arg(long, global = true)]
     policy: Option<String>,
 
     /// Verify mode: workspace (default), package (per-crate), none (no verify)
-    #[arg(long)]
+    #[arg(long, global = true)]
     verify_mode: Option<String>,
 
     /// Enable parallel publishing (packages at the same dependency level are published concurrently)
-    #[arg(long)]
+    #[arg(long, global = true)]
     parallel: bool,
 
     /// Maximum number of concurrent publish operations (implies --parallel)
-    #[arg(long)]
+    #[arg(long, global = true)]
     max_concurrent: Option<usize>,
 
     /// Timeout per package publish operation when using parallel mode (e.g. 30m, 1h)
-    #[arg(long)]
+    #[arg(long, global = true)]
     per_package_timeout: Option<String>,
 
     /// Output format: text (default) or json
@@ -784,8 +784,18 @@ fn run_doctor(
         ws.plan.registry.name, ws.plan.registry.api_base
     );
 
-    let token = shipper::auth::resolve_token(&ws.plan.registry.name)?;
-    println!("token_detected: {}", token.is_some());
+    let auth_type = shipper::auth::detect_auth_type(&ws.plan.registry.name)?;
+    println!(
+        "token_detected: {}",
+        matches!(auth_type, Some(shipper::types::AuthType::Token))
+    );
+    let auth_label = match auth_type {
+        Some(shipper::types::AuthType::Token) => "token",
+        Some(shipper::types::AuthType::TrustedPublishing) => "trusted",
+        Some(shipper::types::AuthType::Unknown) => "unknown",
+        None => "-",
+    };
+    println!("auth_type: {}", auth_label);
 
     let abs_state = if opts.state_dir.is_absolute() {
         opts.state_dir.clone()
@@ -1011,6 +1021,30 @@ mod tests {
     fn parse_duration_handles_valid_and_invalid_inputs() {
         assert!(parse_duration("1s").is_ok());
         assert!(parse_duration("nope").is_err());
+    }
+
+    #[test]
+    fn global_flags_parse_after_subcommand() {
+        let cli = Cli::try_parse_from([
+            "shipper",
+            "preflight",
+            "--allow-dirty",
+            "--strict-ownership",
+            "--verify-mode",
+            "package",
+            "--policy",
+            "safe",
+            "--format",
+            "json",
+        ])
+        .expect("parse CLI");
+
+        assert!(matches!(cli.cmd, Commands::Preflight));
+        assert!(cli.allow_dirty);
+        assert!(cli.strict_ownership);
+        assert_eq!(cli.verify_mode.as_deref(), Some("package"));
+        assert_eq!(cli.policy.as_deref(), Some("safe"));
+        assert_eq!(cli.format, "json");
     }
 
     #[test]

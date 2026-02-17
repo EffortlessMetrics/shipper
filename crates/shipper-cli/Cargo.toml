@@ -4,19 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "CLI for reliable, resumable Rust crate publishing"
-documentation = "https://docs.rs/shipper-cli"
+description = "Command-line tool for reliable, resumable Rust workspace publishing"
+readme = "README.md"
+documentation = "https://github.com/EffortlessMetrics/shipper/tree/main/crates/shipper-cli"
 homepage = "https://github.com/EffortlessMetrics/shipper"
 repository = "https://github.com/EffortlessMetrics/shipper"
-keywords = ["cargo", "publish", "workspace", "registry", "ci"]
-categories = ["development-tools::cargo-plugins"]
+keywords = ["cargo", "publish", "workspace", "cli", "ci"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "shipper"
 path = "src/main.rs"
 
 [dependencies]
-shipper = { path = "../shipper" }
+shipper = { path = "../shipper", version = "0.2.0" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"

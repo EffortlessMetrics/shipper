@@ -12,6 +12,11 @@ Cargo already knows how to package and upload crates. What tends to break in rea
 
 Shipper is intentionally narrow: it focuses on making publishing **safe to start** and **safe to re-run**.
 
+## Workspace crates
+
+- [`shipper-cli`](crates/shipper-cli/README.md) - installs the `shipper` binary and exposes the command-line workflow.
+- [`shipper`](crates/shipper/README.md) - reusable library for planning, preflight checks, publish execution, resume, and receipts.
+
 ## What shipper does
 
 - Builds a deterministic **publish plan** for workspace crates (dependency-first ordering).
@@ -67,6 +72,12 @@ Shipper's registry API checks (version existence, optional owners preflight) res
 - `$CARGO_HOME/credentials.toml` (created by `cargo login`)
 
 The token is treated as an **opaque string** and sent as the value of the `Authorization` header, matching Cargo's registry web API model.
+
+`shipper doctor` reports both `token_detected` and an `auth_type` value:
+- `token` (Cargo token found)
+- `trusted` (GitHub OIDC trusted publishing env detected)
+- `unknown` (partial auth env detected)
+- `-` (no known auth detected)
 
 ## State + receipts
 

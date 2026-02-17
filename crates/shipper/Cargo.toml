@@ -4,12 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "A publishing reliability layer for Rust workspaces"
+description = "Core library for reliable, resumable Rust workspace publishing"
+readme = "README.md"
 documentation = "https://docs.rs/shipper"
 homepage = "https://github.com/EffortlessMetrics/shipper"
 repository = "https://github.com/EffortlessMetrics/shipper"
-keywords = ["cargo", "publish", "workspace", "registry", "ci"]
-categories = ["development-tools::cargo-plugins"]
+keywords = ["cargo", "publish", "workspace", "release", "automation"]
+categories = ["development-tools", "development-tools::build-utils"]
 
 [dependencies]
 anyhow = "1.0.101"

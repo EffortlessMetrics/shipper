@@ -16,9 +16,9 @@ use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
 use crate::state;
 use crate::types::{
-    AttemptEvidence, AuthType, ErrorClass, EventType, ExecutionResult, ExecutionState,
-    Finishability, PackageProgress, PackageReceipt, PackageState, PreflightPackage,
-    PreflightReport, PublishEvent, PublishPolicy, ReadinessEvidence, Receipt, RuntimeOptions,
+    AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, Finishability,
+    PackageProgress, PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent,
+    PublishPolicy, ReadinessEvidence, Receipt, RuntimeOptions,
 };
 
 pub trait Reporter {
@@ -64,6 +64,17 @@ pub fn run_preflight(
 ) -> Result<PreflightReport> {
     let workspace_root = &ws.workspace_root;
     let effects = apply_policy(opts);
+    let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
+    let events_path = events::events_path(&state_dir);
+    let mut event_log = events::EventLog::new();
+
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PreflightStarted,
+        package: "all".to_string(),
+    });
+    event_log.write_to_file(&events_path)?;
+    event_log.clear();
 
     if !opts.allow_dirty {
         reporter.info("checking git cleanliness...");
@@ -75,25 +86,27 @@ pub fn run_preflight(
 
     let token = auth::resolve_token(&ws.plan.registry.name)?;
     let token_detected = token.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+    let auth_type = auth::detect_auth_type_from_token(token.as_deref());
 
     if effects.strict_ownership && !token_detected {
+        event_log.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::PreflightComplete {
+                finishability: Finishability::Failed,
+            },
+            package: "all".to_string(),
+        });
+        event_log.write_to_file(&events_path)?;
         bail!(
             "strict ownership requested but no token found (set CARGO_REGISTRY_TOKEN or run cargo login)"
         );
     }
 
-    // Determine auth type
-    let auth_type = if token_detected {
-        Some(AuthType::Token)
-    } else {
-        None
-    };
-
     // Run dry-run verification based on VerifyMode and policy
     use crate::types::VerifyMode;
 
     // Workspace-level dry-run result (used for Workspace mode)
-    let workspace_dry_run_passed =
+    let (workspace_dry_run_passed, workspace_dry_run_output) =
         if effects.run_dry_run && opts.verify_mode == VerifyMode::Workspace {
             reporter.info("running workspace dry-run verification...");
             let dry_run_result = cargo::cargo_publish_dry_run_workspace(
@@ -103,16 +116,37 @@ pub fn run_preflight(
                 opts.output_lines,
             );
             match &dry_run_result {
-                Ok(output) => output.exit_code == 0,
-                Err(_) => false,
+                Ok(output) => (
+                    output.exit_code == 0,
+                    format!(
+                        "workspace dry-run: exit_code={}; stdout_tail={:?}; stderr_tail={:?}",
+                        output.exit_code, output.stdout_tail, output.stderr_tail
+                    ),
+                ),
+                Err(err) => (false, format!("workspace dry-run failed: {err:#}")),
             }
         } else if !effects.run_dry_run || opts.verify_mode == VerifyMode::None {
             reporter.info("skipping dry-run (policy, --no-verify, or verify_mode=none)");
-            true
+            (
+                true,
+                "workspace dry-run skipped (policy, --no-verify, or verify_mode=none)".to_string(),
+            )
         } else {
             // Package mode — handled per-package below
-            true
+            (
+                true,
+                "workspace dry-run skipped (verify_mode=package)".to_string(),
+            )
         };
+
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PreflightWorkspaceVerify {
+            passed: workspace_dry_run_passed,
+            output: workspace_dry_run_output,
+        },
+        package: "all".to_string(),
+    });
 
     // Per-package dry-run results (used for Package mode)
     let per_package_dry_run: std::collections::BTreeMap<String, bool> =
@@ -149,6 +183,15 @@ pub fn run_preflight(
     for p in &ws.plan.packages {
         let already_published = reg.version_exists(&p.name, &p.version)?;
         let is_new_crate = reg.check_new_crate(&p.name)?;
+        if is_new_crate {
+            event_log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::PreflightNewCrateDetected {
+                    crate_name: p.name.clone(),
+                },
+                package: format!("{}@{}", p.name, p.version),
+            });
+        }
 
         // Determine dry-run result for this package
         let dry_run_passed = if opts.verify_mode == VerifyMode::Package {
@@ -186,6 +229,15 @@ pub fn run_preflight(
             false
         };
 
+        event_log.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::PreflightOwnershipCheck {
+                crate_name: p.name.clone(),
+                verified: ownership_verified,
+            },
+            package: format!("{}@{}", p.name, p.version),
+        });
+
         if !ownership_verified {
             any_ownership_unverified = true;
         }
@@ -212,6 +264,15 @@ pub fn run_preflight(
     } else {
         Finishability::Proven
     };
+
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PreflightComplete {
+            finishability: finishability.clone(),
+        },
+        package: "all".to_string(),
+    });
+    event_log.write_to_file(&events_path)?;
 
     Ok(PreflightReport {
         plan_id: ws.plan.plan_id.clone(),
@@ -941,7 +1002,7 @@ mod tests {
 
     use super::*;
     use crate::plan::PlannedWorkspace;
-    use crate::types::{PlannedPackage, Registry, ReleasePlan};
+    use crate::types::{AuthType, PlannedPackage, Registry, ReleasePlan};
 
     #[derive(Default)]
     struct CollectingReporter {
@@ -1279,7 +1340,8 @@ mod tests {
             method: crate::types::ReadinessMethod::Api,
             initial_delay: Duration::from_millis(0),
             max_delay: Duration::from_millis(50),
-            max_total_wait: Duration::from_millis(500),
+            // Keep this generous to avoid timing flakes under highly parallel test execution.
+            max_total_wait: Duration::from_secs(2),
             poll_interval: Duration::from_millis(1),
             jitter_factor: 0.0,
             index_path: None,
@@ -1587,6 +1649,126 @@ mod tests {
                     .infos
                     .iter()
                     .any(|i| i.contains("new crate, skipping ownership check"))
+            );
+            server.join();
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_preflight_writes_preflight_events() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([("SHIPPER_CARGO_EXIT", Some("0".to_string()))]);
+        temp_env::with_vars(env_vars, || {
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.allow_dirty = true;
+            opts.skip_ownership_check = true;
+
+            let mut reporter = CollectingReporter::default();
+            let _ = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+            let events_path = td.path().join(".shipper").join("events.jsonl");
+            let log = crate::events::EventLog::read_from_file(&events_path).expect("read events");
+            let events = log.all_events();
+
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.event_type, EventType::PreflightStarted))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.event_type, EventType::PreflightWorkspaceVerify { .. }))
+            );
+            assert!(
+                events.iter().any(|e| {
+                    matches!(e.event_type, EventType::PreflightNewCrateDetected { .. })
+                })
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.event_type, EventType::PreflightOwnershipCheck { .. }))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.event_type, EventType::PreflightComplete { .. }))
+            );
+            server.join();
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_preflight_detects_trusted_publishing_auth_type() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+            (
+                "CARGO_HOME",
+                Some(td.path().to_str().expect("utf8").to_string()),
+            ),
+            ("CARGO_REGISTRY_TOKEN", None::<String>),
+            ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<String>),
+            (
+                "ACTIONS_ID_TOKEN_REQUEST_URL",
+                Some("https://example.invalid/oidc".to_string()),
+            ),
+            (
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+                Some("oidc-token".to_string()),
+            ),
+        ]);
+        temp_env::with_vars(env_vars, || {
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.allow_dirty = true;
+            opts.skip_ownership_check = true;
+
+            let mut reporter = CollectingReporter::default();
+            let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+            assert!(!report.token_detected);
+            assert_eq!(
+                report.packages[0].auth_type,
+                Some(crate::types::AuthType::TrustedPublishing)
             );
             server.join();
         });

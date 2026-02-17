@@ -232,6 +232,50 @@ fn doctor_command_snapshot() {
 workspace_root: <WORKSPACE_ROOT>
 registry: crates-io (https://crates.io)
 token_detected: false
+auth_type: -
+state_dir: <STATE_DIR>
+
+cargo: <CARGO_VERSION>
+git: <GIT_VERSION>
+"#
+    );
+}
+
+#[test]
+fn doctor_command_detects_trusted_publishing_auth() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    let mut cmd = shipper_cmd();
+    let out = cmd
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(".shipper")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .env(
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "https://example.invalid/oidc",
+        )
+        .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-token")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(out).expect("utf8");
+    assert_snapshot!(
+        normalize_output(&stdout),
+        @r#"
+workspace_root: <WORKSPACE_ROOT>
+registry: crates-io (https://crates.io)
+token_detected: false
+auth_type: trusted
 state_dir: <STATE_DIR>
 
 cargo: <CARGO_VERSION>
@@ -344,6 +388,56 @@ What to do next:
 ⚠ Some checks could not be verified. You can still publish, but may encounter permission issues. Use `shipper publish --policy fast` to proceed.
 "#
     );
+    registry.join();
+}
+
+#[test]
+fn preflight_command_writes_preflight_events() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+    let registry = spawn_registry(vec![404], 2);
+
+    shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--state-dir")
+        .arg(".shipper")
+        .arg("--allow-dirty")
+        .arg("--skip-ownership-check")
+        .arg("preflight")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success();
+
+    let events_path = td.path().join(".shipper").join("events.jsonl");
+    assert!(events_path.exists(), "expected {}", events_path.display());
+    let events = fs::read_to_string(&events_path).expect("read events");
+    assert!(events.contains(r#""type":"preflight_started""#));
+    assert!(events.contains(r#""type":"preflight_workspace_verify""#));
+    assert!(events.contains(r#""type":"preflight_new_crate_detected""#));
+    assert!(events.contains(r#""type":"preflight_ownership_check""#));
+    assert!(events.contains(r#""type":"preflight_complete""#));
+
+    let mut inspect = shipper_cmd();
+    let out = inspect
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(".shipper")
+        .arg("inspect-events")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(out).expect("utf8");
+    assert!(stdout.contains(r#""type":"preflight_complete""#));
+
     registry.join();
 }
 
