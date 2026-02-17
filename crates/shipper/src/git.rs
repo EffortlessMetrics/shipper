@@ -145,6 +145,7 @@ fn git_program() -> String {
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     use serial_test::serial;
     use tempfile::tempdir;
@@ -178,6 +179,28 @@ mod tests {
             fs::set_permissions(&path, perms).expect("chmod");
             path
         }
+    }
+
+    fn system_git_available() -> bool {
+        Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn run_system_git(repo_root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_root)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -430,6 +453,29 @@ mod tests {
             assert_eq!(ctx.branch, Some("main".to_string()));
             assert_eq!(ctx.tag, Some("v1.0.0".to_string()));
             assert_eq!(ctx.dirty, Some(false));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn given_real_tagged_repo_when_get_git_tag_then_returns_exact_tag() {
+        if !system_git_available() {
+            return;
+        }
+
+        let td = tempdir().expect("tempdir");
+        temp_env::with_var("SHIPPER_GIT_BIN", None::<&str>, || {
+            run_system_git(td.path(), &["init"]);
+            run_system_git(td.path(), &["config", "user.email", "shipper@example.test"]);
+            run_system_git(td.path(), &["config", "user.name", "Shipper Test"]);
+
+            fs::write(td.path().join("README.md"), "demo\n").expect("write");
+            run_system_git(td.path(), &["add", "."]);
+            run_system_git(td.path(), &["commit", "-m", "initial"]);
+            run_system_git(td.path(), &["tag", "v1.2.3"]);
+
+            let tag = get_git_tag(td.path());
+            assert_eq!(tag.as_deref(), Some("v1.2.3"));
         });
     }
 

@@ -116,6 +116,7 @@ pub enum ReadinessMethod {
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ReadinessConfig {
     /// Enable readiness checks
     pub enabled: bool,
@@ -173,6 +174,7 @@ impl Default for ReadinessConfig {
 
 /// Configuration for parallel publishing
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ParallelConfig {
     /// Enable parallel publishing (default: false for sequential)
     pub enabled: bool,

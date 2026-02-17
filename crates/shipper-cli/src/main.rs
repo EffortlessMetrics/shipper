@@ -129,7 +129,7 @@ struct Cli {
     per_package_timeout: Option<String>,
 
     /// Output format: text (default) or json
-    #[arg(long, default_value = "text", global = true)]
+    #[arg(long, default_value = "text", value_parser = ["text", "json"], global = true)]
     format: String,
 
     #[command(subcommand)]
@@ -253,6 +253,20 @@ fn main() -> Result<()> {
                 .with_context(|| "Failed to load config from workspace")?
         };
 
+    // Validate loaded configuration before using it for runtime options.
+    if let Some(ref cfg) = config {
+        let config_path = cli
+            .config
+            .clone()
+            .unwrap_or_else(|| planned.workspace_root.join(".shipper.toml"));
+        cfg.validate().with_context(|| {
+            format!(
+                "Configuration validation failed for {}",
+                config_path.display()
+            )
+        })?;
+    }
+
     // Apply registry from config if CLI didn't set it
     if let Some(ref cfg) = config
         && let Some(ref reg_config) = cfg.registry
@@ -368,7 +382,12 @@ fn main() -> Result<()> {
             run_ci(ci_cmd, &opts.state_dir, &planned.workspace_root)?;
         }
         Commands::Clean { keep_receipt } => {
-            run_clean(&opts.state_dir, &planned.workspace_root, keep_receipt)?;
+            run_clean(
+                &opts.state_dir,
+                &planned.workspace_root,
+                keep_receipt,
+                opts.force,
+            )?;
         }
         Commands::Config(_) => {
             // This should never be reached since we handle Config commands early
@@ -904,7 +923,12 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
     Ok(())
 }
 
-fn run_clean(state_dir: &PathBuf, workspace_root: &Path, keep_receipt: bool) -> Result<()> {
+fn run_clean(
+    state_dir: &PathBuf,
+    workspace_root: &Path,
+    keep_receipt: bool,
+    force: bool,
+) -> Result<()> {
     let abs_state = if state_dir.is_absolute() {
         state_dir.clone()
     } else {
@@ -918,14 +942,29 @@ fn run_clean(state_dir: &PathBuf, workspace_root: &Path, keep_receipt: bool) -> 
 
     // Check for active lock
     if lock_path.exists() {
-        let lock_info = shipper::lock::LockFile::read_lock_info(&abs_state)?;
-        eprintln!("[warn] Active lock found:");
-        eprintln!("[warn]   PID: {}", lock_info.pid);
-        eprintln!("[warn]   Hostname: {}", lock_info.hostname);
-        eprintln!("[warn]   Acquired at: {}", lock_info.acquired_at);
-        eprintln!("[warn]   Plan ID: {:?}", lock_info.plan_id);
-        eprintln!("[warn] Use --force to override the lock");
-        bail!("cannot clean: active lock exists");
+        if force {
+            eprintln!(
+                "[warn] --force specified; removing lock file: {}",
+                lock_path.display()
+            );
+            std::fs::remove_file(&lock_path)
+                .with_context(|| format!("failed to remove lock file {}", lock_path.display()))?;
+        } else {
+            match shipper::lock::LockFile::read_lock_info(&abs_state) {
+                Ok(lock_info) => {
+                    eprintln!("[warn] Active lock found:");
+                    eprintln!("[warn]   PID: {}", lock_info.pid);
+                    eprintln!("[warn]   Hostname: {}", lock_info.hostname);
+                    eprintln!("[warn]   Acquired at: {}", lock_info.acquired_at);
+                    eprintln!("[warn]   Plan ID: {:?}", lock_info.plan_id);
+                }
+                Err(err) => {
+                    eprintln!("[warn] Active lock found but metadata could not be read: {err:#}");
+                }
+            }
+            eprintln!("[warn] Use --force to override the lock");
+            bail!("cannot clean: active lock exists");
+        }
     }
 
     // Remove state file
@@ -991,6 +1030,7 @@ fn run_config(cmd: ConfigCommands) -> Result<()> {
 mod tests {
     use std::fs;
 
+    use chrono::Utc;
     use serial_test::serial;
     use tempfile::tempdir;
 
@@ -1464,5 +1504,65 @@ mode = "fast"
             Duration::from_secs(1800),
             "config lock_timeout should apply"
         );
+    }
+
+    #[test]
+    fn run_clean_errors_when_lock_exists_without_force() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = PathBuf::from(".shipper");
+        let abs_state = td.path().join(&state_dir);
+        fs::create_dir_all(&abs_state).expect("mkdir");
+
+        let lock_info = shipper::lock::LockInfo {
+            pid: 12345,
+            hostname: "test-host".to_string(),
+            acquired_at: Utc::now(),
+            plan_id: Some("plan-123".to_string()),
+        };
+        fs::write(
+            abs_state.join(shipper::lock::LOCK_FILE),
+            serde_json::to_string(&lock_info).expect("serialize"),
+        )
+        .expect("write lock");
+
+        let err = run_clean(&state_dir, td.path(), false, false).expect_err("must fail");
+        assert!(err.to_string().contains("cannot clean: active lock exists"));
+        assert!(abs_state.join(shipper::lock::LOCK_FILE).exists());
+    }
+
+    #[test]
+    fn run_clean_force_removes_lock_and_state_files() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = PathBuf::from(".shipper");
+        let abs_state = td.path().join(&state_dir);
+        fs::create_dir_all(&abs_state).expect("mkdir");
+
+        let state_path = abs_state.join(shipper::state::STATE_FILE);
+        let receipt_path = abs_state.join(shipper::state::RECEIPT_FILE);
+        let events_path = abs_state.join(shipper::events::EVENTS_FILE);
+        let lock_path = abs_state.join(shipper::lock::LOCK_FILE);
+
+        fs::write(&state_path, "{}").expect("write state");
+        fs::write(&receipt_path, "{}").expect("write receipt");
+        fs::write(&events_path, "{}").expect("write events");
+
+        let lock_info = shipper::lock::LockInfo {
+            pid: 12345,
+            hostname: "test-host".to_string(),
+            acquired_at: Utc::now(),
+            plan_id: Some("plan-123".to_string()),
+        };
+        fs::write(
+            &lock_path,
+            serde_json::to_string(&lock_info).expect("serialize"),
+        )
+        .expect("write lock");
+
+        run_clean(&state_dir, td.path(), false, true).expect("clean with force");
+
+        assert!(!state_path.exists(), "state file should be removed");
+        assert!(!receipt_path.exists(), "receipt file should be removed");
+        assert!(!events_path.exists(), "events file should be removed");
+        assert!(!lock_path.exists(), "lock file should be removed");
     }
 }

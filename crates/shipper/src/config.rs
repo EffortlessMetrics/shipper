@@ -32,7 +32,7 @@ pub struct VerifyConfig {
 }
 
 /// Nested retry configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
     /// Max attempts per crate publish step
     #[serde(default = "default_max_attempts")]
@@ -56,7 +56,7 @@ pub struct RetryConfig {
 }
 
 /// Nested output configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputConfig {
     /// Number of output lines to capture for evidence
     #[serde(default = "default_output_lines")]
@@ -64,7 +64,7 @@ pub struct OutputConfig {
 }
 
 /// Nested lock configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockConfig {
     /// Lock timeout duration
     #[serde(
@@ -73,6 +73,32 @@ pub struct LockConfig {
     )]
     #[serde(default = "default_lock_timeout")]
     pub timeout: Duration,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_max_attempts(),
+            base_delay: default_base_delay(),
+            max_delay: default_max_delay(),
+        }
+    }
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            lines: default_output_lines(),
+        }
+    }
+}
+
+impl Default for LockConfig {
+    fn default() -> Self {
+        Self {
+            timeout: default_lock_timeout(),
+        }
+    }
 }
 
 /// Nested flags configuration
@@ -576,6 +602,56 @@ per_package_timeout = "1h"
             config.parallel.per_package_timeout,
             Duration::from_secs(3600)
         );
+    }
+
+    #[test]
+    fn test_parse_toml_with_partial_readiness_uses_defaults() {
+        let toml = r#"
+[readiness]
+method = "both"
+"#;
+
+        let config: ShipperConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.readiness.method, ReadinessMethod::Both);
+        assert!(config.readiness.enabled);
+        assert_eq!(config.readiness.initial_delay, Duration::from_secs(1));
+        assert_eq!(config.readiness.max_delay, Duration::from_secs(60));
+        assert_eq!(config.readiness.max_total_wait, Duration::from_secs(300));
+        assert_eq!(config.readiness.poll_interval, Duration::from_secs(2));
+        assert_eq!(config.readiness.jitter_factor, 0.5);
+    }
+
+    #[test]
+    fn test_parse_toml_with_partial_parallel_uses_defaults() {
+        let toml = r#"
+[parallel]
+enabled = true
+"#;
+
+        let config: ShipperConfig = toml::from_str(toml).unwrap();
+        assert!(config.parallel.enabled);
+        assert_eq!(config.parallel.max_concurrent, 4);
+        assert_eq!(
+            config.parallel.per_package_timeout,
+            Duration::from_secs(1800)
+        );
+    }
+
+    #[test]
+    fn test_parse_toml_with_partial_sections_remains_valid() {
+        let toml = r#"
+[readiness]
+method = "both"
+
+[parallel]
+enabled = true
+"#;
+
+        let config: ShipperConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.output.lines, 50);
+        assert_eq!(config.retry.max_attempts, 6);
+        assert_eq!(config.lock.timeout, Duration::from_secs(3600));
+        assert!(config.validate().is_ok());
     }
 
     #[test]
