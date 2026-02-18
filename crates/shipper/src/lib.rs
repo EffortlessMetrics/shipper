@@ -1,11 +1,29 @@
-//! Shipper: a publishing reliability layer for Rust workspaces.
+//! # Shipper
 //!
-//! Shipper makes `cargo publish` safe to start and safe to re-run for
-//! multi-crate workspaces. It handles dependency ordering, preflight
-//! verification, retry with backoff, readiness checking, and resumable
-//! state persistence.
+//! A reliability layer around `cargo publish` for Rust workspaces.
 //!
-//! # Pipeline
+//! Shipper provides deterministic, resumable crate publishing with comprehensive
+//! safety checks and evidence collection. It makes `cargo publish` safe to start
+//! and safe to re-run for multi-crate workspaces.
+//!
+//! ## Features
+//!
+//! - **Deterministic ordering** — Crates publish in a reproducible order based on the
+//!   dependency graph, ensuring dependencies are always published before dependents.
+//! - **Preflight verification** — Catch issues before publishing: git cleanliness,
+//!   registry reachability, dry-run compilation, version existence, and ownership checks.
+//! - **Readiness verification** — Confirm crates are visible on the registry after
+//!   publishing, with configurable polling and backoff strategies.
+//! - **Resumable execution** — Interrupted publishes can be resumed from where they
+//!   left off, with state persisted to disk.
+//! - **Evidence capture** — Receipts and event logs provide audit trails for every
+//!   publish operation, including attempt counts, durations, and error classifications.
+//! - **Parallel publishing** — Independent crates can be published concurrently for
+//!   faster workspace releases (opt-in via [`types::ParallelConfig`]).
+//! - **Multiple authentication methods** — Supports token-based authentication and
+//!   GitHub Trusted Publishing.
+//!
+//! ## Pipeline
 //!
 //! The core flow is **plan → preflight → publish → (resume if interrupted)**:
 //!
@@ -18,13 +36,71 @@
 //! 4. [`engine::run_resume`] reloads persisted state and continues from
 //!    the first pending or failed package.
 //!
-//! # Key types
+//! ## Example
 //!
-//! - [`types::ReleaseSpec`] — input specification (manifest path, registry, package filter)
-//! - [`types::ReleasePlan`] — deterministic, SHA256-identified publish plan
-//! - [`types::RuntimeOptions`] — all runtime knobs (retry, readiness, policy, etc.)
-//! - [`types::Receipt`] — audit receipt with evidence for each published crate
-//! - [`types::PreflightReport`] — preflight assessment with finishability verdict
+//! ```no_run
+//! use std::path::PathBuf;
+//! use shipper::{plan, engine, types};
+//!
+//! // Build a publish plan from the workspace
+//! let spec = types::ReleaseSpec {
+//!     manifest_path: PathBuf::from("Cargo.toml"),
+//!     registry: types::Registry::crates_io(),
+//!     selected_packages: None,
+//! };
+//! let workspace = plan::build_plan(&spec)?;
+//!
+//! // Configure runtime options
+//! let opts = types::RuntimeOptions {
+//!     allow_dirty: false,
+//!     max_attempts: 3,
+//!     state_dir: PathBuf::from(".shipper"),
+//!     ..Default::default() // Note: RuntimeOptions doesn't implement Default,
+//!                          // you'll need to provide all fields
+//! };
+//!
+//! # Ok::<(), anyhow::Error>(())
+//! ```
+//!
+//! ## Key Types
+//!
+//! - [`types::ReleaseSpec`] — Input specification (manifest path, registry, package filter)
+//! - [`types::ReleasePlan`] — Deterministic, SHA256-identified publish plan
+//! - [`types::RuntimeOptions`] — All runtime knobs (retry, readiness, policy, etc.)
+//! - [`types::Receipt`] — Audit receipt with evidence for each published crate
+//! - [`types::PreflightReport`] — Preflight assessment with finishability verdict
+//! - [`types::PublishPolicy`] — Policy presets for safety vs. speed tradeoffs
+//!
+//! ## Modules
+//!
+//! - [`plan`] — Workspace analysis and topological plan generation
+//! - [`engine`] — Core publish, preflight, and resume logic
+//! - [`engine_parallel`] — Wave-based parallel publishing engine
+//! - [`types`] — Domain types: specs, plans, options, receipts, errors
+//! - [`config`] — Configuration file (`.shipper.toml`) loading and merging
+//! - [`auth`] — Token resolution and authentication detection
+//! - [`registry`] — Registry API and sparse-index client
+//! - [`state`] — State and receipt persistence
+//! - [`events`] — Append-only JSONL event log
+//! - [`git`] — Git operations (cleanliness check, context capture)
+//! - [`lock`] — Distributed lock to prevent concurrent publishes
+//! - [`environment`] — Environment fingerprinting (OS, arch, tool versions)
+//! - [`store`] — `StateStore` trait for pluggable persistence backends
+//! - [`cargo`] — Workspace metadata via `cargo_metadata`
+//!
+//! ## Feature Flags
+//!
+//! This crate does not currently use feature flags. All functionality is
+//! available by default.
+//!
+//! ## Stability
+//!
+//! The library API is subject to change before v1.0.0. Breaking changes will be
+//! documented in the [changelog](https://github.com/cmrigney/shipper/blob/main/CHANGELOG.md).
+//!
+//! ## CLI Usage
+//!
+//! For command-line usage, see the [shipper-cli crate](https://crates.io/crates/shipper-cli).
 
 /// Token resolution: `CARGO_REGISTRY_TOKEN` → `CARGO_REGISTRIES_<NAME>_TOKEN`
 /// → `$CARGO_HOME/credentials.toml`.
