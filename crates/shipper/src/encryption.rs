@@ -16,12 +16,12 @@
 //! - Random salt and nonce for each encryption operation
 //! - Encrypted data format: base64(salt || nonce || ciphertext || auth_tag)
 
-use anyhow::{Context, Result};
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng, rand_core::RngCore},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit, OsRng, rand_core::RngCore},
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use anyhow::{Context, Result};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use pbkdf2::pbkdf2_hmac_array;
 use sha2::Sha256;
 
@@ -97,8 +97,7 @@ pub fn encrypt(data: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     let key = derive_key(passphrase, &salt);
 
     // Create cipher and encrypt
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .context("failed to create AES-256-GCM cipher")?;
+    let cipher = Aes256Gcm::new_from_slice(&key).context("failed to create AES-256-GCM cipher")?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, data)
@@ -143,12 +142,14 @@ pub fn decrypt(encrypted_data: impl AsRef<str>, passphrase: &str) -> Result<Vec<
     let key = derive_key(passphrase, salt);
 
     // Create cipher and decrypt
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .context("failed to create AES-256-GCM cipher")?;
+    let cipher = Aes256Gcm::new_from_slice(&key).context("failed to create AES-256-GCM cipher")?;
     let nonce = Nonce::from_slice(nonce_bytes);
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| anyhow::anyhow!("decryption failed - wrong passphrase or corrupted data: {:?}", e))?;
+    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| {
+        anyhow::anyhow!(
+            "decryption failed - wrong passphrase or corrupted data: {:?}",
+            e
+        )
+    })?;
 
     Ok(plaintext)
 }
@@ -206,8 +207,8 @@ pub fn write_encrypted(path: &std::path::Path, data: &[u8], passphrase: &str) ->
     let encrypted = encrypt(data, passphrase)?;
 
     // Write as base64 string
-    let encrypted_str = String::from_utf8(encrypted)
-        .context("encrypted data is not valid UTF-8")?;
+    let encrypted_str =
+        String::from_utf8(encrypted).context("encrypted data is not valid UTF-8")?;
 
     std::fs::write(path, encrypted_str)
         .with_context(|| format!("failed to write encrypted file: {}", path.display()))?;
@@ -236,10 +237,10 @@ impl StateEncryption {
         }
 
         // Try env var first if configured
-        if let Some(ref env_var) = self.config.env_var {
-            if let Ok(passphrase) = std::env::var(env_var) {
-                return Ok(Some(passphrase));
-            }
+        if let Some(ref env_var) = self.config.env_var
+            && let Ok(passphrase) = std::env::var(env_var)
+        {
+            return Ok(Some(passphrase));
         }
 
         // Fall back to direct passphrase
@@ -265,7 +266,7 @@ impl StateEncryption {
         // First, try to decrypt assuming it's encrypted
         if let Some(passphrase) = self.get_passphrase()? {
             // Try decryption first
-            if let Ok(decrypted) = decrypt(&String::from_utf8_lossy(data), &passphrase) {
+            if let Ok(decrypted) = decrypt(String::from_utf8_lossy(data), &passphrase) {
                 return Ok(decrypted);
             }
         }
@@ -283,17 +284,18 @@ impl StateEncryption {
                 .with_context(|| format!("failed to read file: {}", path.display()));
         }
 
-        let passphrase = self.get_passphrase()?.context(
-            "encryption is enabled but no passphrase available",
-        )?;
+        let passphrase = self
+            .get_passphrase()?
+            .context("encryption is enabled but no passphrase available")?;
 
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read file: {}", path.display()))?;
 
         // Try to decrypt - if it fails, assume it's not encrypted
         match decrypt(&content, &passphrase) {
-            Ok(decrypted) => String::from_utf8(decrypted)
-                .context("decrypted data is not valid UTF-8"),
+            Ok(decrypted) => {
+                String::from_utf8(decrypted).context("decrypted data is not valid UTF-8")
+            }
             Err(_) => {
                 // File might not be encrypted yet - try reading as plain
                 Ok(content)
@@ -309,13 +311,13 @@ impl StateEncryption {
                 .with_context(|| format!("failed to write file: {}", path.display()));
         }
 
-        let passphrase = self.get_passphrase()?.context(
-            "encryption is enabled but no passphrase available",
-        )?;
+        let passphrase = self
+            .get_passphrase()?
+            .context("encryption is enabled but no passphrase available")?;
 
         let encrypted = encrypt(data, &passphrase)?;
-        let encrypted_str = String::from_utf8(encrypted)
-            .context("encrypted data is not valid UTF-8")?;
+        let encrypted_str =
+            String::from_utf8(encrypted).context("encrypted data is not valid UTF-8")?;
 
         std::fs::write(path, encrypted_str)
             .with_context(|| format!("failed to write encrypted file: {}", path.display()))
@@ -350,8 +352,16 @@ mod tests {
         assert_ne!(encrypted1, encrypted2);
 
         // But both should decrypt to the same plaintext
-        let decrypted1 = decrypt(&String::from_utf8(encrypted1).expect("valid UTF-8"), passphrase).expect("decryption should succeed");
-        let decrypted2 = decrypt(&String::from_utf8(encrypted2).expect("valid UTF-8"), passphrase).expect("decryption should succeed");
+        let decrypted1 = decrypt(
+            &String::from_utf8(encrypted1).expect("valid UTF-8"),
+            passphrase,
+        )
+        .expect("decryption should succeed");
+        let decrypted2 = decrypt(
+            &String::from_utf8(encrypted2).expect("valid UTF-8"),
+            passphrase,
+        )
+        .expect("decryption should succeed");
 
         assert_eq!(decrypted1, decrypted2);
     }
@@ -407,7 +417,8 @@ mod tests {
         let encrypted = encryption.encrypt(data).expect("encryption should succeed");
         // Convert to string for decrypt
         let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
-        let decrypted = decrypt(&encrypted_str, "my-secret-passphrase").expect("decryption should succeed");
+        let decrypted =
+            decrypt(&encrypted_str, "my-secret-passphrase").expect("decryption should succeed");
 
         assert_eq!(data.to_vec(), decrypted);
     }

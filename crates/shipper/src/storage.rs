@@ -25,9 +25,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Represents the type of storage backend
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum StorageType {
     /// Local filesystem storage
+    #[default]
     File,
     /// Amazon S3 storage
     S3,
@@ -35,12 +36,6 @@ pub enum StorageType {
     Gcs,
     /// Azure Blob Storage
     Azure,
-}
-
-impl Default for StorageType {
-    fn default() -> Self {
-        StorageType::File
-    }
 }
 
 impl std::fmt::Display for StorageType {
@@ -246,7 +241,7 @@ pub mod s3 {
     use super::{CloudStorageConfig, Result, StorageBackend, StorageType};
     use aws_config::defaults::{self, BehaviorVersion};
     use aws_credential_types::provider::ProvideCredentials;
-    use aws_sdk_s3::{config::AsyncClient, Client};
+    use aws_sdk_s3::{Client, config::AsyncClient};
     use std::sync::Arc;
 
     /// S3 storage backend implementation.
@@ -280,15 +275,16 @@ pub mod s3 {
                 config.access_key_id.as_ref(),
                 config.secret_access_key.as_ref(),
             ) {
-                let credentials = aws_credential_types::provider::static_provider::StaticCredentials::new(
-                    aws_sdk_s3::config::Credentials::new(
-                        access_key.clone(),
-                        secret_key.clone(),
-                        config.session_token.clone(),
-                        None,
-                        "shipper",
-                    ),
-                );
+                let credentials =
+                    aws_credential_types::provider::static_provider::StaticCredentials::new(
+                        aws_sdk_s3::config::Credentials::new(
+                            access_key.clone(),
+                            secret_key.clone(),
+                            config.session_token.clone(),
+                            None,
+                            "shipper",
+                        ),
+                    );
                 builder = builder.credentials_provider(credentials);
             }
 
@@ -350,7 +346,9 @@ pub mod s3 {
                 .key(&key)
                 .send()
                 .blocking()
-                .with_context(|| format!("failed to read S3 object s3://{}/{}", self.bucket, key))?;
+                .with_context(|| {
+                    format!("failed to read S3 object s3://{}/{}", self.bucket, key)
+                })?;
 
             let bytes = output
                 .body
@@ -371,7 +369,9 @@ pub mod s3 {
                 .body(aws_sdk_s3::primitives::ByteStream::from(data.to_vec()))
                 .send()
                 .blocking()
-                .with_context(|| format!("failed to write S3 object s3://{}/{}", self.bucket, key))?;
+                .with_context(|| {
+                    format!("failed to write S3 object s3://{}/{}", self.bucket, key)
+                })?;
 
             Ok(())
         }
@@ -384,7 +384,9 @@ pub mod s3 {
                 .key(&key)
                 .send()
                 .blocking()
-                .with_context(|| format!("failed to delete S3 object s3://{}/{}", self.bucket, key))?;
+                .with_context(|| {
+                    format!("failed to delete S3 object s3://{}/{}", self.bucket, key)
+                })?;
 
             Ok(())
         }
@@ -402,10 +404,16 @@ pub mod s3 {
             match result {
                 Ok(_) => Ok(true),
                 Err(e) => {
-                    if e.as_service_error().map(|s| s.is_not_found()).unwrap_or(false) {
+                    if e.as_service_error()
+                        .map(|s| s.is_not_found())
+                        .unwrap_or(false)
+                    {
                         Ok(false)
                     } else {
-                        Err(anyhow::anyhow!("failed to check S3 object existence: {}", e))
+                        Err(anyhow::anyhow!(
+                            "failed to check S3 object existence: {}",
+                            e
+                        ))
                     }
                 }
             }
@@ -478,7 +486,12 @@ pub mod gcs {
             let data = self
                 .client
                 .download_object(&self.bucket, &object_name, None)
-                .with_context(|| format!("failed to read GCS object gs://{}/{}", self.bucket, object_name))?;
+                .with_context(|| {
+                    format!(
+                        "failed to read GCS object gs://{}/{}",
+                        self.bucket, object_name
+                    )
+                })?;
 
             Ok(data)
         }
@@ -497,7 +510,12 @@ pub mod gcs {
                         },
                     ),
                 )
-                .with_context(|| format!("failed to write GCS object gs://{}/{}", self.bucket, object_name))?;
+                .with_context(|| {
+                    format!(
+                        "failed to write GCS object gs://{}/{}",
+                        self.bucket, object_name
+                    )
+                })?;
 
             Ok(())
         }
@@ -506,7 +524,12 @@ pub mod gcs {
             let object_name = self.full_object_name(path);
             self.client
                 .delete_object(&self.bucket, &object_name, None)
-                .with_context(|| format!("failed to delete GCS object gs://{}/{}", self.bucket, object_name))?;
+                .with_context(|| {
+                    format!(
+                        "failed to delete GCS object gs://{}/{}",
+                        self.bucket, object_name
+                    )
+                })?;
 
             Ok(())
         }
@@ -648,7 +671,12 @@ pub mod azure {
             let data = blob_client
                 .get_content()
                 .execute()
-                .with_context(|| format!("failed to read Azure blob {} in container {}", path, self.container))?
+                .with_context(|| {
+                    format!(
+                        "failed to read Azure blob {} in container {}",
+                        path, self.container
+                    )
+                })?
                 .data
                 .to_vec();
 
@@ -661,17 +689,24 @@ pub mod azure {
                 .put_block_blob(data)
                 .content_type("application/octet-stream")
                 .execute()
-                .with_context(|| format!("failed to write Azure blob {} in container {}", path, self.container))?;
+                .with_context(|| {
+                    format!(
+                        "failed to write Azure blob {} in container {}",
+                        path, self.container
+                    )
+                })?;
 
             Ok(())
         }
 
         fn delete(&self, path: &str) -> Result<()> {
             let blob_client = self.blob_client(path);
-            blob_client
-                .delete()
-                .execute()
-                .with_context(|| format!("failed to delete Azure blob {} in container {}", path, self.container))?;
+            blob_client.delete().execute().with_context(|| {
+                format!(
+                    "failed to delete Azure blob {} in container {}",
+                    path, self.container
+                )
+            })?;
 
             Ok(())
         }
@@ -820,7 +855,11 @@ mod tests {
 
         // Check exists
         assert!(storage.exists("test.txt").expect("exists should succeed"));
-        assert!(!storage.exists("missing.txt").expect("exists should succeed"));
+        assert!(
+            !storage
+                .exists("missing.txt")
+                .expect("exists should succeed")
+        );
     }
 
     #[test]
@@ -829,7 +868,9 @@ mod tests {
         let storage = FileStorage::new(td.path().to_path_buf());
 
         // Write and then delete
-        storage.write("test.txt", b"hello").expect("write should succeed");
+        storage
+            .write("test.txt", b"hello")
+            .expect("write should succeed");
         assert!(storage.exists("test.txt").expect("exists should succeed"));
 
         storage.delete("test.txt").expect("delete should succeed");
@@ -853,7 +894,8 @@ mod tests {
 
     #[test]
     fn test_cloud_storage_config_full_path() {
-        let config = CloudStorageConfig::new(StorageType::S3, "my-bucket").with_base_path("shipper");
+        let config =
+            CloudStorageConfig::new(StorageType::S3, "my-bucket").with_base_path("shipper");
 
         assert_eq!(config.full_path("state.json"), "shipper/state.json");
         assert_eq!(config.full_path("receipt.json"), "shipper/receipt.json");

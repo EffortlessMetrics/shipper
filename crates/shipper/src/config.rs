@@ -11,14 +11,14 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::types::{
-    ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, Registry, RuntimeOptions, VerifyMode,
-    deserialize_duration, serialize_duration,
+    ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, Registry, RuntimeOptions,
+    VerifyMode, deserialize_duration, serialize_duration,
 };
 
-use crate::retry::{PerErrorConfig, RetryPolicy, RetryStrategyType};
-use crate::webhook::WebhookConfig;
 use crate::encryption::EncryptionConfig as EncryptionSettings;
+use crate::retry::{PerErrorConfig, RetryPolicy, RetryStrategyType};
 use crate::storage::{CloudStorageConfig, StorageType};
+use crate::webhook::WebhookConfig;
 
 /// Nested policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -197,21 +197,18 @@ impl StorageConfigInner {
         }
 
         // Check for environment variable overrides
-        if config.access_key_id.is_none() {
-            if let Ok(access_key) = std::env::var("SHIPPER_STORAGE_ACCESS_KEY_ID") {
-                config.access_key_id = Some(access_key);
-            }
-        }
-        if config.secret_access_key.is_none() {
-            if let Ok(secret_key) = std::env::var("SHIPPER_STORAGE_SECRET_ACCESS_KEY") {
-                config.secret_access_key = Some(secret_key);
-            }
-        }
-        if config.region.is_none() {
-            if let Ok(region) = std::env::var("SHIPPER_STORAGE_REGION") {
-                config.region = Some(region);
-            }
-        }
+        config.access_key_id = config
+            .access_key_id
+            .clone()
+            .or_else(|| std::env::var("SHIPPER_STORAGE_ACCESS_KEY_ID").ok());
+        config.secret_access_key = config
+            .secret_access_key
+            .clone()
+            .or_else(|| std::env::var("SHIPPER_STORAGE_SECRET_ACCESS_KEY").ok());
+        config.region = config
+            .region
+            .clone()
+            .or_else(|| std::env::var("SHIPPER_STORAGE_REGION").ok());
 
         Some(config)
     }
@@ -575,7 +572,12 @@ impl ShipperConfig {
         }
 
         // Ensure only one default registry
-        let default_count = self.registries.registries.iter().filter(|r| r.default).count();
+        let default_count = self
+            .registries
+            .registries
+            .iter()
+            .filter(|r| r.default)
+            .count();
         if default_count > 1 {
             bail!("only one registry can be marked as default");
         }
@@ -596,31 +598,41 @@ impl ShipperConfig {
             skip_ownership_check: cli.skip_ownership_check || self.flags.skip_ownership_check,
             strict_ownership: cli.strict_ownership || self.flags.strict_ownership,
             no_verify: cli.no_verify,
-            max_attempts: cli.max_attempts.unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                self.retry.max_attempts
-            } else {
-                effective_retry.max_attempts
-            }),
-            base_delay: cli.base_delay.unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                self.retry.base_delay
-            } else {
-                effective_retry.base_delay
-            }),
-            max_delay: cli.max_delay.unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                self.retry.max_delay
-            } else {
-                effective_retry.max_delay
-            }),
-            retry_strategy: cli.retry_strategy.unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                self.retry.strategy
-            } else {
-                effective_retry.strategy
-            }),
-            retry_jitter: cli.retry_jitter.unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                self.retry.jitter
-            } else {
-                effective_retry.jitter
-            }),
+            max_attempts: cli
+                .max_attempts
+                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                    self.retry.max_attempts
+                } else {
+                    effective_retry.max_attempts
+                }),
+            base_delay: cli
+                .base_delay
+                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                    self.retry.base_delay
+                } else {
+                    effective_retry.base_delay
+                }),
+            max_delay: cli
+                .max_delay
+                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                    self.retry.max_delay
+                } else {
+                    effective_retry.max_delay
+                }),
+            retry_strategy: cli.retry_strategy.unwrap_or(
+                if self.retry.policy == RetryPolicy::Custom {
+                    self.retry.strategy
+                } else {
+                    effective_retry.strategy
+                },
+            ),
+            retry_jitter: cli
+                .retry_jitter
+                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                    self.retry.jitter
+                } else {
+                    effective_retry.jitter
+                }),
             retry_per_error: self.retry.per_error.clone(),
             verify_timeout: cli.verify_timeout.unwrap_or(Duration::from_secs(120)),
             verify_poll_interval: cli.verify_poll_interval.unwrap_or(Duration::from_secs(5)),
@@ -692,7 +704,8 @@ impl ShipperConfig {
                 // Determine target registries based on CLI overrides and config
                 if cli.all_registries {
                     // Publish to all configured registries
-                    self.registries.get_registries()
+                    self.registries
+                        .get_registries()
                         .into_iter()
                         .map(|r| Registry {
                             name: r.name,
@@ -702,10 +715,12 @@ impl ShipperConfig {
                         .collect()
                 } else if let Some(ref reg_names) = cli.registries {
                     // Publish to specifically requested registries
-                    reg_names.iter()
+                    reg_names
+                        .iter()
                         .map(|name| {
                             // Try to find in config, otherwise use defaults
-                            self.registries.find_by_name(name)
+                            self.registries
+                                .find_by_name(name)
                                 .map(|r| Registry {
                                     name: r.name,
                                     api_base: r.api_base,

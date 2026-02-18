@@ -29,8 +29,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DurationMilliSeconds, serde_as};
 
-use crate::webhook::WebhookConfig;
 use crate::encryption::EncryptionConfig as EncryptionSettings;
+use crate::webhook::WebhookConfig;
 
 /// Deserialize a Duration from either a string (human-readable) or u64 (milliseconds)
 pub(crate) fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
@@ -155,7 +155,7 @@ impl Registry {
 ///     registry: Registry::crates_io(),
 ///     selected_packages: None, // Publish all packages
 /// };
-/// 
+///
 /// // Or with specific packages
 /// let specific_spec = ReleaseSpec {
 ///     manifest_path: PathBuf::from("Cargo.toml"),
@@ -730,8 +730,8 @@ pub struct ReleasePlan {
 /// let published = PackageState::Published;
 ///
 /// // When skipped (e.g., already published)
-/// let skipped = PackageState::Skipped { 
-///     reason: "version already exists".to_string() 
+/// let skipped = PackageState::Skipped {
+///     reason: "version already exists".to_string()
 /// };
 ///
 /// // On failure
@@ -836,7 +836,7 @@ pub struct PackageProgress {
 ///     updated_at: Utc::now(),
 ///     packages: std::collections::BTreeMap::new(),
 /// };
-/// 
+///
 /// // Save to disk for resumability
 /// # Ok::<(), anyhow::Error>(())
 /// ```
@@ -1126,10 +1126,10 @@ pub struct PublishEvent {
 ///     package_count: 5,
 /// };
 /// let started = EventType::ExecutionStarted;
-/// let finished = EventType::ExecutionFinished { 
-///     result: ExecutionResult::Success 
+/// let finished = EventType::ExecutionFinished {
+///     result: ExecutionResult::Success
 /// };
-/// 
+///
 /// // Package events
 /// let pkg_started = EventType::PackageStarted {
 ///     name: "my-crate".to_string(),
@@ -1139,12 +1139,12 @@ pub struct PublishEvent {
 ///     class: ErrorClass::Retryable,
 ///     message: "rate limited".to_string(),
 /// };
-/// 
+///
 /// // Readiness events
 /// let ready = EventType::ReadinessStarted {
 ///     method: ReadinessMethod::Api,
 /// };
-/// 
+///
 /// // Preflight events
 /// let preflight = EventType::PreflightComplete {
 ///     finishability: Finishability::Proven,

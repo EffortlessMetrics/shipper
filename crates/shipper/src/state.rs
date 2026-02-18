@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::encryption::StateEncryption;
 use crate::environment::collect_environment_fingerprint;
 use crate::types::{ExecutionState, Receipt};
 
@@ -75,46 +74,60 @@ pub fn has_incomplete_state(state_dir: &Path) -> bool {
 }
 
 /// Load state with encryption support
-pub fn load_state_encrypted(state_dir: &Path, encrypt_config: &crate::encryption::EncryptionConfig) -> Result<Option<ExecutionState>> {
+pub fn load_state_encrypted(
+    state_dir: &Path,
+    encrypt_config: &crate::encryption::EncryptionConfig,
+) -> Result<Option<ExecutionState>> {
     let path = state_path(state_dir);
     if !path.exists() {
         return Ok(None);
     }
-    
+
     let encryption = crate::encryption::StateEncryption::new(encrypt_config.clone())?;
     let content = encryption.read_file(&path)?;
-    
+
     let st: ExecutionState = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse state JSON {}", path.display()))?;
     Ok(Some(st))
 }
 
 /// Save state with encryption support
-pub fn save_state_encrypted(state_dir: &Path, state: &ExecutionState, encrypt_config: &crate::encryption::EncryptionConfig) -> Result<()> {
+pub fn save_state_encrypted(
+    state_dir: &Path,
+    state: &ExecutionState,
+    encrypt_config: &crate::encryption::EncryptionConfig,
+) -> Result<()> {
     fs::create_dir_all(state_dir)
         .with_context(|| format!("failed to create state dir {}", state_dir.display()))?;
 
     let path = state_path(state_dir);
-    
+
     let encryption = crate::encryption::StateEncryption::new(encrypt_config.clone())?;
     let data = serde_json::to_vec_pretty(state).context("failed to serialize state JSON")?;
     encryption.write_file(&path, &data)
 }
 
 /// Write receipt with encryption support
-pub fn write_receipt_encrypted(state_dir: &Path, receipt: &Receipt, encrypt_config: &crate::encryption::EncryptionConfig) -> Result<()> {
+pub fn write_receipt_encrypted(
+    state_dir: &Path,
+    receipt: &Receipt,
+    encrypt_config: &crate::encryption::EncryptionConfig,
+) -> Result<()> {
     fs::create_dir_all(state_dir)
         .with_context(|| format!("failed to create state dir {}", state_dir.display()))?;
 
     let path = receipt_path(state_dir);
-    
+
     let encryption = crate::encryption::StateEncryption::new(encrypt_config.clone())?;
     let data = serde_json::to_vec_pretty(receipt).context("failed to serialize receipt JSON")?;
     encryption.write_file(&path, &data)
 }
 
 /// Load receipt with encryption support
-pub fn load_receipt_encrypted(state_dir: &Path, encrypt_config: &crate::encryption::EncryptionConfig) -> Result<Option<Receipt>> {
+pub fn load_receipt_encrypted(
+    state_dir: &Path,
+    encrypt_config: &crate::encryption::EncryptionConfig,
+) -> Result<Option<Receipt>> {
     let path = receipt_path(state_dir);
     if !path.exists() {
         return Ok(None);
@@ -139,7 +152,10 @@ pub fn load_receipt_encrypted(state_dir: &Path, encrypt_config: &crate::encrypti
 }
 
 /// Migrate receipt with encryption support
-fn migrate_receipt_encrypted(path: &Path, encrypt_config: &crate::encryption::EncryptionConfig) -> Result<Receipt> {
+fn migrate_receipt_encrypted(
+    path: &Path,
+    encrypt_config: &crate::encryption::EncryptionConfig,
+) -> Result<Receipt> {
     let encryption = crate::encryption::StateEncryption::new(encrypt_config.clone())?;
     let content = encryption.read_file(path)?;
 
@@ -158,15 +174,13 @@ fn migrate_receipt_encrypted(path: &Path, encrypt_config: &crate::encryption::En
         "shipper.receipt.v1" => migrate_v1_to_v2(value)?,
         "shipper.receipt.v2" => serde_json::from_value(value)
             .with_context(|| format!("failed to deserialize receipt v2 from {}", path.display()))?,
-        _ => {
-            serde_json::from_value(value).with_context(|| {
-                format!(
-                    "failed to deserialize receipt with unknown version {} from {}",
-                    receipt_version,
-                    path.display()
-                )
-            })?
-        }
+        _ => serde_json::from_value(value).with_context(|| {
+            format!(
+                "failed to deserialize receipt with unknown version {} from {}",
+                receipt_version,
+                path.display()
+            )
+        })?,
     };
 
     Ok(receipt)

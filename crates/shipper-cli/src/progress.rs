@@ -43,9 +43,7 @@ impl ProgressReporter {
             pb.set_style(
                 ProgressStyle::default_bar()
                     .template("{msg}")
-                    .unwrap_or_else(|_| {
-                        ProgressStyle::default_bar()
-                    })
+                    .unwrap_or_else(|_| ProgressStyle::default_bar())
                     .progress_chars("#>-"),
             );
             Some(pb)
@@ -65,6 +63,7 @@ impl ProgressReporter {
 
     /// Creates a silent progress reporter that always uses non-TTY mode.
     /// Use this when you explicitly want to disable progress bars regardless of TTY.
+    #[allow(dead_code)]
     pub fn silent(total_packages: usize) -> Self {
         Self {
             is_tty: false,
@@ -91,9 +90,7 @@ impl ProgressReporter {
                 let elapsed = self.start_time.elapsed();
                 let msg = format!(
                     "[{}/{}] Publishing {}... ({elapsed:?})",
-                    self.current_package,
-                    self.total_packages,
-                    self.current_name
+                    self.current_package, self.total_packages, self.current_name
                 );
                 pb.set_message(msg);
                 pb.set_position((self.current_package - 1) as u64);
@@ -102,14 +99,14 @@ impl ProgressReporter {
             let elapsed = self.start_time.elapsed();
             eprintln!(
                 "[{}/{}] Publishing {}... ({elapsed:?})",
-                self.current_package,
-                self.total_packages,
-                self.current_name
+                self.current_package, self.total_packages, self.current_name
             );
         }
     }
 
     /// Marks the current package as completed.
+    #[allow(clippy::collapsible_if)]
+    #[allow(dead_code)]
     pub fn finish_package(&mut self) {
         if self.is_tty {
             if let Some(ref pb) = self.progress_bar {
@@ -119,16 +116,12 @@ impl ProgressReporter {
     }
 
     /// Sets a status message (e.g., "Waiting for registry...").
+    #[allow(dead_code)]
     pub fn set_status(&self, status: &str) {
         if self.is_tty {
             if let Some(ref pb) = self.progress_bar {
                 let current = pb.position();
-                let msg = format!(
-                    "[{}/{}] {}",
-                    current + 1,
-                    self.total_packages,
-                    status
-                );
+                let msg = format!("[{}/{}] {}", current + 1, self.total_packages, status);
                 pb.set_message(msg);
             }
         } else {

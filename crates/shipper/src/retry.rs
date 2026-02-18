@@ -132,19 +132,14 @@ pub struct PerErrorConfig {
 }
 
 /// Calculate the delay for the next retry attempt based on the strategy configuration.
-pub fn calculate_delay(
-    config: &RetryStrategyConfig,
-    attempt: u32,
-) -> Duration {
+pub fn calculate_delay(config: &RetryStrategyConfig, attempt: u32) -> Duration {
     let delay = match config.strategy {
         RetryStrategyType::Immediate => Duration::ZERO,
         RetryStrategyType::Exponential => {
             let pow = attempt.saturating_sub(1).min(16);
             config.base_delay.saturating_mul(2_u32.saturating_pow(pow))
         }
-        RetryStrategyType::Linear => {
-            config.base_delay.saturating_mul(attempt)
-        }
+        RetryStrategyType::Linear => config.base_delay.saturating_mul(attempt),
         RetryStrategyType::Constant => config.base_delay,
     };
 
@@ -367,11 +362,7 @@ mod tests {
         assert_eq!(result.strategy, RetryStrategyType::Immediate);
 
         // Should fall back to default for ambiguous
-        let result = config_for_error(
-            &default_config,
-            &Some(per_error),
-            ErrorClass::Ambiguous,
-        );
+        let result = config_for_error(&default_config, &Some(per_error), ErrorClass::Ambiguous);
         assert_eq!(result.strategy, RetryStrategyType::Exponential);
     }
 
@@ -417,7 +408,13 @@ mod tests {
         assert!(config.ambiguous.is_some());
         assert!(config.permanent.is_none());
 
-        assert_eq!(config.retryable.unwrap().strategy, RetryStrategyType::Immediate);
-        assert_eq!(config.ambiguous.unwrap().strategy, RetryStrategyType::Exponential);
+        assert_eq!(
+            config.retryable.unwrap().strategy,
+            RetryStrategyType::Immediate
+        );
+        assert_eq!(
+            config.ambiguous.unwrap().strategy,
+            RetryStrategyType::Exponential
+        );
     }
 }

@@ -127,10 +127,7 @@ impl WebhookClient {
 
         std::thread::spawn(move || {
             if let Err(e) = do_send_event(&client, &url, secret.as_deref(), &payload) {
-                eprintln!(
-                    "[warn] webhook delivery failed (non-blocking): {:#}",
-                    e
-                );
+                eprintln!("[warn] webhook delivery failed (non-blocking): {:#}", e);
             }
         });
     }
@@ -148,7 +145,7 @@ fn do_send_event(
 
     // Add signature header if secret is provided
     if let Some(secret) = secret {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(json.as_bytes());
         hasher.update(secret.as_bytes());
@@ -164,11 +161,7 @@ fn do_send_event(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().unwrap_or_default();
-        anyhow::bail!(
-            "webhook returned error status {}: {}",
-            status,
-            body
-        );
+        anyhow::bail!("webhook returned error status {}: {}", status, body);
     }
 
     Ok(())
@@ -242,9 +235,13 @@ mod tests {
 
         let json = serde_json::to_string(&payload).expect("serialize");
         let parsed: WebhookPayload = serde_json::from_str(&json).expect("deserialize");
-        
+
         match parsed.event {
-            WebhookEvent::PublishStarted { plan_id, package_count, registry } => {
+            WebhookEvent::PublishStarted {
+                plan_id,
+                package_count,
+                registry,
+            } => {
                 assert_eq!(plan_id, "test-plan");
                 assert_eq!(package_count, 3);
                 assert_eq!(registry, "crates-io");
@@ -306,10 +303,13 @@ mod tests {
 
             let json = serde_json::to_string(&payload).expect("serialize");
             let parsed: WebhookPayload = serde_json::from_str(&json).expect("deserialize");
-            assert!(matches!(parsed.event, WebhookEvent::PublishStarted { .. } 
-                | WebhookEvent::PublishSucceeded { .. }
-                | WebhookEvent::PublishFailed { .. }
-                | WebhookEvent::PublishCompleted { .. }));
+            assert!(matches!(
+                parsed.event,
+                WebhookEvent::PublishStarted { .. }
+                    | WebhookEvent::PublishSucceeded { .. }
+                    | WebhookEvent::PublishFailed { .. }
+                    | WebhookEvent::PublishCompleted { .. }
+            ));
         }
     }
 }

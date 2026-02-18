@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand, CommandFactory};
+use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
 use shipper::config::{CliOverrides, ShipperConfig};
@@ -420,17 +420,17 @@ fn main() -> Result<()> {
         Commands::Publish => {
             let total_packages = planned.plan.packages.len();
             let mut progress = ProgressReporter::new(total_packages);
-            
+
             // Show initial progress if we have packages
             if total_packages > 0 {
                 let first_pkg = &planned.plan.packages[0];
                 progress.set_package(1, &first_pkg.name, &first_pkg.version);
             }
-            
+
             let receipt = engine::run_publish(&planned, &opts, &mut reporter)?;
-            
+
             progress.finish();
-            
+
             print_receipt(
                 &receipt,
                 &planned.workspace_root,
@@ -441,17 +441,17 @@ fn main() -> Result<()> {
         Commands::Resume => {
             let total_packages = planned.plan.packages.len();
             let mut progress = ProgressReporter::new(total_packages);
-            
+
             // Show initial progress if we have packages
             if total_packages > 0 {
                 let first_pkg = &planned.plan.packages[0];
                 progress.set_package(1, &first_pkg.name, &first_pkg.version);
             }
-            
+
             let receipt = engine::run_resume(&planned, &opts, &mut reporter)?;
-            
+
             progress.finish();
-            
+
             print_receipt(
                 &receipt,
                 &planned.workspace_root,
@@ -532,7 +532,9 @@ fn parse_retry_strategy(s: &str) -> Result<shipper::retry::RetryStrategyType> {
         "exponential" => Ok(shipper::retry::RetryStrategyType::Exponential),
         "linear" => Ok(shipper::retry::RetryStrategyType::Linear),
         "constant" => Ok(shipper::retry::RetryStrategyType::Constant),
-        _ => bail!("invalid retry-strategy: {s} (expected: immediate, exponential, linear, constant)"),
+        _ => bail!(
+            "invalid retry-strategy: {s} (expected: immediate, exponential, linear, constant)"
+        ),
     }
 }
 
@@ -580,7 +582,11 @@ fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
     println!("Publishing Levels (packages at same level can be published in parallel):");
     println!();
     for level in &levels {
-        let level_pkgs: Vec<String> = level.packages.iter().map(|p| format!("{}@{}", p.name, p.version)).collect();
+        let level_pkgs: Vec<String> = level
+            .packages
+            .iter()
+            .map(|p| format!("{}@{}", p.name, p.version))
+            .collect();
         println!("  Level {}: {}", level.level, level_pkgs.join(", "));
     }
     println!();
@@ -592,9 +598,16 @@ fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
         let deps = ws.plan.dependencies.get(&p.name);
         let deps_str = match deps {
             Some(deps) if !deps.is_empty() => {
-                let dep_versions: Vec<String> = deps.iter().filter_map(|dep_name| {
-                    ws.plan.packages.iter().find(|pkg| &pkg.name == dep_name).map(|pkg| format!("{}@{}", dep_name, pkg.version))
-                }).collect();
+                let dep_versions: Vec<String> = deps
+                    .iter()
+                    .filter_map(|dep_name| {
+                        ws.plan
+                            .packages
+                            .iter()
+                            .find(|pkg| &pkg.name == dep_name)
+                            .map(|pkg| format!("{}@{}", dep_name, pkg.version))
+                    })
+                    .collect();
                 format!("depends on: {}", dep_versions.join(", "))
             }
             _ => String::from("no workspace dependencies"),
@@ -606,34 +619,45 @@ fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
     // Show potential issues / preflight considerations
     println!("=== Preflight Considerations ===");
     println!();
-    
+
     // Analyze potential issues
     let mut issues: Vec<String> = Vec::new();
-    
+
     // Check for packages with many dependencies (may take longer)
     for p in &ws.plan.packages {
+        #[allow(clippy::collapsible_if)]
         if let Some(deps) = ws.plan.dependencies.get(&p.name) {
             if deps.len() > 3 {
-                issues.push(format!("  - {}@{} has {} dependencies (may require longer publish time)", p.name, p.version, deps.len()));
+                issues.push(format!(
+                    "  - {}@{} has {} dependencies (may require longer publish time)",
+                    p.name,
+                    p.version,
+                    deps.len()
+                ));
             }
         }
     }
-    
+
     // Check for packages that are depended upon by many others
-    let mut dependents_count: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut dependents_count: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
     for deps in ws.plan.dependencies.values() {
         for dep in deps {
             *dependents_count.entry(dep.as_str()).or_insert(0) += 1;
         }
     }
     for (name, count) in &dependents_count {
+        #[allow(clippy::collapsible_if)]
         if *count > 3 {
-            if let Some(pkg) = ws.plan.packages.iter().find(|p| &p.name == *name) {
-                issues.push(format!("  - {}@{} is a core dependency for {} packages (critical path)", pkg.name, pkg.version, count));
+            if let Some(pkg) = ws.plan.packages.iter().find(|p| p.name == *name) {
+                issues.push(format!(
+                    "  - {}@{} is a core dependency for {} packages (critical path)",
+                    pkg.name, pkg.version, count
+                ));
             }
         }
     }
-    
+
     if issues.is_empty() {
         println!("  No obvious issues detected.");
         println!("  All packages have reasonable dependency structures.");
@@ -647,27 +671,46 @@ fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
     // Estimate time analysis (rough estimates)
     println!("=== Estimated Publishing Analysis ===");
     println!();
-    
+
     // Calculate max parallel packages per level
     let max_parallel = levels.iter().map(|l| l.packages.len()).max().unwrap_or(0);
-    println!("  Parallel publishing: {}", if max_parallel > 1 { "enabled" } else { "sequential" });
+    println!(
+        "  Parallel publishing: {}",
+        if max_parallel > 1 {
+            "enabled"
+        } else {
+            "sequential"
+        }
+    );
     println!("  Max concurrent packages: {}", max_parallel);
     println!("  Total publish levels: {}", total_levels);
-    
+
     // Rough time estimate (assuming ~30s per package + network overhead)
     let total_packages = ws.plan.packages.len();
     let estimated_sequential_secs = total_packages * 30;
     let estimated_parallel_secs = levels.iter().map(|_l| 30).sum::<usize>();
-    println!("  Estimated time (sequential): ~{}s ({:.1}min)", estimated_sequential_secs, estimated_sequential_secs as f64 / 60.0);
-    println!("  Estimated time (parallel): ~{}s ({:.1}min)", estimated_parallel_secs, estimated_parallel_secs as f64 / 60.0);
+    println!(
+        "  Estimated time (sequential): ~{}s ({:.1}min)",
+        estimated_sequential_secs,
+        estimated_sequential_secs as f64 / 60.0
+    );
+    println!(
+        "  Estimated time (parallel): ~{}s ({:.1}min)",
+        estimated_parallel_secs,
+        estimated_parallel_secs as f64 / 60.0
+    );
     println!();
 
     // Show final publish order
     println!("=== Full Publish Order ===");
     println!();
     for (idx, p) in ws.plan.packages.iter().enumerate() {
-        let level = levels.iter().find(|l| l.packages.iter().any(|lp| lp.name == p.name));
-        let level_str = level.map(|l| format!("[Level {}]", l.level)).unwrap_or_else(|| "[?]".to_string());
+        let level = levels
+            .iter()
+            .find(|l| l.packages.iter().any(|lp| lp.name == p.name));
+        let level_str = level
+            .map(|l| format!("[Level {}]", l.level))
+            .unwrap_or_else(|| "[?]".to_string());
         println!("  {:>3}. {} {} @{}", idx + 1, level_str, p.name, p.version);
     }
 }
@@ -1248,7 +1291,12 @@ fn run_config(cmd: ConfigCommands) -> Result<()> {
 }
 
 fn run_completion(shell: &Shell) -> Result<()> {
-    clap_complete::generate(*shell, &mut Cli::command(), "shipper", &mut std::io::stdout());
+    clap_complete::generate(
+        *shell,
+        &mut Cli::command(),
+        "shipper",
+        &mut std::io::stdout(),
+    );
     Ok(())
 }
 
@@ -1409,6 +1457,9 @@ mod tests {
             max_attempts: 1,
             base_delay: Duration::from_millis(0),
             max_delay: Duration::from_millis(0),
+            retry_strategy: shipper::retry::RetryStrategyType::Exponential,
+            retry_jitter: 0.5,
+            retry_per_error: shipper::retry::PerErrorConfig::default(),
             verify_timeout: Duration::from_millis(0),
             verify_poll_interval: Duration::from_millis(0),
             state_dir: state_dir.clone(),
@@ -1421,6 +1472,8 @@ mod tests {
             output_lines: 50,
             parallel: shipper::types::ParallelConfig::default(),
             webhook: shipper::webhook::WebhookConfig::default(),
+            encryption: shipper::encryption::EncryptionConfig::default(),
+            registries: vec![],
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
@@ -1472,6 +1525,9 @@ mod tests {
             max_attempts: 1,
             base_delay: Duration::from_millis(0),
             max_delay: Duration::from_millis(0),
+            retry_strategy: shipper::retry::RetryStrategyType::Exponential,
+            retry_jitter: 0.5,
+            retry_per_error: shipper::retry::PerErrorConfig::default(),
             verify_timeout: Duration::from_millis(0),
             verify_poll_interval: Duration::from_millis(0),
             state_dir: td.path().join("abs-state-2"),
@@ -1484,6 +1540,8 @@ mod tests {
             output_lines: 50,
             parallel: shipper::types::ParallelConfig::default(),
             webhook: shipper::webhook::WebhookConfig::default(),
+            encryption: shipper::encryption::EncryptionConfig::default(),
+            registries: vec![],
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
@@ -1680,14 +1738,21 @@ mode = "fast"
                 strict_ownership: false,
             },
             retry: shipper::config::RetryConfig {
+                policy: shipper::retry::RetryPolicy::Custom,
                 max_attempts: 10,
                 base_delay: Duration::from_secs(5),
                 max_delay: Duration::from_secs(300),
+                strategy: shipper::retry::RetryStrategyType::Exponential,
+                jitter: 0.5,
+                per_error: shipper::retry::PerErrorConfig::default(),
             },
             state_dir: None,
             registry: None,
+            registries: shipper::config::MultiRegistryConfig::default(),
             parallel: shipper::types::ParallelConfig::default(),
             webhook: shipper::webhook::WebhookConfig::default(),
+            encryption: shipper::config::EncryptionConfigInner::default(),
+            storage: shipper::config::StorageConfigInner::default(),
         };
 
         // CLI overrides some values, leaves others as None
