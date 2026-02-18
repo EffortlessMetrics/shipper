@@ -862,6 +862,7 @@ mod tests {
             retry_per_error: crate::retry::PerErrorConfig::default(),
             encryption: crate::encryption::EncryptionConfig::default(),
             webhook: crate::webhook::WebhookConfig::default(),
+            registries: vec![],
         }
     }
 

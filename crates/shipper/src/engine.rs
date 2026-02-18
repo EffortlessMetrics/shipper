@@ -58,6 +58,53 @@ pub(crate) fn apply_policy(opts: &RuntimeOptions) -> PolicyEffects {
     }
 }
 
+/// Run preflight verification checks before publishing.
+///
+/// This function performs various pre-publish checks to catch issues early:
+/// - Git cleanliness (if `allow_dirty` is false)
+/// - Registry reachability
+/// - Dry-run compilation verification
+/// - Version existence check (skip already-published versions)
+/// - Ownership verification (optional, based on policy)
+///
+/// # Arguments
+///
+/// * `ws` - The planned workspace containing packages to publish
+/// * `opts` - Runtime options controlling behavior
+/// * `reporter` - A reporter for outputting progress and warnings
+///
+/// # Returns
+///
+/// Returns a [`PreflightReport`] containing:
+/// - Whether a token was detected
+/// - The finishability assessment (Proven/NotProven/Failed)
+/// - Per-package preflight results
+///
+/// # Example
+///
+/// ```no_run
+/// use shipper::{engine, plan, types};
+/// use std::path::PathBuf;
+///
+/// # async fn run() -> Result<(), anyhow::Error> {
+/// let spec = types::ReleaseSpec {
+///     manifest_path: PathBuf::from("Cargo.toml"),
+///     registry: types::Registry::crates_io(),
+///     selected_packages: None,
+/// };
+/// let ws = plan::build_plan(&spec)?;
+/// let opts = types::RuntimeOptions { /* ... */ };
+///
+/// let mut reporter = MyReporter::default();
+/// let report = engine::run_preflight(&ws, &opts, &mut reporter)?;
+///
+/// println!("Finishability: {:?}", report.finishability);
+/// for pkg in &report.packages {
+///     println!("  {}@{}: already_published={}", pkg.name, pkg.version, pkg.already_published);
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub fn run_preflight(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
@@ -284,6 +331,45 @@ pub fn run_preflight(
     })
 }
 
+/// Execute the publish operation for all packages in the workspace.
+///
+/// This is the main publishing function that:
+/// 1. Acquires a distributed lock to prevent concurrent publishes
+/// 2. Checks git cleanliness (if configured)
+/// 3. Initializes or resumes from existing state
+/// 4. Publishes each package in dependency order
+/// 5. Verifies visibility on the registry after each publish
+/// 6. Writes a receipt with full evidence upon completion
+///
+/// # Arguments
+///
+/// * `ws` - The planned workspace containing packages to publish
+/// * `opts` - Runtime options controlling retry, readiness, policy, etc.
+/// * `reporter` - A reporter for outputting progress and warnings
+///
+/// # Returns
+///
+/// Returns a [`Receipt`] containing:
+/// - The plan ID and registry
+/// - Start and finish timestamps
+/// - Per-package receipts with evidence
+/// - Git context and environment fingerprint
+/// - Path to the event log
+///
+/// # Behavior
+///
+/// - **Resumability**: If interrupted, the state is persisted and `run_resume` can continue
+/// - **Parallel publishing**: If `opts.parallel.enabled` is true, uses parallel publishing
+/// - **Readiness checks**: Verifies crate visibility after publishing (configurable)
+/// - **Retry logic**: Retries transient failures with exponential backoff
+///
+/// # Error Handling
+///
+/// Returns an error if:
+/// - Lock acquisition fails
+/// - Git check fails (when required)
+/// - A permanent error occurs (e.g., authentication failure)
+/// - All retry attempts are exhausted
 pub fn run_publish(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
@@ -869,6 +955,54 @@ pub fn run_publish(
     Ok(receipt)
 }
 
+/// Resume a previously interrupted publish operation.
+///
+/// This function loads existing state from the state directory and continues
+/// publishing from where it left off. It handles:
+/// - Packages that were never attempted (Pending)
+/// - Packages that failed and should be retried
+/// - Packages that were uploaded but not verified (Uploaded)
+/// - Already-successful packages (Published/Skipped) - skipped automatically
+///
+/// # Arguments
+///
+/// * `ws` - The planned workspace (should match the original plan)
+/// * `opts` - Runtime options
+/// * `reporter` - A reporter for outputting progress
+///
+/// # Returns
+///
+/// Returns a [`Receipt`] similar to [`run_publish`].
+///
+/// # Error Handling
+///
+/// Returns an error if:
+/// - No existing state is found in the state directory
+/// - The plan ID doesn't match (use `opts.force_resume` to override)
+/// - Lock acquisition fails
+///
+/// # Example
+///
+/// ```no_run
+/// use shipper::{engine, plan, types};
+/// use std::path::PathBuf;
+///
+/// # async fn run() -> Result<(), anyhow::Error> {
+/// let spec = types::ReleaseSpec {
+///     manifest_path: PathBuf::from("Cargo.toml"),
+///     registry: types::Registry::crates_io(),
+///     selected_packages: None,
+/// };
+/// let ws = plan::build_plan(&spec)?;
+/// let opts = types::RuntimeOptions { /* ... */ };
+///
+/// let mut reporter = MyReporter::default();
+/// let receipt = engine::run_resume(&ws, &opts, &mut reporter)?;
+///
+/// println!("Published {} packages", receipt.packages.len());
+/// # Ok(())
+/// # }
+/// ```
 pub fn run_resume(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
@@ -1322,6 +1456,7 @@ mod tests {
             retry_jitter: 0.0,
             retry_per_error: crate::retry::PerErrorConfig::default(),
             encryption: crate::encryption::EncryptionConfig::default(),
+            registries: vec![],
         }
     }
 

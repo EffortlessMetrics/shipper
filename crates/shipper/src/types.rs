@@ -1,3 +1,26 @@
+//! # Types
+//!
+//! Core domain types for Shipper, including specs, plans, options, receipts, and errors.
+//!
+//! This module defines the fundamental data structures used throughout Shipper:
+//! - [`ReleaseSpec`] - Input specification for a publish operation
+//! - [`ReleasePlan`] - Deterministic, SHA256-identified publish plan  
+//! - [`RuntimeOptions`] - All runtime configuration options
+//! - [`Receipt`] - Audit receipt with evidence for each published crate
+//! - [`PreflightReport`] - Preflight assessment with finishability verdict
+//! - [`PublishPolicy`] - Policy presets for safety vs. speed tradeoffs
+//!
+//! ## Serialization
+//!
+//! Most types implement `Serialize` and `Deserialize` from `serde` for
+//! persistence to disk. Durations are serialized as milliseconds for
+//! cross-platform compatibility.
+//!
+//! ## Stability
+//!
+//! These types are considered stable unless otherwise noted. Breaking
+//! changes will be documented in the changelog.
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -36,6 +59,27 @@ where
     serializer.serialize_u64(duration.as_millis() as u64)
 }
 
+/// Represents a Cargo registry for publishing crates.
+///
+/// A registry is identified by its name (used with `cargo publish --registry <name>`)
+/// and its API/base URLs. The default registry is crates.io, which can be created
+/// using [`Registry::crates_io()`].
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::Registry;
+///
+/// // Use crates.io (default)
+/// let crates_io = Registry::crates_io();
+///
+/// // Custom registry
+/// let my_registry = Registry {
+///     name: "my-registry".to_string(),
+///     api_base: "https://my-registry.example.com".to_string(),
+///     index_base: Some("https://index.my-registry.example.com".to_string()),
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Registry {
     /// Cargo registry name (for `cargo publish --registry <name>`). For crates.io this is typically `crates-io`.
@@ -49,6 +93,27 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// Creates a new [`Registry`] configured for crates.io.
+    ///
+    /// This is the default registry used by Cargo and is the most common
+    /// target for publishing Rust crates.
+    ///
+    /// # Returns
+    ///
+    /// A [`Registry`] with:
+    /// - name: `"crates-io"`
+    /// - api_base: `"https://crates.io"`
+    /// - index_base: `Some("https://index.crates.io")`
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use shipper::types::Registry;
+    ///
+    /// let registry = Registry::crates_io();
+    /// assert_eq!(registry.name, "crates-io");
+    /// assert_eq!(registry.api_base, "https://crates.io");
+    /// ```
     pub fn crates_io() -> Self {
         Self {
             name: "crates-io".to_string(),
@@ -74,87 +139,284 @@ impl Registry {
     }
 }
 
+/// Input specification for a crate publish operation.
+///
+/// This is the primary entry point for configuring a Shipper publish operation.
+/// It defines what to publish, where to publish it, and which packages to include.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::path::PathBuf;
+/// use shipper::types::{ReleaseSpec, Registry};
+///
+/// let spec = ReleaseSpec {
+///     manifest_path: PathBuf::from("Cargo.toml"),
+///     registry: Registry::crates_io(),
+///     selected_packages: None, // Publish all packages
+/// };
+/// 
+/// // Or with specific packages
+/// let specific_spec = ReleaseSpec {
+///     manifest_path: PathBuf::from("Cargo.toml"),
+///     registry: Registry::crates_io(),
+///     selected_packages: Some(vec!["my-crate".to_string()]),
+/// };
+/// ```
+///
+/// # Fields
+///
+/// - `manifest_path`: Path to the workspace's `Cargo.toml`
+/// - `registry`: Target [`Registry`] for publishing
+/// - `selected_packages`: Optional list of package names to publish (None = all)
 #[derive(Debug, Clone)]
 pub struct ReleaseSpec {
+    /// Path to the workspace's `Cargo.toml` manifest.
     pub manifest_path: PathBuf,
+    /// Target registry for publishing.
     pub registry: Registry,
+    /// Optional list of package names to publish. If `None`, all publishable
+    /// packages in the workspace will be published.
     pub selected_packages: Option<Vec<String>>,
 }
 
+/// Policy presets that control the balance between safety and speed in publishing.
+///
+/// These policies determine which preflight checks and readiness verifications
+/// are performed during the publish process. Choosing a more conservative policy
+/// increases reliability at the cost of longer execution time.
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::PublishPolicy;
+///
+/// // Default: maximum safety
+/// let safe = PublishPolicy::Safe;
+///
+/// // Balanced: skip some checks for known-good scenarios
+/// let balanced = PublishPolicy::Balanced;
+///
+/// // Fast: minimal verification, maximum risk
+/// let fast = PublishPolicy::Fast;
+/// ```
+///
+/// # Variants
+///
+/// - [`PublishPolicy::Safe`] - Full preflight verification and readiness checks (default)
+/// - [`PublishPolicy::Balanced`] - Verify only when needed for experienced users
+/// - [`PublishPolicy::Fast`] - Skip all verification, assume the user knows what they're doing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PublishPolicy {
     /// Verify + strict checks (default)
+    ///
+    /// This is the default policy. It performs:
+    /// - Full preflight verification (git cleanliness, dry-run, version existence)
+    /// - Readiness checks after publishing
+    /// - Ownership verification if applicable
     #[default]
     Safe,
     /// Verify only when needed
+    ///
+    /// Skips some checks that are redundant in well-tested workflows.
+    /// Suitable for CI/CD pipelines with established release processes.
     Balanced,
     /// No verify; explicit risk
+    ///
+    /// Disables all verification. Use only when you understand the risks
+    /// and have verified the publish process manually. Faster but dangerous.
     Fast,
 }
 
+/// Controls when and how `cargo verify` is run before publishing.
+///
+/// Verification compiles the crate to ensure it builds correctly before
+/// attempting to publish. This adds safety but increases publish time.
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::VerifyMode;
+///
+/// // Verify the entire workspace at once (most efficient)
+/// let workspace = VerifyMode::Workspace;
+///
+/// // Verify each crate individually (more thorough)
+/// let package = VerifyMode::Package;
+///
+/// // Skip verification entirely
+/// let none = VerifyMode::None;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerifyMode {
     /// Default, safest - run workspace dry-run
+    ///
+    /// Runs `cargo verify` on the entire workspace once. This is the
+    /// default and most efficient option.
     #[default]
     Workspace,
     /// Per-crate verify
+    ///
+    /// Runs `cargo verify` for each crate individually before publishing.
+    /// More thorough but slower than workspace mode.
     Package,
     /// No verify
+    ///
+    /// Skips verification entirely. Use with caution.
     None,
 }
 
+/// Method for verifying crate visibility after publishing.
+///
+/// After a crate is published, Shipper can verify it becomes visible on
+/// the registry before proceeding. This catches issues like propagation
+/// delays or rejected publishes that Cargo might not report immediately.
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::ReadinessMethod;
+///
+/// // Fast: check the registry HTTP API
+/// let api = ReadinessMethod::Api;
+///
+/// // Accurate: check the sparse index directly
+/// let index = ReadinessMethod::Index;
+///
+/// // Reliable: check both (slowest)
+/// let both = ReadinessMethod::Both;
+/// ```
+///
+/// # Performance
+///
+/// - `Api`: ~1-2 requests per crate (fastest)
+/// - `Index`: ~10-50 requests per crate (slower, most accurate)
+/// - `Both`: Combines both methods (slowest, most reliable)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadinessMethod {
     /// Check crates.io HTTP API (default, fast)
+    ///
+    /// Makes HTTP requests to the registry's API to check if the
+    /// version is visible. Fast but may not catch all edge cases.
     #[default]
     Api,
     /// Check sparse index (slower, more accurate)
+    ///
+    /// Downloads and checks the sparse index for the crate.
+    /// More accurate than API but requires more requests.
     Index,
     /// Check both (slowest, most reliable)
+    ///
+    /// Uses both API and index methods, only passing if both
+    /// confirm visibility. Most reliable but slowest.
     Both,
 }
 
+/// Configuration for readiness verification after publishing.
+///
+/// Readiness verification confirms that a published crate is visible on
+/// the registry before Shipper considers the publish successful. This
+/// catches propagation delays and failed publishes early.
+///
+/// # Example
+///
+/// ```rust
+/// use std::time::Duration;
+/// use shipper::types::{ReadinessConfig, ReadinessMethod};
+///
+/// // Default configuration
+/// let config = ReadinessConfig::default();
+///
+/// // Custom configuration
+/// let custom = ReadinessConfig {
+///     enabled: true,
+///     method: ReadinessMethod::Both,
+///     initial_delay: Duration::from_secs(2),
+///     max_delay: Duration::from_secs(120),
+///     max_total_wait: Duration::from_secs(600), // 10 minutes
+///     poll_interval: Duration::from_secs(5),
+///     jitter_factor: 0.3,
+///     index_path: None,
+///     prefer_index: false,
+/// };
+/// ```
+///
+/// # Defaults
+///
+/// - `enabled`: `true`
+/// - `method`: [`ReadinessMethod::Api`]
+/// - `initial_delay`: 1 second
+/// - `max_delay`: 60 seconds
+/// - `max_total_wait`: 300 seconds (5 minutes)
+/// - `poll_interval`: 2 seconds
+/// - `jitter_factor`: 0.5 (±50%)
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReadinessConfig {
     /// Enable readiness checks
+    ///
+    /// When disabled, Shipper will not verify crate visibility after
+    /// publishing. This speeds up publishing but may miss failures.
     pub enabled: bool,
     /// Method for checking version visibility
     pub method: ReadinessMethod,
     /// Initial delay before first poll
+    ///
+    /// Most registries need a few seconds to propagate new versions.
+    /// This delay allows the initial propagation to complete before
+    /// starting to poll.
     #[serde(
         deserialize_with = "deserialize_duration",
         serialize_with = "serialize_duration"
     )]
     pub initial_delay: Duration,
     /// Maximum delay between polls (capped)
+    ///
+    /// The poll interval starts at the initial_delay value and increases
+    /// exponentially up to this maximum.
     #[serde(
         deserialize_with = "deserialize_duration",
         serialize_with = "serialize_duration"
     )]
     pub max_delay: Duration,
     /// Maximum total time to wait for visibility
+    ///
+    /// If the crate is not visible within this time, the publish is
+    /// considered failed. This prevents waiting indefinitely.
     #[serde(
         deserialize_with = "deserialize_duration",
         serialize_with = "serialize_duration"
     )]
     pub max_total_wait: Duration,
     /// Base poll interval
+    ///
+    /// The interval between readiness checks. This is the starting
+    /// interval before jitter and exponential backoff are applied.
     #[serde(
         deserialize_with = "deserialize_duration",
         serialize_with = "serialize_duration"
     )]
     pub poll_interval: Duration,
     /// Jitter factor (±50% means 0.5)
+    ///
+    /// Adds randomness to poll intervals to reduce thundering herd
+    /// when many clients are checking simultaneously. A value of 0.5
+    /// means the actual interval varies by ±50%.
     pub jitter_factor: f64,
     /// Custom index path for testing (optional)
+    ///
+    /// When set, uses this local path instead of downloading from
+    /// the remote index. Useful for testing with mock registries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_path: Option<PathBuf>,
     /// Use index as primary method when Both is selected
+    ///
+    /// When [`ReadinessMethod::Both`] is used, this determines which
+    /// method is checked first. If `true`, the index is checked first.
     #[serde(default)]
     pub prefer_index: bool,
 }
@@ -175,15 +437,60 @@ impl Default for ReadinessConfig {
     }
 }
 
-/// Configuration for parallel publishing
+/// Configuration for parallel publishing.
+///
+/// Parallel publishing allows independent crates in a workspace to be
+/// published concurrently, significantly reducing total publish time
+/// for large workspaces with many independent crates.
+///
+/// # Example
+///
+/// ```rust
+/// use std::time::Duration;
+/// use shipper::types::ParallelConfig;
+///
+/// // Default: sequential publishing
+/// let sequential = ParallelConfig::default();
+///
+/// // Enable parallel publishing
+/// let parallel = ParallelConfig {
+///     enabled: true,
+///     max_concurrent: 4,
+///     per_package_timeout: Duration::from_secs(1800), // 30 minutes
+/// };
+/// ```
+///
+/// # How It Works
+///
+/// Shipper analyzes the dependency graph and groups crates into "levels".
+/// Crates at the same level have no dependencies on each other and can
+/// be published in parallel. Crates at higher levels must wait for all
+/// crates at lower levels to complete.
+///
+/// # Defaults
+///
+/// - `enabled`: `false` (sequential by default)
+/// - `max_concurrent`: 4
+/// - `per_package_timeout`: 1800 seconds (30 minutes)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ParallelConfig {
     /// Enable parallel publishing (default: false for sequential)
+    ///
+    /// When disabled (the default), crates are published one at a time
+    /// in dependency order. When enabled, independent crates are
+    /// published concurrently.
     pub enabled: bool,
     /// Maximum number of concurrent publish operations (default: 4)
+    ///
+    /// The maximum number of crates that can be publishing simultaneously.
+    /// This limits resource usage and API rate limiting impact.
     pub max_concurrent: usize,
     /// Timeout per package publish operation (default: 30 minutes)
+    ///
+    /// If a single package publish takes longer than this duration,
+    /// it will be aborted and retried. This prevents a slow publish
+    /// from blocking the entire operation.
     #[serde(
         deserialize_with = "deserialize_duration",
         serialize_with = "serialize_duration"
@@ -201,6 +508,45 @@ impl Default for ParallelConfig {
     }
 }
 
+/// Runtime configuration options for a Shipper publish operation.
+///
+/// This struct contains all the tunable parameters that control how
+/// Shipper executes a publish operation, including retry behavior,
+/// verification settings, and output preferences.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::path::PathBuf;
+/// use shipper::types::{RuntimeOptions, PublishPolicy, ParallelConfig};
+///
+/// let options = RuntimeOptions {
+///     allow_dirty: false,
+///     skip_ownership_check: false,
+///     strict_ownership: true,
+///     no_verify: false,
+///     max_attempts: 3,
+///     base_delay: std::time::Duration::from_secs(1),
+///     max_delay: std::time::Duration::from_secs(60),
+///     retry_strategy: shipper::retry::RetryStrategyType::Exponential,
+///     retry_jitter: 0.3,
+///     retry_per_error: shipper::retry::PerErrorConfig::default(),
+///     verify_timeout: std::time::Duration::from_secs(600),
+///     verify_poll_interval: std::time::Duration::from_secs(10),
+///     state_dir: PathBuf::from(".shipper"),
+///     force_resume: false,
+///     policy: PublishPolicy::Safe,
+///     verify_mode: shipper::types::VerifyMode::Workspace,
+///     readiness: shipper::types::ReadinessConfig::default(),
+///     output_lines: 1000,
+///     force: false,
+///     lock_timeout: std::time::Duration::from_secs(3600),
+///     parallel: ParallelConfig::default(),
+///     webhook: shipper::webhook::WebhookConfig::default(),
+///     encryption: shipper::encryption::EncryptionConfig::default(),
+///     registries: vec![],
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct RuntimeOptions {
     pub allow_dirty: bool,
@@ -234,8 +580,28 @@ pub struct RuntimeOptions {
     pub webhook: WebhookConfig,
     /// Encryption configuration for state files
     pub encryption: EncryptionSettings,
+    /// Target registries for multi-registry publishing
+    pub registries: Vec<Registry>,
 }
 
+/// A package in the publish plan.
+///
+/// This represents a single crate that will be published as part of
+/// a [`ReleasePlan`]. It contains the minimal information needed to
+/// identify and publish the crate.
+///
+/// # Example
+///
+/// ```rust
+/// use std::path::PathBuf;
+/// use shipper::types::PlannedPackage;
+///
+/// let pkg = PlannedPackage {
+///     name: "my-crate".to_string(),
+///     version: "1.2.3".to_string(),
+///     manifest_path: PathBuf::from("crates/my-crate/Cargo.toml"),
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedPackage {
     pub name: String,
@@ -243,7 +609,39 @@ pub struct PlannedPackage {
     pub manifest_path: PathBuf,
 }
 
-/// A group of packages that can be published in parallel
+/// A group of packages that can be published in parallel.
+///
+/// Packages at the same level have no dependencies on each other within
+/// the workspace, meaning they can be published concurrently without
+/// violating dependency order.
+///
+/// # Example
+///
+/// ```rust
+/// use std::path::PathBuf;
+/// use shipper::types::{PublishLevel, PlannedPackage};
+///
+/// let level = PublishLevel {
+///     level: 0,
+///     packages: vec![
+///         PlannedPackage {
+///             name: "utils".to_string(),
+///             version: "1.0.0".to_string(),
+///             manifest_path: PathBuf::from("crates/utils/Cargo.toml"),
+///         },
+///         PlannedPackage {
+///             name: "common".to_string(),
+///             version: "2.0.0".to_string(),
+///             manifest_path: PathBuf::from("crates/common/Cargo.toml"),
+///         },
+///     ],
+/// };
+/// ```
+///
+/// # Level Numbering
+///
+/// Level 0 contains packages with no workspace dependencies.
+/// Level N contains packages that depend only on packages in levels 0..N.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishLevel {
     /// The level number (0 = no dependencies, 1 = depends on level 0, etc.)
@@ -252,6 +650,41 @@ pub struct PublishLevel {
     pub packages: Vec<PlannedPackage>,
 }
 
+/// A deterministic, identified plan for publishing a workspace.
+///
+/// The release plan is generated by [`crate::plan::build_plan`] and contains
+/// all information needed to execute the publish operation. It includes:
+/// - A unique plan ID (SHA256 hash of relevant content)
+/// - Ordered list of packages to publish
+/// - Dependency information for parallel publishing
+/// - Registry configuration
+///
+/// # Example
+///
+/// ```no_run
+/// use std::path::PathBuf;
+/// use shipper::{plan, types::{ReleaseSpec, Registry}};
+///
+/// let spec = ReleaseSpec {
+///     manifest_path: PathBuf::from("Cargo.toml"),
+///     registry: Registry::crates_io(),
+///     selected_packages: None,
+/// };
+///
+/// let plan = plan::build_plan(&spec)?;
+///
+/// println!("Publishing {} packages in order:", plan.packages.len());
+/// for pkg in &plan.packages {
+///     println!("  {} {}", pkg.name, pkg.version);
+/// }
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
+/// # Resumability
+///
+/// The plan ID is stable across runs if the workspace metadata doesn't
+/// change. This allows Shipper to detect when a resumed operation is
+/// using the same plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleasePlan {
     pub plan_version: String,
@@ -266,6 +699,47 @@ pub struct ReleasePlan {
     pub dependencies: BTreeMap<String, Vec<String>>,
 }
 
+/// The state of a package in the publish pipeline.
+///
+/// Each package in a release plan progresses through these states during
+/// publishing. The state is persisted to enable resumability after
+/// interruption.
+///
+/// # State Transitions
+///
+/// ```text
+/// Pending → Uploaded → Published
+///              ↓
+///            Failed
+///              ↓
+///           Pending (retry)
+/// ```
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::PackageState;
+///
+/// // Initial state
+/// let pending = PackageState::Pending;
+///
+/// // After successful upload
+/// let uploaded = PackageState::Uploaded;
+///
+/// // After visibility verification
+/// let published = PackageState::Published;
+///
+/// // When skipped (e.g., already published)
+/// let skipped = PackageState::Skipped { 
+///     reason: "version already exists".to_string() 
+/// };
+///
+/// // On failure
+/// let failed = PackageState::Failed {
+///     class: shipper::types::ErrorClass::Retryable,
+///     message: "network timeout".to_string(),
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum PackageState {
@@ -277,6 +751,35 @@ pub enum PackageState {
     Ambiguous { message: String },
 }
 
+/// Classification of errors encountered during publishing.
+///
+/// Error classification determines whether a publish attempt should be
+/// retried. Some errors are permanent (retrying won't help) while others
+/// are transient (likely to succeed on retry).
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::ErrorClass;
+///
+/// // Network issues, rate limiting - worth retrying
+/// let retryable = ErrorClass::Retryable;
+///
+/// // Invalid credentials, version conflict - won't succeed on retry
+/// let permanent = ErrorClass::Permanent;
+///
+/// // Unclear - may or may not be retryable
+/// let ambiguous = ErrorClass::Ambiguous;
+/// ```
+///
+/// # Classification Heuristics
+///
+/// Shipper uses various heuristics to classify errors:
+/// - HTTP 429 (Too Many Requests) → Retryable
+/// - HTTP 401/403 (Auth errors) → Permanent
+/// - HTTP 409 (Version conflict) → Permanent
+/// - Network timeouts → Retryable
+/// - Unknown errors → Ambiguous
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorClass {
@@ -285,6 +788,26 @@ pub enum ErrorClass {
     Ambiguous,
 }
 
+/// Progress tracking for a single package in an execution.
+///
+/// This struct is persisted to disk during publishing to enable
+/// resuming after interruption. It tracks the current state and
+/// attempt count for each package.
+///
+/// # Example
+///
+/// ```rust
+/// use chrono::Utc;
+/// use shipper::types::{PackageProgress, PackageState};
+///
+/// let progress = PackageProgress {
+///     name: "my-crate".to_string(),
+///     version: "1.2.3".to_string(),
+///     attempts: 2,
+///     state: PackageState::Pending,
+///     last_updated_at: Utc::now(),
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageProgress {
     pub name: String,
@@ -294,6 +817,35 @@ pub struct PackageProgress {
     pub last_updated_at: DateTime<Utc>,
 }
 
+/// The complete state of an in-progress publish operation.
+///
+/// This is the root structure persisted to disk during publishing.
+/// It contains the plan ID, registry info, and progress for all packages.
+///
+/// # Example
+///
+/// ```no_run
+/// use chrono::Utc;
+/// use shipper::types::{ExecutionState, PackageProgress, Registry};
+///
+/// let state = ExecutionState {
+///     state_version: "shipper.state.v1".to_string(),
+///     plan_id: "abc123".to_string(),
+///     registry: Registry::crates_io(),
+///     created_at: Utc::now(),
+///     updated_at: Utc::now(),
+///     packages: std::collections::BTreeMap::new(),
+/// };
+/// 
+/// // Save to disk for resumability
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
+/// # Persistence
+///
+/// The execution state is saved to `state.json` in the state directory
+/// after each package completes. This allows Shipper to resume
+/// interrupted operations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionState {
     pub state_version: String,
@@ -304,6 +856,32 @@ pub struct ExecutionState {
     pub packages: BTreeMap<String, PackageProgress>,
 }
 
+/// Receipt for a successfully published package.
+///
+/// This contains all evidence and metadata for a published crate,
+/// useful for auditing and debugging. It's part of the final
+/// [`Receipt`] document.
+///
+/// # Example
+///
+/// ```rust
+/// use chrono::Utc;
+/// use shipper::types::{PackageReceipt, PackageState, PackageEvidence};
+///
+/// let receipt = PackageReceipt {
+///     name: "my-crate".to_string(),
+///     version: "1.2.3".to_string(),
+///     attempts: 1,
+///     state: PackageState::Published,
+///     started_at: Utc::now(),
+///     finished_at: Utc::now(),
+///     duration_ms: 5000,
+///     evidence: PackageEvidence {
+///         attempts: vec![],
+///         readiness_checks: vec![],
+///     },
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageReceipt {
     pub name: String,
@@ -316,12 +894,43 @@ pub struct PackageReceipt {
     pub evidence: PackageEvidence,
 }
 
+/// Evidence collected during package publishing.
+///
+/// This includes detailed information about each publish attempt and
+/// readiness verification checks. It's used for debugging and auditing.
+///
+/// # Contents
+///
+/// - `attempts`: Details of each publish attempt (command, output, timing)
+/// - `readiness_checks`: Results of visibility verification checks
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageEvidence {
     pub attempts: Vec<AttemptEvidence>,
     pub readiness_checks: Vec<ReadinessEvidence>,
 }
 
+/// Evidence for a single publish attempt.
+///
+/// Contains the command that was run, its output, and timing information.
+/// This is useful for debugging failed publishes.
+///
+/// # Example
+///
+/// ```rust
+/// use chrono::Utc;
+/// use std::time::Duration;
+/// use shipper::types::AttemptEvidence;
+///
+/// let evidence = AttemptEvidence {
+///     attempt_number: 1,
+///     command: "cargo publish --registry crates-io".to_string(),
+///     exit_code: 0,
+///     stdout_tail: "Uploading my-crate v1.2.3".to_string(),
+///     stderr_tail: "".to_string(),
+///     timestamp: Utc::now(),
+///     duration: Duration::from_secs(5),
+/// };
+/// ```
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttemptEvidence {
@@ -335,6 +944,24 @@ pub struct AttemptEvidence {
     pub duration: Duration,
 }
 
+/// Evidence for a single readiness check.
+///
+/// Records the result of checking crate visibility after publishing.
+///
+/// # Example
+///
+/// ```rust
+/// use chrono::Utc;
+/// use std::time::Duration;
+/// use shipper::types::ReadinessEvidence;
+///
+/// let evidence = ReadinessEvidence {
+///     attempt: 1,
+///     visible: true,
+///     timestamp: Utc::now(),
+///     delay_before: Duration::from_secs(2),
+/// };
+/// ```
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadinessEvidence {
@@ -345,6 +972,24 @@ pub struct ReadinessEvidence {
     pub delay_before: Duration,
 }
 
+/// Fingerprint of the environment where publishing occurred.
+///
+/// Captures version information about Shipper, Cargo, Rust, and the
+/// operating system. This helps reproduce and debug issues.
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::EnvironmentFingerprint;
+///
+/// let fp = EnvironmentFingerprint {
+///     shipper_version: "0.2.0".to_string(),
+///     cargo_version: Some("1.75.0".to_string()),
+///     rust_version: Some("1.75.0".to_string()),
+///     os: "linux".to_string(),
+///     arch: "x86_64".to_string(),
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvironmentFingerprint {
     pub shipper_version: String,
@@ -354,6 +999,23 @@ pub struct EnvironmentFingerprint {
     pub arch: String,
 }
 
+/// Git context at the time of publishing.
+///
+/// Captures the current git state, including commit hash, branch,
+/// tag, and whether the working directory is dirty.
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::GitContext;
+///
+/// let ctx = GitContext {
+///     commit: Some("abc123def".to_string()),
+///     branch: Some("main".to_string()),
+///     tag: Some("v1.0.0".to_string()),
+///     dirty: Some(false),
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitContext {
     pub commit: Option<String>,
@@ -362,6 +1024,45 @@ pub struct GitContext {
     pub dirty: Option<bool>,
 }
 
+/// Complete receipt for a publish operation.
+///
+/// This is the final audit document containing all evidence and
+/// metadata for a complete publish operation. It's saved to disk
+/// after all packages are published.
+///
+/// # Example
+///
+/// ```no_run
+/// use chrono::Utc;
+/// use std::path::PathBuf;
+/// use shipper::types::{Receipt, Registry, EnvironmentFingerprint};
+///
+/// let receipt = Receipt {
+///     receipt_version: "shipper.receipt.v1".to_string(),
+///     plan_id: "abc123".to_string(),
+///     registry: Registry::crates_io(),
+///     started_at: Utc::now(),
+///     finished_at: Utc::now(),
+///     packages: vec![],
+///     event_log_path: PathBuf::from(".shipper/events.jsonl"),
+///     git_context: None,
+///     environment: EnvironmentFingerprint {
+///         shipper_version: env!("CARGO_PKG_VERSION").to_string(),
+///         cargo_version: None,
+///         rust_version: None,
+///         os: std::env::consts::OS.to_string(),
+///         arch: std::env::consts::ARCH.to_string(),
+///     },
+/// };
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
+/// # Storage
+///
+/// Receipts are stored in the state directory and can be used for:
+/// - Auditing past publishes
+/// - Debugging failed publishes
+/// - Evidence for compliance requirements
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Receipt {
     pub receipt_version: String,
@@ -378,6 +1079,23 @@ pub struct Receipt {
 
 // Event types for evidence-first receipts
 
+/// An event in the publish event log.
+///
+/// Events are written to an append-only JSONL file during publishing.
+/// This provides a detailed timeline for debugging and auditing.
+///
+/// # Example
+///
+/// ```rust
+/// use chrono::Utc;
+/// use shipper::types::{PublishEvent, EventType};
+///
+/// let event = PublishEvent {
+///     timestamp: Utc::now(),
+///     event_type: EventType::ExecutionStarted,
+///     package: "".to_string(),
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishEvent {
     pub timestamp: DateTime<Utc>,
@@ -385,6 +1103,53 @@ pub struct PublishEvent {
     pub package: String, // "name@version"
 }
 
+/// Types of events that can occur during publishing.
+///
+/// These events are logged to provide a complete audit trail of the
+/// publish operation. Each variant carries relevant data.
+///
+/// # Categories
+///
+/// - **Lifecycle events**: Plan created, execution started/finished
+/// - **Package events**: Started, attempted, output, published, failed, skipped
+/// - **Readiness events**: Started, polled, completed, timeout
+/// - **Preflight events**: Started, verified, ownership checked, completed
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::{EventType, ExecutionResult, ErrorClass, ReadinessMethod, Finishability};
+///
+/// // Lifecycle events
+/// let plan_created = EventType::PlanCreated {
+///     plan_id: "abc123".to_string(),
+///     package_count: 5,
+/// };
+/// let started = EventType::ExecutionStarted;
+/// let finished = EventType::ExecutionFinished { 
+///     result: ExecutionResult::Success 
+/// };
+/// 
+/// // Package events
+/// let pkg_started = EventType::PackageStarted {
+///     name: "my-crate".to_string(),
+///     version: "1.0.0".to_string(),
+/// };
+/// let pkg_failed = EventType::PackageFailed {
+///     class: ErrorClass::Retryable,
+///     message: "rate limited".to_string(),
+/// };
+/// 
+/// // Readiness events
+/// let ready = EventType::ReadinessStarted {
+///     method: ReadinessMethod::Api,
+/// };
+/// 
+/// // Preflight events
+/// let preflight = EventType::PreflightComplete {
+///     finishability: Finishability::Proven,
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventType {
@@ -471,6 +1236,26 @@ pub enum EventType {
     },
 }
 
+/// The result of a publish execution.
+///
+/// This summarizes the overall outcome of attempting to publish
+/// all packages in a release plan.
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::ExecutionResult;
+///
+/// let success = ExecutionResult::Success;
+/// let partial = ExecutionResult::PartialFailure;
+/// let complete = ExecutionResult::CompleteFailure;
+/// ```
+///
+/// # Meaning
+///
+/// - `Success`: All packages published successfully
+/// - `PartialFailure`: Some packages failed but others succeeded
+/// - `CompleteFailure`: All packages failed (or no packages to publish)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionResult {
@@ -479,6 +1264,26 @@ pub enum ExecutionResult {
     CompleteFailure,
 }
 
+/// Authentication method used for publishing.
+///
+/// Shipper supports multiple authentication mechanisms, and this
+/// enum tracks which one was used for a particular publish.
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::AuthType;
+///
+/// let token = AuthType::Token;
+/// let trusted = AuthType::TrustedPublishing;
+/// let unknown = AuthType::Unknown;
+/// ```
+///
+/// # Authentication Methods
+///
+/// - `Token`: Traditional Cargo token (CARGO_REGISTRY_TOKEN)
+/// - `TrustedPublishing`: GitHub OIDC token from CI/CD
+/// - `Unknown`: Could not determine the auth method
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthType {
@@ -487,6 +1292,26 @@ pub enum AuthType {
     Unknown,
 }
 
+/// Whether a preflight-verified publish is guaranteed to succeed.
+///
+/// This is determined during preflight checks based on various
+/// factors like whether the crate is new, if ownership is verified, etc.
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::Finishability;
+///
+/// let proven = Finishability::Proven;       // Should succeed
+/// let not_proven = Finishability::NotProven; // Might succeed
+/// let failed = Finishability::Failed;        // Won't succeed
+/// ```
+///
+/// # Determination
+///
+/// - `Proven`: All preflight checks passed strongly (new crate, owned, etc.)
+/// - `NotProven`: Some uncertainty (already published version, etc.)
+/// - `Failed`: Preflight checks failed (auth issues, dry-run failed, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Finishability {
@@ -495,6 +1320,43 @@ pub enum Finishability {
     Failed,
 }
 
+/// Report from preflight verification checks.
+///
+/// Before publishing, Shipper runs various preflight checks to catch
+/// issues early. This report summarizes the findings.
+///
+/// # Example
+///
+/// ```no_run
+/// use chrono::Utc;
+/// use shipper::types::{PreflightReport, Finishability, PreflightPackage, Registry};
+///
+/// let report = PreflightReport {
+///     plan_id: "abc123".to_string(),
+///     token_detected: true,
+///     finishability: Finishability::Proven,
+///     packages: vec![
+///         PreflightPackage {
+///             name: "my-crate".to_string(),
+///             version: "1.0.0".to_string(),
+///             already_published: false,
+///             is_new_crate: true,
+///             auth_type: Some(shipper::types::AuthType::Token),
+///             ownership_verified: true,
+///             dry_run_passed: true,
+///         },
+///     ],
+///     timestamp: Utc::now(),
+/// };
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
+/// # Usage
+///
+/// The preflight report is used to:
+/// - Determine if publishing should proceed
+/// - Provide transparency about potential issues
+/// - Support debugging if publish fails
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreflightReport {
     pub plan_id: String,
@@ -504,6 +1366,26 @@ pub struct PreflightReport {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Preflight status for a single package.
+///
+/// Contains the results of preflight checks for one crate in the
+/// workspace.
+///
+/// # Example
+///
+/// ```rust
+/// use shipper::types::{PreflightPackage, AuthType};
+///
+/// let pkg = PreflightPackage {
+///     name: "my-crate".to_string(),
+///     version: "1.0.0".to_string(),
+///     already_published: false,
+///     is_new_crate: true,
+///     auth_type: Some(AuthType::Token),
+///     ownership_verified: true,
+///     dry_run_passed: true,
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreflightPackage {
     pub name: String,

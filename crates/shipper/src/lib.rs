@@ -64,12 +64,12 @@
 //!
 //! ## Key Types
 //!
-//! - [`types::ReleaseSpec`] — Input specification (manifest path, registry, package filter)
-//! - [`types::ReleasePlan`] — Deterministic, SHA256-identified publish plan
-//! - [`types::RuntimeOptions`] — All runtime knobs (retry, readiness, policy, etc.)
-//! - [`types::Receipt`] — Audit receipt with evidence for each published crate
-//! - [`types::PreflightReport`] — Preflight assessment with finishability verdict
-//! - [`types::PublishPolicy`] — Policy presets for safety vs. speed tradeoffs
+//! - `ReleaseSpec` — Input specification (manifest path, registry, package filter)
+//! - `ReleasePlan` — Deterministic, SHA256-identified publish plan
+//! - `RuntimeOptions` — All runtime knobs (retry, readiness, policy, etc.)
+//! - `Receipt` — Audit receipt with evidence for each published crate
+//! - `PreflightReport` — Preflight assessment with finishability verdict
+//! - `PublishPolicy` — Policy presets for safety vs. speed tradeoffs
 //!
 //! ## Modules
 //!
@@ -86,13 +86,16 @@
 //! - [`lock`] — Distributed lock to prevent concurrent publishes
 //! - [`environment`] — Environment fingerprinting (OS, arch, tool versions)
 //! - [`store`] — `StateStore` trait for pluggable persistence backends
+//! - [`storage`] — Cloud storage backends (S3, GCS, Azure Blob)
 //! - [`cargo`] — Workspace metadata via `cargo_metadata`
 //! - [`webhook`] — Webhook notifications for publish events
 //!
 //! ## Feature Flags
 //!
-//! This crate does not currently use feature flags. All functionality is
-//! available by default.
+//! - `s3` — Enable AWS S3 storage backend
+//! - `gcs` — Enable Google Cloud Storage backend
+//! - `azure` — Enable Azure Blob Storage backend
+//! - `cloud` — Enable all cloud storage backends
 //!
 //! ## Stability
 //!
@@ -142,6 +145,12 @@ pub mod state;
 
 /// `StateStore` trait for pluggable persistence backends.
 pub mod store;
+
+/// Cloud storage backends (S3, GCS, Azure Blob).
+///
+/// The backends implement the `StorageBackend` trait
+/// to enable distributed/team workflows.
+pub mod storage;
 
 /// Domain types: specs, plans, options, receipts, errors.
 pub mod types;

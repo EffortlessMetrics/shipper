@@ -11,13 +11,14 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::types::{
-    ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, RuntimeOptions, VerifyMode,
+    ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, Registry, RuntimeOptions, VerifyMode,
     deserialize_duration, serialize_duration,
 };
 
 use crate::retry::{PerErrorConfig, RetryPolicy, RetryStrategyType};
 use crate::webhook::WebhookConfig;
 use crate::encryption::EncryptionConfig as EncryptionSettings;
+use crate::storage::{CloudStorageConfig, StorageType};
 
 /// Nested policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -143,6 +144,84 @@ pub struct EncryptionConfigInner {
     pub env_key: Option<String>,
 }
 
+/// Nested storage configuration for cloud storage backends
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StorageConfigInner {
+    /// Storage type: file, s3, gcs, or azure
+    #[serde(default)]
+    pub storage_type: StorageType,
+    /// Bucket/container name
+    #[serde(default)]
+    pub bucket: Option<String>,
+    /// Region (for S3) or project ID (for GCS)
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Base path within the bucket
+    #[serde(default)]
+    pub base_path: Option<String>,
+    /// Custom endpoint for S3-compatible services (MinIO, DigitalOcean Spaces, etc.)
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Access key ID
+    #[serde(default)]
+    pub access_key_id: Option<String>,
+    /// Secret access key
+    #[serde(default)]
+    pub secret_access_key: Option<String>,
+}
+
+impl StorageConfigInner {
+    /// Build CloudStorageConfig from this configuration
+    ///
+    /// Returns None if storage is not configured (i.e., using local file storage)
+    pub fn to_cloud_config(&self) -> Option<CloudStorageConfig> {
+        // Only build cloud config if bucket is specified
+        let bucket = self.bucket.as_ref()?;
+
+        let mut config = CloudStorageConfig::new(self.storage_type.clone(), bucket.clone());
+
+        if let Some(ref region) = self.region {
+            config.region = Some(region.clone());
+        }
+        if let Some(ref base_path) = self.base_path {
+            config.base_path = base_path.clone();
+        }
+        if let Some(ref endpoint) = self.endpoint {
+            config.endpoint = Some(endpoint.clone());
+        }
+        if let Some(ref access_key_id) = self.access_key_id {
+            config.access_key_id = Some(access_key_id.clone());
+        }
+        if let Some(ref secret_access_key) = self.secret_access_key {
+            config.secret_access_key = Some(secret_access_key.clone());
+        }
+
+        // Check for environment variable overrides
+        if config.access_key_id.is_none() {
+            if let Ok(access_key) = std::env::var("SHIPPER_STORAGE_ACCESS_KEY_ID") {
+                config.access_key_id = Some(access_key);
+            }
+        }
+        if config.secret_access_key.is_none() {
+            if let Ok(secret_key) = std::env::var("SHIPPER_STORAGE_SECRET_ACCESS_KEY") {
+                config.secret_access_key = Some(secret_key);
+            }
+        }
+        if config.region.is_none() {
+            if let Ok(region) = std::env::var("SHIPPER_STORAGE_REGION") {
+                config.region = Some(region);
+            }
+        }
+
+        Some(config)
+    }
+
+    /// Check if cloud storage is configured
+    pub fn is_configured(&self) -> bool {
+        self.bucket.is_some() && self.storage_type != StorageType::File
+    }
+}
+
 /// Nested flags configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FlagsConfig {
@@ -199,9 +278,13 @@ pub struct ShipperConfig {
     #[serde(default)]
     pub state_dir: Option<PathBuf>,
 
-    /// Optional custom registry configuration
+    /// Optional custom registry configuration (single registry)
     #[serde(default)]
     pub registry: Option<RegistryConfig>,
+
+    /// Multiple registry configuration for multi-registry publishing
+    #[serde(default)]
+    pub registries: MultiRegistryConfig,
 
     /// Webhook configuration for publish notifications
     #[serde(default)]
@@ -210,16 +293,87 @@ pub struct ShipperConfig {
     /// Encryption configuration for state files
     #[serde(default)]
     pub encryption: EncryptionConfigInner,
+
+    /// Storage configuration for cloud storage backends
+    #[serde(default)]
+    pub storage: StorageConfigInner,
 }
 
-/// Registry configuration
+/// Registry configuration - supports both single registry and multiple registries
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryConfig {
     /// Cargo registry name (e.g., crates-io)
     pub name: String,
 
-    /// Base URL for registry web API (e.g., https://crates.io)
+    /// Base URL for registry web API (e.g., <https://crates.io>)
     pub api_base: String,
+
+    /// Base URL for the sparse index (optional, derived from api_base if not set)
+    #[serde(default)]
+    pub index_base: Option<String>,
+
+    /// Registry token (can also be set via environment variable)
+    /// Supported formats:
+    /// - "env:VAR_NAME" - read token from environment variable
+    /// - "file:/path/to/token" - read token from file
+    /// - Raw token string (not recommended for production)
+    #[serde(default)]
+    pub token: Option<String>,
+
+    /// Whether this is the default registry (used when publishing to all registries)
+    #[serde(default)]
+    pub default: bool,
+}
+
+/// Multiple registry configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MultiRegistryConfig {
+    /// List of registries to publish to
+    #[serde(default)]
+    pub registries: Vec<RegistryConfig>,
+
+    /// Default registries to publish to if none specified (default: ["crates-io"])
+    #[serde(default)]
+    pub default_registries: Vec<String>,
+}
+
+impl MultiRegistryConfig {
+    /// Get all registries, with crates-io as default if none configured
+    pub fn get_registries(&self) -> Vec<RegistryConfig> {
+        if self.registries.is_empty() {
+            // Return default crates-io registry
+            vec![RegistryConfig {
+                name: "crates-io".to_string(),
+                api_base: "https://crates.io".to_string(),
+                index_base: Some("https://index.crates.io".to_string()),
+                token: None,
+                default: true,
+            }]
+        } else {
+            self.registries.clone()
+        }
+    }
+
+    /// Get the default registry (first one marked as default, or first one, or crates-io)
+    pub fn get_default(&self) -> RegistryConfig {
+        self.registries
+            .iter()
+            .find(|r| r.default)
+            .or(self.registries.first())
+            .cloned()
+            .unwrap_or_else(|| RegistryConfig {
+                name: "crates-io".to_string(),
+                api_base: "https://crates.io".to_string(),
+                index_base: Some("https://index.crates.io".to_string()),
+                token: None,
+                default: true,
+            })
+    }
+
+    /// Find a registry by name
+    pub fn find_by_name(&self, name: &str) -> Option<RegistryConfig> {
+        self.registries.iter().find(|r| r.name == name).cloned()
+    }
 }
 
 /// CLI overrides for merging with config file values.
@@ -257,6 +411,10 @@ pub struct CliOverrides {
     pub webhook_secret: Option<String>,
     pub encrypt: bool,
     pub encrypt_passphrase: Option<String>,
+    /// Target registries for multi-registry publishing (comma-separated list)
+    pub registries: Option<Vec<String>>,
+    /// Publish to all configured registries
+    pub all_registries: bool,
 }
 
 impl Default for ShipperConfig {
@@ -292,8 +450,10 @@ impl Default for ShipperConfig {
             parallel: ParallelConfig::default(),
             state_dir: None,
             registry: None,
+            registries: MultiRegistryConfig::default(),
             webhook: WebhookConfig::default(),
             encryption: EncryptionConfigInner::default(),
+            storage: StorageConfigInner::default(),
         }
     }
 }
@@ -404,6 +564,22 @@ impl ShipperConfig {
             }
         }
 
+        // Validate multiple registries if present
+        for reg in &self.registries.registries {
+            if reg.name.is_empty() {
+                bail!("registries[].name cannot be empty");
+            }
+            if reg.api_base.is_empty() {
+                bail!("registries[].api_base cannot be empty");
+            }
+        }
+
+        // Ensure only one default registry
+        let default_count = self.registries.registries.iter().filter(|r| r.default).count();
+        if default_count > 1 {
+            bail!("only one registry can be marked as default");
+        }
+
         Ok(())
     }
 
@@ -511,6 +687,48 @@ impl ShipperConfig {
                     cfg.env_var = Some("SHIPPER_ENCRYPT_KEY".to_string());
                 }
                 cfg
+            },
+            registries: {
+                // Determine target registries based on CLI overrides and config
+                if cli.all_registries {
+                    // Publish to all configured registries
+                    self.registries.get_registries()
+                        .into_iter()
+                        .map(|r| Registry {
+                            name: r.name,
+                            api_base: r.api_base,
+                            index_base: r.index_base,
+                        })
+                        .collect()
+                } else if let Some(ref reg_names) = cli.registries {
+                    // Publish to specifically requested registries
+                    reg_names.iter()
+                        .map(|name| {
+                            // Try to find in config, otherwise use defaults
+                            self.registries.find_by_name(name)
+                                .map(|r| Registry {
+                                    name: r.name,
+                                    api_base: r.api_base,
+                                    index_base: r.index_base,
+                                })
+                                .unwrap_or_else(|| {
+                                    // Default to crates-io if not found
+                                    if name == "crates-io" {
+                                        Registry::crates_io()
+                                    } else {
+                                        Registry {
+                                            name: name.clone(),
+                                            api_base: format!("https://{}.crates.io", name),
+                                            index_base: None,
+                                        }
+                                    }
+                                })
+                        })
+                        .collect()
+                } else {
+                    // Default: single registry from the plan
+                    vec![]
+                }
             },
         }
     }
@@ -677,6 +895,9 @@ mod tests {
             registry: Some(RegistryConfig {
                 name: String::new(),
                 api_base: "https://crates.io".to_string(),
+                index_base: None,
+                token: None,
+                default: false,
             }),
             ..Default::default()
         };
@@ -685,6 +906,9 @@ mod tests {
         config.registry = Some(RegistryConfig {
             name: "crates-io".to_string(),
             api_base: String::new(),
+            index_base: None,
+            token: None,
+            default: false,
         });
         assert!(config.validate().is_err());
     }

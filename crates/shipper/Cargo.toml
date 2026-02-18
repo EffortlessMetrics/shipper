@@ -12,6 +12,25 @@ repository = "https://github.com/EffortlessMetrics/shipper"
 keywords = ["cargo", "publish", "workspace", "release", "automation"]
 categories = ["development-tools", "development-tools::build-utils"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--generate-link-to-definition"]
+
+[features]
+default = []
+
+# AWS S3 storage support
+s3 = ["aws-sdk-s3", "aws-config", "aws-credential-types"]
+
+# Google Cloud Storage support
+gcs = ["google-cloud-storage"]
+
+# Azure Blob Storage support
+azure = ["azure_storage", "azure_storage_blobs"]
+
+# Enable all cloud storage backends
+cloud = ["s3", "gcs", "azure"]
+
 [dependencies]
 anyhow = "1.0.101"
 thiserror = "2.0.18"
@@ -33,6 +52,18 @@ tokio = { version = "1.42", features = ["rt", "time", "sync", "macros"] }
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", features = ["simple"] }
 base64 = "0.22"
+
+# AWS S3 dependencies (optional)
+aws-sdk-s3 = { version = "1", optional = true }
+aws-config = { version = "1", optional = true }
+aws-credential-types = { version = "1", optional = true }
+
+# Google Cloud Storage dependencies (optional)
+google-cloud-storage = { version = "1", optional = true }
+
+# Azure Storage dependencies (optional)
+azure_storage = { version = "0.15", optional = true }
+azure_storage_blobs = { version = "0.15", optional = true }
 
 [lints]
 workspace = true

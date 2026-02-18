@@ -156,6 +156,15 @@ struct Cli {
     #[arg(long, global = true)]
     encrypt_passphrase: Option<String>,
 
+    /// Target registries for multi-registry publishing (comma-separated list)
+    /// Example: --registries crates-io,my-registry
+    #[arg(long, global = true)]
+    registries: Option<String>,
+
+    /// Publish to all configured registries
+    #[arg(long, global = true)]
+    all_registries: bool,
+
     /// Output format: text (default) or json
     #[arg(long, default_value = "text", value_parser = ["text", "json"], global = true)]
     format: String,
@@ -385,6 +394,13 @@ fn main() -> Result<()> {
         webhook_secret: cli.webhook_secret.clone(),
         encrypt: cli.encrypt,
         encrypt_passphrase: cli.encrypt_passphrase.clone(),
+        registries: cli.registries.as_ref().map(|s| {
+            s.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        }),
+        all_registries: cli.all_registries,
     };
 
     // Merge CLI overrides with config (or defaults if no config)
