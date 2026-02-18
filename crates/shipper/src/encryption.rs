@@ -353,12 +353,12 @@ mod tests {
 
         // But both should decrypt to the same plaintext
         let decrypted1 = decrypt(
-            &String::from_utf8(encrypted1).expect("valid UTF-8"),
+            String::from_utf8(encrypted1).expect("valid UTF-8"),
             passphrase,
         )
         .expect("decryption should succeed");
         let decrypted2 = decrypt(
-            &String::from_utf8(encrypted2).expect("valid UTF-8"),
+            String::from_utf8(encrypted2).expect("valid UTF-8"),
             passphrase,
         )
         .expect("decryption should succeed");

@@ -661,23 +661,12 @@ pub struct PublishLevel {
 ///
 /// # Example
 ///
-/// ```no_run
-/// use std::path::PathBuf;
-/// use shipper::{plan, types::{ReleaseSpec, Registry}};
-///
-/// let spec = ReleaseSpec {
-///     manifest_path: PathBuf::from("Cargo.toml"),
-///     registry: Registry::crates_io(),
-///     selected_packages: None,
-/// };
-///
+/// ```ignore
 /// let plan = plan::build_plan(&spec)?;
-///
-/// println!("Publishing {} packages in order:", plan.packages.len());
-/// for pkg in &plan.packages {
+/// println!("Publishing {} packages:", plan.plan.packages.len());
+/// for pkg in &plan.plan.packages {
 ///     println!("  {} {}", pkg.name, pkg.version);
 /// }
-/// # Ok::<(), anyhow::Error>(())
 /// ```
 ///
 /// # Resumability

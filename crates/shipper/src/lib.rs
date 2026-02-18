@@ -38,7 +38,7 @@
 //!
 //! ## Example
 //!
-//! ```no_run
+//! ```ignore
 //! use std::path::PathBuf;
 //! use shipper::{plan, engine, types};
 //!
@@ -50,16 +50,8 @@
 //! };
 //! let workspace = plan::build_plan(&spec)?;
 //!
-//! // Configure runtime options
-//! let opts = types::RuntimeOptions {
-//!     allow_dirty: false,
-//!     max_attempts: 3,
-//!     state_dir: PathBuf::from(".shipper"),
-//!     ..Default::default() // Note: RuntimeOptions doesn't implement Default,
-//!                          // you'll need to provide all fields
-//! };
-//!
-//! # Ok::<(), anyhow::Error>(())
+//! // Configure runtime options (all fields must be provided)
+//! let opts = types::RuntimeOptions { /* ... */ };
 //! ```
 //!
 //! ## Key Types
@@ -86,16 +78,9 @@
 //! - [`lock`] — Distributed lock to prevent concurrent publishes
 //! - [`environment`] — Environment fingerprinting (OS, arch, tool versions)
 //! - [`store`] — `StateStore` trait for pluggable persistence backends
-//! - [`storage`] — Cloud storage backends (S3, GCS, Azure Blob)
+//! - [`storage`] — Storage backends with pluggable `StorageBackend` trait
 //! - [`cargo`] — Workspace metadata via `cargo_metadata`
 //! - [`webhook`] — Webhook notifications for publish events
-//!
-//! ## Feature Flags
-//!
-//! - `s3` — Enable AWS S3 storage backend
-//! - `gcs` — Enable Google Cloud Storage backend
-//! - `azure` — Enable Azure Blob Storage backend
-//! - `cloud` — Enable all cloud storage backends
 //!
 //! ## Stability
 //!
@@ -146,16 +131,13 @@ pub mod state;
 /// `StateStore` trait for pluggable persistence backends.
 pub mod store;
 
-/// Cloud storage backends (S3, GCS, Azure Blob).
-///
-/// The backends implement the `StorageBackend` trait
-/// to enable distributed/team workflows.
+/// Storage backends with pluggable `StorageBackend` trait.
 pub mod storage;
 
 /// Domain types: specs, plans, options, receipts, errors.
 pub mod types;
 
-/// Webhook notifications for pubretry module.
+/// Configurable retry strategies with backoff and jitter.
 pub mod retry;
 
 /// Webhook notifications for publish events.

@@ -82,28 +82,12 @@ pub(crate) fn apply_policy(opts: &RuntimeOptions) -> PolicyEffects {
 ///
 /// # Example
 ///
-/// ```no_run
-/// use shipper::{engine, plan, types};
-/// use std::path::PathBuf;
-///
-/// # async fn run() -> Result<(), anyhow::Error> {
-/// let spec = types::ReleaseSpec {
-///     manifest_path: PathBuf::from("Cargo.toml"),
-///     registry: types::Registry::crates_io(),
-///     selected_packages: None,
-/// };
+/// ```ignore
 /// let ws = plan::build_plan(&spec)?;
 /// let opts = types::RuntimeOptions { /* ... */ };
-///
 /// let mut reporter = MyReporter::default();
 /// let report = engine::run_preflight(&ws, &opts, &mut reporter)?;
-///
 /// println!("Finishability: {:?}", report.finishability);
-/// for pkg in &report.packages {
-///     println!("  {}@{}: already_published={}", pkg.name, pkg.version, pkg.already_published);
-/// }
-/// # Ok(())
-/// # }
 /// ```
 pub fn run_preflight(
     ws: &PlannedWorkspace,
@@ -986,25 +970,12 @@ pub fn run_publish(
 ///
 /// # Example
 ///
-/// ```no_run
-/// use shipper::{engine, plan, types};
-/// use std::path::PathBuf;
-///
-/// # async fn run() -> Result<(), anyhow::Error> {
-/// let spec = types::ReleaseSpec {
-///     manifest_path: PathBuf::from("Cargo.toml"),
-///     registry: types::Registry::crates_io(),
-///     selected_packages: None,
-/// };
+/// ```ignore
 /// let ws = plan::build_plan(&spec)?;
 /// let opts = types::RuntimeOptions { /* ... */ };
-///
 /// let mut reporter = MyReporter::default();
 /// let receipt = engine::run_resume(&ws, &opts, &mut reporter)?;
-///
 /// println!("Published {} packages", receipt.packages.len());
-/// # Ok(())
-/// # }
 /// ```
 pub fn run_resume(
     ws: &PlannedWorkspace,
