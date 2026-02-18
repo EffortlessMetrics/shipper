@@ -1,0 +1,190 @@
+# CircleCI CI/CD Configuration for Shipper
+#
+# This pipeline provides continuous integration and optional publishing:
+# - Runs on: main branch pushes and all PRs
+# - Jobs: build, test, clippy, fmt checks
+# - Optional: publish to crates.io on version tags (v*)
+#
+# Prerequisites:
+# - CircleCI Rust orb is pre-installed
+# - For publishing: add CARGO_REGISTRY_TOKEN to CircleCI project environment variables
+#
+# To enable publishing:
+# 1. Add a secret environment variable named 'CARGO_REGISTRY_TOKEN'
+# 2. Push a tag matching 'v*' to trigger the publish job
+
+version: 2.1
+
+# =============================================================================
+# Orbs
+# =============================================================================
+# Using the official CircleCI Rust orb for toolchain management
+orbs:
+  rust: circleci/rust@1.10.0
+
+# =============================================================================
+# Workflows
+# =============================================================================
+workflows:
+  # Main CI workflow - runs on every push and PR
+  ci:
+    jobs:
+      - build
+      - test
+      - clippy
+      - fmt
+
+  # Publish workflow - runs only on tags (e.g., v1.0.0)
+  publish:
+    when:
+      matches:
+        pattern: '^v[0-9]+'
+        value: << pipeline.git.tag >>
+    jobs:
+      - publish:
+          context: cargo-registry
+
+# =============================================================================
+# Jobs
+# =============================================================================
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job: Build
+  # ---------------------------------------------------------------------------
+  build:
+    executor:
+      name: rust/default
+      rust_version: 1.92
+    environment:
+      # Enable color output for cargo
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - cargo-{{ .Environment.CIRCLE_JOB }}-{{ checksum "Cargo.lock" }}
+            - cargo-{{ .Environment.CIRCLE_JOB }}-
+      - run:
+          name: Build workspace
+          command: cargo build --workspace --release
+      - save_cache:
+          key: cargo-{{ .Environment.CIRCLE_JOB }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/bin
+            - ~/.cargo/registry/index
+            - ~/.cargo/registry/cache
+            - ~/.cargo/git/db
+            - target
+
+  # ---------------------------------------------------------------------------
+  # Job: Test
+  # ---------------------------------------------------------------------------
+  test:
+    executor:
+      name: rust/default
+      rust_version: 1.92
+    environment:
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - cargo-{{ .Environment.CIRCLE_JOB }}-{{ checksum "Cargo.lock" }}
+            - cargo-{{ .Environment.CIRCLE_JOB }}-
+      - run:
+          name: Run tests
+          command: cargo test --workspace --all-features
+      - save_cache:
+          key: cargo-{{ .Environment.CIRCLE_JOB }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/bin
+            - ~/.cargo/registry/index
+            - ~/.cargo/registry/cache
+            - ~/.cargo/git/db
+            - target
+
+  # ---------------------------------------------------------------------------
+  # Job: Clippy (linting)
+  # ---------------------------------------------------------------------------
+  clippy:
+    executor:
+      name: rust/default
+      rust_version: 1.92
+    environment:
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - cargo-{{ .Environment.CIRCLE_JOB }}-{{ checksum "Cargo.lock" }}
+            - cargo-{{ .Environment.CIRCLE_JOB }}-
+      - run:
+          name: Run clippy lints
+          command: cargo clippy --workspace --all-features -- -D warnings
+      - save_cache:
+          key: cargo-{{ .Environment.CIRCLE_JOB }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/bin
+            - ~/.cargo/registry/index
+            - ~/.cargo/registry/cache
+            - ~/.cargo/git/db
+            - target
+
+  # ---------------------------------------------------------------------------
+  # Job: Format check
+  # ---------------------------------------------------------------------------
+  fmt:
+    executor:
+      name: rust/default
+      rust_version: 1.92
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - cargo-{{ .Environment.CIRCLE_JOB }}-{{ checksum "Cargo.lock" }}
+            - cargo-{{ .Environment.CIRCLE_JOB }}-
+      - run:
+          name: Check formatting
+          command: cargo fmt --all -- --check
+      - save_cache:
+          key: cargo-{{ .Environment.CIRCLE_JOB }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/bin
+            - ~/.cargo/registry/index
+            - ~/.cargo/registry/cache
+            - ~/.cargo/git/db
+            - target
+
+  # ---------------------------------------------------------------------------
+  # Job: Publish to crates.io
+  # ---------------------------------------------------------------------------
+  publish:
+    executor:
+      name: rust/default
+      rust_version: 1.92
+    environment:
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - cargo-{{ .Environment.CIRCLE_JOB }}-{{ checksum "Cargo.lock" }}
+            - cargo-{{ .Environment.CIRCLE_JOB }}-
+      - run:
+          name: Configure git
+          command: |
+            git config --global user.email "ci@shipper.dev"
+            git config --global user.name "Shipper CI"
+      - run:
+          name: Publish to crates.io
+          command: cargo publish --workspace
+          environment:
+            CARGO_REGISTRY_TOKEN: ${CARGO_REGISTRY_TOKEN}
+      - save_cache:
+          key: cargo-{{ .Environment.CIRCLE_JOB }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/bin
+            - ~/.cargo/registry/index
+            - ~/.cargo/registry/cache
+            - ~/.cargo/git/db
+            - target

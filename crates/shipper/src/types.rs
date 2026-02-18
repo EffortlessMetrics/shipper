@@ -6,6 +6,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DurationMilliSeconds, serde_as};
 
+use crate::webhook::WebhookConfig;
+use crate::encryption::EncryptionConfig as EncryptionSettings;
+
 /// Deserialize a Duration from either a string (human-readable) or u64 (milliseconds)
 pub(crate) fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
@@ -207,6 +210,12 @@ pub struct RuntimeOptions {
     pub max_attempts: u32,
     pub base_delay: Duration,
     pub max_delay: Duration,
+    /// Retry strategy type: immediate, exponential, linear, constant
+    pub retry_strategy: crate::retry::RetryStrategyType,
+    /// Jitter factor for retry delays
+    pub retry_jitter: f64,
+    /// Per-error-type retry configuration
+    pub retry_per_error: crate::retry::PerErrorConfig,
     pub verify_timeout: Duration,
     pub verify_poll_interval: Duration,
     pub state_dir: PathBuf,
@@ -221,6 +230,10 @@ pub struct RuntimeOptions {
     pub lock_timeout: Duration,
     /// Parallel publishing configuration
     pub parallel: ParallelConfig,
+    /// Webhook configuration for publish notifications
+    pub webhook: WebhookConfig,
+    /// Encryption configuration for state files
+    pub encryption: EncryptionSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

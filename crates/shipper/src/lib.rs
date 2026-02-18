@@ -87,6 +87,7 @@
 //! - [`environment`] — Environment fingerprinting (OS, arch, tool versions)
 //! - [`store`] — `StateStore` trait for pluggable persistence backends
 //! - [`cargo`] — Workspace metadata via `cargo_metadata`
+//! - [`webhook`] — Webhook notifications for publish events
 //!
 //! ## Feature Flags
 //!
@@ -144,3 +145,12 @@ pub mod store;
 
 /// Domain types: specs, plans, options, receipts, errors.
 pub mod types;
+
+/// Webhook notifications for pubretry module.
+pub mod retry;
+
+/// Webhook notifications for publish events.
+pub mod webhook;
+
+/// State file encryption module.
+pub mod encryption;

@@ -171,13 +171,15 @@ fn plan_command_snapshot() {
     let stdout = String::from_utf8(out).expect("utf8");
     assert_snapshot!(
         normalize_output(&stdout),
-        @r#"
-plan_id: <PLAN_ID>
-registry: crates-io (https://crates.io)
-workspace_root: <WORKSPACE_ROOT>
+        @"
+    plan_id: <PLAN_ID>
+    registry: crates-io (https://crates.io)
+    workspace_root: <WORKSPACE_ROOT>
 
-  1. demo@0.1.0
-"#
+    Total packages to publish: 1
+
+      1. demo@0.1.0
+    "
     );
 }
 

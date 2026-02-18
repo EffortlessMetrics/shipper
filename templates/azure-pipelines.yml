@@ -1,0 +1,190 @@
+# Azure DevOps Pipelines CI/CD Configuration for Shipper
+#
+# This pipeline provides continuous integration and optional publishing:
+# - Runs on: main branch pushes and all PRs
+# - Jobs: build, test, clippy, fmt checks
+# - Optional: publish to crates.io on version tags (v*)
+#
+# To enable publishing:
+# 1. Add a secret variable named 'CARGO_REGISTRY_TOKEN' with your crates.io token
+# 2. Uncomment the publish job or enable it via pipeline triggers
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - '*.md'
+      - 'docs/**'
+      - '.gitignore'
+
+# Pull request trigger - runs for all PRs
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - '*.md'
+      - 'docs/**'
+      - '.gitignore'
+
+variables:
+  # Rust toolchain version (matches rust-version in Cargo.toml)
+  rustToolchainVersion: '1.92'
+  # Cargo cache directory
+  CARGO_HOME: '$(Agent.TempDirectory)/cargo-cache'
+  # Enable color output
+  CARGO_TERM_COLOR: 'always'
+
+stages:
+  # ===========================================================================
+  # Stage: Build and Test
+  # ===========================================================================
+  - stage: ci
+    displayName: 'Build, Test & Lint'
+    jobs:
+      # -----------------------------------------------------------------------
+      # Job: Build
+      # -----------------------------------------------------------------------
+      - job: build
+        displayName: 'Build'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          # Install Rust toolchain
+          - task: Rust@1
+            displayName: 'Install Rust toolchain'
+            inputs:
+              toolchainVersion: $(rustToolchainVersion)
+              profile: default
+
+          # Cache cargo dependencies
+          - task: Cache@2
+            displayName: 'Cache cargo dependencies'
+            inputs:
+              key: 'cargo | "$(Agent.OS)" | Cargo.lock'
+              path: '$(CARGO_HOME)'
+
+          # Build the project
+          - script: |
+              cargo build --workspace --release
+            displayName: 'Build workspace'
+
+      # -----------------------------------------------------------------------
+      # Job: Test
+      # -----------------------------------------------------------------------
+      - job: test
+        displayName: 'Test'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          # Install Rust toolchain
+          - task: Rust@1
+            displayName: 'Install Rust toolchain'
+            inputs:
+              toolchainVersion: $(rustToolchainVersion)
+              profile: default
+
+          # Cache cargo dependencies
+          - task: Cache@2
+            displayName: 'Cache cargo dependencies'
+            inputs:
+              key: 'cargo | "$(Agent.OS)" | Cargo.lock'
+              path: '$(CARGO_HOME)'
+
+          # Run tests
+          - script: |
+              cargo test --workspace --all-features
+            displayName: 'Run tests'
+
+      # -----------------------------------------------------------------------
+      # Job: Clippy (linting)
+      # -----------------------------------------------------------------------
+      - job: clippy
+        displayName: 'Clippy'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          # Install Rust toolchain
+          - task: Rust@1
+            displayName: 'Install Rust toolchain'
+            inputs:
+              toolchainVersion: $(rustToolchainVersion)
+              profile: default
+
+          # Cache cargo dependencies
+          - task: Cache@2
+            displayName: 'Cache cargo dependencies'
+            inputs:
+              key: 'cargo | "$(Agent.OS)" | Cargo.lock'
+              path: '$(CARGO_HOME)'
+
+          # Run clippy
+          - script: |
+              cargo clippy --workspace --all-features -- -D warnings
+            displayName: 'Run clippy'
+
+      # -----------------------------------------------------------------------
+      # Job: Format check
+      # -----------------------------------------------------------------------
+      - job: fmt
+        displayName: 'Format Check'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          # Install Rust toolchain
+          - task: Rust@1
+            displayName: 'Install Rust toolchain'
+            inputs:
+              toolchainVersion: $(rustToolchainVersion)
+              profile: default
+
+          # Run format check
+          - script: |
+              cargo fmt --all -- --check
+            displayName: 'Check formatting'
+
+  # ===========================================================================
+  # Stage: Publish (optional, runs on tags)
+  # ===========================================================================
+  - stage: publish
+    displayName: 'Publish to crates.io'
+    condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
+    jobs:
+      - job: publish
+        displayName: 'Publish'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          # Install Rust toolchain
+          - task: Rust@1
+            displayName: 'Install Rust toolchain'
+            inputs:
+              toolchainVersion: $(rustToolchainVersion)
+              profile: default
+
+          # Checkout code
+          - checkout: self
+            persistCredentials: true
+
+          # Cache cargo dependencies
+          - task: Cache@2
+            displayName: 'Cache cargo dependencies'
+            inputs:
+              key: 'cargo | "$(Agent.OS)" | Cargo.lock'
+              path: '$(CARGO_HOME)'
+
+          # Configure git identity for cargo
+          - script: |
+              git config --global user.email "ci@shipper.dev"
+              git config --global user.name "Shipper CI"
+            displayName: 'Configure git'
+
+          # Publish to crates.io
+          - script: |
+              cargo publish --workspace
+            displayName: 'Publish to crates.io'
+            env:
+              CARGO_REGISTRY_TOKEN: $(CARGO_REGISTRY_TOKEN)

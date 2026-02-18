@@ -3,12 +3,16 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, CommandFactory};
+use clap_complete::Shell;
 
 use shipper::config::{CliOverrides, ShipperConfig};
 use shipper::engine::{self, Reporter};
 use shipper::plan;
 use shipper::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
+
+mod progress;
+use progress::ProgressReporter;
 
 #[derive(Parser, Debug)]
 #[command(name = "shipper", version)]
@@ -72,6 +76,14 @@ struct Cli {
     #[arg(long, global = true)]
     max_delay: Option<String>,
 
+    /// Retry strategy: immediate, exponential (default), linear, constant
+    #[arg(long, global = true)]
+    retry_strategy: Option<String>,
+
+    /// Jitter factor for retry delays (0.0 = no jitter, 1.0 = full jitter; default: 0.5)
+    #[arg(long, global = true)]
+    retry_jitter: Option<f64>,
+
     /// How long to wait for registry visibility after a successful publish (default: 2m)
     #[arg(long, global = true)]
     verify_timeout: Option<String>,
@@ -128,9 +140,29 @@ struct Cli {
     #[arg(long, global = true)]
     per_package_timeout: Option<String>,
 
+    /// Webhook URL to send publish event notifications to
+    #[arg(long, global = true)]
+    webhook_url: Option<String>,
+
+    /// Optional secret for signing webhook payloads
+    #[arg(long, global = true)]
+    webhook_secret: Option<String>,
+
+    /// Enable encryption for state files
+    #[arg(long, global = true)]
+    encrypt: bool,
+
+    /// Passphrase for state file encryption (or use SHIPPER_ENCRYPT_KEY env var)
+    #[arg(long, global = true)]
+    encrypt_passphrase: Option<String>,
+
     /// Output format: text (default) or json
     #[arg(long, default_value = "text", value_parser = ["text", "json"], global = true)]
     format: String,
+
+    /// Show detailed dependency analysis for plan command
+    #[arg(long, global = true)]
+    verbose: bool,
 
     #[command(subcommand)]
     cmd: Commands,
@@ -166,6 +198,12 @@ enum Commands {
     /// Configuration file management.
     #[command(subcommand)]
     Config(ConfigCommands),
+    /// Generate shell completion scripts for the specified shell.
+    Completion {
+        /// Shell to generate completions for.
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -216,6 +254,11 @@ fn main() -> Result<()> {
     // Handle Config commands early (they don't need workspace plan)
     if let Commands::Config(config_cmd) = &cli.cmd {
         return run_config(config_cmd.clone());
+    }
+
+    // Handle Completion commands early (they don't need workspace plan)
+    if let Commands::Completion { shell } = &cli.cmd {
+        return run_completion(shell);
     }
 
     let spec = ReleaseSpec {
@@ -290,6 +333,12 @@ fn main() -> Result<()> {
         max_attempts: cli.max_attempts,
         base_delay: cli.base_delay.as_deref().map(parse_duration).transpose()?,
         max_delay: cli.max_delay.as_deref().map(parse_duration).transpose()?,
+        retry_strategy: cli
+            .retry_strategy
+            .as_deref()
+            .map(parse_retry_strategy)
+            .transpose()?,
+        retry_jitter: cli.retry_jitter,
         verify_timeout: cli
             .verify_timeout
             .as_deref()
@@ -332,6 +381,10 @@ fn main() -> Result<()> {
             .as_deref()
             .map(parse_duration)
             .transpose()?,
+        webhook_url: cli.webhook_url.clone(),
+        webhook_secret: cli.webhook_secret.clone(),
+        encrypt: cli.encrypt,
+        encrypt_passphrase: cli.encrypt_passphrase.clone(),
     };
 
     // Merge CLI overrides with config (or defaults if no config)
@@ -342,14 +395,26 @@ fn main() -> Result<()> {
 
     match cli.cmd {
         Commands::Plan => {
-            print_plan(&planned);
+            print_plan(&planned, cli.verbose);
         }
         Commands::Preflight => {
             let rep = engine::run_preflight(&planned, &opts, &mut reporter)?;
             print_preflight(&rep, &cli.format);
         }
         Commands::Publish => {
+            let total_packages = planned.plan.packages.len();
+            let mut progress = ProgressReporter::new(total_packages);
+            
+            // Show initial progress if we have packages
+            if total_packages > 0 {
+                let first_pkg = &planned.plan.packages[0];
+                progress.set_package(1, &first_pkg.name, &first_pkg.version);
+            }
+            
             let receipt = engine::run_publish(&planned, &opts, &mut reporter)?;
+            
+            progress.finish();
+            
             print_receipt(
                 &receipt,
                 &planned.workspace_root,
@@ -358,7 +423,19 @@ fn main() -> Result<()> {
             );
         }
         Commands::Resume => {
+            let total_packages = planned.plan.packages.len();
+            let mut progress = ProgressReporter::new(total_packages);
+            
+            // Show initial progress if we have packages
+            if total_packages > 0 {
+                let first_pkg = &planned.plan.packages[0];
+                progress.set_package(1, &first_pkg.name, &first_pkg.version);
+            }
+            
             let receipt = engine::run_resume(&planned, &opts, &mut reporter)?;
+            
+            progress.finish();
+            
             print_receipt(
                 &receipt,
                 &planned.workspace_root,
@@ -392,6 +469,10 @@ fn main() -> Result<()> {
         Commands::Config(_) => {
             // This should never be reached since we handle Config commands early
             unreachable!("Config commands should be handled before this match");
+        }
+        Commands::Completion { .. } => {
+            // This should never be reached since we handle Completion commands early
+            unreachable!("Completion commands should be handled before this match");
         }
     }
 
@@ -429,13 +510,27 @@ fn parse_readiness_method(s: &str) -> Result<shipper::types::ReadinessMethod> {
     }
 }
 
-fn print_plan(ws: &plan::PlannedWorkspace) {
+fn parse_retry_strategy(s: &str) -> Result<shipper::retry::RetryStrategyType> {
+    match s.to_lowercase().as_str() {
+        "immediate" => Ok(shipper::retry::RetryStrategyType::Immediate),
+        "exponential" => Ok(shipper::retry::RetryStrategyType::Exponential),
+        "linear" => Ok(shipper::retry::RetryStrategyType::Linear),
+        "constant" => Ok(shipper::retry::RetryStrategyType::Constant),
+        _ => bail!("invalid retry-strategy: {s} (expected: immediate, exponential, linear, constant)"),
+    }
+}
+
+fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool) {
     println!("plan_id: {}", ws.plan.plan_id);
     println!(
         "registry: {} ({})",
         ws.plan.registry.name, ws.plan.registry.api_base
     );
     println!("workspace_root: {}", ws.workspace_root.display());
+    println!();
+
+    let total_packages = ws.plan.packages.len();
+    println!("Total packages to publish: {}", total_packages);
     println!();
 
     if !ws.skipped.is_empty() {
@@ -446,8 +541,118 @@ fn print_plan(ws: &plan::PlannedWorkspace) {
         println!();
     }
 
+    if verbose {
+        // Enhanced verbose output with dependency analysis
+        print_detailed_plan(ws);
+    } else {
+        // Simple output
+        for (idx, p) in ws.plan.packages.iter().enumerate() {
+            println!("{:>3}. {}@{}", idx + 1, p.name, p.version);
+        }
+    }
+}
+
+fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
+    // Get dependency levels for parallel publishing analysis
+    let levels = ws.plan.group_by_levels();
+    let total_levels = levels.len();
+
+    println!("=== Dependency Analysis ===");
+    println!();
+
+    // Show dependency levels for parallel publishing
+    println!("Publishing Levels (packages at same level can be published in parallel):");
+    println!();
+    for level in &levels {
+        let level_pkgs: Vec<String> = level.packages.iter().map(|p| format!("{}@{}", p.name, p.version)).collect();
+        println!("  Level {}: {}", level.level, level_pkgs.join(", "));
+    }
+    println!();
+
+    // Show full dependency graph
+    println!("Dependency Graph:");
+    println!();
     for (idx, p) in ws.plan.packages.iter().enumerate() {
-        println!("{:>3}. {}@{}", idx + 1, p.name, p.version);
+        let deps = ws.plan.dependencies.get(&p.name);
+        let deps_str = match deps {
+            Some(deps) if !deps.is_empty() => {
+                let dep_versions: Vec<String> = deps.iter().filter_map(|dep_name| {
+                    ws.plan.packages.iter().find(|pkg| &pkg.name == dep_name).map(|pkg| format!("{}@{}", dep_name, pkg.version))
+                }).collect();
+                format!("depends on: {}", dep_versions.join(", "))
+            }
+            _ => String::from("no workspace dependencies"),
+        };
+        println!("  {:>3}. {}@{} ({})", idx + 1, p.name, p.version, deps_str);
+    }
+    println!();
+
+    // Show potential issues / preflight considerations
+    println!("=== Preflight Considerations ===");
+    println!();
+    
+    // Analyze potential issues
+    let mut issues: Vec<String> = Vec::new();
+    
+    // Check for packages with many dependencies (may take longer)
+    for p in &ws.plan.packages {
+        if let Some(deps) = ws.plan.dependencies.get(&p.name) {
+            if deps.len() > 3 {
+                issues.push(format!("  - {}@{} has {} dependencies (may require longer publish time)", p.name, p.version, deps.len()));
+            }
+        }
+    }
+    
+    // Check for packages that are depended upon by many others
+    let mut dependents_count: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for deps in ws.plan.dependencies.values() {
+        for dep in deps {
+            *dependents_count.entry(dep.as_str()).or_insert(0) += 1;
+        }
+    }
+    for (name, count) in &dependents_count {
+        if *count > 3 {
+            if let Some(pkg) = ws.plan.packages.iter().find(|p| &p.name == *name) {
+                issues.push(format!("  - {}@{} is a core dependency for {} packages (critical path)", pkg.name, pkg.version, count));
+            }
+        }
+    }
+    
+    if issues.is_empty() {
+        println!("  No obvious issues detected.");
+        println!("  All packages have reasonable dependency structures.");
+    } else {
+        for issue in &issues {
+            println!("{}", issue);
+        }
+    }
+    println!();
+
+    // Estimate time analysis (rough estimates)
+    println!("=== Estimated Publishing Analysis ===");
+    println!();
+    
+    // Calculate max parallel packages per level
+    let max_parallel = levels.iter().map(|l| l.packages.len()).max().unwrap_or(0);
+    println!("  Parallel publishing: {}", if max_parallel > 1 { "enabled" } else { "sequential" });
+    println!("  Max concurrent packages: {}", max_parallel);
+    println!("  Total publish levels: {}", total_levels);
+    
+    // Rough time estimate (assuming ~30s per package + network overhead)
+    let total_packages = ws.plan.packages.len();
+    let estimated_sequential_secs = total_packages * 30;
+    let estimated_parallel_secs = levels.iter().map(|_l| 30).sum::<usize>();
+    println!("  Estimated time (sequential): ~{}s ({:.1}min)", estimated_sequential_secs, estimated_sequential_secs as f64 / 60.0);
+    println!("  Estimated time (parallel): ~{}s ({:.1}min)", estimated_parallel_secs, estimated_parallel_secs as f64 / 60.0);
+    println!();
+
+    // Show final publish order
+    println!("=== Full Publish Order ===");
+    println!();
+    for (idx, p) in ws.plan.packages.iter().enumerate() {
+        let level = levels.iter().find(|l| l.packages.iter().any(|lp| lp.name == p.name));
+        let level_str = level.map(|l| format!("[Level {}]", l.level)).unwrap_or_else(|| "[?]".to_string());
+        println!("  {:>3}. {} {} @{}", idx + 1, level_str, p.name, p.version);
     }
 }
 
@@ -1026,6 +1231,11 @@ fn run_config(cmd: ConfigCommands) -> Result<()> {
     Ok(())
 }
 
+fn run_completion(shell: &Shell) -> Result<()> {
+    clap_complete::generate(*shell, &mut Cli::command(), "shipper", &mut std::io::stdout());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1194,6 +1404,7 @@ mod tests {
             readiness: shipper::types::ReadinessConfig::default(),
             output_lines: 50,
             parallel: shipper::types::ParallelConfig::default(),
+            webhook: shipper::webhook::WebhookConfig::default(),
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
@@ -1256,6 +1467,7 @@ mod tests {
             readiness: shipper::types::ReadinessConfig::default(),
             output_lines: 50,
             parallel: shipper::types::ParallelConfig::default(),
+            webhook: shipper::webhook::WebhookConfig::default(),
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
@@ -1459,6 +1671,7 @@ mode = "fast"
             state_dir: None,
             registry: None,
             parallel: shipper::types::ParallelConfig::default(),
+            webhook: shipper::webhook::WebhookConfig::default(),
         };
 
         // CLI overrides some values, leaves others as None

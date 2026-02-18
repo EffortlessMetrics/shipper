@@ -15,6 +15,10 @@ use crate::types::{
     deserialize_duration, serialize_duration,
 };
 
+use crate::retry::{PerErrorConfig, RetryPolicy, RetryStrategyType};
+use crate::webhook::WebhookConfig;
+use crate::encryption::EncryptionConfig as EncryptionSettings;
+
 /// Nested policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PolicyConfig {
@@ -34,7 +38,11 @@ pub struct VerifyConfig {
 /// Nested retry configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
-    /// Max attempts per crate publish step
+    /// Retry policy preset: default, aggressive, conservative, or custom
+    #[serde(default)]
+    pub policy: RetryPolicy,
+
+    /// Max attempts per crate publish step (used when policy is custom or as fallback)
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
 
@@ -53,6 +61,18 @@ pub struct RetryConfig {
     )]
     #[serde(default = "default_max_delay")]
     pub max_delay: Duration,
+
+    /// Strategy type: immediate, exponential, linear, constant
+    #[serde(default)]
+    pub strategy: RetryStrategyType,
+
+    /// Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
+    #[serde(default = "default_jitter")]
+    pub jitter: f64,
+
+    /// Per-error-type retry configuration
+    #[serde(default)]
+    pub per_error: PerErrorConfig,
 }
 
 /// Nested output configuration
@@ -78,11 +98,19 @@ pub struct LockConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
+            policy: RetryPolicy::Default,
             max_attempts: default_max_attempts(),
             base_delay: default_base_delay(),
             max_delay: default_max_delay(),
+            strategy: RetryStrategyType::Exponential,
+            jitter: 0.5,
+            per_error: PerErrorConfig::default(),
         }
     }
+}
+
+fn default_jitter() -> f64 {
+    0.5
 }
 
 impl Default for OutputConfig {
@@ -99,6 +127,20 @@ impl Default for LockConfig {
             timeout: default_lock_timeout(),
         }
     }
+}
+
+/// Nested encryption configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EncryptionConfigInner {
+    /// Enable encryption for state files
+    #[serde(default)]
+    pub enabled: bool,
+    /// Passphrase for encryption/decryption (can also be set via SHIPPER_ENCRYPT_KEY env var)
+    #[serde(default)]
+    pub passphrase: Option<String>,
+    /// Environment variable to read passphrase from (default: SHIPPER_ENCRYPT_KEY)
+    #[serde(default)]
+    pub env_key: Option<String>,
 }
 
 /// Nested flags configuration
@@ -160,6 +202,14 @@ pub struct ShipperConfig {
     /// Optional custom registry configuration
     #[serde(default)]
     pub registry: Option<RegistryConfig>,
+
+    /// Webhook configuration for publish notifications
+    #[serde(default)]
+    pub webhook: WebhookConfig,
+
+    /// Encryption configuration for state files
+    #[serde(default)]
+    pub encryption: EncryptionConfigInner,
 }
 
 /// Registry configuration
@@ -183,6 +233,8 @@ pub struct CliOverrides {
     pub max_attempts: Option<u32>,
     pub base_delay: Option<Duration>,
     pub max_delay: Option<Duration>,
+    pub retry_strategy: Option<RetryStrategyType>,
+    pub retry_jitter: Option<f64>,
     pub verify_timeout: Option<Duration>,
     pub verify_poll_interval: Option<Duration>,
     pub output_lines: Option<usize>,
@@ -201,6 +253,10 @@ pub struct CliOverrides {
     pub parallel_enabled: bool,
     pub max_concurrent: Option<usize>,
     pub per_package_timeout: Option<Duration>,
+    pub webhook_url: Option<String>,
+    pub webhook_secret: Option<String>,
+    pub encrypt: bool,
+    pub encrypt_passphrase: Option<String>,
 }
 
 impl Default for ShipperConfig {
@@ -220,9 +276,13 @@ impl Default for ShipperConfig {
                 timeout: default_lock_timeout(),
             },
             retry: RetryConfig {
+                policy: RetryPolicy::Default,
                 max_attempts: default_max_attempts(),
                 base_delay: default_base_delay(),
                 max_delay: default_max_delay(),
+                strategy: RetryStrategyType::Exponential,
+                jitter: 0.5,
+                per_error: PerErrorConfig::default(),
             },
             flags: FlagsConfig {
                 allow_dirty: false,
@@ -232,6 +292,8 @@ impl Default for ShipperConfig {
             parallel: ParallelConfig::default(),
             state_dir: None,
             registry: None,
+            webhook: WebhookConfig::default(),
+            encryption: EncryptionConfigInner::default(),
         }
     }
 }
@@ -300,6 +362,11 @@ impl ShipperConfig {
             bail!("retry.max_delay must be greater than or equal to retry.base_delay");
         }
 
+        // Validate jitter
+        if self.retry.jitter < 0.0 || self.retry.jitter > 1.0 {
+            bail!("retry.jitter must be between 0.0 and 1.0");
+        }
+
         // Validate lock_timeout
         if self.lock.timeout.is_zero() {
             bail!("lock.timeout must be greater than 0");
@@ -345,14 +412,40 @@ impl ShipperConfig {
     /// For `Option` fields: CLI value takes precedence; falls back to config.
     /// For `bool` flags: `true` if either CLI or config enables it (OR).
     pub fn build_runtime_options(&self, cli: CliOverrides) -> RuntimeOptions {
+        // Determine effective retry config based on policy
+        let effective_retry = self.retry.policy.to_config();
+
         RuntimeOptions {
             allow_dirty: cli.allow_dirty || self.flags.allow_dirty,
             skip_ownership_check: cli.skip_ownership_check || self.flags.skip_ownership_check,
             strict_ownership: cli.strict_ownership || self.flags.strict_ownership,
             no_verify: cli.no_verify,
-            max_attempts: cli.max_attempts.unwrap_or(self.retry.max_attempts),
-            base_delay: cli.base_delay.unwrap_or(self.retry.base_delay),
-            max_delay: cli.max_delay.unwrap_or(self.retry.max_delay),
+            max_attempts: cli.max_attempts.unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                self.retry.max_attempts
+            } else {
+                effective_retry.max_attempts
+            }),
+            base_delay: cli.base_delay.unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                self.retry.base_delay
+            } else {
+                effective_retry.base_delay
+            }),
+            max_delay: cli.max_delay.unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                self.retry.max_delay
+            } else {
+                effective_retry.max_delay
+            }),
+            retry_strategy: cli.retry_strategy.unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                self.retry.strategy
+            } else {
+                effective_retry.strategy
+            }),
+            retry_jitter: cli.retry_jitter.unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                self.retry.jitter
+            } else {
+                effective_retry.jitter
+            }),
+            retry_per_error: self.retry.per_error.clone(),
             verify_timeout: cli.verify_timeout.unwrap_or(Duration::from_secs(120)),
             verify_poll_interval: cli.verify_poll_interval.unwrap_or(Duration::from_secs(5)),
             state_dir: cli.state_dir.unwrap_or_else(|| {
@@ -385,6 +478,39 @@ impl ShipperConfig {
                 per_package_timeout: cli
                     .per_package_timeout
                     .unwrap_or(self.parallel.per_package_timeout),
+            },
+            webhook: {
+                let mut cfg = self.webhook.clone();
+                // CLI can override webhook settings
+                if let Some(url) = cli.webhook_url {
+                    cfg.url = Some(url);
+                    cfg.enabled = true;
+                }
+                if let Some(secret) = cli.webhook_secret {
+                    cfg.secret = Some(secret);
+                }
+                cfg
+            },
+            encryption: {
+                let mut cfg = EncryptionSettings::default();
+                // Enable encryption if CLI flag is set or config enables it
+                if cli.encrypt || self.encryption.enabled {
+                    cfg.enabled = true;
+                }
+                // CLI passphrase takes precedence over config
+                if let Some(passphrase) = cli.encrypt_passphrase {
+                    cfg.passphrase = Some(passphrase);
+                } else if let Some(passphrase) = &self.encryption.passphrase {
+                    cfg.passphrase = Some(passphrase.clone());
+                }
+                // Use env_key from config if set
+                if let Some(ref env_key) = self.encryption.env_key {
+                    cfg.env_var = Some(env_key.clone());
+                } else if cfg.enabled && cfg.passphrase.is_none() {
+                    // Default to SHIPPER_ENCRYPT_KEY if enabled but no passphrase
+                    cfg.env_var = Some("SHIPPER_ENCRYPT_KEY".to_string());
+                }
+                cfg
             },
         }
     }
@@ -427,12 +553,38 @@ lines = 50
 timeout = "1h"
 
 [retry]
-# Max attempts per crate publish step
+# Retry policy: default (balanced), aggressive, conservative, or custom
+# - default: exponential backoff with 6 attempts, 2s base, 2m max
+# - aggressive: exponential backoff with 10 attempts, 500ms base, 30s max
+# - conservative: linear backoff with 3 attempts, 5s base, 60s max
+# - custom: uses explicit strategy settings below
+policy = "default"
+# Max attempts per crate publish step (used when policy is custom)
 max_attempts = 6
 # Base backoff delay
 base_delay = "2s"
 # Max backoff delay
 max_delay = "2m"
+# Strategy type: immediate, exponential, linear, constant
+strategy = "exponential"
+# Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
+jitter = 0.5
+
+# Per-error-type retry configuration (optional)
+# Uncomment and customize to override retry behavior for specific error types
+# [retry.per_error.retryable]
+# strategy = "immediate"
+# max_attempts = 10
+# base_delay = "0s"
+# max_delay = "1s"
+# jitter = 0.0
+
+# [retry.per_error.ambiguous]
+# strategy = "exponential"
+# max_attempts = 5
+# base_delay = "1s"
+# max_delay = "60s"
+# jitter = 0.3
 
 [flags]
 # Allow publishing from a dirty git working tree (not recommended)
@@ -454,6 +606,17 @@ per_package_timeout = "30m"
 # [registry]
 # name = "crates-io"
 # api_base = "https://crates.io"
+
+# Optional: Webhook notifications for publish events
+# [webhook]
+# Enable webhook notifications (default: false - disabled)
+# enabled = false
+# URL to send POST requests to
+# url = "https://your-webhook-endpoint.com/webhook"
+# Optional secret for signing webhook payloads
+# secret = "your-webhook-secret"
+# Request timeout (default: 30s)
+# timeout = "30s"
 "#.to_string()
     }
 }
@@ -658,9 +821,13 @@ enabled = true
     fn test_build_runtime_options_cli_overrides_config() {
         let config = ShipperConfig {
             retry: RetryConfig {
+                policy: RetryPolicy::Custom,
                 max_attempts: 10,
                 base_delay: Duration::from_secs(5),
                 max_delay: Duration::from_secs(300),
+                strategy: RetryStrategyType::Exponential,
+                jitter: 0.5,
+                per_error: PerErrorConfig::default(),
             },
             output: OutputConfig { lines: 100 },
             policy: PolicyConfig {
@@ -686,9 +853,13 @@ enabled = true
     fn test_build_runtime_options_config_used_when_cli_none() {
         let config = ShipperConfig {
             retry: RetryConfig {
+                policy: RetryPolicy::Custom,
                 max_attempts: 10,
                 base_delay: Duration::from_secs(5),
                 max_delay: Duration::from_secs(300),
+                strategy: RetryStrategyType::Exponential,
+                jitter: 0.5,
+                per_error: PerErrorConfig::default(),
             },
             output: OutputConfig { lines: 100 },
             policy: PolicyConfig {

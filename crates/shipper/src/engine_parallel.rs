@@ -299,7 +299,13 @@ fn publish_package(
                         };
                     }
                     ErrorClass::Retryable | ErrorClass::Ambiguous => {
-                        let delay = engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                        let delay = engine::backoff_delay(
+                            opts.base_delay,
+                            opts.max_delay,
+                            attempt,
+                            opts.retry_strategy,
+                            opts.retry_jitter,
+                        );
                         {
                             let mut rep = reporter.lock().unwrap();
                             rep.warn(&format!(
@@ -356,13 +362,25 @@ fn publish_package(
                     break;
                 } else {
                     last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
-                    let delay = engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                    let delay = engine::backoff_delay(
+                        opts.base_delay,
+                        opts.max_delay,
+                        attempt,
+                        opts.retry_strategy,
+                        opts.retry_jitter,
+                    );
                     thread::sleep(delay);
                 }
             }
             Err(_) => {
                 last_err = Some((ErrorClass::Ambiguous, "readiness check failed".into()));
-                let delay = engine::backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                let delay = engine::backoff_delay(
+                    opts.base_delay,
+                    opts.max_delay,
+                    attempt,
+                    opts.retry_strategy,
+                    opts.retry_jitter,
+                );
                 thread::sleep(delay);
             }
         }
@@ -839,6 +857,11 @@ mod tests {
                 max_concurrent: 4,
                 per_package_timeout: Duration::from_secs(60),
             },
+            retry_strategy: crate::retry::RetryStrategyType::Exponential,
+            retry_jitter: 0.0,
+            retry_per_error: crate::retry::PerErrorConfig::default(),
+            encryption: crate::encryption::EncryptionConfig::default(),
+            webhook: crate::webhook::WebhookConfig::default(),
         }
     }
 

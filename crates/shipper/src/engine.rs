@@ -20,6 +20,7 @@ use crate::types::{
     PackageProgress, PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent,
     PublishPolicy, ReadinessEvidence, Receipt, RuntimeOptions,
 };
+use crate::webhook::{self, WebhookEvent};
 
 pub trait Reporter {
     fn info(&mut self, msg: &str);
@@ -345,6 +346,15 @@ pub fn run_publish(
         event_type: EventType::ExecutionStarted,
         package: "all".to_string(),
     });
+    // Send webhook notification: publish started
+    webhook::maybe_send_event(
+        &opts.webhook,
+        WebhookEvent::PublishStarted {
+            plan_id: ws.plan.plan_id.clone(),
+            package_count: ws.plan.packages.len(),
+            registry: ws.plan.registry.name.clone(),
+        },
+    );
     // Event: PlanCreated
     event_log.record(PublishEvent {
         timestamp: run_started,
@@ -628,7 +638,13 @@ pub fn run_publish(
                             ));
                         }
                         ErrorClass::Retryable | ErrorClass::Ambiguous => {
-                            let delay = backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                            let delay = backoff_delay(
+                                opts.base_delay,
+                                opts.max_delay,
+                                attempt,
+                                opts.retry_strategy,
+                                opts.retry_jitter,
+                            );
                             reporter.warn(&format!(
                                 "{}@{}: retrying in {}",
                                 p.name,
@@ -669,10 +685,27 @@ pub fn run_publish(
                 event_log.write_to_file(&events_path)?;
                 event_log.clear();
 
+                // Send webhook notification: package succeeded
+                webhook::maybe_send_event(
+                    &opts.webhook,
+                    WebhookEvent::PublishSucceeded {
+                        plan_id: ws.plan.plan_id.clone(),
+                        package_name: p.name.clone(),
+                        package_version: p.version.clone(),
+                        duration_ms: start_instant.elapsed().as_millis() as u64,
+                    },
+                );
+
                 break;
             } else {
                 last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
-                let delay = backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                let delay = backoff_delay(
+                    opts.base_delay,
+                    opts.max_delay,
+                    attempt,
+                    opts.retry_strategy,
+                    opts.retry_jitter,
+                );
                 thread::sleep(delay);
             }
         }
@@ -710,13 +743,25 @@ pub fn run_publish(
                 event_log.record(PublishEvent {
                     timestamp: Utc::now(),
                     event_type: EventType::PackageFailed {
-                        class,
+                        class: class.clone(),
                         message: msg.clone(),
                     },
                     package: pkg_label.clone(),
                 });
                 event_log.write_to_file(&events_path)?;
                 event_log.clear();
+
+                // Send webhook notification: package failed
+                webhook::maybe_send_event(
+                    &opts.webhook,
+                    WebhookEvent::PublishFailed {
+                        plan_id: ws.plan.plan_id.clone(),
+                        package_name: p.name.clone(),
+                        package_version: p.version.clone(),
+                        error_class: format!("{:?}", class.clone()),
+                        message: msg.clone(),
+                    },
+                );
 
                 let progress = st
                     .packages
@@ -772,11 +817,40 @@ pub fn run_publish(
     event_log.record(PublishEvent {
         timestamp: Utc::now(),
         event_type: EventType::ExecutionFinished {
-            result: exec_result,
+            result: exec_result.clone(),
         },
         package: "all".to_string(),
     });
     event_log.write_to_file(&events_path)?;
+
+    // Calculate publish completion statistics
+    let total_packages = receipts.len();
+    let success_count = receipts.iter().filter(|r| {
+        matches!(r.state, PackageState::Published)
+    }).count();
+    let failure_count = receipts.iter().filter(|r| {
+        matches!(r.state, PackageState::Failed { .. })
+    }).count();
+    let skipped_count = receipts.iter().filter(|r| {
+        matches!(r.state, PackageState::Skipped { .. })
+    }).count();
+
+    // Send webhook notification: all complete
+    webhook::maybe_send_event(
+        &opts.webhook,
+        WebhookEvent::PublishCompleted {
+            plan_id: ws.plan.plan_id.clone(),
+            total_packages,
+            success_count,
+            failure_count,
+            skipped_count,
+            result: match exec_result {
+                ExecutionResult::Success => "success".to_string(),
+                ExecutionResult::PartialFailure => "partial_failure".to_string(),
+                ExecutionResult::CompleteFailure => "complete_failure".to_string(),
+            },
+        },
+    );
 
     let receipt = Receipt {
         receipt_version: "shipper.receipt.v2".to_string(),
@@ -973,18 +1047,21 @@ pub(crate) fn classify_cargo_failure(stderr: &str, stdout: &str) -> (ErrorClass,
     )
 }
 
-pub(crate) fn backoff_delay(base: Duration, max: Duration, attempt: u32) -> Duration {
-    let pow = attempt.saturating_sub(1).min(16);
-    let mut delay = base.saturating_mul(2_u32.saturating_pow(pow));
-    if delay > max {
-        delay = max;
-    }
-
-    // 0.5x..1.5x jitter
-    let jitter: f64 = rand::random::<f64>(); // Random value between 0 and 1
-    let jitter = 0.5 + jitter; // Scale to 0.5..1.5
-    let millis = (delay.as_millis() as f64 * jitter).round() as u128;
-    Duration::from_millis(millis as u64)
+pub(crate) fn backoff_delay(
+    base: Duration,
+    max: Duration,
+    attempt: u32,
+    strategy: crate::retry::RetryStrategyType,
+    jitter: f64,
+) -> Duration {
+    let config = crate::retry::RetryStrategyConfig {
+        strategy,
+        max_attempts: 10, // Not used for delay calculation
+        base_delay: base,
+        max_delay: max,
+        jitter,
+    };
+    crate::retry::calculate_delay(&config, attempt)
 }
 
 #[cfg(test)]
@@ -1240,6 +1317,11 @@ mod tests {
             force: false,
             lock_timeout: Duration::from_secs(3600),
             parallel: crate::types::ParallelConfig::default(),
+            webhook: crate::webhook::WebhookConfig::default(),
+            retry_strategy: crate::retry::RetryStrategyType::Exponential,
+            retry_jitter: 0.0,
+            retry_per_error: crate::retry::PerErrorConfig::default(),
+            encryption: crate::encryption::EncryptionConfig::default(),
         }
     }
 
@@ -1308,8 +1390,8 @@ mod tests {
     fn backoff_delay_is_bounded_with_jitter() {
         let base = Duration::from_millis(100);
         let max = Duration::from_millis(500);
-        let d1 = backoff_delay(base, max, 1);
-        let d20 = backoff_delay(base, max, 20);
+        let d1 = backoff_delay(base, max, 1, crate::retry::RetryStrategyType::Exponential, 0.5);
+        let d20 = backoff_delay(base, max, 20, crate::retry::RetryStrategyType::Exponential, 0.5);
 
         assert!(d1 >= Duration::from_millis(50));
         assert!(d1 <= Duration::from_millis(150));
