@@ -1496,7 +1496,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "flaky test due to random jitter - verify manually if retry logic is correct"]
     fn backoff_delay_is_bounded_with_jitter() {
         let base = Duration::from_millis(100);
         let max = Duration::from_millis(500);

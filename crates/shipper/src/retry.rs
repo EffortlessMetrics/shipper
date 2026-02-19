@@ -160,8 +160,8 @@ fn apply_jitter(delay: Duration, jitter: f64) -> Duration {
     // Generate a random factor between (1 - jitter) and (1 + jitter)
     let jitter_range = 2.0 * jitter;
     let random_factor = 1.0 - jitter + (rand::random::<f64>() * jitter_range);
-    let micros = (delay.as_millis() as f64 * random_factor).round() as u64;
-    Duration::from_micros(micros)
+    let millis = (delay.as_millis() as f64 * random_factor).round() as u64;
+    Duration::from_millis(millis)
 }
 
 /// Get the retry configuration for a specific error class.

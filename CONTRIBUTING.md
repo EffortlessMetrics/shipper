@@ -39,7 +39,7 @@ We follow the [Rust Code of Conduct](https://www.rust-lang.org/policies/code-of-
 
 ### Prerequisites
 
-- **Rust**: 1.70 or later (check with `rustc --version`)
+- **Rust**: 1.92 or later (check with `rustc --version`)
 - **Git**: For version control
 - **cargo-nextest** (optional): For better test output
 

@@ -2148,6 +2148,7 @@ dependencies = [
  "chrono",
  "gethostname",
  "hex",
+ "hmac",
  "humantime",
  "insta",
  "pbkdf2",

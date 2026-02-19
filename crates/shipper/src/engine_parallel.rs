@@ -12,9 +12,10 @@ use crate::events;
 use crate::registry::RegistryClient;
 use crate::state;
 use crate::types::{
-    self, AttemptEvidence, ErrorClass, EventType, ExecutionState, PackageReceipt, PackageState,
-    PlannedPackage, PublishEvent, ReadinessEvidence, RuntimeOptions,
+    self, AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, PackageReceipt,
+    PackageState, PlannedPackage, PublishEvent, ReadinessEvidence, RuntimeOptions,
 };
+use crate::webhook::{self, WebhookEvent};
 
 use crate::plan::PlannedWorkspace;
 
@@ -275,7 +276,7 @@ fn publish_package(
                 match class {
                     ErrorClass::Permanent => {
                         let failed = PackageState::Failed {
-                            class,
+                            class: class.clone(),
                             message: msg.clone(),
                         };
                         {
@@ -288,6 +289,18 @@ fn publish_package(
                             let _ = log.write_to_file(events_path);
                             log.clear();
                         }
+
+                        // Send webhook notification: package failed
+                        webhook::maybe_send_event(
+                            &opts.webhook,
+                            WebhookEvent::PublishFailed {
+                                plan_id: ws.plan.plan_id.clone(),
+                                package_name: p.name.clone(),
+                                package_version: p.version.clone(),
+                                error_class: format!("{:?}", class),
+                                message: msg.clone(),
+                            },
+                        );
 
                         return PackagePublishResult {
                             result: Err(anyhow::anyhow!(
@@ -359,6 +372,17 @@ fn publish_package(
                         log.clear();
                     }
 
+                    // Send webhook notification: package succeeded
+                    webhook::maybe_send_event(
+                        &opts.webhook,
+                        WebhookEvent::PublishSucceeded {
+                            plan_id: ws.plan.plan_id.clone(),
+                            package_name: p.name.clone(),
+                            package_version: p.version.clone(),
+                            duration_ms: start_instant.elapsed().as_millis() as u64,
+                        },
+                    );
+
                     break;
                 } else {
                     last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
@@ -401,6 +425,17 @@ fn publish_package(
                     update_state_locked(&mut state, &key, PackageState::Published);
                     let _ = state::save_state(state_dir, &state);
                 }
+
+                // Send webhook notification: package succeeded
+                webhook::maybe_send_event(
+                    &opts.webhook,
+                    WebhookEvent::PublishSucceeded {
+                        plan_id: ws.plan.plan_id.clone(),
+                        package_name: p.name.clone(),
+                        package_version: p.version.clone(),
+                        duration_ms: start_instant.elapsed().as_millis() as u64,
+                    },
+                );
             } else {
                 last_err = Some((
                     ErrorClass::Ambiguous,
@@ -421,6 +456,17 @@ fn publish_package(
                 update_state_locked(&mut state, &key, PackageState::Published);
                 let _ = state::save_state(state_dir, &state);
             }
+
+            // Send webhook notification: package succeeded
+            webhook::maybe_send_event(
+                &opts.webhook,
+                WebhookEvent::PublishSucceeded {
+                    plan_id: ws.plan.plan_id.clone(),
+                    package_name: p.name.clone(),
+                    package_version: p.version.clone(),
+                    duration_ms: duration_ms as u64,
+                },
+            );
 
             return PackagePublishResult {
                 result: Ok(PackageReceipt {
@@ -443,6 +489,7 @@ fn publish_package(
                 }),
             };
         } else {
+            let error_class_str = format!("{:?}", class);
             let failed = PackageState::Failed {
                 class,
                 message: msg.clone(),
@@ -468,11 +515,34 @@ fn publish_package(
                 log.clear();
             }
 
+            // Send webhook notification: package failed
+            webhook::maybe_send_event(
+                &opts.webhook,
+                WebhookEvent::PublishFailed {
+                    plan_id: ws.plan.plan_id.clone(),
+                    package_name: p.name.clone(),
+                    package_version: p.version.clone(),
+                    error_class: error_class_str,
+                    message: msg.clone(),
+                },
+            );
+
             return PackagePublishResult {
                 result: Err(anyhow::anyhow!("{}@{}: failed: {}", p.name, p.version, msg)),
             };
         }
     }
+
+    // Send webhook notification: package succeeded
+    webhook::maybe_send_event(
+        &opts.webhook,
+        WebhookEvent::PublishSucceeded {
+            plan_id: ws.plan.plan_id.clone(),
+            package_name: p.name.clone(),
+            package_version: p.version.clone(),
+            duration_ms: duration_ms as u64,
+        },
+    );
 
     PackagePublishResult {
         result: Ok(PackageReceipt {
@@ -603,6 +673,16 @@ pub fn run_publish_parallel(
         ws.plan.packages.len()
     ));
 
+    // Send webhook notification: publish started
+    webhook::maybe_send_event(
+        &opts.webhook,
+        WebhookEvent::PublishStarted {
+            plan_id: ws.plan.plan_id.clone(),
+            package_count: ws.plan.packages.len(),
+            registry: ws.plan.registry.name.clone(),
+        },
+    );
+
     // Initialize event log
     let events_path = events::events_path(state_dir);
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -668,6 +748,51 @@ pub fn run_publish_parallel(
     // Copy updated state back
     let updated_st = st_arc.lock().unwrap();
     *st = updated_st.clone();
+
+    // Calculate publish completion statistics
+    let total_packages = all_receipts.len();
+    let success_count = all_receipts
+        .iter()
+        .filter(|r| matches!(r.state, PackageState::Published))
+        .count();
+    let failure_count = all_receipts
+        .iter()
+        .filter(|r| matches!(r.state, PackageState::Failed { .. }))
+        .count();
+    let skipped_count = all_receipts
+        .iter()
+        .filter(|r| matches!(r.state, PackageState::Skipped { .. }))
+        .count();
+
+    let exec_result = if all_receipts.iter().all(|r| {
+        matches!(
+            r.state,
+            PackageState::Published | PackageState::Uploaded | PackageState::Skipped { .. }
+        )
+    }) {
+        ExecutionResult::Success
+    } else if success_count == 0 {
+        ExecutionResult::CompleteFailure
+    } else {
+        ExecutionResult::PartialFailure
+    };
+
+    // Send webhook notification: all complete
+    webhook::maybe_send_event(
+        &opts.webhook,
+        WebhookEvent::PublishCompleted {
+            plan_id: ws.plan.plan_id.clone(),
+            total_packages,
+            success_count,
+            failure_count,
+            skipped_count,
+            result: match exec_result {
+                ExecutionResult::Success => "success".to_string(),
+                ExecutionResult::PartialFailure => "partial_failure".to_string(),
+                ExecutionResult::CompleteFailure => "complete_failure".to_string(),
+            },
+        },
+    );
 
     Ok(all_receipts)
 }
@@ -1292,5 +1417,454 @@ mod tests {
         let progress = st.packages.get("demo@0.1.0").expect("pkg");
         assert!(matches!(progress.state, PackageState::Published));
         assert!(st.updated_at >= before);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Additional tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn test_run_publish_parallel_single_package() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // Registry returns 200 for version_exists (already published)
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(200, "{}".to_string())],
+            )]),
+            1,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+        let mut st = init_state_for_package(&ws.plan.plan_id, &ws.plan.registry, "demo", "0.1.0");
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts =
+                    run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                        .expect("parallel publish");
+
+                assert_eq!(receipts.len(), 1);
+                assert!(matches!(receipts[0].state, PackageState::Skipped { .. }));
+                assert_eq!(receipts[0].name, "demo");
+                assert_eq!(receipts[0].version, "0.1.0");
+                assert_eq!(receipts[0].attempts, 0);
+            },
+        );
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_run_publish_parallel_multiple_levels() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // Both packages already published
+        let server = spawn_registry_server(
+            BTreeMap::from([
+                (
+                    "/api/v1/crates/base/1.0.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/dependent/2.0.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+            ]),
+            2,
+        );
+
+        // "dependent" depends on "base" so they end up in different levels
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-multi-level".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: vec![
+                    PlannedPackage {
+                        name: "base".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: td.path().join("base").join("Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "dependent".to_string(),
+                        version: "2.0.0".to_string(),
+                        manifest_path: td.path().join("dependent").join("Cargo.toml"),
+                    },
+                ],
+                dependencies: BTreeMap::from([("dependent".to_string(), vec!["base".to_string()])]),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+
+        let mut packages = BTreeMap::new();
+        for p in &ws.plan.packages {
+            packages.insert(
+                engine::pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
+        };
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts =
+                    run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                        .expect("parallel publish");
+
+                assert_eq!(receipts.len(), 2);
+                for r in &receipts {
+                    assert!(
+                        matches!(r.state, PackageState::Skipped { .. }),
+                        "expected Skipped for {}, got {:?}",
+                        r.name,
+                        r.state
+                    );
+                }
+
+                // Verify reporter saw level info messages
+                let level_msgs: Vec<&String> = reporter
+                    .infos
+                    .iter()
+                    .filter(|m| m.contains("Level"))
+                    .collect();
+                assert!(
+                    level_msgs.len() >= 2,
+                    "expected at least 2 level messages, got: {:?}",
+                    level_msgs
+                );
+            },
+        );
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_publish_package_handles_uploaded_resume() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // version_exists returns 404 (initial check), then 200 (readiness verification)
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(404, "{}".to_string()), (200, "{}".to_string())],
+            )]),
+            2,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+
+        // Set the initial state to Uploaded (cargo publish succeeded previously)
+        let key = engine::pkg_key("demo", "0.1.0");
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            key.clone(),
+            PackageProgress {
+                name: "demo".to_string(),
+                version: "0.1.0".to_string(),
+                attempts: 1,
+                state: PackageState::Uploaded,
+                last_updated_at: Utc::now(),
+            },
+        );
+        let st = Arc::new(Mutex::new(ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
+        }));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+
+                let receipt = result.result.expect("should succeed");
+                assert!(
+                    matches!(receipt.state, PackageState::Published),
+                    "expected Published, got {:?}",
+                    receipt.state
+                );
+
+                // State should be Published
+                let state = st.lock().unwrap();
+                let progress = state.packages.get(&key).expect("pkg");
+                assert!(matches!(progress.state, PackageState::Published));
+
+                // Evidence should have no cargo attempts (skipped cargo publish)
+                assert!(
+                    receipt.evidence.attempts.is_empty(),
+                    "expected no cargo attempt evidence for resumed Uploaded package"
+                );
+            },
+        );
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_publish_package_records_attempt_evidence() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // version_exists returns 404 (not published), then readiness returns 200
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(404, "{}".to_string()), (200, "{}".to_string())],
+            )]),
+            2,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+        let st = Arc::new(Mutex::new(init_state_for_package(
+            &ws.plan.plan_id,
+            &ws.plan.registry,
+            "demo",
+            "0.1.0",
+        )));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+                ),
+                ("SHIPPER_CARGO_EXIT", Some("0")),
+                ("SHIPPER_CARGO_STDOUT", Some("Uploading demo v0.1.0")),
+            ],
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+
+                let receipt = result.result.expect("should succeed");
+                assert!(matches!(receipt.state, PackageState::Published));
+
+                // Evidence should contain exactly one attempt
+                assert_eq!(
+                    receipt.evidence.attempts.len(),
+                    1,
+                    "expected 1 attempt evidence entry"
+                );
+
+                let attempt = &receipt.evidence.attempts[0];
+                assert_eq!(attempt.attempt_number, 1);
+                assert!(
+                    attempt.command.contains("cargo publish"),
+                    "command should contain 'cargo publish', got: {}",
+                    attempt.command
+                );
+                assert_eq!(attempt.exit_code, 0);
+            },
+        );
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_run_publish_level_respects_max_concurrent() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // Four packages, all already published
+        let server = spawn_registry_server(
+            BTreeMap::from([
+                (
+                    "/api/v1/crates/pkg-a/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/pkg-b/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/pkg-c/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/pkg-d/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+            ]),
+            4,
+        );
+
+        let pkg_names = ["pkg-a", "pkg-b", "pkg-c", "pkg-d"];
+        let packages: Vec<PlannedPackage> = pkg_names
+            .iter()
+            .map(|name| PlannedPackage {
+                name: name.to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join(name).join("Cargo.toml"),
+            })
+            .collect();
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-concurrent".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: packages.clone(),
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        // Limit concurrency to 2 (with 4 packages, should chunk into 2 batches)
+        opts.parallel.max_concurrent = 2;
+
+        let mut state_packages = BTreeMap::new();
+        for p in &packages {
+            state_packages.insert(
+                engine::pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let st = Arc::new(Mutex::new(ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: state_packages,
+        }));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        let level = PublishLevel { level: 0, packages };
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts = run_publish_level(
+                    &level,
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                )
+                .expect("level publish");
+
+                assert_eq!(receipts.len(), 4, "all 4 packages should have receipts");
+                for r in &receipts {
+                    assert!(
+                        matches!(r.state, PackageState::Skipped { .. }),
+                        "expected Skipped for {}, got {:?}",
+                        r.name,
+                        r.state
+                    );
+                }
+
+                // Verify all package names are present
+                let mut names: Vec<String> = receipts.iter().map(|r| r.name.clone()).collect();
+                names.sort();
+                assert_eq!(
+                    names,
+                    vec!["pkg-a", "pkg-b", "pkg-c", "pkg-d"],
+                    "all package names should be in receipts"
+                );
+            },
+        );
+        server.join();
     }
 }

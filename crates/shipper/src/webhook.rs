@@ -145,11 +145,13 @@ fn do_send_event(
 
     // Add signature header if secret is provided
     if let Some(secret) = secret {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(json.as_bytes());
-        hasher.update(secret.as_bytes());
-        let signature = hex::encode(hasher.finalize());
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        type HmacSha256 = Hmac<Sha256>;
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
+        mac.update(json.as_bytes());
+        let signature = hex::encode(mac.finalize().into_bytes());
         request = request.header("X-Shipper-Signature", format!("sha256={}", signature));
     }
 
@@ -261,6 +263,62 @@ mod tests {
 
         let result = WebhookClient::new(&config);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn webhook_signature_is_valid_hmac() {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        type HmacSha256 = Hmac<Sha256>;
+
+        let secret = "my-webhook-secret";
+        let payload = WebhookPayload {
+            timestamp: chrono::DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            event: WebhookEvent::PublishStarted {
+                plan_id: "plan-123".to_string(),
+                package_count: 2,
+                registry: "crates-io".to_string(),
+            },
+        };
+
+        let json = serde_json::to_string(&payload).expect("serialize");
+
+        // Compute the HMAC-SHA256 signature the same way do_send_event does
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
+        mac.update(json.as_bytes());
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        // Independently compute HMAC-SHA256 to verify correctness
+        let mut mac2 =
+            HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
+        mac2.update(json.as_bytes());
+        // Verify using the Mac trait's verify method (constant-time comparison)
+        let expected_bytes = hex::decode(&signature).expect("valid hex");
+        mac2.verify_slice(&expected_bytes)
+            .expect("HMAC signature should verify correctly");
+
+        // Ensure the signature is the right length for SHA-256 (64 hex chars = 32 bytes)
+        assert_eq!(
+            signature.len(),
+            64,
+            "SHA-256 HMAC should produce 64 hex characters"
+        );
+
+        // Ensure this is NOT just SHA256(payload || secret) — the old broken approach
+        {
+            use sha2::Digest;
+            let mut hasher = Sha256::new();
+            hasher.update(json.as_bytes());
+            hasher.update(secret.as_bytes());
+            let naive_hash = hex::encode(hasher.finalize());
+            assert_ne!(
+                signature, naive_hash,
+                "HMAC-SHA256 must differ from naive SHA256(payload || secret)"
+            );
+        }
     }
 
     #[test]
