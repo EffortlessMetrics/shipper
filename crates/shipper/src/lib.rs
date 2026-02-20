@@ -145,3 +145,11 @@ pub mod webhook;
 
 /// State file encryption module.
 pub mod encryption;
+
+/// Property-based tests for shipper invariants.
+#[cfg(test)]
+mod property_tests;
+
+/// Stress tests for concurrent operations.
+#[cfg(test)]
+mod stress_tests;

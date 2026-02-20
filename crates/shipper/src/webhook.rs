@@ -214,6 +214,41 @@ pub fn maybe_send_event(config: &WebhookConfig, event: WebhookEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
+    use std::time::Duration;
+
+    /// Spawn a minimal HTTP server that counts requests
+    fn spawn_counter_server() -> (String, Arc<AtomicUsize>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+
+        let handle = thread::spawn(move || {
+            for stream in listener.incoming().take(10) {
+                let mut stream = stream.expect("stream");
+                let counter = counter_clone.clone();
+
+                // Read request
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+
+                // Count request
+                counter.fetch_add(1, Ordering::SeqCst);
+
+                // Send response
+                let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        (format!("http://{}", addr), counter, handle)
+    }
 
     #[test]
     fn webhook_config_defaults_are_disabled() {
@@ -369,5 +404,140 @@ mod tests {
                     | WebhookEvent::PublishCompleted { .. }
             ));
         }
+    }
+
+    #[test]
+    fn webhook_client_send_event_non_blocking() {
+        let (url, counter, _handle) = spawn_counter_server();
+
+        let config = WebhookConfig {
+            enabled: true,
+            url: Some(url),
+            secret: None,
+            timeout: Duration::from_secs(5),
+        };
+
+        let client = WebhookClient::new(&config).expect("client");
+
+        client.send_event(WebhookEvent::PublishStarted {
+            plan_id: "test".to_string(),
+            package_count: 1,
+            registry: "crates-io".to_string(),
+        });
+
+        // Wait for async delivery
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Should have received the request
+        assert!(counter.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn webhook_client_send_event_with_secret() {
+        let (url, counter, _handle) = spawn_counter_server();
+
+        let config = WebhookConfig {
+            enabled: true,
+            url: Some(url),
+            secret: Some("test-secret".to_string()),
+            timeout: Duration::from_secs(5),
+        };
+
+        let client = WebhookClient::new(&config).expect("client");
+
+        client.send_event(WebhookEvent::PublishSucceeded {
+            plan_id: "test".to_string(),
+            package_name: "test-pkg".to_string(),
+            package_version: "1.0.0".to_string(),
+            duration_ms: 100,
+        });
+
+        // Wait for async delivery
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Should have received the request
+        assert!(counter.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn maybe_send_event_skips_when_disabled() {
+        let config = WebhookConfig::default();
+
+        // Should not panic or send
+        maybe_send_event(
+            &config,
+            WebhookEvent::PublishStarted {
+                plan_id: "test".to_string(),
+                package_count: 1,
+                registry: "crates-io".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn maybe_send_event_skips_when_no_url() {
+        let config = WebhookConfig {
+            enabled: true,
+            url: None,
+            ..Default::default()
+        };
+
+        // Should not panic or send
+        maybe_send_event(
+            &config,
+            WebhookEvent::PublishStarted {
+                plan_id: "test".to_string(),
+                package_count: 1,
+                registry: "crates-io".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn maybe_send_event_sends_when_configured() {
+        let (url, counter, _handle) = spawn_counter_server();
+
+        let config = WebhookConfig {
+            enabled: true,
+            url: Some(url),
+            secret: None,
+            timeout: Duration::from_secs(5),
+        };
+
+        maybe_send_event(
+            &config,
+            WebhookEvent::PublishCompleted {
+                plan_id: "test".to_string(),
+                total_packages: 1,
+                success_count: 1,
+                failure_count: 0,
+                skipped_count: 0,
+                result: "success".to_string(),
+            },
+        );
+
+        // Wait for async delivery
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Should have received the request
+        assert!(counter.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn webhook_config_serialization() {
+        let config = WebhookConfig {
+            enabled: true,
+            url: Some("https://example.com/webhook".to_string()),
+            secret: Some("secret123".to_string()),
+            timeout: Duration::from_secs(60),
+        };
+
+        let json = serde_json::to_string(&config).expect("serialize");
+        let parsed: WebhookConfig = serde_json::from_str(&json).expect("deserialize");
+
+        assert!(parsed.enabled);
+        assert_eq!(parsed.url, Some("https://example.com/webhook".to_string()));
+        assert_eq!(parsed.secret, Some("secret123".to_string()));
+        assert_eq!(parsed.timeout, Duration::from_secs(60));
     }
 }

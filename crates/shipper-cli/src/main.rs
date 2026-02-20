@@ -223,6 +223,12 @@ enum CiCommands {
     /// Print GitLab CI workflow snippet.
     #[command(name = "gitlab")]
     GitLab,
+    /// Print CircleCI workflow snippet.
+    #[command(name = "circleci")]
+    CircleCI,
+    /// Print Azure DevOps pipeline snippet.
+    #[command(name = "azure-devops")]
+    AzureDevOps,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -1181,6 +1187,86 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
             println!("      - {}/", abs_state.display());
             println!("    expire_in: 1 day");
             println!("    when: always");
+        }
+        CiCommands::CircleCI => {
+            println!("# CircleCI config snippet for Shipper");
+            println!("# Add this to your .circleci/config.yml");
+            println!();
+            println!("version: 2.1");
+            println!();
+            println!("jobs:");
+            println!("  publish:");
+            println!("    docker:");
+            println!("      - image: cimg/rust:latest");
+            println!("    steps:");
+            println!("      - checkout");
+            println!("      - restore_cache:");
+            println!("          keys:");
+            println!("            - shipper-state-{{{{ .Branch }}}}-{{{{ .Revision }}}}");
+            println!("            - shipper-state-{{{{ .Branch }}}}");
+            println!("            - shipper-state-");
+            println!("      - run:");
+            println!("          name: Install Shipper");
+            println!("          command: cargo install shipper-cli --locked");
+            println!("      - run:");
+            println!("          name: Publish Crates");
+            println!("          command: shipper publish");
+            println!("          environment:");
+            println!("            CARGO_REGISTRY_TOKEN: ${{{{ CARGO_REGISTRY_TOKEN }}}}");
+            println!("      - save_cache:");
+            println!("          key: shipper-state-{{{{ .Branch }}}}-{{{{ .Revision }}}}");
+            println!("          paths:");
+            println!("            - {}", abs_state.display());
+            println!("      - store_artifacts:");
+            println!("          path: {}", abs_state.display());
+            println!("          destination: shipper-state");
+            println!();
+            println!("workflows:");
+            println!("  version: 2");
+            println!("  publish:");
+            println!("    jobs:");
+            println!("      - publish:");
+            println!("          filters:");
+            println!("            branches:");
+            println!("              only: main");
+            println!("          context: cargo-registry");
+        }
+        CiCommands::AzureDevOps => {
+            println!("# Azure DevOps pipeline snippet for Shipper");
+            println!("# Add this to your azure-pipelines.yml");
+            println!();
+            println!("trigger:");
+            println!("  - main");
+            println!();
+            println!("pool:");
+            println!("  vmImage: 'ubuntu-latest'");
+            println!();
+            println!("variables:");
+            println!("  CARGO_HOME: $(Pipeline.Workspace)/.cargo");
+            println!();
+            println!("steps:");
+            println!("  - task: Cache@2");
+            println!("    displayName: 'Cache Cargo and Shipper State'");
+            println!("    inputs:");
+            println!("      key: 'shipper | \"$(Agent.OS)\" | \"$(Build.SourceVersion)\"'");
+            println!("      restoreKeys: |");
+            println!("        shipper | \"$(Agent.OS)\"");
+            println!("        shipper");
+            println!("      path: $(CARGO_HOME)");
+            println!("      cacheHitVar: CACHE_RESTORED");
+            println!();
+            println!("  - script: cargo install shipper-cli --locked");
+            println!("    displayName: 'Install Shipper'");
+            println!();
+            println!("  - script: shipper publish");
+            println!("    displayName: 'Publish Crates'");
+            println!("    env:");
+            println!("      CARGO_REGISTRY_TOKEN: $(CARGO_REGISTRY_TOKEN)");
+            println!();
+            println!("  - publish: {}", abs_state.display());
+            println!("    displayName: 'Publish Shipper State Artifact'");
+            println!("    condition: succeededOrFailed()");
+            println!("    artifact: 'shipper-state'");
         }
     }
 
