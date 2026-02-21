@@ -1,0 +1,23 @@
+[package]
+name = "shipper-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "State store abstraction for shipper"
+repository = "https://github.com/EffortlessMetrics/shipper"
+documentation = "https://docs.rs/shipper-store"
+keywords = ["store", "state", "persistence"]
+categories = ["development-tools"]
+
+[dependencies]
+anyhow = "1.0"
+serde.workspace = true
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

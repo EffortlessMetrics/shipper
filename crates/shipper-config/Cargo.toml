@@ -1,0 +1,23 @@
+[package]
+name = "shipper-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Configuration file handling for shipper"
+repository = "https://github.com/EffortlessMetrics/shipper"
+documentation = "https://docs.rs/shipper-config"
+keywords = ["config", "toml", "publish"]
+categories = ["development-tools"]
+
+[dependencies]
+serde.workspace = true
+anyhow = "1.0"
+toml = "0.9"
+shipper-types = { path = "../shipper-types" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

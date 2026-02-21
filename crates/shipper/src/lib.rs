@@ -117,7 +117,8 @@ pub mod events;
 pub mod git;
 
 /// Distributed lock to prevent concurrent publishes.
-pub mod lock;
+/// Re-exported from shipper-lock microcrate.
+pub use shipper_lock as lock;
 
 /// Workspace analysis and topological plan generation.
 pub mod plan;
@@ -138,13 +139,15 @@ pub mod storage;
 pub mod types;
 
 /// Configurable retry strategies with backoff and jitter.
-pub mod retry;
+/// Re-exported from shipper-retry microcrate.
+pub use shipper_retry as retry;
 
 /// Webhook notifications for publish events.
 pub mod webhook;
 
 /// State file encryption module.
-pub mod encryption;
+/// Re-exported from shipper-encrypt microcrate.
+pub use shipper_encrypt as encryption;
 
 /// Property-based tests for shipper invariants.
 #[cfg(test)]

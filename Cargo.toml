@@ -2,6 +2,21 @@
 members = [
   "crates/shipper",
   "crates/shipper-cli",
+  "crates/shipper-retry",
+  "crates/shipper-lock",
+  "crates/shipper-encrypt",
+  "crates/shipper-types",
+  "crates/shipper-events",
+  "crates/shipper-auth",
+  "crates/shipper-state",
+  "crates/shipper-config",
+  "crates/shipper-git",
+  "crates/shipper-registry",
+  "crates/shipper-cargo",
+  "crates/shipper-environment",
+  "crates/shipper-process",
+  "crates/shipper-webhook",
+  "crates/shipper-store",
 ]
 resolver = "3"
 
@@ -13,6 +28,10 @@ rust-version = "1.92"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+proptest = "1.10.0"
 
 [profile.release]
 strip = true
