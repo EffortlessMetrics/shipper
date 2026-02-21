@@ -23,6 +23,20 @@ Shipper employs a multi-layered testing approach:
 # Run all unit and integration tests
 cargo test --workspace
 
+# Run with the in-crate modular backends via feature flags
+# (auth, git, events, lock, encryption, environment, storage, cargo)
+cargo test -p shipper --features micro-all
+
+# Run individual backend toggles
+cargo test -p shipper --features micro-auth
+cargo test -p shipper --features micro-git
+cargo test -p shipper --features micro-events
+cargo test -p shipper --features micro-lock
+cargo test -p shipper --features micro-encrypt
+cargo test -p shipper --features micro-environment
+cargo test -p shipper --features micro-storage
+cargo test -p shipper --features micro-cargo
+
 # Run with nextest (faster, better output)
 cargo nextest run --workspace
 
@@ -108,6 +122,25 @@ Feature: Resumable publishing
 ```
 
 Located in `features/*.feature` and `tests/bdd_publish.rs`.
+
+Micro backend compatibility can be validated from the command line matrix as well:
+
+```bash
+# Default behavior (monolithic backends)
+cargo test -p shipper-cli --test bdd_publish
+
+# Micro backend behavior (same BDD expectations with feature-flagged microcrates)
+cargo test -p shipper-cli --test bdd_publish --features micro-all
+cargo test -p shipper-cli --test bdd_publish --features micro-auth
+cargo test -p shipper-cli --test bdd_publish --features micro-git
+cargo test -p shipper-cli --test bdd_publish --features micro-events
+cargo test -p shipper-cli --test bdd_publish --features micro-lock
+cargo test -p shipper-cli --test bdd_publish --features micro-encrypt
+cargo test -p shipper-cli --test bdd_publish --features micro-environment
+cargo test -p shipper-cli --test bdd_publish --features micro-storage
+cargo test -p shipper-cli --test bdd_publish --features micro-cargo
+cargo test -p shipper-cli --test bdd_publish --features micro-all
+``` 
 
 ### E2E Tests
 

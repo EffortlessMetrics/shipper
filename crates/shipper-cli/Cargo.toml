@@ -30,6 +30,18 @@ indicatif = "0.17"
 [lints]
 workspace = true
 
+[features]
+default = []
+micro-auth = ["shipper/micro-auth"]
+micro-git = ["shipper/micro-git"]
+micro-events = ["shipper/micro-events"]
+micro-lock = ["shipper/micro-lock"]
+micro-encrypt = ["shipper/micro-encrypt"]
+micro-environment = ["shipper/micro-environment"]
+micro-storage = ["shipper/micro-storage"]
+micro-cargo = ["shipper/micro-cargo"]
+micro-all = ["shipper/micro-all"]
+
 [dev-dependencies]
 assert_cmd = "2"
 insta = "1"

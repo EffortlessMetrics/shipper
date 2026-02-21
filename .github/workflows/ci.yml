@@ -201,6 +201,10 @@ jobs:
     name: BDD Tests
     runs-on: ubuntu-latest
     needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        feature-set: ["", "micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-all"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -216,7 +220,12 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Run BDD tests
-        run: cargo test -p shipper-cli --test bdd_publish -- --nocapture
+        run: |
+          if [ "${{ matrix.feature-set }}" = "" ]; then
+            cargo test -p shipper-cli --test bdd_publish -- --nocapture
+          else
+            cargo test -p shipper-cli --test bdd_publish --features "${{ matrix.feature-set }}" -- --nocapture
+          fi
 
   fuzz-smoke:
     name: Fuzz Smoke (PR)

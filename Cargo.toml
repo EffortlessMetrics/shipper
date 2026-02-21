@@ -17,6 +17,7 @@ members = [
   "crates/shipper-process",
   "crates/shipper-webhook",
   "crates/shipper-store",
+  "crates/shipper-storage",
 ]
 resolver = "3"
 

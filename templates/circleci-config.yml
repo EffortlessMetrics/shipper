@@ -41,6 +41,17 @@ jobs:
           command: cargo test --workspace
           no_output_timeout: 30m
 
+      - run:
+          name: Run BDD compatibility matrix
+          command: |
+            for feature_set in "" "micro-auth" "micro-git" "micro-events" "micro-lock" "micro-encrypt" "micro-environment" "micro-storage" "micro-cargo" "micro-all"; do
+              if [ -z "$feature_set" ]; then
+                cargo test -p shipper-cli --test bdd_publish -- --nocapture
+              else
+                cargo test -p shipper-cli --test bdd_publish --features "$feature_set" -- --nocapture
+              fi
+            done
+
       - save_cache:
           key: cargo-registry-{{ arch }}-{{ checksum "Cargo.lock" }}
           paths:

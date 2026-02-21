@@ -93,9 +93,17 @@
 
 /// Token resolution: `CARGO_REGISTRY_TOKEN` → `CARGO_REGISTRIES_<NAME>_TOKEN`
 /// → `$CARGO_HOME/credentials.toml`.
+#[cfg(feature = "micro-auth")]
+#[path = "auth_micro.rs"]
+pub mod auth;
+#[cfg(not(feature = "micro-auth"))]
 pub mod auth;
 
-/// Workspace metadata via `cargo_metadata`.
+/// Workspace metadata and publish execution via cargo.
+#[cfg(feature = "micro-cargo")]
+#[path = "cargo_micro.rs"]
+pub mod cargo;
+#[cfg(not(feature = "micro-cargo"))]
 pub mod cargo;
 
 /// Configuration file (`.shipper.toml`) loading and merging.
@@ -108,17 +116,32 @@ pub mod engine;
 pub mod engine_parallel;
 
 /// Environment fingerprinting (OS, arch, tool versions).
+#[cfg(feature = "micro-environment")]
+#[path = "environment_micro.rs"]
+pub mod environment;
+#[cfg(not(feature = "micro-environment"))]
 pub mod environment;
 
 /// Append-only JSONL event log.
+#[cfg(feature = "micro-events")]
+#[path = "events_micro.rs"]
+pub mod events;
+#[cfg(not(feature = "micro-events"))]
 pub mod events;
 
 /// Git operations (cleanliness check, context capture).
+#[cfg(feature = "micro-git")]
+#[path = "git_micro.rs"]
+pub mod git;
+#[cfg(not(feature = "micro-git"))]
 pub mod git;
 
 /// Distributed lock to prevent concurrent publishes.
-/// Re-exported from shipper-lock microcrate.
-pub use shipper_lock as lock;
+#[cfg(feature = "micro-lock")]
+#[path = "lock_micro.rs"]
+pub mod lock;
+#[cfg(not(feature = "micro-lock"))]
+pub mod lock;
 
 /// Workspace analysis and topological plan generation.
 pub mod plan;
@@ -133,6 +156,10 @@ pub mod state;
 pub mod store;
 
 /// Storage backends with pluggable `StorageBackend` trait.
+#[cfg(feature = "micro-storage")]
+#[path = "storage_micro.rs"]
+pub mod storage;
+#[cfg(not(feature = "micro-storage"))]
 pub mod storage;
 
 /// Domain types: specs, plans, options, receipts, errors.
@@ -146,8 +173,11 @@ pub use shipper_retry as retry;
 pub mod webhook;
 
 /// State file encryption module.
-/// Re-exported from shipper-encrypt microcrate.
-pub use shipper_encrypt as encryption;
+#[cfg(feature = "micro-encrypt")]
+#[path = "encryption_micro.rs"]
+pub mod encryption;
+#[cfg(not(feature = "micro-encrypt"))]
+pub mod encryption;
 
 /// Property-based tests for shipper invariants.
 #[cfg(test)]

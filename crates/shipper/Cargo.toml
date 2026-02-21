@@ -15,8 +15,14 @@ categories = ["development-tools", "development-tools::build-utils"]
 [dependencies]
 # Workspace microcrates
 shipper-retry = { path = "../shipper-retry" }
-shipper-lock = { path = "../shipper-lock" }
-shipper-encrypt = { path = "../shipper-encrypt" }
+shipper-lock = { path = "../shipper-lock", optional = true }
+shipper-encrypt = { path = "../shipper-encrypt", optional = true }
+shipper-auth = { path = "../shipper-auth", optional = true }
+shipper-git = { path = "../shipper-git", optional = true }
+shipper-events = { path = "../shipper-events", optional = true }
+shipper-environment = { path = "../shipper-environment", optional = true }
+shipper-storage = { path = "../shipper-storage", optional = true }
+shipper-cargo = { path = "../shipper-cargo", optional = true }
 
 anyhow = "1.0.101"
 thiserror = "2.0.18"
@@ -37,6 +43,17 @@ base64 = "0.22"
 # HMAC for webhook signatures
 hmac = "0.12"
 sha2 = "0.10"
+
+[features]
+micro-auth = ["dep:shipper-auth"]
+micro-git = ["dep:shipper-git"]
+micro-events = ["dep:shipper-events"]
+micro-lock = ["dep:shipper-lock"]
+micro-encrypt = ["dep:shipper-encrypt"]
+micro-environment = ["dep:shipper-environment"]
+micro-storage = ["dep:shipper-storage"]
+micro-cargo = ["dep:shipper-cargo"]
+micro-all = ["micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo"]
 
 [lints]
 workspace = true

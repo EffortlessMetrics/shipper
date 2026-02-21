@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+#[cfg(feature = "micro-cargo")]
+use cargo_metadata::{DependencyKind, Metadata, PackageId};
+#[cfg(not(feature = "micro-cargo"))]
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, PackageId};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
@@ -226,7 +229,13 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     })
 }
 
-fn load_metadata(manifest_path: &PathBuf) -> Result<Metadata> {
+#[cfg(feature = "micro-cargo")]
+fn load_metadata(manifest_path: &Path) -> Result<Metadata> {
+    shipper_cargo::load_metadata(manifest_path)
+}
+
+#[cfg(not(feature = "micro-cargo"))]
+fn load_metadata(manifest_path: &Path) -> Result<Metadata> {
     let mut cmd = MetadataCommand::new();
     cmd.manifest_path(manifest_path);
     cmd.exec().context("failed to execute cargo metadata")
