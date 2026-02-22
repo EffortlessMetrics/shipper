@@ -272,20 +272,6 @@ pub struct Owner {
     pub avatar: Option<String>,
 }
 
-/// Response from the versions API
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct VersionsResponse {
-    versions: Vec<Version>,
-}
-
-/// Version information
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct Version {
-    num: String,
-}
-
 /// Response from the crate API
 #[derive(Debug, Deserialize)]
 struct CrateResponse {
@@ -389,6 +375,16 @@ mod tests {
 
         let json = serde_json::to_string(&owner).expect("serialize");
         assert!(json.contains("\"login\":\"testuser\""));
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct VersionsResponse {
+        versions: Vec<Version>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Version {
+        num: String,
     }
 
     #[test]

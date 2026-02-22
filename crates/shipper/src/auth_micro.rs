@@ -143,25 +143,24 @@ fn cargo_home_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".cargo"))
 }
 
-#[allow(dead_code)]
-fn normalize_registry_for_env(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use serial_test::serial;
     use tempfile::tempdir;
 
     use super::*;
+
+    fn normalize_registry_for_env(name: &str) -> String {
+        name.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
 
     #[test]
     fn normalize_registry_name_for_env() {
