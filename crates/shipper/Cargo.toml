@@ -43,7 +43,7 @@ chrono = { version = "0.4.43", features = ["serde"] }
 humantime = "2.3.0"
 toml = "0.9.8"
 hex = "0.4.3"
-gethostname = "0.5.0"
+gethostname = "1.1.0"
 tokio = { version = "1.42", features = ["rt", "time", "sync", "macros"] }
 base64 = "0.22"
 aes-gcm = "0.10"
