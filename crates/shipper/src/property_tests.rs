@@ -189,10 +189,10 @@ mod topo_invariant_tests {
             if let Some(deps) = dependencies.get(&pkg.name) {
                 let pkg_pos = positions[&pkg.name];
                 for dep in deps {
-                    if let Some(&dep_pos) = positions.get(dep) {
-                        if dep_pos >= pkg_pos {
-                            return false; // Dependency appears after dependent
-                        }
+                    if let Some(&dep_pos) = positions.get(dep)
+                        && dep_pos >= pkg_pos
+                    {
+                        return false; // Dependency appears after dependent
                     }
                 }
             }

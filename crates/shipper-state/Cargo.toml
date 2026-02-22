@@ -16,6 +16,8 @@ serde_json = "1.0"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 shipper-types = { path = "../shipper-types" }
+shipper-environment = { path = "../shipper-environment" }
+shipper-encrypt = { path = "../shipper-encrypt" }
 
 [dev-dependencies]
 tempfile = "3"

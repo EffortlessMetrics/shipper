@@ -56,13 +56,9 @@ impl GitContext {
 
     /// Get a short commit hash (first 7 characters)
     pub fn short_commit(&self) -> Option<&str> {
-        self.commit.as_ref().map(|c| {
-            if c.len() > 7 {
-                &c[..7]
-            } else {
-                c.as_str()
-            }
-        })
+        self.commit
+            .as_ref()
+            .map(|c| if c.len() > 7 { &c[..7] } else { c.as_str() })
     }
 }
 
@@ -127,7 +123,7 @@ pub fn get_branch(path: &Path) -> Result<Option<String>> {
     }
 
     let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    
+
     // If we're in detached HEAD state, return None
     if branch == "HEAD" {
         return Ok(None);
@@ -242,8 +238,8 @@ pub fn is_on_tag(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::process::Command;
+    use tempfile::tempdir;
 
     fn init_git_repo(dir: &Path) {
         Command::new("git")
@@ -315,7 +311,12 @@ mod tests {
         // After init, we might be on master or main
         let branch = get_branch(td.path()).expect("branch");
         // Could be "master", "main", or None depending on git version
-        assert!(branch.is_none() || branch.as_ref().map_or(false, |b| b == "master" || b == "main"));
+        assert!(
+            branch.is_none()
+                || branch
+                    .as_ref()
+                    .is_some_and(|b| b == "master" || b == "main")
+        );
     }
 
     #[test]

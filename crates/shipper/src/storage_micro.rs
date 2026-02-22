@@ -44,15 +44,21 @@ impl StorageBackend for FileStorage {
     }
 
     fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        self.inner.write(path, data).context("failed to write to storage")
+        self.inner
+            .write(path, data)
+            .context("failed to write to storage")
     }
 
     fn delete(&self, path: &str) -> Result<()> {
-        self.inner.delete(path).context("failed to delete from storage")
+        self.inner
+            .delete(path)
+            .context("failed to delete from storage")
     }
 
     fn exists(&self, path: &str) -> Result<bool> {
-        self.inner.exists(path).context("failed to check storage path")
+        self.inner
+            .exists(path)
+            .context("failed to check storage path")
     }
 
     fn list(&self, prefix: &str) -> Result<Vec<String>> {
@@ -124,15 +130,24 @@ mod tests {
 
     #[test]
     fn unknown_storage_type_from_env_returns_none() {
-        temp_env::with_vars([("SHIPPER_STORAGE_TYPE", Some("bogus")), ("SHIPPER_STORAGE_BUCKET", Some("bucket"))], || {
-            assert!(config_from_env().is_none());
-        });
+        temp_env::with_vars(
+            [
+                ("SHIPPER_STORAGE_TYPE", Some("bogus")),
+                ("SHIPPER_STORAGE_BUCKET", Some("bucket")),
+            ],
+            || {
+                assert!(config_from_env().is_none());
+            },
+        );
     }
 
     #[test]
     fn file_storage_exposes_base_path_compatibly() {
         let file_storage = FileStorage::new(PathBuf::from("/tmp/shipper-storage"));
-        assert_eq!(file_storage.base_path(), &PathBuf::from("/tmp/shipper-storage"));
+        assert_eq!(
+            file_storage.base_path(),
+            &PathBuf::from("/tmp/shipper-storage")
+        );
         assert_eq!(file_storage.path(), Path::new("/tmp/shipper-storage"));
     }
 }

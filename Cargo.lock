@@ -2245,6 +2245,7 @@ dependencies = [
 name = "shipper"
 version = "0.2.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "base64",
  "cargo_metadata",
@@ -2254,6 +2255,7 @@ dependencies = [
  "hmac",
  "humantime",
  "insta",
+ "pbkdf2",
  "proptest",
  "rand 0.10.0",
  "reqwest",
@@ -2264,13 +2266,20 @@ dependencies = [
  "sha2",
  "shipper-auth",
  "shipper-cargo",
+ "shipper-config",
  "shipper-encrypt",
  "shipper-environment",
  "shipper-events",
  "shipper-git",
  "shipper-lock",
+ "shipper-process",
+ "shipper-registry",
  "shipper-retry",
+ "shipper-state",
  "shipper-storage",
+ "shipper-store",
+ "shipper-types",
+ "shipper-webhook",
  "temp-env",
  "tempfile",
  "thiserror 2.0.18",
@@ -2333,7 +2342,12 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde",
+ "serde_with",
+ "shipper-encrypt",
+ "shipper-retry",
+ "shipper-storage",
  "shipper-types",
+ "shipper-webhook",
  "tempfile",
  "toml",
 ]
@@ -2359,6 +2373,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "shipper-types",
  "tempfile",
 ]
 
@@ -2400,6 +2415,7 @@ name = "shipper-process"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "humantime",
  "serde",
  "serde_json",
  "tempfile",
@@ -2435,6 +2451,8 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "shipper-encrypt",
+ "shipper-environment",
  "shipper-types",
  "tempfile",
 ]
@@ -2457,6 +2475,9 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "shipper-events",
+ "shipper-state",
+ "shipper-types",
  "tempfile",
 ]
 
@@ -2465,8 +2486,14 @@ name = "shipper-types"
 version = "0.2.0"
 dependencies = [
  "chrono",
+ "humantime",
+ "proptest",
  "serde",
  "serde_json",
+ "serde_with",
+ "shipper-encrypt",
+ "shipper-retry",
+ "shipper-webhook",
 ]
 
 [[package]]
@@ -2474,9 +2501,11 @@ name = "shipper-webhook"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "hmac",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 

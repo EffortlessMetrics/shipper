@@ -203,7 +203,10 @@ fn token_from_credentials_file(path: &Path, registry: &str) -> Result<String> {
         return Ok(token.to_string());
     }
 
-    Err(anyhow::anyhow!("token not found for registry: {}", registry))
+    Err(anyhow::anyhow!(
+        "token not found for registry: {}",
+        registry
+    ))
 }
 
 /// Parse credentials.toml and return all configured registries.
@@ -240,11 +243,7 @@ pub fn mask_token(token: &str) -> String {
     if token.len() <= 8 {
         return "*".repeat(token.len());
     }
-    format!(
-        "{}****{}",
-        &token[..4],
-        &token[token.len() - 4..]
-    )
+    format!("{}****{}", &token[..4], &token[token.len() - 4..])
 }
 
 #[cfg(test)]
@@ -282,12 +281,16 @@ mod tests {
 
     #[test]
     fn resolve_token_from_env_registry() {
-        temp_env::with_var("CARGO_REGISTRIES_MY_REGISTRY_TOKEN", Some("custom-token"), || {
-            let auth = resolve_token("my-registry", None);
-            assert!(auth.detected);
-            assert_eq!(auth.token, Some("custom-token".to_string()));
-            assert_eq!(auth.source, TokenSource::EnvRegistry);
-        });
+        temp_env::with_var(
+            "CARGO_REGISTRIES_MY_REGISTRY_TOKEN",
+            Some("custom-token"),
+            || {
+                let auth = resolve_token("my-registry", None);
+                assert!(auth.detected);
+                assert_eq!(auth.token, Some("custom-token".to_string()));
+                assert_eq!(auth.source, TokenSource::EnvRegistry);
+            },
+        );
     }
 
     #[test]
@@ -367,7 +370,10 @@ token = "custom-token"
     fn token_source_display() {
         assert_eq!(TokenSource::None.to_string(), "none");
         assert_eq!(TokenSource::EnvDefault.to_string(), "CARGO_REGISTRY_TOKEN");
-        assert_eq!(TokenSource::EnvRegistry.to_string(), "CARGO_REGISTRIES_<NAME>_TOKEN");
+        assert_eq!(
+            TokenSource::EnvRegistry.to_string(),
+            "CARGO_REGISTRIES_<NAME>_TOKEN"
+        );
         assert_eq!(TokenSource::CredentialsFile.to_string(), "credentials.toml");
     }
 }

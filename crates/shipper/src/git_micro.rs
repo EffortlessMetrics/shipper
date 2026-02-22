@@ -34,7 +34,12 @@ pub fn collect_git_context() -> Option<GitContext> {
         return None;
     }
 
-    Some(git_context)
+    Some(GitContext {
+        commit: git_context.commit,
+        branch: git_context.branch,
+        tag: git_context.tag,
+        dirty: git_context.dirty,
+    })
 }
 
 /// Get the current commit SHA
@@ -106,12 +111,11 @@ fn get_git_dirty_status(repo_root: &Path, git_program: &str) -> Option<bool> {
 }
 
 pub fn is_git_clean(repo_root: &Path) -> Result<bool> {
-    if let Some(git_program) = env::var("SHIPPER_GIT_BIN").ok() {
+    if let Ok(git_program) = env::var("SHIPPER_GIT_BIN") {
         return local_is_git_clean(repo_root, &git_program);
     }
 
-    shipper_git::is_git_clean(repo_root)
-        .map_err(|err| anyhow::anyhow!("git status failed: {err}"))
+    shipper_git::is_git_clean(repo_root).map_err(|err| anyhow::anyhow!("git status failed: {err}"))
 }
 
 fn local_is_git_clean(repo_root: &Path, git_program: &str) -> Result<bool> {

@@ -141,9 +141,9 @@ impl EventLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use shipper_types::{ErrorClass, EventType, ExecutionResult, Finishability, ReadinessMethod};
     use tempfile::tempdir;
-    use chrono::Utc;
 
     fn sample_event(package: &str) -> PublishEvent {
         PublishEvent {

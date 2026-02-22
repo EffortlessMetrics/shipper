@@ -671,8 +671,15 @@ impl ShipperConfig {
                 let mut cfg = self.webhook.clone();
                 // CLI can override webhook settings
                 if let Some(url) = cli.webhook_url {
-                    cfg.url = Some(url);
-                    cfg.enabled = true;
+                    #[cfg(feature = "micro-webhook")]
+                    {
+                        cfg.url = url;
+                    }
+                    #[cfg(not(feature = "micro-webhook"))]
+                    {
+                        cfg.url = Some(url);
+                        cfg.enabled = true;
+                    }
                 }
                 if let Some(secret) = cli.webhook_secret {
                     cfg.secret = Some(secret);

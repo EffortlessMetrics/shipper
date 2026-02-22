@@ -24,8 +24,10 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::Sha256;
 
 /// Webhook type
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,7 +49,7 @@ pub struct WebhookConfig {
     /// Type of webhook
     #[serde(default)]
     pub webhook_type: WebhookType,
-    /// Optional secret for signing (not yet implemented)
+    /// Optional secret for payload signing
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
     /// Timeout in seconds
@@ -55,7 +57,9 @@ pub struct WebhookConfig {
     pub timeout_secs: u64,
 }
 
-fn default_timeout() -> u64 { 30 }
+fn default_timeout() -> u64 {
+    30
+}
 
 impl Default for WebhookConfig {
     fn default() -> Self {
@@ -108,12 +112,23 @@ pub fn send_webhook(config: &WebhookConfig, payload: &WebhookPayload) -> Result<
         WebhookType::Discord => discord_payload(payload)?,
     };
 
-    let response = client
+    let signature = config
+        .secret
+        .as_deref()
+        .filter(|secret| !secret.trim().is_empty())
+        .map(|secret| webhook_signature(secret, &body))
+        .transpose()?;
+
+    let mut request = client
         .post(&config.url)
         .header("Content-Type", "application/json")
-        .body(body)
-        .send()
-        .context("failed to send webhook request")?;
+        .body(body);
+
+    if let Some(signature) = signature {
+        request = request.header("X-Hub-Signature-256", signature);
+    }
+
+    let response = request.send().context("failed to send webhook request")?;
 
     if !response.status().is_success() {
         return Err(anyhow::anyhow!(
@@ -139,10 +154,23 @@ pub async fn send_webhook_async(config: &WebhookConfig, payload: &WebhookPayload
         WebhookType::Discord => discord_payload(payload)?,
     };
 
-    let response = client
+    let signature = config
+        .secret
+        .as_deref()
+        .filter(|secret| !secret.trim().is_empty())
+        .map(|secret| webhook_signature(secret, &body))
+        .transpose()?;
+
+    let mut request = client
         .post(&config.url)
         .header("Content-Type", "application/json")
-        .body(body)
+        .body(body);
+
+    if let Some(signature) = signature {
+        request = request.header("X-Hub-Signature-256", signature);
+    }
+
+    let response = request
         .send()
         .await
         .context("failed to send webhook request")?;
@@ -158,12 +186,28 @@ pub async fn send_webhook_async(config: &WebhookConfig, payload: &WebhookPayload
     Ok(())
 }
 
+fn webhook_signature(secret: &str, body: &str) -> Result<String> {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).context("invalid webhook secret")?;
+    mac.update(body.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    Ok(format!("sha256={}", hex_encode(&digest)))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{:02x}", byte));
+    }
+    out
+}
+
 /// Format payload for Slack
 fn slack_payload(payload: &WebhookPayload) -> Result<String> {
     let color = if payload.success { "good" } else { "danger" };
-    
+
     let mut fields = vec![];
-    
+
     if let Some(package) = &payload.package {
         fields.push(json!({
             "title": "Package",
@@ -171,7 +215,7 @@ fn slack_payload(payload: &WebhookPayload) -> Result<String> {
             "short": true
         }));
     }
-    
+
     if let Some(version) = &payload.version {
         fields.push(json!({
             "title": "Version",
@@ -179,7 +223,7 @@ fn slack_payload(payload: &WebhookPayload) -> Result<String> {
             "short": true
         }));
     }
-    
+
     if let Some(registry) = &payload.registry {
         fields.push(json!({
             "title": "Registry",
@@ -187,7 +231,7 @@ fn slack_payload(payload: &WebhookPayload) -> Result<String> {
             "short": true
         }));
     }
-    
+
     if let Some(error) = &payload.error {
         fields.push(json!({
             "title": "Error",
@@ -210,10 +254,14 @@ fn slack_payload(payload: &WebhookPayload) -> Result<String> {
 
 /// Format payload for Discord
 fn discord_payload(payload: &WebhookPayload) -> Result<String> {
-    let color = if payload.success { 65280_u32 } else { 16711680_u32 };
-    
+    let color = if payload.success {
+        65280_u32
+    } else {
+        16711680_u32
+    };
+
     let mut fields = vec![];
-    
+
     if let Some(package) = &payload.package {
         fields.push(json!({
             "name": "Package",
@@ -221,7 +269,7 @@ fn discord_payload(payload: &WebhookPayload) -> Result<String> {
             "inline": true
         }));
     }
-    
+
     if let Some(version) = &payload.version {
         fields.push(json!({
             "name": "Version",
@@ -229,7 +277,7 @@ fn discord_payload(payload: &WebhookPayload) -> Result<String> {
             "inline": true
         }));
     }
-    
+
     if let Some(registry) = &payload.registry {
         fields.push(json!({
             "name": "Registry",
@@ -237,7 +285,7 @@ fn discord_payload(payload: &WebhookPayload) -> Result<String> {
             "inline": true
         }));
     }
-    
+
     if let Some(error) = &payload.error {
         fields.push(json!({
             "name": "Error",
@@ -330,7 +378,7 @@ mod tests {
     fn slack_payload_format() {
         let payload = publish_success_payload("test", "1.0.0", "crates-io");
         let json = slack_payload(&payload).expect("format");
-        
+
         assert!(json.contains("\"attachments\""));
         assert!(json.contains("\"color\":\"good\""));
         assert!(json.contains("test"));
@@ -340,7 +388,7 @@ mod tests {
     fn discord_payload_format() {
         let payload = publish_success_payload("test", "1.0.0", "crates-io");
         let json = discord_payload(&payload).expect("format");
-        
+
         assert!(json.contains("\"embeds\""));
         assert!(json.contains("\"color\":65280"));
         assert!(json.contains("test"));
@@ -354,7 +402,7 @@ mod tests {
             secret: None,
             timeout_secs: 60,
         };
-        
+
         let json = serde_json::to_string(&config).expect("serialize");
         assert!(json.contains("\"url\""));
         assert!(json.contains("\"webhook_type\":\"Slack\""));
@@ -367,7 +415,7 @@ mod tests {
             success: true,
             ..Default::default()
         };
-        
+
         let json = serde_json::to_string(&payload).expect("serialize");
         assert!(json.contains("\"message\":\"test message\""));
         assert!(json.contains("\"success\":true"));
@@ -385,5 +433,14 @@ mod tests {
         let payload = publish_failure_payload("test", "1.0.0", "error");
         let json = discord_payload(&payload).expect("format");
         assert!(json.contains("\"color\":16711680"));
+    }
+
+    #[test]
+    fn webhook_signature_matches_known_hmac_sha256() {
+        let signature = webhook_signature("secret", "hello").expect("signature");
+        assert_eq!(
+            signature,
+            "sha256=88aab3ede8d3adf94d26ab90d3bafd4a2083070c3bcce9c014ee04a443847c0b"
+        );
     }
 }

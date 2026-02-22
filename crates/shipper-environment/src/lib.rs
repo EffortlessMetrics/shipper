@@ -17,12 +17,13 @@
 //! println!("Fingerprint: {}", fingerprint);
 //! ```
 
-use std::env;
 use std::collections::BTreeMap;
+use std::env;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use shipper_types::EnvironmentFingerprint;
 
 /// Detected CI environment
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,16 +132,16 @@ impl EnvironmentInfo {
         let ci_environment = detect_environment();
         let os = env::consts::OS.to_string();
         let arch = env::consts::ARCH.to_string();
-        
+
         // Get rust version
         let rust_version = get_rust_version().unwrap_or_else(|_| "unknown".to_string());
-        
+
         // Get cargo version
         let cargo_version = get_cargo_version().unwrap_or_else(|_| "unknown".to_string());
-        
+
         // Collect relevant environment variables (sanitized)
         let env_vars = collect_env_vars();
-        
+
         Ok(Self {
             ci_environment,
             os,
@@ -160,12 +161,12 @@ impl EnvironmentInfo {
         components.push(format!("arch:{}", self.arch));
         components.push(format!("rust:{}", self.rust_version));
         components.push(format!("cargo:{}", self.cargo_version));
-        
+
         // Add relevant env vars
         for (key, value) in &self.env_vars {
             components.push(format!("{}:{}", key, value));
         }
-        
+
         components.join("|")
     }
 }
@@ -176,8 +177,27 @@ pub fn get_environment_fingerprint() -> String {
     let os = env::consts::OS;
     let arch = env::consts::ARCH;
     let rust = get_rust_version().unwrap_or_else(|_| "unknown".to_string());
-    
+
     format!("{}|{}|{}|{}", ci, os, arch, rust)
+}
+
+fn normalize_tool_version(raw: &str) -> Option<String> {
+    raw.split_whitespace().nth(1).map(ToOwned::to_owned)
+}
+
+/// Collect a structured environment fingerprint compatible with `shipper` runtime types.
+pub fn collect_environment_fingerprint() -> EnvironmentFingerprint {
+    EnvironmentFingerprint {
+        shipper_version: env!("CARGO_PKG_VERSION").to_string(),
+        cargo_version: get_cargo_version()
+            .ok()
+            .and_then(|raw| normalize_tool_version(&raw)),
+        rust_version: get_rust_version()
+            .ok()
+            .and_then(|raw| normalize_tool_version(&raw)),
+        os: env::consts::OS.to_string(),
+        arch: env::consts::ARCH.to_string(),
+    }
 }
 
 /// Get the Rust version
@@ -185,7 +205,7 @@ pub fn get_rust_version() -> Result<String> {
     let output = std::process::Command::new("rustc")
         .args(["--version"])
         .output()?;
-    
+
     if output.status.success() {
         let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(version)
@@ -199,7 +219,7 @@ pub fn get_cargo_version() -> Result<String> {
     let output = std::process::Command::new("cargo")
         .args(["--version"])
         .output()?;
-    
+
     if output.status.success() {
         let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(version)
@@ -211,7 +231,7 @@ pub fn get_cargo_version() -> Result<String> {
 /// Collect relevant environment variables for fingerprinting
 fn collect_env_vars() -> BTreeMap<String, String> {
     let mut vars = BTreeMap::new();
-    
+
     // CI-related variables that are safe to include
     let ci_vars = [
         "CI",
@@ -230,20 +250,20 @@ fn collect_env_vars() -> BTreeMap<String, String> {
         "BITBUCKET_BRANCH",
         "BITBUCKET_COMMIT",
     ];
-    
+
     for var in ci_vars {
         if let Ok(value) = env::var(var) {
             vars.insert(var.to_string(), value);
         }
     }
-    
+
     vars
 }
 
 /// Get the current branch name from CI environment
 pub fn get_ci_branch() -> Option<String> {
     let env = detect_environment();
-    
+
     match env {
         CiEnvironment::GitHubActions => env::var("GITHUB_REF_NAME").ok(),
         CiEnvironment::GitLabCI => env::var("CI_COMMIT_REF_NAME").ok(),
@@ -259,7 +279,7 @@ pub fn get_ci_branch() -> Option<String> {
 /// Get the current commit SHA from CI environment
 pub fn get_ci_commit_sha() -> Option<String> {
     let env = detect_environment();
-    
+
     match env {
         CiEnvironment::GitHubActions => env::var("GITHUB_SHA").ok(),
         CiEnvironment::GitLabCI => env::var("CI_COMMIT_SHA").ok(),
@@ -275,23 +295,19 @@ pub fn get_ci_commit_sha() -> Option<String> {
 /// Check if running on a pull request
 pub fn is_pull_request() -> bool {
     let env = detect_environment();
-    
+
     match env {
-        CiEnvironment::GitHubActions => {
-            env::var("GITHUB_EVENT_NAME").map(|v| v == "pull_request").unwrap_or(false)
-        }
-        CiEnvironment::GitLabCI => {
-            env::var("CI_MERGE_REQUEST_ID").is_ok()
-        }
-        CiEnvironment::CircleCI => {
-            env::var("CIRCLE_PULL_REQUEST").is_ok()
-        }
-        CiEnvironment::TravisCI => {
-            env::var("TRAVIS_PULL_REQUEST").map(|v| v != "false").unwrap_or(false)
-        }
-        CiEnvironment::AzurePipelines => {
-            env::var("BUILD_REASON").map(|v| v == "PullRequest").unwrap_or(false)
-        }
+        CiEnvironment::GitHubActions => env::var("GITHUB_EVENT_NAME")
+            .map(|v| v == "pull_request")
+            .unwrap_or(false),
+        CiEnvironment::GitLabCI => env::var("CI_MERGE_REQUEST_ID").is_ok(),
+        CiEnvironment::CircleCI => env::var("CIRCLE_PULL_REQUEST").is_ok(),
+        CiEnvironment::TravisCI => env::var("TRAVIS_PULL_REQUEST")
+            .map(|v| v != "false")
+            .unwrap_or(false),
+        CiEnvironment::AzurePipelines => env::var("BUILD_REASON")
+            .map(|v| v == "PullRequest")
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -330,6 +346,14 @@ mod tests {
         let fp = get_environment_fingerprint();
         assert!(!fp.is_empty());
         assert!(fp.contains('|'));
+    }
+
+    #[test]
+    fn collect_environment_fingerprint_returns_structured_values() {
+        let fp = collect_environment_fingerprint();
+        assert!(!fp.shipper_version.is_empty());
+        assert!(!fp.os.is_empty());
+        assert!(!fp.arch.is_empty());
     }
 
     #[test]

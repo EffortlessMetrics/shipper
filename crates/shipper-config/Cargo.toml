@@ -14,7 +14,12 @@ categories = ["development-tools"]
 serde.workspace = true
 anyhow = "1.0"
 toml = "0.9"
+serde_with = "3.12.0"
 shipper-types = { path = "../shipper-types" }
+shipper-encrypt = { path = "../shipper-encrypt" }
+shipper-storage = { path = "../shipper-storage" }
+shipper-webhook = { path = "../shipper-webhook" }
+shipper-retry = { path = "../shipper-retry" }
 
 [dev-dependencies]
 tempfile = "3"

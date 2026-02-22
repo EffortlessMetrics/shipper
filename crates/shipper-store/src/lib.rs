@@ -1,168 +1,89 @@
-//! State store abstraction for shipper.
+//! State store abstraction for persistence.
 //!
-//! This crate provides a trait-based abstraction for state storage,
+//! This module provides a trait-based abstraction for state storage,
 //! allowing for future implementations like S3, GCS, or Azure Blob Storage.
-//!
-//! # Example
-//!
-//! ```
-//! use shipper_store::{StateStore, FileStore, SchemaVersion};
-//! use std::path::PathBuf;
-//!
-//! let store = FileStore::new(PathBuf::from(".shipper"));
-//!
-//! // Validate schema version
-//! let version = SchemaVersion::parse("shipper.receipt.v2").expect("parse");
-//! assert!(version.is_supported(1));
-//! ```
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 
-/// Minimum supported schema version
-pub const MINIMUM_SUPPORTED_VERSION: u32 = 1;
+use shipper_events::EventLog;
+use shipper_types::{ExecutionState, Receipt};
 
-/// Current schema version
-pub const CURRENT_VERSION: u32 = 2;
+/// Trait for state storage backends.
+///
+/// This trait abstracts the storage of execution state, receipts, and event logs,
+/// allowing for different storage backends (filesystem, S3, GCS, etc.).
+pub trait StateStore: Send + Sync {
+    /// Save execution state to storage
+    fn save_state(&self, state: &ExecutionState) -> Result<()>;
 
-/// Schema version for state files
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SchemaVersion {
-    /// Version number
-    pub version: u32,
-}
+    /// Load execution state from storage, returns None if not found
+    fn load_state(&self) -> Result<Option<ExecutionState>>;
 
-impl SchemaVersion {
-    /// Parse a schema version from a string like "shipper.receipt.v2"
-    pub fn parse(s: &str) -> Result<Self> {
-        let parts: Vec<&str> = s.split('.').collect();
-        if parts.len() != 3 || !parts[0].starts_with("shipper") || !parts[2].starts_with('v') {
-            return Err(anyhow::anyhow!("invalid schema version format: {}", s));
-        }
+    /// Save receipt to storage
+    fn save_receipt(&self, receipt: &Receipt) -> Result<()>;
 
-        let version_part = &parts[2][1..]; // Skip 'v'
-        let version = version_part
-            .parse::<u32>()
-            .with_context(|| format!("invalid version number: {}", s))?;
+    /// Load receipt from storage, returns None if not found
+    fn load_receipt(&self) -> Result<Option<Receipt>>;
 
-        Ok(Self { version })
-    }
+    /// Save event log to storage
+    fn save_events(&self, events: &EventLog) -> Result<()>;
 
-    /// Create a new schema version
-    pub fn new(version: u32) -> Self {
-        Self { version }
-    }
+    /// Load event log from storage, returns None if not found
+    fn load_events(&self) -> Result<Option<EventLog>>;
 
-    /// Get the version number
-    pub fn version(&self) -> u32 {
-        self.version
-    }
+    /// Clear all state (state.json, receipt.json, events.jsonl)
+    fn clear(&self) -> Result<()>;
 
-    /// Check if this version is supported (>= minimum)
-    pub fn is_supported(&self, minimum: u32) -> bool {
-        self.version >= minimum
-    }
-
-    /// Format as a version string
-    pub fn to_version_string(&self, prefix: &str) -> String {
-        format!("shipper.{}.v{}", prefix, self.version)
+    /// Validate schema version
+    fn validate_version(&self, version: &str) -> Result<()> {
+        validate_schema_version(version)
     }
 }
 
-impl Default for SchemaVersion {
-    fn default() -> Self {
-        Self { version: CURRENT_VERSION }
-    }
-}
-
-impl std::fmt::Display for SchemaVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "v{}", self.version)
-    }
-}
-
-/// Validate a schema version string
+/// Validate any schema version
 pub fn validate_schema_version(version: &str) -> Result<()> {
-    let parsed = SchemaVersion::parse(version)?;
-    
-    if !parsed.is_supported(MINIMUM_SUPPORTED_VERSION) {
+    // Parse version string (e.g., "shipper.receipt.v2" -> 2)
+    let version_num = parse_schema_version(version)
+        .with_context(|| format!("invalid schema version format: {}", version))?;
+
+    let minimum_num =
+        parse_schema_version(shipper_state::MINIMUM_SUPPORTED_VERSION).with_context(|| {
+            format!(
+                "invalid minimum version format: {}",
+                shipper_state::MINIMUM_SUPPORTED_VERSION
+            )
+        })?;
+
+    if version_num < minimum_num {
         anyhow::bail!(
-            "schema version {} is too old. Minimum supported version is v{}",
+            "schema version {} is too old. Minimum supported version is {}",
             version,
-            MINIMUM_SUPPORTED_VERSION
+            shipper_state::MINIMUM_SUPPORTED_VERSION
         );
     }
 
     Ok(())
 }
 
-/// Metadata about stored state
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StateMetadata {
-    /// Schema version
-    pub schema_version: SchemaVersion,
-    /// When the state was created
-    pub created_at: DateTime<Utc>,
-    /// When the state was last updated
-    pub updated_at: DateTime<Utc>,
-    /// Optional checksum for integrity verification
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub checksum: Option<String>,
-}
-
-impl StateMetadata {
-    /// Create new metadata with current timestamp
-    pub fn new() -> Self {
-        let now = Utc::now();
-        Self {
-            schema_version: SchemaVersion::default(),
-            created_at: now,
-            updated_at: now,
-            checksum: None,
-        }
+/// Parse schema version number from version string (e.g., "shipper.receipt.v2" -> 2)
+fn parse_schema_version(version: &str) -> Result<u32> {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() != 3 || !parts[0].starts_with("shipper") || !parts[2].starts_with('v') {
+        anyhow::bail!("invalid schema version format: {}", version);
     }
 
-    /// Update the modified timestamp
-    pub fn touch(&mut self) {
-        self.updated_at = Utc::now();
-    }
-}
-
-impl Default for StateMetadata {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Trait for state storage backends.
-///
-/// This trait abstracts the storage of state and receipts,
-/// allowing for different storage backends (filesystem, S3, GCS, etc.).
-pub trait StateStore: Send + Sync {
-    /// Check if state exists
-    fn exists(&self) -> bool;
-
-    /// Clear all state
-    fn clear(&self) -> Result<()>;
-
-    /// Get the storage location description
-    fn location(&self) -> String;
-}
-
-/// Trait for state data storage
-pub trait DataStore<T>: StateStore {
-    /// Save data to storage
-    fn save(&self, data: &T) -> Result<()>;
-
-    /// Load data from storage
-    fn load(&self) -> Result<Option<T>>;
+    // Extract the version number from the last part (e.g., "v2" -> 2)
+    let version_part = &parts[2][1..]; // Skip 'v'
+    version_part
+        .parse::<u32>()
+        .with_context(|| format!("invalid version number in schema version: {}", version))
 }
 
 /// Filesystem-based state store implementation.
-#[derive(Debug, Clone)]
+///
+/// This is the default implementation that stores state in a local directory.
 pub struct FileStore {
     state_dir: PathBuf,
 }
@@ -177,389 +98,315 @@ impl FileStore {
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
     }
-
-    /// Get path to a file in the state directory
-    pub fn file_path(&self, name: &str) -> PathBuf {
-        self.state_dir.join(name)
-    }
-
-    /// Ensure the state directory exists
-    pub fn ensure_dir(&self) -> Result<()> {
-        if !self.state_dir.exists() {
-            std::fs::create_dir_all(&self.state_dir)
-                .with_context(|| format!("failed to create state dir: {}", self.state_dir.display()))?;
-        }
-        Ok(())
-    }
-
-    /// Write data to a file atomically
-    pub fn write_file(&self, name: &str, content: &[u8]) -> Result<()> {
-        self.ensure_dir()?;
-
-        let path = self.file_path(name);
-        let tmp_path = path.with_extension("tmp");
-
-        std::fs::write(&tmp_path, content)
-            .with_context(|| format!("failed to write file: {}", tmp_path.display()))?;
-
-        std::fs::rename(&tmp_path, &path)
-            .with_context(|| format!("failed to rename file to: {}", path.display()))?;
-
-        Ok(())
-    }
-
-    /// Read data from a file
-    pub fn read_file(&self, name: &str) -> Result<Option<Vec<u8>>> {
-        let path = self.file_path(name);
-        if !path.exists() {
-            return Ok(None);
-        }
-
-        let content = std::fs::read(&path)
-            .with_context(|| format!("failed to read file: {}", path.display()))?;
-
-        Ok(Some(content))
-    }
-
-    /// Delete a file
-    pub fn delete_file(&self, name: &str) -> Result<()> {
-        let path = self.file_path(name);
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("failed to delete file: {}", path.display()))?;
-        }
-        Ok(())
-    }
-
-    /// Check if a file exists
-    pub fn file_exists(&self, name: &str) -> bool {
-        self.file_path(name).exists()
-    }
-
-    /// List all files in the state directory
-    pub fn list_files(&self) -> Result<Vec<String>> {
-        if !self.state_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut files = Vec::new();
-        for entry in std::fs::read_dir(&self.state_dir)
-            .with_context(|| format!("failed to read dir: {}", self.state_dir.display()))?
-        {
-            let entry = entry?;
-            if entry.file_type()?.is_file()
-                && let Some(name) = entry.file_name().to_str()
-            {
-                files.push(name.to_string());
-            }
-        }
-
-        Ok(files)
-    }
-
-    /// Save JSON data to a file
-    pub fn save_json<T: Serialize>(&self, name: &str, data: &T) -> Result<()> {
-        let content = serde_json::to_string_pretty(data)
-            .context("failed to serialize JSON")?;
-        self.write_file(name, content.as_bytes())
-    }
-
-    /// Load JSON data from a file
-    pub fn load_json<T: for<'de> Deserialize<'de>>(&self, name: &str) -> Result<Option<T>> {
-        let content = self.read_file(name)?;
-        match content {
-            Some(data) => {
-                let parsed: T = serde_json::from_slice(&data)
-                    .with_context(|| format!("failed to parse JSON from: {}", name))?;
-                Ok(Some(parsed))
-            }
-            None => Ok(None),
-        }
-    }
 }
 
 impl StateStore for FileStore {
-    fn exists(&self) -> bool {
-        self.state_dir.exists()
+    fn save_state(&self, state: &ExecutionState) -> Result<()> {
+        shipper_state::save_state(&self.state_dir, state)
+    }
+
+    fn load_state(&self) -> Result<Option<ExecutionState>> {
+        shipper_state::load_state(&self.state_dir)
+    }
+
+    fn save_receipt(&self, receipt: &Receipt) -> Result<()> {
+        shipper_state::write_receipt(&self.state_dir, receipt)
+    }
+
+    fn load_receipt(&self) -> Result<Option<Receipt>> {
+        shipper_state::load_receipt(&self.state_dir)
+    }
+
+    fn save_events(&self, events: &EventLog) -> Result<()> {
+        let path = shipper_events::events_path(&self.state_dir);
+        events.write_to_file(&path)
+    }
+
+    fn load_events(&self) -> Result<Option<EventLog>> {
+        let path = shipper_events::events_path(&self.state_dir);
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(Some(EventLog::read_from_file(&path)?))
     }
 
     fn clear(&self) -> Result<()> {
-        if self.state_dir.exists() {
-            std::fs::remove_dir_all(&self.state_dir)
-                .with_context(|| format!("failed to remove state dir: {}", self.state_dir.display()))?;
+        let state_path = shipper_state::state_path(&self.state_dir);
+        let receipt_path = shipper_state::receipt_path(&self.state_dir);
+        let events_path = shipper_events::events_path(&self.state_dir);
+
+        // Remove files if they exist
+        if state_path.exists() {
+            std::fs::remove_file(&state_path)
+                .with_context(|| format!("failed to remove state file {}", state_path.display()))?;
         }
+        if receipt_path.exists() {
+            std::fs::remove_file(&receipt_path).with_context(|| {
+                format!("failed to remove receipt file {}", receipt_path.display())
+            })?;
+        }
+        if events_path.exists() {
+            std::fs::remove_file(&events_path).with_context(|| {
+                format!("failed to remove events file {}", events_path.display())
+            })?;
+        }
+
         Ok(())
-    }
-
-    fn location(&self) -> String {
-        self.state_dir.display().to_string()
-    }
-}
-
-/// Store statistics
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct StoreStats {
-    /// Number of files in the store
-    pub file_count: usize,
-    /// Total size in bytes
-    pub total_size: u64,
-    /// Oldest file timestamp
-    pub oldest_file: Option<DateTime<Utc>>,
-    /// Newest file timestamp
-    pub newest_file: Option<DateTime<Utc>>,
-}
-
-impl FileStore {
-    /// Get statistics about the store
-    pub fn stats(&self) -> Result<StoreStats> {
-        let files = self.list_files()?;
-        let mut stats = StoreStats {
-            file_count: files.len(),
-            ..Default::default()
-        };
-
-        for name in &files {
-            let path = self.file_path(name);
-            if let Ok(metadata) = std::fs::metadata(&path) {
-                stats.total_size += metadata.len();
-                
-                if let Ok(modified) = metadata.modified() {
-                    let datetime: DateTime<Utc> = modified.into();
-                    if stats.oldest_file.is_none() || datetime < stats.oldest_file.unwrap() {
-                        stats.oldest_file = Some(datetime);
-                    }
-                    if stats.newest_file.is_none() || datetime > stats.newest_file.unwrap() {
-                        stats.newest_file = Some(datetime);
-                    }
-                }
-            }
-        }
-
-        Ok(stats)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::BTreeMap;
     use tempfile::tempdir;
 
-    #[test]
-    fn schema_version_parse_v1() {
-        let v = SchemaVersion::parse("shipper.receipt.v1").expect("parse");
-        assert_eq!(v.version(), 1);
-    }
+    use super::*;
+    use chrono::Utc;
+    use shipper_types::{PackageProgress, PackageReceipt, PackageState, Registry};
 
-    #[test]
-    fn schema_version_parse_v2() {
-        let v = SchemaVersion::parse("shipper.receipt.v2").expect("parse");
-        assert_eq!(v.version(), 2);
-    }
+    fn sample_state() -> ExecutionState {
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "demo@0.1.0".to_string(),
+            PackageProgress {
+                name: "demo".to_string(),
+                version: "0.1.0".to_string(),
+                attempts: 1,
+                state: PackageState::Pending,
+                last_updated_at: Utc::now(),
+            },
+        );
 
-    #[test]
-    fn schema_version_parse_invalid_format() {
-        assert!(SchemaVersion::parse("invalid").is_err());
-        assert!(SchemaVersion::parse("shipper.receipt").is_err());
-        assert!(SchemaVersion::parse("shipper.receipt.2").is_err());
-        assert!(SchemaVersion::parse("other.receipt.v2").is_err());
-    }
-
-    #[test]
-    fn schema_version_is_supported() {
-        let v = SchemaVersion::new(2);
-        assert!(v.is_supported(1));
-        assert!(v.is_supported(2));
-        assert!(!v.is_supported(3));
-    }
-
-    #[test]
-    fn schema_version_to_string() {
-        let v = SchemaVersion::new(2);
-        assert_eq!(v.to_version_string("receipt"), "shipper.receipt.v2");
-        assert_eq!(v.to_string(), "v2");
-    }
-
-    #[test]
-    fn schema_version_default() {
-        let v = SchemaVersion::default();
-        assert_eq!(v.version(), CURRENT_VERSION);
-    }
-
-    #[test]
-    fn validate_schema_version_accepts_v1() {
-        assert!(validate_schema_version("shipper.receipt.v1").is_ok());
-    }
-
-    #[test]
-    fn validate_schema_version_accepts_v2() {
-        assert!(validate_schema_version("shipper.receipt.v2").is_ok());
-    }
-
-    #[test]
-    fn validate_schema_version_rejects_v0() {
-        assert!(validate_schema_version("shipper.receipt.v0").is_err());
-    }
-
-    #[test]
-    fn state_metadata_new() {
-        let meta = StateMetadata::new();
-        assert_eq!(meta.schema_version.version, CURRENT_VERSION);
-        assert!(meta.checksum.is_none());
-    }
-
-    #[test]
-    fn state_metadata_touch() {
-        let mut meta = StateMetadata::new();
-        let original = meta.updated_at;
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        meta.touch();
-        assert!(meta.updated_at > original);
-    }
-
-    #[test]
-    fn file_store_new() {
-        let td = tempdir().expect("tempdir");
-        let store = FileStore::new(td.path().to_path_buf());
-        assert_eq!(store.state_dir(), td.path());
-    }
-
-    #[test]
-    fn file_store_exists() {
-        let td = tempdir().expect("tempdir");
-        let store = FileStore::new(td.path().to_path_buf());
-        assert!(store.exists());
-
-        let store2 = FileStore::new(td.path().join("nonexistent"));
-        assert!(!store2.exists());
-    }
-
-    #[test]
-    fn file_store_write_and_read_file() {
-        let td = tempdir().expect("tempdir");
-        let store = FileStore::new(td.path().to_path_buf());
-
-        store.write_file("test.txt", b"hello world").expect("write");
-
-        let content = store.read_file("test.txt").expect("read");
-        assert!(content.is_some());
-        assert_eq!(content.unwrap(), b"hello world");
-    }
-
-    #[test]
-    fn file_store_read_missing_file() {
-        let td = tempdir().expect("tempdir");
-        let store = FileStore::new(td.path().to_path_buf());
-
-        let content = store.read_file("missing.txt").expect("read");
-        assert!(content.is_none());
-    }
-
-    #[test]
-    fn file_store_delete_file() {
-        let td = tempdir().expect("tempdir");
-        let store = FileStore::new(td.path().to_path_buf());
-
-        store.write_file("test.txt", b"data").expect("write");
-        assert!(store.file_exists("test.txt"));
-
-        store.delete_file("test.txt").expect("delete");
-        assert!(!store.file_exists("test.txt"));
-    }
-
-    #[test]
-    fn file_store_list_files() {
-        let td = tempdir().expect("tempdir");
-        let store = FileStore::new(td.path().to_path_buf());
-
-        store.write_file("a.txt", b"a").expect("write");
-        store.write_file("b.txt", b"b").expect("write");
-
-        let files = store.list_files().expect("list");
-        assert_eq!(files.len(), 2);
-        assert!(files.contains(&"a.txt".to_string()));
-        assert!(files.contains(&"b.txt".to_string()));
-    }
-
-    #[test]
-    fn file_store_save_and_load_json() {
-        let td = tempdir().expect("tempdir");
-        let store = FileStore::new(td.path().to_path_buf());
-
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct TestData {
-            name: String,
-            value: i32,
+        ExecutionState {
+            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: "p1".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
         }
+    }
 
-        let data = TestData {
-            name: "test".to_string(),
-            value: 42,
-        };
-
-        store.save_json("test.json", &data).expect("save");
-
-        let loaded: TestData = store.load_json("test.json").expect("load").expect("some");
-        assert_eq!(loaded, data);
+    fn sample_receipt() -> Receipt {
+        Receipt {
+            receipt_version: "shipper.receipt.v2".to_string(),
+            plan_id: "p1".to_string(),
+            registry: Registry::crates_io(),
+            started_at: Utc::now(),
+            finished_at: Utc::now(),
+            packages: vec![PackageReceipt {
+                name: "demo".to_string(),
+                version: "0.1.0".to_string(),
+                attempts: 1,
+                state: PackageState::Published,
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 10,
+                evidence: shipper_types::PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            }],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: None,
+            environment: shipper_types::EnvironmentFingerprint {
+                shipper_version: "0.1.0".to_string(),
+                cargo_version: Some("1.75.0".to_string()),
+                rust_version: Some("1.75.0".to_string()),
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        }
     }
 
     #[test]
-    fn file_store_load_missing_json() {
+    fn file_store_saves_and_loads_state() {
         let td = tempdir().expect("tempdir");
         let store = FileStore::new(td.path().to_path_buf());
 
-        #[derive(Serialize, Deserialize)]
-        struct TestData {
-            name: String,
-        }
+        let state = sample_state();
+        store.save_state(&state).expect("save state");
 
-        let loaded: Option<TestData> = store.load_json("missing.json").expect("load");
+        let loaded = store.load_state().expect("load state");
+        assert!(loaded.is_some());
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.plan_id, state.plan_id);
+    }
+
+    #[test]
+    fn file_store_returns_none_for_missing_state() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let loaded = store.load_state().expect("load state");
         assert!(loaded.is_none());
     }
 
     #[test]
-    fn file_store_clear() {
+    fn file_store_saves_and_loads_receipt() {
         let td = tempdir().expect("tempdir");
         let store = FileStore::new(td.path().to_path_buf());
 
-        store.write_file("test.txt", b"data").expect("write");
-        assert!(store.exists());
-        assert!(store.file_exists("test.txt"));
+        let receipt = sample_receipt();
+        store.save_receipt(&receipt).expect("save receipt");
 
+        let loaded = store.load_receipt().expect("load receipt");
+        assert!(loaded.is_some());
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.plan_id, receipt.plan_id);
+    }
+
+    #[test]
+    fn file_store_returns_none_for_missing_receipt() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let loaded = store.load_receipt().expect("load receipt");
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn file_store_saves_and_loads_events() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let mut events = EventLog::new();
+        events.record(shipper_types::PublishEvent {
+            timestamp: Utc::now(),
+            event_type: shipper_types::EventType::ExecutionStarted,
+            package: "all".to_string(),
+        });
+
+        store.save_events(&events).expect("save events");
+
+        let loaded = store.load_events().expect("load events");
+        assert!(loaded.is_some());
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.all_events().len(), 1);
+    }
+
+    #[test]
+    fn file_store_returns_none_for_missing_events() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let loaded = store.load_events().expect("load events");
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn file_store_clears_all_state() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        // Save some state
+        store.save_state(&sample_state()).expect("save state");
+        store.save_receipt(&sample_receipt()).expect("save receipt");
+
+        // Verify it exists
+        assert!(store.load_state().expect("load state").is_some());
+        assert!(store.load_receipt().expect("load receipt").is_some());
+
+        // Clear
         store.clear().expect("clear");
-        assert!(!store.exists());
+
+        // Verify it's gone
+        assert!(store.load_state().expect("load state").is_none());
+        assert!(store.load_receipt().expect("load receipt").is_none());
     }
 
     #[test]
-    fn file_store_location() {
-        let td = tempdir().expect("tempdir");
-        let store = FileStore::new(td.path().to_path_buf());
-        assert!(store.location().contains(td.path().to_str().unwrap()));
+    fn validate_schema_version_accepts_current_version() {
+        let result = validate_schema_version("shipper.receipt.v2");
+        assert!(result.is_ok());
     }
 
     #[test]
-    fn file_store_stats() {
-        let td = tempdir().expect("tempdir");
-        let store = FileStore::new(td.path().to_path_buf());
-
-        store.write_file("a.txt", b"hello").expect("write");
-        store.write_file("b.txt", b"world").expect("write");
-
-        let stats = store.stats().expect("stats");
-        assert_eq!(stats.file_count, 2);
-        assert_eq!(stats.total_size, 10); // 5 + 5 bytes
-        assert!(stats.newest_file.is_some());
-        assert!(stats.oldest_file.is_some());
+    fn validate_schema_version_accepts_minimum_version() {
+        let result = validate_schema_version("shipper.receipt.v1");
+        assert!(result.is_ok());
     }
 
     #[test]
-    fn file_store_stats_empty() {
+    fn validate_schema_version_rejects_old_version() {
+        let result = validate_schema_version("shipper.receipt.v0");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("too old"));
+    }
+
+    #[test]
+    fn validate_schema_version_rejects_invalid_format() {
+        let result = validate_schema_version("invalid.version");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_schema_version_rejects_non_shipper_version() {
+        let result = validate_schema_version("other.receipt.v2");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_schema_version_rejects_missing_version_number() {
+        let result = validate_schema_version("shipper.receipt.v");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_in_store_extracts_number_from_v1() {
+        let result = parse_schema_version("shipper.receipt.v1").expect("should parse");
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn parse_schema_version_in_store_extracts_number_from_v2() {
+        let result = parse_schema_version("shipper.receipt.v2").expect("should parse");
+        assert_eq!(result, 2);
+    }
+
+    #[test]
+    fn parse_schema_version_in_store_handles_large_version() {
+        let result = parse_schema_version("shipper.receipt.v100").expect("should parse");
+        assert_eq!(result, 100);
+    }
+
+    #[test]
+    fn parse_schema_version_in_store_rejects_invalid_format_no_prefix() {
+        let result = parse_schema_version("receipt.v2");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_in_store_rejects_invalid_format_no_version() {
+        let result = parse_schema_version("shipper.receipt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_in_store_rejects_invalid_format_missing_v() {
+        let result = parse_schema_version("shipper.receipt.2");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn file_store_state_dir_returns_correct_path() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join(".shipper");
+        let store = FileStore::new(path.clone());
+
+        assert_eq!(store.state_dir(), path);
+    }
+
+    #[test]
+    fn file_store_validate_version_delegates_to_validate_schema_version() {
         let td = tempdir().expect("tempdir");
         let store = FileStore::new(td.path().to_path_buf());
 
-        let stats = store.stats().expect("stats");
-        assert_eq!(stats.file_count, 0);
-        assert_eq!(stats.total_size, 0);
-        assert!(stats.newest_file.is_none());
-        assert!(stats.oldest_file.is_none());
+        // Test valid version
+        assert!(store.validate_version("shipper.receipt.v2").is_ok());
+
+        // Test invalid version
+        assert!(store.validate_version("shipper.receipt.v0").is_err());
     }
 }

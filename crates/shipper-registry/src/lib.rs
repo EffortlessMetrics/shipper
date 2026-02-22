@@ -90,7 +90,7 @@ impl RegistryClient {
 
     /// Check if a specific version of a crate exists
     pub fn version_exists(&self, name: &str, version: &str) -> Result<bool> {
-        let url = format!("{}/api/v1/crates/{}/versions", self.base_url, name);
+        let url = format!("{}/api/v1/crates/{}/{}", self.base_url, name, version);
 
         let response = self
             .client
@@ -98,19 +98,11 @@ impl RegistryClient {
             .send()
             .context("failed to send request to registry")?;
 
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(false);
+        match response.status() {
+            reqwest::StatusCode::OK => Ok(true),
+            reqwest::StatusCode::NOT_FOUND => Ok(false),
+            status => Err(anyhow::anyhow!("unexpected status code: {}", status)),
         }
-
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!("unexpected status code: {}", response.status()));
-        }
-
-        let versions: VersionsResponse = response
-            .json()
-            .context("failed to parse versions response")?;
-
-        Ok(versions.versions.iter().any(|v| v.num == version))
     }
 
     /// Get crate information
@@ -128,12 +120,14 @@ impl RegistryClient {
         }
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!("unexpected status code: {}", response.status()));
+            return Err(anyhow::anyhow!(
+                "unexpected status code: {}",
+                response.status()
+            ));
         }
 
-        let crate_response: CrateResponse = response
-            .json()
-            .context("failed to parse crate response")?;
+        let crate_response: CrateResponse =
+            response.json().context("failed to parse crate response")?;
 
         Ok(Some(CrateInfo {
             name: crate_response.crate_data.name,
@@ -143,35 +137,96 @@ impl RegistryClient {
         }))
     }
 
-    /// Get the list of owners for a crate
-    pub fn get_owners(&self, name: &str) -> Result<Vec<Owner>> {
+    fn fetch_owners_with_token(
+        &self,
+        name: &str,
+        token: Option<&str>,
+    ) -> Result<Option<OwnersResponse>> {
         let url = format!("{}/api/v1/crates/{}/owners", self.base_url, name);
-
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .context("failed to send request to registry")?;
-
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(Vec::new());
+        let mut request = self.client.get(&url);
+        if let Some(token) = token {
+            request = request.header("Authorization", token);
         }
 
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!("unexpected status code: {}", response.status()));
+        let response = request.send().context("failed to query owners")?;
+        match response.status() {
+            reqwest::StatusCode::OK => {
+                let owners_response: OwnersResponse =
+                    response.json().context("failed to parse owners response")?;
+                Ok(Some(owners_response))
+            }
+            reqwest::StatusCode::NOT_FOUND => Ok(None),
+            reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::UNAUTHORIZED => {
+                Err(anyhow::anyhow!(
+                    "forbidden when querying owners; token may be invalid or missing required scope"
+                ))
+            }
+            status => Err(anyhow::anyhow!(
+                "unexpected status while querying owners: {status}"
+            )),
         }
+    }
 
-        let owners_response: OwnersResponse = response
-            .json()
-            .context("failed to parse owners response")?;
+    /// Get the list of owners for a crate.
+    pub fn get_owners(&self, name: &str) -> Result<Vec<Owner>> {
+        let owners_response = self
+            .fetch_owners_with_token(name, None)?
+            .unwrap_or_default();
+        Ok(owners_response
+            .users
+            .into_iter()
+            .map(|owner| Owner {
+                login: owner.login,
+                name: owner.name,
+                avatar: owner.avatar,
+            })
+            .collect())
+    }
 
-        Ok(owners_response.users)
+    /// List owners for a crate with token-aware lookup.
+    pub fn list_owners(&self, name: &str, token: &str) -> Result<OwnersResponse> {
+        self.fetch_owners_with_token(name, Some(token))?
+            .ok_or_else(|| anyhow::anyhow!("crate not found when querying owners: {name}"))
     }
 
     /// Check if a user is an owner of a crate
     pub fn is_owner(&self, name: &str, username: &str) -> Result<bool> {
         let owners = self.get_owners(name)?;
         Ok(owners.iter().any(|o| o.login == username))
+    }
+
+    /// Check if a version exists in sparse-index metadata.
+    pub fn is_version_visible_in_sparse_index(
+        &self,
+        index_base: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<bool> {
+        let content = self.fetch_sparse_index_file(index_base, name)?;
+        parse_version_from_sparse_index(&content, version)
+    }
+
+    /// Fetch sparse-index content for a crate.
+    pub fn fetch_sparse_index_file(&self, index_base: &str, name: &str) -> Result<String> {
+        let index_base = index_base.trim_end_matches('/');
+        let index_path = sparse_index_path(name);
+        let url = format!("{}/{}", index_base, index_path);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .context("index request failed")?;
+
+        match response.status() {
+            reqwest::StatusCode::OK => response
+                .text()
+                .context("failed to read index response body"),
+            reqwest::StatusCode::NOT_FOUND => Err(anyhow::anyhow!("index file not found: {url}")),
+            status => Err(anyhow::anyhow!(
+                "unexpected status while fetching index: {status}"
+            )),
+        }
     }
 
     /// Get the base URL
@@ -195,6 +250,19 @@ pub struct CrateInfo {
 
 /// Owner information
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnersApiUser {
+    /// Optional owner ID (not guaranteed in all registry responses)
+    pub id: Option<u64>,
+    /// Owner's login/username
+    pub login: String,
+    /// Owner's display name
+    pub name: Option<String>,
+    /// Owner's avatar URL
+    pub avatar: Option<String>,
+}
+
+/// Owner information
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Owner {
     /// Owner's login/username
     pub login: String,
@@ -205,12 +273,14 @@ pub struct Owner {
 }
 
 /// Response from the versions API
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct VersionsResponse {
     versions: Vec<Version>,
 }
 
 /// Version information
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Version {
     num: String,
@@ -233,9 +303,33 @@ struct CrateData {
 }
 
 /// Response from the owners API
-#[derive(Debug, Deserialize)]
-struct OwnersResponse {
-    users: Vec<Owner>,
+#[derive(Debug, Default, Deserialize)]
+pub struct OwnersResponse {
+    pub users: Vec<OwnersApiUser>,
+}
+
+fn parse_version_from_sparse_index(content: &str, version: &str) -> Result<bool> {
+    #[derive(Deserialize)]
+    struct IndexVersion {
+        vers: String,
+    }
+
+    Ok(content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<IndexVersion>(line).ok())
+        .any(|value| value.vers == version))
+}
+
+/// Compute the sparse-index path for a crate name.
+pub fn sparse_index_path(crate_name: &str) -> String {
+    let lower = crate_name.to_ascii_lowercase();
+    match lower.len() {
+        1 => format!("1/{}", lower),
+        2 => format!("2/{}", lower),
+        3 => format!("3/{}/{}", &lower[..1], lower),
+        _ => format!("{}/{}/{}", &lower[..2], &lower[2..4], lower),
+    }
 }
 
 /// Check if a crate version is visible on the registry
@@ -268,8 +362,7 @@ mod tests {
 
     #[test]
     fn client_with_timeout() {
-        let client = RegistryClient::crates_io()
-            .with_timeout(Duration::from_secs(60));
+        let client = RegistryClient::crates_io().with_timeout(Duration::from_secs(60));
         assert_eq!(client.timeout, Duration::from_secs(60));
     }
 
@@ -332,7 +425,10 @@ mod tests {
         let response: OwnersResponse = serde_json::from_str(json).expect("parse");
         assert_eq!(response.users.len(), 2);
         assert_eq!(response.users[0].login, "user1");
-        assert_eq!(response.users[1].avatar, Some("https://example.com/avatar.png".to_string()));
+        assert_eq!(
+            response.users[1].avatar,
+            Some("https://example.com/avatar.png".to_string())
+        );
     }
 
     #[test]

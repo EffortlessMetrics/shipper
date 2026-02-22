@@ -85,10 +85,7 @@ pub fn cargo_publish(
 
         let deadline = Instant::now() + timeout_dur;
         loop {
-            match child
-                .try_wait()
-                .context("failed to poll cargo process")?
-            {
+            match child.try_wait().context("failed to poll cargo process")? {
                 Some(status) => {
                     let mut stdout_bytes = Vec::new();
                     let mut stderr_bytes = Vec::new();
@@ -384,7 +381,10 @@ impl WorkspaceMetadata {
 
     /// Get a package by name
     pub fn get_package(&self, name: &str) -> Option<&Package> {
-        self.metadata.packages.iter().find(|p| p.name.as_str() == name)
+        self.metadata
+            .packages
+            .iter()
+            .find(|p| p.name.as_str() == name)
     }
 
     /// Get the workspace members
@@ -443,7 +443,10 @@ impl WorkspaceMetadata {
         }
 
         if visiting.contains(name) {
-            return Err(anyhow::anyhow!("circular dependency detected involving {}", name));
+            return Err(anyhow::anyhow!(
+                "circular dependency detected involving {}",
+                name
+            ));
         }
 
         visiting.insert(name.to_string());
@@ -554,9 +557,9 @@ pub fn is_valid_package_name(name: &str) -> bool {
     }
 
     // All chars must be valid
-    chars.iter().all(|c| {
-        c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-' || *c == '_'
-    })
+    chars
+        .iter()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-' || *c == '_')
 }
 
 /// Get all workspace member names
@@ -624,10 +627,10 @@ mod tests {
     #[test]
     fn workspace_metadata_loads_current_workspace() {
         let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
-        
+
         // Should have at least one package
         assert!(!metadata.all_packages().is_empty());
-        
+
         // Should have a workspace root
         assert!(metadata.workspace_root().exists());
     }
@@ -635,7 +638,7 @@ mod tests {
     #[test]
     fn workspace_metadata_gets_package() {
         let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
-        
+
         // Should be able to get a known package
         let pkg = metadata.get_package("shipper");
         assert!(pkg.is_some());
@@ -644,8 +647,8 @@ mod tests {
     #[test]
     fn workspace_metadata_topological_order() {
         let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
-        
-        // Should be able to get topological order, though it may fail if 
+
+        // Should be able to get topological order, though it may fail if
         // there are circular dependencies in external packages
         let result = metadata.topological_order();
         // Just check it doesn't panic - the result depends on the workspace structure

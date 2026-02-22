@@ -2,14 +2,14 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-#[cfg(feature = "micro-cargo")]
-use cargo_metadata::{DependencyKind, Metadata, PackageId};
 #[cfg(not(feature = "micro-cargo"))]
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, PackageId};
+#[cfg(feature = "micro-cargo")]
+use cargo_metadata::{DependencyKind, Metadata, PackageId};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 
-use crate::types::{PlannedPackage, PublishLevel, ReleasePlan, ReleaseSpec};
+use crate::types::{PlannedPackage, ReleasePlan, ReleaseSpec};
 
 #[derive(Debug, Clone)]
 pub struct SkippedPackage {
@@ -321,6 +321,7 @@ fn compute_plan_id(registry_api_base: &str, packages: &[PlannedPackage]) -> Stri
     hex::encode(digest)
 }
 
+#[cfg(not(feature = "micro-types"))]
 impl ReleasePlan {
     /// Group packages by dependency level for parallel publishing.
     ///
@@ -329,7 +330,7 @@ impl ReleasePlan {
     /// in the plan. Level N packages depend only on packages in levels < N.
     ///
     /// This method uses the `dependencies` field of the ReleasePlan to determine levels.
-    pub fn group_by_levels(&self) -> Vec<PublishLevel> {
+    pub fn group_by_levels(&self) -> Vec<crate::types::PublishLevel> {
         use std::collections::HashMap;
 
         if self.packages.is_empty() {
@@ -339,7 +340,7 @@ impl ReleasePlan {
         // Assign levels using a simple algorithm:
         // Level 0: packages with no dependencies
         // Level N: packages whose maximum dependency level is N-1
-        let mut levels: Vec<PublishLevel> = Vec::new();
+        let mut levels: Vec<crate::types::PublishLevel> = Vec::new();
         let mut pkg_level: HashMap<String, usize> = HashMap::new();
 
         for pkg in &self.packages {
@@ -362,7 +363,7 @@ impl ReleasePlan {
 
             // Ensure we have enough levels
             while levels.len() < level {
-                levels.push(PublishLevel {
+                levels.push(crate::types::PublishLevel {
                     level: levels.len(),
                     packages: Vec::new(),
                 });

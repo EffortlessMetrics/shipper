@@ -27,12 +27,12 @@ pub fn resolve_token(registry_name: &str) -> Result<Option<String>> {
     let cargo_home = cargo_home_dir()?;
     for filename in [shipper_auth::CREDENTIALS_FILE, "credentials"] {
         let path = cargo_home.join(filename);
-        if path.exists() {
-            if let Some(token) = token_from_credentials_file(&path, registry_name)? {
-                let token = token.trim().to_string();
-                if !token.is_empty() {
-                    return Ok(Some(token));
-                }
+        if path.exists()
+            && let Some(token) = token_from_credentials_file(&path, registry_name)?
+        {
+            let token = token.trim().to_string();
+            if !token.is_empty() {
+                return Ok(Some(token));
             }
         }
     }
@@ -117,6 +117,18 @@ fn token_from_credentials_file(
                 return Ok(Some(tok.to_string()));
             }
         }
+
+        // Unquoted `[registries.crates.io]` in TOML creates nested tables
+        // (registries -> crates -> io) rather than a single dotted key.
+        if let Some(tok) = value
+            .get("registries")
+            .and_then(|t| t.get("crates"))
+            .and_then(|t| t.get("io"))
+            .and_then(|t| t.get("token"))
+            .and_then(|v| v.as_str())
+        {
+            return Ok(Some(tok.to_string()));
+        }
     }
 
     Ok(None)
@@ -131,6 +143,7 @@ fn cargo_home_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".cargo"))
 }
 
+#[allow(dead_code)]
 fn normalize_registry_for_env(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -145,8 +158,6 @@ fn normalize_registry_for_env(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use serial_test::serial;
     use tempfile::tempdir;
 
@@ -249,10 +260,13 @@ token = "token-dot"
         )
         .expect("write");
 
-        temp_env::with_vars([("CARGO_HOME", Some(td.path().to_str().expect("utf8"))], || {
-            let tok = resolve_token("crates-io").expect("resolve");
-            assert_eq!(tok.as_deref(), Some("token-dot"));
-        });
+        temp_env::with_vars(
+            [("CARGO_HOME", Some(td.path().to_str().expect("utf8")))],
+            || {
+                let tok = resolve_token("crates-io").expect("resolve");
+                assert_eq!(tok.as_deref(), Some("token-dot"));
+            },
+        );
     }
 
     #[test]

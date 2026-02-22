@@ -1,5 +1,7 @@
 Feature: Micro backend feature flags
-  Shipper's auth, git, events, lock, encrypt, environment, and storage modules can be provided by shared microcrates.
+  Shipper's auth, git, events, lock, encrypt, environment, process, storage, cargo,
+  registry, webhook, types, config, state, and store modules can be provided by shared
+  microcrates.
 
   Scenario: Preflight behavior stays stable with micro backends enabled
     Given a workspace with a dependency chain

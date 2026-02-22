@@ -44,12 +44,12 @@ jobs:
       - run:
           name: Run BDD compatibility matrix
           command: |
-            for feature_set in "" "micro-auth" "micro-git" "micro-events" "micro-lock" "micro-encrypt" "micro-environment" "micro-storage" "micro-cargo" "micro-all"; do
-              if [ -z "$feature_set" ]; then
-                cargo test -p shipper-cli --test bdd_publish -- --nocapture
-              else
+            for feature_set in "" "micro-auth" "micro-git" "micro-events" "micro-lock" "micro-encrypt" "micro-environment" "micro-storage" "micro-cargo" "micro-registry" "micro-process" "micro-webhook" "micro-types" "micro-config" "micro-state" "micro-store" "micro-all"; do
+            if [ -z "$feature_set" ]; then
+              cargo test -p shipper-cli --test bdd_publish -- --nocapture
+            else
                 cargo test -p shipper-cli --test bdd_publish --features "$feature_set" -- --nocapture
-              fi
+            fi
             done
 
       - save_cache:

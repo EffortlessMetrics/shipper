@@ -269,8 +269,9 @@ impl FileStorage {
     /// Ensure the base directory exists
     pub fn ensure_base_dir(&self) -> Result<()> {
         if !self.base_path.exists() {
-            std::fs::create_dir_all(&self.base_path)
-                .with_context(|| format!("failed to create directory: {}", self.base_path.display()))?;
+            std::fs::create_dir_all(&self.base_path).with_context(|| {
+                format!("failed to create directory: {}", self.base_path.display())
+            })?;
         }
         Ok(())
     }
@@ -285,21 +286,21 @@ impl StorageBackend for FileStorage {
 
     fn write(&self, path: &str, data: &[u8]) -> Result<()> {
         let full_path = self.base_path.join(path);
-        
+
         // Create parent directories if they don't exist
         if let Some(parent) = full_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create directory: {}", parent.display()))?;
         }
-        
+
         // Write to a temp file first, then rename for atomicity
         let tmp_path = full_path.with_extension("tmp");
         std::fs::write(&tmp_path, data)
             .with_context(|| format!("failed to write file: {}", tmp_path.display()))?;
-        
+
         std::fs::rename(&tmp_path, &full_path)
             .with_context(|| format!("failed to rename file to: {}", full_path.display()))?;
-        
+
         Ok(())
     }
 
@@ -329,7 +330,7 @@ impl StorageBackend for FileStorage {
             for entry in std::fs::read_dir(dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                
+
                 if path.is_dir() {
                     collect_files(&path, base, results)?;
                 } else if let Ok(relative) = path.strip_prefix(base)
@@ -363,7 +364,7 @@ impl StorageBackend for FileStorage {
 /// Currently only filesystem storage is fully implemented.
 pub fn build_storage_backend(config: &CloudStorageConfig) -> Result<Box<dyn StorageBackend>> {
     config.validate()?;
-    
+
     match config.storage_type {
         StorageType::File => Ok(Box::new(FileStorage::new(PathBuf::from(&config.base_path)))),
         StorageType::S3 => {
@@ -471,7 +472,7 @@ mod tests {
         let config = CloudStorageConfig::s3("my-bucket")
             .with_region("us-west-2")
             .with_credentials("key", "secret");
-        
+
         assert_eq!(config.storage_type, StorageType::S3);
         assert_eq!(config.bucket, "my-bucket");
         assert_eq!(config.region, Some("us-west-2".to_string()));
@@ -518,7 +519,9 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let storage = FileStorage::new(td.path().to_path_buf());
 
-        storage.write("nested/deep/path/test.txt", b"data").expect("write");
+        storage
+            .write("nested/deep/path/test.txt", b"data")
+            .expect("write");
 
         let data = storage.read("nested/deep/path/test.txt").expect("read");
         assert_eq!(data, b"data");

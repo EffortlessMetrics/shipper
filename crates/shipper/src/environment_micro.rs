@@ -27,16 +27,14 @@ fn normalize_version(raw: &str) -> Option<String> {
 /// Collect environment fingerprint details while preserving the existing in-crate
 /// API shape.
 pub fn collect_environment_fingerprint() -> EnvironmentFingerprint {
-    let environment_info = EnvironmentInfo::collect().unwrap_or_else(|_| {
-        EnvironmentInfo {
-            ci_environment: detect_environment(),
-            os: env::consts::OS.to_string(),
-            arch: env::consts::ARCH.to_string(),
-            rust_version: "unknown".to_string(),
-            cargo_version: "unknown".to_string(),
-            env_vars: std::collections::BTreeMap::new(),
-            collected_at: chrono::Utc::now(),
-        }
+    let environment_info = EnvironmentInfo::collect().unwrap_or_else(|_| EnvironmentInfo {
+        ci_environment: detect_environment(),
+        os: env::consts::OS.to_string(),
+        arch: env::consts::ARCH.to_string(),
+        rust_version: "unknown".to_string(),
+        cargo_version: "unknown".to_string(),
+        env_vars: std::collections::BTreeMap::new(),
+        collected_at: chrono::Utc::now(),
     });
 
     EnvironmentFingerprint {
@@ -62,8 +60,14 @@ mod tests {
 
     #[test]
     fn normalize_version_extracts_numeric_suffix() {
-        assert_eq!(normalize_version("cargo 1.75.0"), Some("1.75.0".to_string()));
-        assert_eq!(normalize_version("rustc 1.72.1"), Some("1.72.1".to_string()));
+        assert_eq!(
+            normalize_version("cargo 1.75.0"),
+            Some("1.75.0".to_string())
+        );
+        assert_eq!(
+            normalize_version("rustc 1.72.1"),
+            Some("1.72.1".to_string())
+        );
         assert_eq!(normalize_version("bad-version"), None);
     }
 

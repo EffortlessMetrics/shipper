@@ -14,8 +14,10 @@
 //! assert!(result.stdout.contains("cargo"));
 //! ```
 
+use std::io::Read;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -61,29 +63,136 @@ impl CommandResult {
     }
 }
 
+/// Result of a command execution with timeout bookkeeping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandOutput {
+    /// Exit code (or -1 when not available)
+    pub exit_code: i32,
+    /// Captured stdout.
+    pub stdout: String,
+    /// Captured stderr.
+    pub stderr: String,
+    /// Whether execution exceeded timeout.
+    pub timed_out: bool,
+    /// Total wall-clock duration.
+    pub duration: Duration,
+}
+
 /// Run a command and capture its output
 pub fn run_command(program: &str, args: &[&str]) -> Result<CommandResult> {
     let start = std::time::Instant::now();
-    
+
     let output = Command::new(program)
         .args(args)
         .output()
         .with_context(|| format!("failed to run command: {} {:?}", program, args))?;
-    
+
     Ok(CommandResult::from_output(&output, start.elapsed()))
 }
 
 /// Run a command in a specific directory
-pub fn run_command_in_dir(program: &str, args: &[&str], dir: &std::path::Path) -> Result<CommandResult> {
+pub fn run_command_in_dir(
+    program: &str,
+    args: &[&str],
+    dir: &std::path::Path,
+) -> Result<CommandResult> {
     let start = std::time::Instant::now();
-    
+
     let output = Command::new(program)
         .args(args)
         .current_dir(dir)
         .output()
-        .with_context(|| format!("failed to run command: {} {:?} in {}", program, args, dir.display()))?;
-    
+        .with_context(|| {
+            format!(
+                "failed to run command: {} {:?} in {}",
+                program,
+                args,
+                dir.display()
+            )
+        })?;
+
     Ok(CommandResult::from_output(&output, start.elapsed()))
+}
+
+/// Run a command with optional timeout and captured output.
+pub fn run_command_with_timeout(
+    program: &str,
+    args: &[&str],
+    working_dir: &std::path::Path,
+    timeout: Option<Duration>,
+) -> Result<CommandOutput> {
+    let start = Instant::now();
+
+    let Some(timeout_dur) = timeout else {
+        let output = run_command_in_dir(program, args, working_dir)?;
+        return Ok(CommandOutput {
+            exit_code: output.exit_code.unwrap_or(-1),
+            stdout: output.stdout,
+            stderr: output.stderr,
+            timed_out: false,
+            duration: Duration::from_millis(output.duration_ms),
+        });
+    };
+
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(working_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("failed to spawn command: {}", program))?;
+
+    let deadline = Instant::now() + timeout_dur;
+    loop {
+        match child
+            .try_wait()
+            .with_context(|| format!("failed to poll command: {}", program))?
+        {
+            Some(status) => {
+                return Ok(CommandOutput {
+                    exit_code: status.code().unwrap_or(-1),
+                    stdout: read_pipe(child.stdout.take()),
+                    stderr: read_pipe(child.stderr.take()),
+                    timed_out: false,
+                    duration: start.elapsed(),
+                });
+            }
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+
+                    let mut stderr = read_pipe(child.stderr.take());
+                    stderr.push_str(&format!(
+                        "\n{} timed out after {}",
+                        program,
+                        humantime::format_duration(timeout_dur)
+                    ));
+
+                    return Ok(CommandOutput {
+                        exit_code: -1,
+                        stdout: read_pipe(child.stdout.take()),
+                        stderr,
+                        timed_out: true,
+                        duration: start.elapsed(),
+                    });
+                }
+
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+fn read_pipe<R: Read>(stream: Option<R>) -> String {
+    let mut buffer = Vec::new();
+    if let Some(mut s) = stream {
+        let _ = s.read_to_end(&mut buffer);
+    }
+    String::from_utf8_lossy(&buffer).to_string()
 }
 
 /// Run a command with environment variables
@@ -93,32 +202,32 @@ pub fn run_command_with_env(
     env: &[(String, String)],
 ) -> Result<CommandResult> {
     let start = std::time::Instant::now();
-    
+
     let mut cmd = Command::new(program);
     cmd.args(args);
-    
+
     for (key, value) in env {
         cmd.env(key, value);
     }
-    
+
     let output = cmd
         .output()
         .with_context(|| format!("failed to run command: {} {:?}", program, args))?;
-    
+
     Ok(CommandResult::from_output(&output, start.elapsed()))
 }
 
 /// Run a command and stream output to stdout/stderr
 pub fn run_command_streaming(program: &str, args: &[&str]) -> Result<CommandResult> {
     let start = std::time::Instant::now();
-    
+
     let output = Command::new(program)
         .args(args)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .output()
         .with_context(|| format!("failed to run command: {} {:?}", program, args))?;
-    
+
     Ok(CommandResult::from_output(&output, start.elapsed()))
 }
 
@@ -128,7 +237,7 @@ pub fn run_command_simple(program: &str, args: &[&str]) -> Result<bool> {
         .args(args)
         .status()
         .with_context(|| format!("failed to run command: {} {:?}", program, args))?;
-    
+
     Ok(status.success())
 }
 
@@ -155,21 +264,36 @@ pub fn run_cargo_in_dir(args: &[&str], dir: &std::path::Path) -> Result<CommandR
 /// Run cargo publish (dry run)
 pub fn cargo_dry_run(manifest_path: &std::path::Path) -> Result<CommandResult> {
     run_cargo_in_dir(
-        &["publish", "--dry-run", "--manifest-path", manifest_path.to_str().unwrap_or("")],
+        &[
+            "publish",
+            "--dry-run",
+            "--manifest-path",
+            manifest_path.to_str().unwrap_or(""),
+        ],
         manifest_path.parent().unwrap_or(std::path::Path::new(".")),
     )
 }
 
 /// Run cargo publish
-pub fn cargo_publish(manifest_path: &std::path::Path, registry: Option<&str>) -> Result<CommandResult> {
-    let mut args = vec!["publish", "--manifest-path", manifest_path.to_str().unwrap_or("")];
-    
+pub fn cargo_publish(
+    manifest_path: &std::path::Path,
+    registry: Option<&str>,
+) -> Result<CommandResult> {
+    let mut args = vec![
+        "publish",
+        "--manifest-path",
+        manifest_path.to_str().unwrap_or(""),
+    ];
+
     if let Some(reg) = registry {
         args.push("--registry");
         args.push(reg);
     }
-    
-    run_cargo_in_dir(&args, manifest_path.parent().unwrap_or(std::path::Path::new(".")))
+
+    run_cargo_in_dir(
+        &args,
+        manifest_path.parent().unwrap_or(std::path::Path::new(".")),
+    )
 }
 
 #[cfg(test)]
@@ -198,7 +322,7 @@ mod tests {
             stderr: "".to_string(),
             duration_ms: 100,
         };
-        
+
         assert!(result.ok().is_ok());
     }
 
@@ -211,7 +335,7 @@ mod tests {
             stderr: "error".to_string(),
             duration_ms: 100,
         };
-        
+
         assert!(result.ok().is_err());
     }
 
@@ -253,7 +377,7 @@ mod tests {
             stderr: "".to_string(),
             duration_ms: 150,
         };
-        
+
         let json = serde_json::to_string(&result).expect("serialize");
         assert!(json.contains("\"success\":true"));
         assert!(json.contains("\"stdout\":\"output\""));

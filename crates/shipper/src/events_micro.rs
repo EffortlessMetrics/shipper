@@ -1,1 +1,1 @@
-pub use shipper_events::{events_path, EventLog, EVENTS_FILE};
+pub use shipper_events::{EVENTS_FILE, EventLog, events_path};

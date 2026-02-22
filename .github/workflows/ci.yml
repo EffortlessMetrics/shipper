@@ -204,7 +204,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        feature-set: ["", "micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-all"]
+        feature-set: ["", "micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-registry", "micro-process", "micro-webhook", "micro-types", "micro-config", "micro-state", "micro-store", "micro-all"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
