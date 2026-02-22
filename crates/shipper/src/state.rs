@@ -73,6 +73,119 @@ pub fn has_incomplete_state(state_dir: &Path) -> bool {
     state_path(state_dir).exists() && !receipt_path(state_dir).exists()
 }
 
+/// Load state with encryption support
+pub fn load_state_encrypted(
+    state_dir: &Path,
+    encrypt_config: &crate::encryption::EncryptionConfig,
+) -> Result<Option<ExecutionState>> {
+    let path = state_path(state_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let encryption = crate::encryption::StateEncryption::new(encrypt_config.clone())?;
+    let content = encryption.read_file(&path)?;
+
+    let st: ExecutionState = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse state JSON {}", path.display()))?;
+    Ok(Some(st))
+}
+
+/// Save state with encryption support
+pub fn save_state_encrypted(
+    state_dir: &Path,
+    state: &ExecutionState,
+    encrypt_config: &crate::encryption::EncryptionConfig,
+) -> Result<()> {
+    fs::create_dir_all(state_dir)
+        .with_context(|| format!("failed to create state dir {}", state_dir.display()))?;
+
+    let path = state_path(state_dir);
+
+    let encryption = crate::encryption::StateEncryption::new(encrypt_config.clone())?;
+    let data = serde_json::to_vec_pretty(state).context("failed to serialize state JSON")?;
+    encryption.write_file(&path, &data)
+}
+
+/// Write receipt with encryption support
+pub fn write_receipt_encrypted(
+    state_dir: &Path,
+    receipt: &Receipt,
+    encrypt_config: &crate::encryption::EncryptionConfig,
+) -> Result<()> {
+    fs::create_dir_all(state_dir)
+        .with_context(|| format!("failed to create state dir {}", state_dir.display()))?;
+
+    let path = receipt_path(state_dir);
+
+    let encryption = crate::encryption::StateEncryption::new(encrypt_config.clone())?;
+    let data = serde_json::to_vec_pretty(receipt).context("failed to serialize receipt JSON")?;
+    encryption.write_file(&path, &data)
+}
+
+/// Load receipt with encryption support
+pub fn load_receipt_encrypted(
+    state_dir: &Path,
+    encrypt_config: &crate::encryption::EncryptionConfig,
+) -> Result<Option<Receipt>> {
+    let path = receipt_path(state_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let encryption = crate::encryption::StateEncryption::new(encrypt_config.clone())?;
+    let content = encryption.read_file(&path)?;
+
+    // Try to parse as Receipt directly
+    if let Ok(receipt) = serde_json::from_str::<Receipt>(&content) {
+        // Validate the version
+        if let Err(_e) = validate_receipt_version(&receipt.receipt_version) {
+            // If version is too old, attempt migration
+            // Note: migration requires raw file access, so we'll handle this case separately
+            return migrate_receipt_encrypted(&path, encrypt_config).map(Some);
+        }
+        return Ok(Some(receipt));
+    }
+
+    // If direct parsing failed, attempt migration
+    migrate_receipt_encrypted(&path, encrypt_config).map(Some)
+}
+
+/// Migrate receipt with encryption support
+fn migrate_receipt_encrypted(
+    path: &Path,
+    encrypt_config: &crate::encryption::EncryptionConfig,
+) -> Result<Receipt> {
+    let encryption = crate::encryption::StateEncryption::new(encrypt_config.clone())?;
+    let content = encryption.read_file(path)?;
+
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse receipt JSON {}", path.display()))?;
+
+    let receipt_version = value
+        .get("receipt_version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("shipper.receipt.v1")
+        .to_string();
+
+    validate_receipt_version(&receipt_version)?;
+
+    let receipt = match receipt_version.as_str() {
+        "shipper.receipt.v1" => migrate_v1_to_v2(value)?,
+        "shipper.receipt.v2" => serde_json::from_value(value)
+            .with_context(|| format!("failed to deserialize receipt v2 from {}", path.display()))?,
+        _ => serde_json::from_value(value).with_context(|| {
+            format!(
+                "failed to deserialize receipt with unknown version {} from {}",
+                receipt_version,
+                path.display()
+            )
+        })?,
+    };
+
+    Ok(receipt)
+}
+
 /// Validate receipt schema version
 pub fn validate_receipt_version(version: &str) -> Result<()> {
     // Parse version string (e.g., "shipper.receipt.v2" -> 2)

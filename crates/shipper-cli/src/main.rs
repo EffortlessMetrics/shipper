@@ -3,134 +3,175 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 use shipper::config::{CliOverrides, ShipperConfig};
 use shipper::engine::{self, Reporter};
 use shipper::plan;
 use shipper::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
 
+mod progress;
+use progress::ProgressReporter;
+
 #[derive(Parser, Debug)]
 #[command(name = "shipper", version)]
 #[command(about = "Resumable, backoff-aware crates.io publishing for workspaces")]
 struct Cli {
     /// Path to a custom configuration file (.shipper.toml)
-    #[arg(long)]
+    #[arg(long, global = true)]
     config: Option<PathBuf>,
 
     /// Path to the workspace Cargo.toml
-    #[arg(long, default_value = "Cargo.toml")]
+    #[arg(long, default_value = "Cargo.toml", global = true)]
     manifest_path: PathBuf,
 
     /// Cargo registry name (default: crates-io)
-    #[arg(long)]
+    #[arg(long, global = true)]
     registry: Option<String>,
 
-    /// Registry API base URL (default: https://crates.io)
-    #[arg(long)]
+    /// Registry API base URL (default: <https://crates.io>)
+    #[arg(long, global = true)]
     api_base: Option<String>,
 
     /// Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members.
-    #[arg(long = "package")]
+    #[arg(long = "package", global = true)]
     packages: Vec<String>,
 
     /// Directory for shipper state and receipts (default: .shipper)
-    #[arg(long)]
+    #[arg(long, global = true)]
     state_dir: Option<PathBuf>,
 
     /// Number of output lines to capture for evidence (default: 50)
-    #[arg(long)]
+    #[arg(long, global = true)]
     output_lines: Option<usize>,
 
     /// Allow publishing from a dirty git working tree.
-    #[arg(long)]
+    #[arg(long, global = true)]
     allow_dirty: bool,
 
     /// Skip owners/permissions preflight.
-    #[arg(long)]
+    #[arg(long, global = true)]
     skip_ownership_check: bool,
 
     /// Fail preflight if ownership checks fail or if no token is available.
     ///
     /// Note: crates.io token scopes may not allow querying owners; this is best-effort.
-    #[arg(long)]
+    #[arg(long, global = true)]
     strict_ownership: bool,
 
     /// Pass --no-verify to cargo publish.
-    #[arg(long)]
+    #[arg(long, global = true)]
     no_verify: bool,
 
     /// Max attempts per crate publish step (default: 6)
-    #[arg(long)]
+    #[arg(long, global = true)]
     max_attempts: Option<u32>,
 
     /// Base backoff delay (e.g. 2s, 500ms; default: 2s)
-    #[arg(long)]
+    #[arg(long, global = true)]
     base_delay: Option<String>,
 
     /// Max backoff delay (e.g. 2m; default: 2m)
-    #[arg(long)]
+    #[arg(long, global = true)]
     max_delay: Option<String>,
 
+    /// Retry strategy: immediate, exponential (default), linear, constant
+    #[arg(long, global = true)]
+    retry_strategy: Option<String>,
+
+    /// Jitter factor for retry delays (0.0 = no jitter, 1.0 = full jitter; default: 0.5)
+    #[arg(long, global = true)]
+    retry_jitter: Option<f64>,
+
     /// How long to wait for registry visibility after a successful publish (default: 2m)
-    #[arg(long)]
+    #[arg(long, global = true)]
     verify_timeout: Option<String>,
 
     /// Poll interval for checking registry visibility (default: 5s)
-    #[arg(long)]
+    #[arg(long, global = true)]
     verify_poll: Option<String>,
 
     /// Readiness check method: api (default, fast), index (slower, more accurate), both (slowest, most reliable)
-    #[arg(long)]
+    #[arg(long, global = true)]
     readiness_method: Option<String>,
 
     /// How long to wait for registry visibility during readiness checks (default: 5m)
-    #[arg(long)]
+    #[arg(long, global = true)]
     readiness_timeout: Option<String>,
 
     /// Poll interval for readiness checks (default: 2s)
-    #[arg(long)]
+    #[arg(long, global = true)]
     readiness_poll: Option<String>,
 
     /// Disable readiness checks (for advanced users).
-    #[arg(long)]
+    #[arg(long, global = true)]
     no_readiness: bool,
 
     /// Force resume even if the computed plan differs from the state file.
-    #[arg(long)]
+    #[arg(long, global = true)]
     force_resume: bool,
 
     /// Force override of existing locks (use with caution)
-    #[arg(long)]
+    #[arg(long, global = true)]
     force: bool,
 
     /// Lock timeout duration (e.g. 1h, 30m; default: 1h). Locks older than this are considered stale.
-    #[arg(long)]
+    #[arg(long, global = true)]
     lock_timeout: Option<String>,
 
     /// Publish policy: safe (verify+strict), balanced (verify when needed), fast (no verify; default: safe)
-    #[arg(long)]
+    #[arg(long, global = true)]
     policy: Option<String>,
 
     /// Verify mode: workspace (default), package (per-crate), none (no verify)
-    #[arg(long)]
+    #[arg(long, global = true)]
     verify_mode: Option<String>,
 
     /// Enable parallel publishing (packages at the same dependency level are published concurrently)
-    #[arg(long)]
+    #[arg(long, global = true)]
     parallel: bool,
 
     /// Maximum number of concurrent publish operations (implies --parallel)
-    #[arg(long)]
+    #[arg(long, global = true)]
     max_concurrent: Option<usize>,
 
     /// Timeout per package publish operation when using parallel mode (e.g. 30m, 1h)
-    #[arg(long)]
+    #[arg(long, global = true)]
     per_package_timeout: Option<String>,
 
+    /// Webhook URL to send publish event notifications to
+    #[arg(long, global = true)]
+    webhook_url: Option<String>,
+
+    /// Optional secret for signing webhook payloads
+    #[arg(long, global = true)]
+    webhook_secret: Option<String>,
+
+    /// Enable encryption for state files
+    #[arg(long, global = true)]
+    encrypt: bool,
+
+    /// Passphrase for state file encryption (or use SHIPPER_ENCRYPT_KEY env var)
+    #[arg(long, global = true)]
+    encrypt_passphrase: Option<String>,
+
+    /// Target registries for multi-registry publishing (comma-separated list)
+    /// Example: --registries crates-io,my-registry
+    #[arg(long, global = true)]
+    registries: Option<String>,
+
+    /// Publish to all configured registries
+    #[arg(long, global = true)]
+    all_registries: bool,
+
     /// Output format: text (default) or json
-    #[arg(long, default_value = "text", global = true)]
+    #[arg(long, default_value = "text", value_parser = ["text", "json"], global = true)]
     format: String,
+
+    /// Show detailed dependency analysis for plan command
+    #[arg(long, global = true)]
+    verbose: bool,
 
     #[command(subcommand)]
     cmd: Commands,
@@ -166,6 +207,12 @@ enum Commands {
     /// Configuration file management.
     #[command(subcommand)]
     Config(ConfigCommands),
+    /// Generate shell completion scripts for the specified shell.
+    Completion {
+        /// Shell to generate completions for.
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -176,6 +223,12 @@ enum CiCommands {
     /// Print GitLab CI workflow snippet.
     #[command(name = "gitlab")]
     GitLab,
+    /// Print CircleCI workflow snippet.
+    #[command(name = "circleci")]
+    CircleCI,
+    /// Print Azure DevOps pipeline snippet.
+    #[command(name = "azure-devops")]
+    AzureDevOps,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -218,6 +271,11 @@ fn main() -> Result<()> {
         return run_config(config_cmd.clone());
     }
 
+    // Handle Completion commands early (they don't need workspace plan)
+    if let Commands::Completion { shell } = &cli.cmd {
+        return run_completion(shell);
+    }
+
     let spec = ReleaseSpec {
         manifest_path: cli.manifest_path.clone(),
         registry: Registry {
@@ -253,6 +311,20 @@ fn main() -> Result<()> {
                 .with_context(|| "Failed to load config from workspace")?
         };
 
+    // Validate loaded configuration before using it for runtime options.
+    if let Some(ref cfg) = config {
+        let config_path = cli
+            .config
+            .clone()
+            .unwrap_or_else(|| planned.workspace_root.join(".shipper.toml"));
+        cfg.validate().with_context(|| {
+            format!(
+                "Configuration validation failed for {}",
+                config_path.display()
+            )
+        })?;
+    }
+
     // Apply registry from config if CLI didn't set it
     if let Some(ref cfg) = config
         && let Some(ref reg_config) = cfg.registry
@@ -276,6 +348,12 @@ fn main() -> Result<()> {
         max_attempts: cli.max_attempts,
         base_delay: cli.base_delay.as_deref().map(parse_duration).transpose()?,
         max_delay: cli.max_delay.as_deref().map(parse_duration).transpose()?,
+        retry_strategy: cli
+            .retry_strategy
+            .as_deref()
+            .map(parse_retry_strategy)
+            .transpose()?,
+        retry_jitter: cli.retry_jitter,
         verify_timeout: cli
             .verify_timeout
             .as_deref()
@@ -318,6 +396,17 @@ fn main() -> Result<()> {
             .as_deref()
             .map(parse_duration)
             .transpose()?,
+        webhook_url: cli.webhook_url.clone(),
+        webhook_secret: cli.webhook_secret.clone(),
+        encrypt: cli.encrypt,
+        encrypt_passphrase: cli.encrypt_passphrase.clone(),
+        registries: cli.registries.as_ref().map(|s| {
+            s.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        }),
+        all_registries: cli.all_registries,
     };
 
     // Merge CLI overrides with config (or defaults if no config)
@@ -328,14 +417,26 @@ fn main() -> Result<()> {
 
     match cli.cmd {
         Commands::Plan => {
-            print_plan(&planned);
+            print_plan(&planned, cli.verbose);
         }
         Commands::Preflight => {
             let rep = engine::run_preflight(&planned, &opts, &mut reporter)?;
             print_preflight(&rep, &cli.format);
         }
         Commands::Publish => {
+            let total_packages = planned.plan.packages.len();
+            let mut progress = ProgressReporter::new(total_packages);
+
+            // Show initial progress if we have packages
+            if total_packages > 0 {
+                let first_pkg = &planned.plan.packages[0];
+                progress.set_package(1, &first_pkg.name, &first_pkg.version);
+            }
+
             let receipt = engine::run_publish(&planned, &opts, &mut reporter)?;
+
+            progress.finish();
+
             print_receipt(
                 &receipt,
                 &planned.workspace_root,
@@ -344,7 +445,19 @@ fn main() -> Result<()> {
             );
         }
         Commands::Resume => {
+            let total_packages = planned.plan.packages.len();
+            let mut progress = ProgressReporter::new(total_packages);
+
+            // Show initial progress if we have packages
+            if total_packages > 0 {
+                let first_pkg = &planned.plan.packages[0];
+                progress.set_package(1, &first_pkg.name, &first_pkg.version);
+            }
+
             let receipt = engine::run_resume(&planned, &opts, &mut reporter)?;
+
+            progress.finish();
+
             print_receipt(
                 &receipt,
                 &planned.workspace_root,
@@ -368,11 +481,20 @@ fn main() -> Result<()> {
             run_ci(ci_cmd, &opts.state_dir, &planned.workspace_root)?;
         }
         Commands::Clean { keep_receipt } => {
-            run_clean(&opts.state_dir, &planned.workspace_root, keep_receipt)?;
+            run_clean(
+                &opts.state_dir,
+                &planned.workspace_root,
+                keep_receipt,
+                opts.force,
+            )?;
         }
         Commands::Config(_) => {
             // This should never be reached since we handle Config commands early
             unreachable!("Config commands should be handled before this match");
+        }
+        Commands::Completion { .. } => {
+            // This should never be reached since we handle Completion commands early
+            unreachable!("Completion commands should be handled before this match");
         }
     }
 
@@ -410,13 +532,29 @@ fn parse_readiness_method(s: &str) -> Result<shipper::types::ReadinessMethod> {
     }
 }
 
-fn print_plan(ws: &plan::PlannedWorkspace) {
+fn parse_retry_strategy(s: &str) -> Result<shipper::retry::RetryStrategyType> {
+    match s.to_lowercase().as_str() {
+        "immediate" => Ok(shipper::retry::RetryStrategyType::Immediate),
+        "exponential" => Ok(shipper::retry::RetryStrategyType::Exponential),
+        "linear" => Ok(shipper::retry::RetryStrategyType::Linear),
+        "constant" => Ok(shipper::retry::RetryStrategyType::Constant),
+        _ => bail!(
+            "invalid retry-strategy: {s} (expected: immediate, exponential, linear, constant)"
+        ),
+    }
+}
+
+fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool) {
     println!("plan_id: {}", ws.plan.plan_id);
     println!(
         "registry: {} ({})",
         ws.plan.registry.name, ws.plan.registry.api_base
     );
     println!("workspace_root: {}", ws.workspace_root.display());
+    println!();
+
+    let total_packages = ws.plan.packages.len();
+    println!("Total packages to publish: {}", total_packages);
     println!();
 
     if !ws.skipped.is_empty() {
@@ -427,8 +565,159 @@ fn print_plan(ws: &plan::PlannedWorkspace) {
         println!();
     }
 
+    if verbose {
+        // Enhanced verbose output with dependency analysis
+        print_detailed_plan(ws);
+    } else {
+        // Simple output
+        for (idx, p) in ws.plan.packages.iter().enumerate() {
+            println!("{:>3}. {}@{}", idx + 1, p.name, p.version);
+        }
+    }
+}
+
+fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
+    // Get dependency levels for parallel publishing analysis
+    let levels = ws.plan.group_by_levels();
+    let total_levels = levels.len();
+
+    println!("=== Dependency Analysis ===");
+    println!();
+
+    // Show dependency levels for parallel publishing
+    println!("Publishing Levels (packages at same level can be published in parallel):");
+    println!();
+    for level in &levels {
+        let level_pkgs: Vec<String> = level
+            .packages
+            .iter()
+            .map(|p| format!("{}@{}", p.name, p.version))
+            .collect();
+        println!("  Level {}: {}", level.level, level_pkgs.join(", "));
+    }
+    println!();
+
+    // Show full dependency graph
+    println!("Dependency Graph:");
+    println!();
     for (idx, p) in ws.plan.packages.iter().enumerate() {
-        println!("{:>3}. {}@{}", idx + 1, p.name, p.version);
+        let deps = ws.plan.dependencies.get(&p.name);
+        let deps_str = match deps {
+            Some(deps) if !deps.is_empty() => {
+                let dep_versions: Vec<String> = deps
+                    .iter()
+                    .filter_map(|dep_name| {
+                        ws.plan
+                            .packages
+                            .iter()
+                            .find(|pkg| &pkg.name == dep_name)
+                            .map(|pkg| format!("{}@{}", dep_name, pkg.version))
+                    })
+                    .collect();
+                format!("depends on: {}", dep_versions.join(", "))
+            }
+            _ => String::from("no workspace dependencies"),
+        };
+        println!("  {:>3}. {}@{} ({})", idx + 1, p.name, p.version, deps_str);
+    }
+    println!();
+
+    // Show potential issues / preflight considerations
+    println!("=== Preflight Considerations ===");
+    println!();
+
+    // Analyze potential issues
+    let mut issues: Vec<String> = Vec::new();
+
+    // Check for packages with many dependencies (may take longer)
+    for p in &ws.plan.packages {
+        #[allow(clippy::collapsible_if)]
+        if let Some(deps) = ws.plan.dependencies.get(&p.name) {
+            if deps.len() > 3 {
+                issues.push(format!(
+                    "  - {}@{} has {} dependencies (may require longer publish time)",
+                    p.name,
+                    p.version,
+                    deps.len()
+                ));
+            }
+        }
+    }
+
+    // Check for packages that are depended upon by many others
+    let mut dependents_count: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for deps in ws.plan.dependencies.values() {
+        for dep in deps {
+            *dependents_count.entry(dep.as_str()).or_insert(0) += 1;
+        }
+    }
+    for (name, count) in &dependents_count {
+        #[allow(clippy::collapsible_if)]
+        if *count > 3 {
+            if let Some(pkg) = ws.plan.packages.iter().find(|p| p.name == *name) {
+                issues.push(format!(
+                    "  - {}@{} is a core dependency for {} packages (critical path)",
+                    pkg.name, pkg.version, count
+                ));
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        println!("  No obvious issues detected.");
+        println!("  All packages have reasonable dependency structures.");
+    } else {
+        for issue in &issues {
+            println!("{}", issue);
+        }
+    }
+    println!();
+
+    // Estimate time analysis (rough estimates)
+    println!("=== Estimated Publishing Analysis ===");
+    println!();
+
+    // Calculate max parallel packages per level
+    let max_parallel = levels.iter().map(|l| l.packages.len()).max().unwrap_or(0);
+    println!(
+        "  Parallel publishing: {}",
+        if max_parallel > 1 {
+            "enabled"
+        } else {
+            "sequential"
+        }
+    );
+    println!("  Max concurrent packages: {}", max_parallel);
+    println!("  Total publish levels: {}", total_levels);
+
+    // Rough time estimate (assuming ~30s per package + network overhead)
+    let total_packages = ws.plan.packages.len();
+    let estimated_sequential_secs = total_packages * 30;
+    let estimated_parallel_secs = levels.iter().map(|_l| 30).sum::<usize>();
+    println!(
+        "  Estimated time (sequential): ~{}s ({:.1}min)",
+        estimated_sequential_secs,
+        estimated_sequential_secs as f64 / 60.0
+    );
+    println!(
+        "  Estimated time (parallel): ~{}s ({:.1}min)",
+        estimated_parallel_secs,
+        estimated_parallel_secs as f64 / 60.0
+    );
+    println!();
+
+    // Show final publish order
+    println!("=== Full Publish Order ===");
+    println!();
+    for (idx, p) in ws.plan.packages.iter().enumerate() {
+        let level = levels
+            .iter()
+            .find(|l| l.packages.iter().any(|lp| lp.name == p.name));
+        let level_str = level
+            .map(|l| format!("[Level {}]", l.level))
+            .unwrap_or_else(|| "[?]".to_string());
+        println!("  {:>3}. {} {} @{}", idx + 1, level_str, p.name, p.version);
     }
 }
 
@@ -784,8 +1073,18 @@ fn run_doctor(
         ws.plan.registry.name, ws.plan.registry.api_base
     );
 
-    let token = shipper::auth::resolve_token(&ws.plan.registry.name)?;
-    println!("token_detected: {}", token.is_some());
+    let auth_type = shipper::auth::detect_auth_type(&ws.plan.registry.name)?;
+    println!(
+        "token_detected: {}",
+        matches!(auth_type, Some(shipper::types::AuthType::Token))
+    );
+    let auth_label = match auth_type {
+        Some(shipper::types::AuthType::Token) => "token",
+        Some(shipper::types::AuthType::TrustedPublishing) => "trusted",
+        Some(shipper::types::AuthType::Unknown) => "unknown",
+        None => "-",
+    };
+    println!("auth_type: {}", auth_label);
 
     let abs_state = if opts.state_dir.is_absolute() {
         opts.state_dir.clone()
@@ -889,12 +1188,97 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
             println!("    expire_in: 1 day");
             println!("    when: always");
         }
+        CiCommands::CircleCI => {
+            println!("# CircleCI config snippet for Shipper");
+            println!("# Add this to your .circleci/config.yml");
+            println!();
+            println!("version: 2.1");
+            println!();
+            println!("jobs:");
+            println!("  publish:");
+            println!("    docker:");
+            println!("      - image: cimg/rust:latest");
+            println!("    steps:");
+            println!("      - checkout");
+            println!("      - restore_cache:");
+            println!("          keys:");
+            println!("            - shipper-state-{{{{ .Branch }}}}-{{{{ .Revision }}}}");
+            println!("            - shipper-state-{{{{ .Branch }}}}");
+            println!("            - shipper-state-");
+            println!("      - run:");
+            println!("          name: Install Shipper");
+            println!("          command: cargo install shipper-cli --locked");
+            println!("      - run:");
+            println!("          name: Publish Crates");
+            println!("          command: shipper publish");
+            println!("          environment:");
+            println!("            CARGO_REGISTRY_TOKEN: ${{{{ CARGO_REGISTRY_TOKEN }}}}");
+            println!("      - save_cache:");
+            println!("          key: shipper-state-{{{{ .Branch }}}}-{{{{ .Revision }}}}");
+            println!("          paths:");
+            println!("            - {}", abs_state.display());
+            println!("      - store_artifacts:");
+            println!("          path: {}", abs_state.display());
+            println!("          destination: shipper-state");
+            println!();
+            println!("workflows:");
+            println!("  version: 2");
+            println!("  publish:");
+            println!("    jobs:");
+            println!("      - publish:");
+            println!("          filters:");
+            println!("            branches:");
+            println!("              only: main");
+            println!("          context: cargo-registry");
+        }
+        CiCommands::AzureDevOps => {
+            println!("# Azure DevOps pipeline snippet for Shipper");
+            println!("# Add this to your azure-pipelines.yml");
+            println!();
+            println!("trigger:");
+            println!("  - main");
+            println!();
+            println!("pool:");
+            println!("  vmImage: 'ubuntu-latest'");
+            println!();
+            println!("variables:");
+            println!("  CARGO_HOME: $(Pipeline.Workspace)/.cargo");
+            println!();
+            println!("steps:");
+            println!("  - task: Cache@2");
+            println!("    displayName: 'Cache Cargo and Shipper State'");
+            println!("    inputs:");
+            println!("      key: 'shipper | \"$(Agent.OS)\" | \"$(Build.SourceVersion)\"'");
+            println!("      restoreKeys: |");
+            println!("        shipper | \"$(Agent.OS)\"");
+            println!("        shipper");
+            println!("      path: $(CARGO_HOME)");
+            println!("      cacheHitVar: CACHE_RESTORED");
+            println!();
+            println!("  - script: cargo install shipper-cli --locked");
+            println!("    displayName: 'Install Shipper'");
+            println!();
+            println!("  - script: shipper publish");
+            println!("    displayName: 'Publish Crates'");
+            println!("    env:");
+            println!("      CARGO_REGISTRY_TOKEN: $(CARGO_REGISTRY_TOKEN)");
+            println!();
+            println!("  - publish: {}", abs_state.display());
+            println!("    displayName: 'Publish Shipper State Artifact'");
+            println!("    condition: succeededOrFailed()");
+            println!("    artifact: 'shipper-state'");
+        }
     }
 
     Ok(())
 }
 
-fn run_clean(state_dir: &PathBuf, workspace_root: &Path, keep_receipt: bool) -> Result<()> {
+fn run_clean(
+    state_dir: &PathBuf,
+    workspace_root: &Path,
+    keep_receipt: bool,
+    force: bool,
+) -> Result<()> {
     let abs_state = if state_dir.is_absolute() {
         state_dir.clone()
     } else {
@@ -908,14 +1292,29 @@ fn run_clean(state_dir: &PathBuf, workspace_root: &Path, keep_receipt: bool) -> 
 
     // Check for active lock
     if lock_path.exists() {
-        let lock_info = shipper::lock::LockFile::read_lock_info(&abs_state)?;
-        eprintln!("[warn] Active lock found:");
-        eprintln!("[warn]   PID: {}", lock_info.pid);
-        eprintln!("[warn]   Hostname: {}", lock_info.hostname);
-        eprintln!("[warn]   Acquired at: {}", lock_info.acquired_at);
-        eprintln!("[warn]   Plan ID: {:?}", lock_info.plan_id);
-        eprintln!("[warn] Use --force to override the lock");
-        bail!("cannot clean: active lock exists");
+        if force {
+            eprintln!(
+                "[warn] --force specified; removing lock file: {}",
+                lock_path.display()
+            );
+            std::fs::remove_file(&lock_path)
+                .with_context(|| format!("failed to remove lock file {}", lock_path.display()))?;
+        } else {
+            match shipper::lock::LockFile::read_lock_info(&abs_state) {
+                Ok(lock_info) => {
+                    eprintln!("[warn] Active lock found:");
+                    eprintln!("[warn]   PID: {}", lock_info.pid);
+                    eprintln!("[warn]   Hostname: {}", lock_info.hostname);
+                    eprintln!("[warn]   Acquired at: {}", lock_info.acquired_at);
+                    eprintln!("[warn]   Plan ID: {:?}", lock_info.plan_id);
+                }
+                Err(err) => {
+                    eprintln!("[warn] Active lock found but metadata could not be read: {err:#}");
+                }
+            }
+            eprintln!("[warn] Use --force to override the lock");
+            bail!("cannot clean: active lock exists");
+        }
     }
 
     // Remove state file
@@ -977,10 +1376,21 @@ fn run_config(cmd: ConfigCommands) -> Result<()> {
     Ok(())
 }
 
+fn run_completion(shell: &Shell) -> Result<()> {
+    clap_complete::generate(
+        *shell,
+        &mut Cli::command(),
+        "shipper",
+        &mut std::io::stdout(),
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
+    use chrono::Utc;
     use serial_test::serial;
     use tempfile::tempdir;
 
@@ -1011,6 +1421,30 @@ mod tests {
     fn parse_duration_handles_valid_and_invalid_inputs() {
         assert!(parse_duration("1s").is_ok());
         assert!(parse_duration("nope").is_err());
+    }
+
+    #[test]
+    fn global_flags_parse_after_subcommand() {
+        let cli = Cli::try_parse_from([
+            "shipper",
+            "preflight",
+            "--allow-dirty",
+            "--strict-ownership",
+            "--verify-mode",
+            "package",
+            "--policy",
+            "safe",
+            "--format",
+            "json",
+        ])
+        .expect("parse CLI");
+
+        assert!(matches!(cli.cmd, Commands::Preflight));
+        assert!(cli.allow_dirty);
+        assert!(cli.strict_ownership);
+        assert_eq!(cli.verify_mode.as_deref(), Some("package"));
+        assert_eq!(cli.policy.as_deref(), Some("safe"));
+        assert_eq!(cli.format, "json");
     }
 
     #[test]
@@ -1109,6 +1543,9 @@ mod tests {
             max_attempts: 1,
             base_delay: Duration::from_millis(0),
             max_delay: Duration::from_millis(0),
+            retry_strategy: shipper::retry::RetryStrategyType::Exponential,
+            retry_jitter: 0.5,
+            retry_per_error: shipper::retry::PerErrorConfig::default(),
             verify_timeout: Duration::from_millis(0),
             verify_poll_interval: Duration::from_millis(0),
             state_dir: state_dir.clone(),
@@ -1120,6 +1557,9 @@ mod tests {
             readiness: shipper::types::ReadinessConfig::default(),
             output_lines: 50,
             parallel: shipper::types::ParallelConfig::default(),
+            webhook: shipper::webhook::WebhookConfig::default(),
+            encryption: shipper::encryption::EncryptionConfig::default(),
+            registries: vec![],
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
@@ -1171,6 +1611,9 @@ mod tests {
             max_attempts: 1,
             base_delay: Duration::from_millis(0),
             max_delay: Duration::from_millis(0),
+            retry_strategy: shipper::retry::RetryStrategyType::Exponential,
+            retry_jitter: 0.5,
+            retry_per_error: shipper::retry::PerErrorConfig::default(),
             verify_timeout: Duration::from_millis(0),
             verify_poll_interval: Duration::from_millis(0),
             state_dir: td.path().join("abs-state-2"),
@@ -1182,6 +1625,9 @@ mod tests {
             readiness: shipper::types::ReadinessConfig::default(),
             output_lines: 50,
             parallel: shipper::types::ParallelConfig::default(),
+            webhook: shipper::webhook::WebhookConfig::default(),
+            encryption: shipper::encryption::EncryptionConfig::default(),
+            registries: vec![],
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
@@ -1378,13 +1824,21 @@ mode = "fast"
                 strict_ownership: false,
             },
             retry: shipper::config::RetryConfig {
+                policy: shipper::retry::RetryPolicy::Custom,
                 max_attempts: 10,
                 base_delay: Duration::from_secs(5),
                 max_delay: Duration::from_secs(300),
+                strategy: shipper::retry::RetryStrategyType::Exponential,
+                jitter: 0.5,
+                per_error: shipper::retry::PerErrorConfig::default(),
             },
             state_dir: None,
             registry: None,
+            registries: shipper::config::MultiRegistryConfig::default(),
             parallel: shipper::types::ParallelConfig::default(),
+            webhook: shipper::webhook::WebhookConfig::default(),
+            encryption: shipper::config::EncryptionConfigInner::default(),
+            storage: shipper::config::StorageConfigInner::default(),
         };
 
         // CLI overrides some values, leaves others as None
@@ -1430,5 +1884,65 @@ mode = "fast"
             Duration::from_secs(1800),
             "config lock_timeout should apply"
         );
+    }
+
+    #[test]
+    fn run_clean_errors_when_lock_exists_without_force() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = PathBuf::from(".shipper");
+        let abs_state = td.path().join(&state_dir);
+        fs::create_dir_all(&abs_state).expect("mkdir");
+
+        let lock_info = shipper::lock::LockInfo {
+            pid: 12345,
+            hostname: "test-host".to_string(),
+            acquired_at: Utc::now(),
+            plan_id: Some("plan-123".to_string()),
+        };
+        fs::write(
+            abs_state.join(shipper::lock::LOCK_FILE),
+            serde_json::to_string(&lock_info).expect("serialize"),
+        )
+        .expect("write lock");
+
+        let err = run_clean(&state_dir, td.path(), false, false).expect_err("must fail");
+        assert!(err.to_string().contains("cannot clean: active lock exists"));
+        assert!(abs_state.join(shipper::lock::LOCK_FILE).exists());
+    }
+
+    #[test]
+    fn run_clean_force_removes_lock_and_state_files() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = PathBuf::from(".shipper");
+        let abs_state = td.path().join(&state_dir);
+        fs::create_dir_all(&abs_state).expect("mkdir");
+
+        let state_path = abs_state.join(shipper::state::STATE_FILE);
+        let receipt_path = abs_state.join(shipper::state::RECEIPT_FILE);
+        let events_path = abs_state.join(shipper::events::EVENTS_FILE);
+        let lock_path = abs_state.join(shipper::lock::LOCK_FILE);
+
+        fs::write(&state_path, "{}").expect("write state");
+        fs::write(&receipt_path, "{}").expect("write receipt");
+        fs::write(&events_path, "{}").expect("write events");
+
+        let lock_info = shipper::lock::LockInfo {
+            pid: 12345,
+            hostname: "test-host".to_string(),
+            acquired_at: Utc::now(),
+            plan_id: Some("plan-123".to_string()),
+        };
+        fs::write(
+            &lock_path,
+            serde_json::to_string(&lock_info).expect("serialize"),
+        )
+        .expect("write lock");
+
+        run_clean(&state_dir, td.path(), false, true).expect("clean with force");
+
+        assert!(!state_path.exists(), "state file should be removed");
+        assert!(!receipt_path.exists(), "receipt file should be removed");
+        assert!(!events_path.exists(), "events file should be removed");
+        assert!(!lock_path.exists(), "lock file should be removed");
     }
 }

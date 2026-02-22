@@ -1,0 +1,77 @@
+# Dependabot configuration for shipper
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+
+updates:
+  # Rust dependencies
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "EffortlessMetrics/shipper-maintainers"
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      # Group minor/patch updates for dev dependencies
+      dev-deps:
+        patterns:
+          - "proptest"
+          - "insta"
+          - "assert_cmd"
+          - "tempfile"
+          - "serial_test"
+          - "tiny_http"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group tokio ecosystem updates
+      tokio:
+        patterns:
+          - "tokio"
+          - "tokio-*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group serde ecosystem
+      serde:
+        patterns:
+          - "serde"
+          - "serde_*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "EffortlessMetrics/shipper-maintainers"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

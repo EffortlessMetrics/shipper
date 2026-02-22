@@ -4,27 +4,50 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "CLI for reliable, resumable Rust crate publishing"
-documentation = "https://docs.rs/shipper-cli"
+description = "Command-line tool for reliable, resumable Rust workspace publishing"
+readme = "README.md"
+documentation = "https://github.com/EffortlessMetrics/shipper/tree/main/crates/shipper-cli"
 homepage = "https://github.com/EffortlessMetrics/shipper"
 repository = "https://github.com/EffortlessMetrics/shipper"
-keywords = ["cargo", "publish", "workspace", "registry", "ci"]
-categories = ["development-tools::cargo-plugins"]
+keywords = ["cargo", "publish", "workspace", "cli", "ci"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "shipper"
 path = "src/main.rs"
 
 [dependencies]
-shipper = { path = "../shipper" }
+shipper = { path = "../shipper", version = "0.2.0" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 serde_json = "1"
 humantime = "2"
 chrono = { version = "0.4", features = ["serde"] }
+atty = "0.2"
+indicatif = "0.17"
 
 [lints]
 workspace = true
+
+[features]
+default = []
+micro-auth = ["shipper/micro-auth"]
+micro-git = ["shipper/micro-git"]
+micro-events = ["shipper/micro-events"]
+micro-lock = ["shipper/micro-lock"]
+micro-encrypt = ["shipper/micro-encrypt"]
+micro-environment = ["shipper/micro-environment"]
+micro-storage = ["shipper/micro-storage"]
+micro-cargo = ["shipper/micro-cargo"]
+micro-registry = ["shipper/micro-registry"]
+micro-process = ["shipper/micro-process"]
+micro-webhook = ["shipper/micro-webhook"]
+micro-types = ["shipper/micro-types"]
+micro-config = ["shipper/micro-config"]
+micro-state = ["shipper/micro-state"]
+micro-store = ["shipper/micro-store"]
+micro-all = ["shipper/micro-all"]
 
 [dev-dependencies]
 assert_cmd = "2"
@@ -34,3 +57,4 @@ serial_test = "3"
 tempfile = "3"
 tiny_http = "0.12"
 temp-env = "0.3"
+serde_yaml = "0.9"

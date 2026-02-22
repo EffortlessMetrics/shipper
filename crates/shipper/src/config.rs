@@ -11,9 +11,14 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::types::{
-    ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, RuntimeOptions, VerifyMode,
-    deserialize_duration, serialize_duration,
+    ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, Registry, RuntimeOptions,
+    VerifyMode, deserialize_duration, serialize_duration,
 };
+
+use crate::encryption::EncryptionConfig as EncryptionSettings;
+use crate::retry::{PerErrorConfig, RetryPolicy, RetryStrategyType};
+use crate::storage::{CloudStorageConfig, StorageType};
+use crate::webhook::WebhookConfig;
 
 /// Nested policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -32,9 +37,13 @@ pub struct VerifyConfig {
 }
 
 /// Nested retry configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
-    /// Max attempts per crate publish step
+    /// Retry policy preset: default, aggressive, conservative, or custom
+    #[serde(default)]
+    pub policy: RetryPolicy,
+
+    /// Max attempts per crate publish step (used when policy is custom or as fallback)
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
 
@@ -53,10 +62,22 @@ pub struct RetryConfig {
     )]
     #[serde(default = "default_max_delay")]
     pub max_delay: Duration,
+
+    /// Strategy type: immediate, exponential, linear, constant
+    #[serde(default)]
+    pub strategy: RetryStrategyType,
+
+    /// Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
+    #[serde(default = "default_jitter")]
+    pub jitter: f64,
+
+    /// Per-error-type retry configuration
+    #[serde(default)]
+    pub per_error: PerErrorConfig,
 }
 
 /// Nested output configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputConfig {
     /// Number of output lines to capture for evidence
     #[serde(default = "default_output_lines")]
@@ -64,7 +85,7 @@ pub struct OutputConfig {
 }
 
 /// Nested lock configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockConfig {
     /// Lock timeout duration
     #[serde(
@@ -73,6 +94,129 @@ pub struct LockConfig {
     )]
     #[serde(default = "default_lock_timeout")]
     pub timeout: Duration,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            policy: RetryPolicy::Default,
+            max_attempts: default_max_attempts(),
+            base_delay: default_base_delay(),
+            max_delay: default_max_delay(),
+            strategy: RetryStrategyType::Exponential,
+            jitter: 0.5,
+            per_error: PerErrorConfig::default(),
+        }
+    }
+}
+
+fn default_jitter() -> f64 {
+    0.5
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            lines: default_output_lines(),
+        }
+    }
+}
+
+impl Default for LockConfig {
+    fn default() -> Self {
+        Self {
+            timeout: default_lock_timeout(),
+        }
+    }
+}
+
+/// Nested encryption configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EncryptionConfigInner {
+    /// Enable encryption for state files
+    #[serde(default)]
+    pub enabled: bool,
+    /// Passphrase for encryption/decryption (can also be set via SHIPPER_ENCRYPT_KEY env var)
+    #[serde(default)]
+    pub passphrase: Option<String>,
+    /// Environment variable to read passphrase from (default: SHIPPER_ENCRYPT_KEY)
+    #[serde(default)]
+    pub env_key: Option<String>,
+}
+
+/// Nested storage configuration for cloud storage backends
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StorageConfigInner {
+    /// Storage type: file, s3, gcs, or azure
+    #[serde(default)]
+    pub storage_type: StorageType,
+    /// Bucket/container name
+    #[serde(default)]
+    pub bucket: Option<String>,
+    /// Region (for S3) or project ID (for GCS)
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Base path within the bucket
+    #[serde(default)]
+    pub base_path: Option<String>,
+    /// Custom endpoint for S3-compatible services (MinIO, DigitalOcean Spaces, etc.)
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Access key ID
+    #[serde(default)]
+    pub access_key_id: Option<String>,
+    /// Secret access key
+    #[serde(default)]
+    pub secret_access_key: Option<String>,
+}
+
+impl StorageConfigInner {
+    /// Build CloudStorageConfig from this configuration
+    ///
+    /// Returns None if storage is not configured (i.e., using local file storage)
+    pub fn to_cloud_config(&self) -> Option<CloudStorageConfig> {
+        // Only build cloud config if bucket is specified
+        let bucket = self.bucket.as_ref()?;
+
+        let mut config = CloudStorageConfig::new(self.storage_type.clone(), bucket.clone());
+
+        if let Some(ref region) = self.region {
+            config.region = Some(region.clone());
+        }
+        if let Some(ref base_path) = self.base_path {
+            config.base_path = base_path.clone();
+        }
+        if let Some(ref endpoint) = self.endpoint {
+            config.endpoint = Some(endpoint.clone());
+        }
+        if let Some(ref access_key_id) = self.access_key_id {
+            config.access_key_id = Some(access_key_id.clone());
+        }
+        if let Some(ref secret_access_key) = self.secret_access_key {
+            config.secret_access_key = Some(secret_access_key.clone());
+        }
+
+        // Check for environment variable overrides
+        config.access_key_id = config
+            .access_key_id
+            .clone()
+            .or_else(|| std::env::var("SHIPPER_STORAGE_ACCESS_KEY_ID").ok());
+        config.secret_access_key = config
+            .secret_access_key
+            .clone()
+            .or_else(|| std::env::var("SHIPPER_STORAGE_SECRET_ACCESS_KEY").ok());
+        config.region = config
+            .region
+            .clone()
+            .or_else(|| std::env::var("SHIPPER_STORAGE_REGION").ok());
+
+        Some(config)
+    }
+
+    /// Check if cloud storage is configured
+    pub fn is_configured(&self) -> bool {
+        self.bucket.is_some() && self.storage_type != StorageType::File
+    }
 }
 
 /// Nested flags configuration
@@ -131,19 +275,102 @@ pub struct ShipperConfig {
     #[serde(default)]
     pub state_dir: Option<PathBuf>,
 
-    /// Optional custom registry configuration
+    /// Optional custom registry configuration (single registry)
     #[serde(default)]
     pub registry: Option<RegistryConfig>,
+
+    /// Multiple registry configuration for multi-registry publishing
+    #[serde(default)]
+    pub registries: MultiRegistryConfig,
+
+    /// Webhook configuration for publish notifications
+    #[serde(default)]
+    pub webhook: WebhookConfig,
+
+    /// Encryption configuration for state files
+    #[serde(default)]
+    pub encryption: EncryptionConfigInner,
+
+    /// Storage configuration for cloud storage backends
+    #[serde(default)]
+    pub storage: StorageConfigInner,
 }
 
-/// Registry configuration
+/// Registry configuration - supports both single registry and multiple registries
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryConfig {
     /// Cargo registry name (e.g., crates-io)
     pub name: String,
 
-    /// Base URL for registry web API (e.g., https://crates.io)
+    /// Base URL for registry web API (e.g., <https://crates.io>)
     pub api_base: String,
+
+    /// Base URL for the sparse index (optional, derived from api_base if not set)
+    #[serde(default)]
+    pub index_base: Option<String>,
+
+    /// Registry token (can also be set via environment variable)
+    /// Supported formats:
+    /// - "env:VAR_NAME" - read token from environment variable
+    /// - "file:/path/to/token" - read token from file
+    /// - Raw token string (not recommended for production)
+    #[serde(default)]
+    pub token: Option<String>,
+
+    /// Whether this is the default registry (used when publishing to all registries)
+    #[serde(default)]
+    pub default: bool,
+}
+
+/// Multiple registry configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MultiRegistryConfig {
+    /// List of registries to publish to
+    #[serde(default)]
+    pub registries: Vec<RegistryConfig>,
+
+    /// Default registries to publish to if none specified (default: ["crates-io"])
+    #[serde(default)]
+    pub default_registries: Vec<String>,
+}
+
+impl MultiRegistryConfig {
+    /// Get all registries, with crates-io as default if none configured
+    pub fn get_registries(&self) -> Vec<RegistryConfig> {
+        if self.registries.is_empty() {
+            // Return default crates-io registry
+            vec![RegistryConfig {
+                name: "crates-io".to_string(),
+                api_base: "https://crates.io".to_string(),
+                index_base: Some("https://index.crates.io".to_string()),
+                token: None,
+                default: true,
+            }]
+        } else {
+            self.registries.clone()
+        }
+    }
+
+    /// Get the default registry (first one marked as default, or first one, or crates-io)
+    pub fn get_default(&self) -> RegistryConfig {
+        self.registries
+            .iter()
+            .find(|r| r.default)
+            .or(self.registries.first())
+            .cloned()
+            .unwrap_or_else(|| RegistryConfig {
+                name: "crates-io".to_string(),
+                api_base: "https://crates.io".to_string(),
+                index_base: Some("https://index.crates.io".to_string()),
+                token: None,
+                default: true,
+            })
+    }
+
+    /// Find a registry by name
+    pub fn find_by_name(&self, name: &str) -> Option<RegistryConfig> {
+        self.registries.iter().find(|r| r.name == name).cloned()
+    }
 }
 
 /// CLI overrides for merging with config file values.
@@ -157,6 +384,8 @@ pub struct CliOverrides {
     pub max_attempts: Option<u32>,
     pub base_delay: Option<Duration>,
     pub max_delay: Option<Duration>,
+    pub retry_strategy: Option<RetryStrategyType>,
+    pub retry_jitter: Option<f64>,
     pub verify_timeout: Option<Duration>,
     pub verify_poll_interval: Option<Duration>,
     pub output_lines: Option<usize>,
@@ -175,6 +404,14 @@ pub struct CliOverrides {
     pub parallel_enabled: bool,
     pub max_concurrent: Option<usize>,
     pub per_package_timeout: Option<Duration>,
+    pub webhook_url: Option<String>,
+    pub webhook_secret: Option<String>,
+    pub encrypt: bool,
+    pub encrypt_passphrase: Option<String>,
+    /// Target registries for multi-registry publishing (comma-separated list)
+    pub registries: Option<Vec<String>>,
+    /// Publish to all configured registries
+    pub all_registries: bool,
 }
 
 impl Default for ShipperConfig {
@@ -194,9 +431,13 @@ impl Default for ShipperConfig {
                 timeout: default_lock_timeout(),
             },
             retry: RetryConfig {
+                policy: RetryPolicy::Default,
                 max_attempts: default_max_attempts(),
                 base_delay: default_base_delay(),
                 max_delay: default_max_delay(),
+                strategy: RetryStrategyType::Exponential,
+                jitter: 0.5,
+                per_error: PerErrorConfig::default(),
             },
             flags: FlagsConfig {
                 allow_dirty: false,
@@ -206,6 +447,10 @@ impl Default for ShipperConfig {
             parallel: ParallelConfig::default(),
             state_dir: None,
             registry: None,
+            registries: MultiRegistryConfig::default(),
+            webhook: WebhookConfig::default(),
+            encryption: EncryptionConfigInner::default(),
+            storage: StorageConfigInner::default(),
         }
     }
 }
@@ -274,6 +519,11 @@ impl ShipperConfig {
             bail!("retry.max_delay must be greater than or equal to retry.base_delay");
         }
 
+        // Validate jitter
+        if self.retry.jitter < 0.0 || self.retry.jitter > 1.0 {
+            bail!("retry.jitter must be between 0.0 and 1.0");
+        }
+
         // Validate lock_timeout
         if self.lock.timeout.is_zero() {
             bail!("lock.timeout must be greater than 0");
@@ -311,6 +561,27 @@ impl ShipperConfig {
             }
         }
 
+        // Validate multiple registries if present
+        for reg in &self.registries.registries {
+            if reg.name.is_empty() {
+                bail!("registries[].name cannot be empty");
+            }
+            if reg.api_base.is_empty() {
+                bail!("registries[].api_base cannot be empty");
+            }
+        }
+
+        // Ensure only one default registry
+        let default_count = self
+            .registries
+            .registries
+            .iter()
+            .filter(|r| r.default)
+            .count();
+        if default_count > 1 {
+            bail!("only one registry can be marked as default");
+        }
+
         Ok(())
     }
 
@@ -319,14 +590,50 @@ impl ShipperConfig {
     /// For `Option` fields: CLI value takes precedence; falls back to config.
     /// For `bool` flags: `true` if either CLI or config enables it (OR).
     pub fn build_runtime_options(&self, cli: CliOverrides) -> RuntimeOptions {
+        // Determine effective retry config based on policy
+        let effective_retry = self.retry.policy.to_config();
+
         RuntimeOptions {
             allow_dirty: cli.allow_dirty || self.flags.allow_dirty,
             skip_ownership_check: cli.skip_ownership_check || self.flags.skip_ownership_check,
             strict_ownership: cli.strict_ownership || self.flags.strict_ownership,
             no_verify: cli.no_verify,
-            max_attempts: cli.max_attempts.unwrap_or(self.retry.max_attempts),
-            base_delay: cli.base_delay.unwrap_or(self.retry.base_delay),
-            max_delay: cli.max_delay.unwrap_or(self.retry.max_delay),
+            max_attempts: cli
+                .max_attempts
+                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                    self.retry.max_attempts
+                } else {
+                    effective_retry.max_attempts
+                }),
+            base_delay: cli
+                .base_delay
+                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                    self.retry.base_delay
+                } else {
+                    effective_retry.base_delay
+                }),
+            max_delay: cli
+                .max_delay
+                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                    self.retry.max_delay
+                } else {
+                    effective_retry.max_delay
+                }),
+            retry_strategy: cli.retry_strategy.unwrap_or(
+                if self.retry.policy == RetryPolicy::Custom {
+                    self.retry.strategy
+                } else {
+                    effective_retry.strategy
+                },
+            ),
+            retry_jitter: cli
+                .retry_jitter
+                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
+                    self.retry.jitter
+                } else {
+                    effective_retry.jitter
+                }),
+            retry_per_error: self.retry.per_error.clone(),
             verify_timeout: cli.verify_timeout.unwrap_or(Duration::from_secs(120)),
             verify_poll_interval: cli.verify_poll_interval.unwrap_or(Duration::from_secs(5)),
             state_dir: cli.state_dir.unwrap_or_else(|| {
@@ -359,6 +666,91 @@ impl ShipperConfig {
                 per_package_timeout: cli
                     .per_package_timeout
                     .unwrap_or(self.parallel.per_package_timeout),
+            },
+            webhook: {
+                let mut cfg = self.webhook.clone();
+                // CLI can override webhook settings
+                if let Some(url) = cli.webhook_url {
+                    #[cfg(feature = "micro-webhook")]
+                    {
+                        cfg.url = url;
+                    }
+                    #[cfg(not(feature = "micro-webhook"))]
+                    {
+                        cfg.url = Some(url);
+                        cfg.enabled = true;
+                    }
+                }
+                if let Some(secret) = cli.webhook_secret {
+                    cfg.secret = Some(secret);
+                }
+                cfg
+            },
+            encryption: {
+                let mut cfg = EncryptionSettings::default();
+                // Enable encryption if CLI flag is set or config enables it
+                if cli.encrypt || self.encryption.enabled {
+                    cfg.enabled = true;
+                }
+                // CLI passphrase takes precedence over config
+                if let Some(passphrase) = cli.encrypt_passphrase {
+                    cfg.passphrase = Some(passphrase);
+                } else if let Some(passphrase) = &self.encryption.passphrase {
+                    cfg.passphrase = Some(passphrase.clone());
+                }
+                // Use env_key from config if set
+                if let Some(ref env_key) = self.encryption.env_key {
+                    cfg.env_var = Some(env_key.clone());
+                } else if cfg.enabled && cfg.passphrase.is_none() {
+                    // Default to SHIPPER_ENCRYPT_KEY if enabled but no passphrase
+                    cfg.env_var = Some("SHIPPER_ENCRYPT_KEY".to_string());
+                }
+                cfg
+            },
+            registries: {
+                // Determine target registries based on CLI overrides and config
+                if cli.all_registries {
+                    // Publish to all configured registries
+                    self.registries
+                        .get_registries()
+                        .into_iter()
+                        .map(|r| Registry {
+                            name: r.name,
+                            api_base: r.api_base,
+                            index_base: r.index_base,
+                        })
+                        .collect()
+                } else if let Some(ref reg_names) = cli.registries {
+                    // Publish to specifically requested registries
+                    reg_names
+                        .iter()
+                        .map(|name| {
+                            // Try to find in config, otherwise use defaults
+                            self.registries
+                                .find_by_name(name)
+                                .map(|r| Registry {
+                                    name: r.name,
+                                    api_base: r.api_base,
+                                    index_base: r.index_base,
+                                })
+                                .unwrap_or_else(|| {
+                                    // Default to crates-io if not found
+                                    if name == "crates-io" {
+                                        Registry::crates_io()
+                                    } else {
+                                        Registry {
+                                            name: name.clone(),
+                                            api_base: format!("https://{}.crates.io", name),
+                                            index_base: None,
+                                        }
+                                    }
+                                })
+                        })
+                        .collect()
+                } else {
+                    // Default: single registry from the plan
+                    vec![]
+                }
             },
         }
     }
@@ -401,12 +793,38 @@ lines = 50
 timeout = "1h"
 
 [retry]
-# Max attempts per crate publish step
+# Retry policy: default (balanced), aggressive, conservative, or custom
+# - default: exponential backoff with 6 attempts, 2s base, 2m max
+# - aggressive: exponential backoff with 10 attempts, 500ms base, 30s max
+# - conservative: linear backoff with 3 attempts, 5s base, 60s max
+# - custom: uses explicit strategy settings below
+policy = "default"
+# Max attempts per crate publish step (used when policy is custom)
 max_attempts = 6
 # Base backoff delay
 base_delay = "2s"
 # Max backoff delay
 max_delay = "2m"
+# Strategy type: immediate, exponential, linear, constant
+strategy = "exponential"
+# Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
+jitter = 0.5
+
+# Per-error-type retry configuration (optional)
+# Uncomment and customize to override retry behavior for specific error types
+# [retry.per_error.retryable]
+# strategy = "immediate"
+# max_attempts = 10
+# base_delay = "0s"
+# max_delay = "1s"
+# jitter = 0.0
+
+# [retry.per_error.ambiguous]
+# strategy = "exponential"
+# max_attempts = 5
+# base_delay = "1s"
+# max_delay = "60s"
+# jitter = 0.3
 
 [flags]
 # Allow publishing from a dirty git working tree (not recommended)
@@ -428,6 +846,17 @@ per_package_timeout = "30m"
 # [registry]
 # name = "crates-io"
 # api_base = "https://crates.io"
+
+# Optional: Webhook notifications for publish events
+# [webhook]
+# Enable webhook notifications (default: false - disabled)
+# enabled = false
+# URL to send POST requests to
+# url = "https://your-webhook-endpoint.com/webhook"
+# Optional secret for signing webhook payloads
+# secret = "your-webhook-secret"
+# Request timeout (default: 30s)
+# timeout = "30s"
 "#.to_string()
     }
 }
@@ -488,6 +917,9 @@ mod tests {
             registry: Some(RegistryConfig {
                 name: String::new(),
                 api_base: "https://crates.io".to_string(),
+                index_base: None,
+                token: None,
+                default: false,
             }),
             ..Default::default()
         };
@@ -496,6 +928,9 @@ mod tests {
         config.registry = Some(RegistryConfig {
             name: "crates-io".to_string(),
             api_base: String::new(),
+            index_base: None,
+            token: None,
+            default: false,
         });
         assert!(config.validate().is_err());
     }
@@ -579,12 +1014,66 @@ per_package_timeout = "1h"
     }
 
     #[test]
+    fn test_parse_toml_with_partial_readiness_uses_defaults() {
+        let toml = r#"
+[readiness]
+method = "both"
+"#;
+
+        let config: ShipperConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.readiness.method, ReadinessMethod::Both);
+        assert!(config.readiness.enabled);
+        assert_eq!(config.readiness.initial_delay, Duration::from_secs(1));
+        assert_eq!(config.readiness.max_delay, Duration::from_secs(60));
+        assert_eq!(config.readiness.max_total_wait, Duration::from_secs(300));
+        assert_eq!(config.readiness.poll_interval, Duration::from_secs(2));
+        assert_eq!(config.readiness.jitter_factor, 0.5);
+    }
+
+    #[test]
+    fn test_parse_toml_with_partial_parallel_uses_defaults() {
+        let toml = r#"
+[parallel]
+enabled = true
+"#;
+
+        let config: ShipperConfig = toml::from_str(toml).unwrap();
+        assert!(config.parallel.enabled);
+        assert_eq!(config.parallel.max_concurrent, 4);
+        assert_eq!(
+            config.parallel.per_package_timeout,
+            Duration::from_secs(1800)
+        );
+    }
+
+    #[test]
+    fn test_parse_toml_with_partial_sections_remains_valid() {
+        let toml = r#"
+[readiness]
+method = "both"
+
+[parallel]
+enabled = true
+"#;
+
+        let config: ShipperConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.output.lines, 50);
+        assert_eq!(config.retry.max_attempts, 6);
+        assert_eq!(config.lock.timeout, Duration::from_secs(3600));
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
     fn test_build_runtime_options_cli_overrides_config() {
         let config = ShipperConfig {
             retry: RetryConfig {
+                policy: RetryPolicy::Custom,
                 max_attempts: 10,
                 base_delay: Duration::from_secs(5),
                 max_delay: Duration::from_secs(300),
+                strategy: RetryStrategyType::Exponential,
+                jitter: 0.5,
+                per_error: PerErrorConfig::default(),
             },
             output: OutputConfig { lines: 100 },
             policy: PolicyConfig {
@@ -610,9 +1099,13 @@ per_package_timeout = "1h"
     fn test_build_runtime_options_config_used_when_cli_none() {
         let config = ShipperConfig {
             retry: RetryConfig {
+                policy: RetryPolicy::Custom,
                 max_attempts: 10,
                 base_delay: Duration::from_secs(5),
                 max_delay: Duration::from_secs(300),
+                strategy: RetryStrategyType::Exponential,
+                jitter: 0.5,
+                per_error: PerErrorConfig::default(),
             },
             output: OutputConfig { lines: 100 },
             policy: PolicyConfig {

@@ -1,0 +1,25 @@
+[package]
+name = "shipper-encrypt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "State file encryption for shipper using AES-256-GCM"
+repository = "https://github.com/EffortlessMetrics/shipper"
+documentation = "https://docs.rs/shipper-encrypt"
+keywords = ["encryption", "aes", "gcm", "pbkdf2", "security"]
+categories = ["cryptography", "security"]
+
+[dependencies]
+serde.workspace = true
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", features = ["simple"] }
+sha2 = "0.10"
+base64 = "0.22"
+anyhow = "1.0"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "shipper-retry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Retry strategies and backoff policies for shipper"
+repository = "https://github.com/cmrigney/shipper"
+documentation = "https://docs.rs/shipper-retry"
+keywords = ["retry", "backoff", "exponential", "jitter"]
+categories = ["algorithms", "asynchronous"]
+
+[dependencies]
+serde.workspace = true
+humantime-serde = "1.1"
+rand = "0.8"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

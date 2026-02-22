@@ -1,0 +1,31 @@
+# Nextest configuration for shipper
+# See: https://nexte.st/book/configuration.html
+
+[profile.ci]
+# Fail fast on CI to save time
+fail-fast = false
+
+# Retries for flaky tests
+retries = { count = 2, backoff = "exponential", delay = "1s" }
+
+# JUnit output for CI reporting
+junit = { path = "target/nextest/ci/junit.xml", report-successful = true }
+
+# Timeout for individual tests
+test-threads = "num-cpus"
+
+# Status level for output
+status-level = "pass"
+
+# Final status level at end of run
+final-status-level = "flaky"
+
+[profile.stress]
+# Stress testing profile - run tests multiple times
+retries = { count = 10, backoff = "fixed", delay = "100ms" }
+test-threads = 1
+
+[profile.nightly]
+# Nightly profile for extended testing
+retries = { count = 3, backoff = "exponential", delay = "2s" }
+test-threads = "num-cpus"

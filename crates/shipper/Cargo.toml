@@ -4,14 +4,33 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "A publishing reliability layer for Rust workspaces"
+description = "Core library for reliable, resumable Rust workspace publishing"
+readme = "README.md"
 documentation = "https://docs.rs/shipper"
 homepage = "https://github.com/EffortlessMetrics/shipper"
 repository = "https://github.com/EffortlessMetrics/shipper"
-keywords = ["cargo", "publish", "workspace", "registry", "ci"]
-categories = ["development-tools::cargo-plugins"]
+keywords = ["cargo", "publish", "workspace", "release", "automation"]
+categories = ["development-tools", "development-tools::build-utils"]
 
 [dependencies]
+# Workspace microcrates
+shipper-retry = { path = "../shipper-retry" }
+shipper-lock = { path = "../shipper-lock", optional = true }
+shipper-encrypt = { path = "../shipper-encrypt", optional = true }
+shipper-auth = { path = "../shipper-auth", optional = true }
+shipper-git = { path = "../shipper-git", optional = true }
+shipper-events = { path = "../shipper-events", optional = true }
+shipper-environment = { path = "../shipper-environment", optional = true }
+shipper-storage = { path = "../shipper-storage", optional = true }
+shipper-cargo = { path = "../shipper-cargo", optional = true }
+shipper-registry = { path = "../shipper-registry", optional = true }
+shipper-process = { path = "../shipper-process", optional = true }
+shipper-webhook = { path = "../shipper-webhook", optional = true }
+shipper-types = { path = "../shipper-types", optional = true }
+shipper-config = { path = "../shipper-config", optional = true }
+shipper-state = { path = "../shipper-state", optional = true }
+shipper-store = { path = "../shipper-store", optional = true }
+
 anyhow = "1.0.101"
 thiserror = "2.0.18"
 cargo_metadata = "0.23.1"
@@ -19,7 +38,6 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_with = "3.12.0"
 reqwest = { version = "0.13.2", features = ["blocking", "json", "rustls"] }
-sha2 = "0.10.9"
 rand = { version = "0.10.0", features = ["std"] }
 chrono = { version = "0.4.43", features = ["serde"] }
 humantime = "2.3.0"
@@ -27,6 +45,31 @@ toml = "0.9.8"
 hex = "0.4.3"
 gethostname = "0.5.0"
 tokio = { version = "1.42", features = ["rt", "time", "sync", "macros"] }
+base64 = "0.22"
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", features = ["simple"] }
+
+# HMAC for webhook signatures
+hmac = "0.12"
+sha2 = "0.10"
+
+[features]
+micro-auth = ["dep:shipper-auth"]
+micro-git = ["dep:shipper-git"]
+micro-events = ["dep:shipper-events", "micro-types"]
+micro-lock = ["dep:shipper-lock"]
+micro-encrypt = ["dep:shipper-encrypt"]
+micro-environment = ["dep:shipper-environment", "micro-types"]
+micro-storage = ["dep:shipper-storage"]
+micro-cargo = ["dep:shipper-cargo"]
+micro-registry = ["dep:shipper-registry"]
+micro-process = ["dep:shipper-process"]
+micro-webhook = ["dep:shipper-webhook"]
+micro-types = ["dep:shipper-types", "micro-webhook", "micro-encrypt", "micro-config"]
+micro-config = ["dep:shipper-config", "micro-types", "micro-storage"]
+micro-state = ["dep:shipper-state", "micro-types", "micro-environment", "micro-encrypt"]
+micro-store = ["dep:shipper-store", "micro-types", "micro-events", "micro-state"]
+micro-all = ["micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-registry", "micro-process", "micro-webhook", "micro-types", "micro-config", "micro-state", "micro-store"]
 
 [lints]
 workspace = true

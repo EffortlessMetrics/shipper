@@ -16,10 +16,11 @@ use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
 use crate::state;
 use crate::types::{
-    AttemptEvidence, AuthType, ErrorClass, EventType, ExecutionResult, ExecutionState,
-    Finishability, PackageProgress, PackageReceipt, PackageState, PreflightPackage,
-    PreflightReport, PublishEvent, PublishPolicy, ReadinessEvidence, Receipt, RuntimeOptions,
+    AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, Finishability,
+    PackageProgress, PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent,
+    PublishPolicy, ReadinessEvidence, Receipt, RuntimeOptions,
 };
+use crate::webhook::{self, WebhookEvent};
 
 pub trait Reporter {
     fn info(&mut self, msg: &str);
@@ -57,6 +58,37 @@ pub(crate) fn apply_policy(opts: &RuntimeOptions) -> PolicyEffects {
     }
 }
 
+/// Run preflight verification checks before publishing.
+///
+/// This function performs various pre-publish checks to catch issues early:
+/// - Git cleanliness (if `allow_dirty` is false)
+/// - Registry reachability
+/// - Dry-run compilation verification
+/// - Version existence check (skip already-published versions)
+/// - Ownership verification (optional, based on policy)
+///
+/// # Arguments
+///
+/// * `ws` - The planned workspace containing packages to publish
+/// * `opts` - Runtime options controlling behavior
+/// * `reporter` - A reporter for outputting progress and warnings
+///
+/// # Returns
+///
+/// Returns a [`PreflightReport`] containing:
+/// - Whether a token was detected
+/// - The finishability assessment (Proven/NotProven/Failed)
+/// - Per-package preflight results
+///
+/// # Example
+///
+/// ```ignore
+/// let ws = plan::build_plan(&spec)?;
+/// let opts = types::RuntimeOptions { /* ... */ };
+/// let mut reporter = MyReporter::default();
+/// let report = engine::run_preflight(&ws, &opts, &mut reporter)?;
+/// println!("Finishability: {:?}", report.finishability);
+/// ```
 pub fn run_preflight(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
@@ -64,6 +96,17 @@ pub fn run_preflight(
 ) -> Result<PreflightReport> {
     let workspace_root = &ws.workspace_root;
     let effects = apply_policy(opts);
+    let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
+    let events_path = events::events_path(&state_dir);
+    let mut event_log = events::EventLog::new();
+
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PreflightStarted,
+        package: "all".to_string(),
+    });
+    event_log.write_to_file(&events_path)?;
+    event_log.clear();
 
     if !opts.allow_dirty {
         reporter.info("checking git cleanliness...");
@@ -75,25 +118,27 @@ pub fn run_preflight(
 
     let token = auth::resolve_token(&ws.plan.registry.name)?;
     let token_detected = token.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+    let auth_type = auth::detect_auth_type_from_token(token.as_deref());
 
     if effects.strict_ownership && !token_detected {
+        event_log.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::PreflightComplete {
+                finishability: Finishability::Failed,
+            },
+            package: "all".to_string(),
+        });
+        event_log.write_to_file(&events_path)?;
         bail!(
             "strict ownership requested but no token found (set CARGO_REGISTRY_TOKEN or run cargo login)"
         );
     }
 
-    // Determine auth type
-    let auth_type = if token_detected {
-        Some(AuthType::Token)
-    } else {
-        None
-    };
-
     // Run dry-run verification based on VerifyMode and policy
     use crate::types::VerifyMode;
 
     // Workspace-level dry-run result (used for Workspace mode)
-    let workspace_dry_run_passed =
+    let (workspace_dry_run_passed, workspace_dry_run_output) =
         if effects.run_dry_run && opts.verify_mode == VerifyMode::Workspace {
             reporter.info("running workspace dry-run verification...");
             let dry_run_result = cargo::cargo_publish_dry_run_workspace(
@@ -103,16 +148,37 @@ pub fn run_preflight(
                 opts.output_lines,
             );
             match &dry_run_result {
-                Ok(output) => output.exit_code == 0,
-                Err(_) => false,
+                Ok(output) => (
+                    output.exit_code == 0,
+                    format!(
+                        "workspace dry-run: exit_code={}; stdout_tail={:?}; stderr_tail={:?}",
+                        output.exit_code, output.stdout_tail, output.stderr_tail
+                    ),
+                ),
+                Err(err) => (false, format!("workspace dry-run failed: {err:#}")),
             }
         } else if !effects.run_dry_run || opts.verify_mode == VerifyMode::None {
             reporter.info("skipping dry-run (policy, --no-verify, or verify_mode=none)");
-            true
+            (
+                true,
+                "workspace dry-run skipped (policy, --no-verify, or verify_mode=none)".to_string(),
+            )
         } else {
             // Package mode — handled per-package below
-            true
+            (
+                true,
+                "workspace dry-run skipped (verify_mode=package)".to_string(),
+            )
         };
+
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PreflightWorkspaceVerify {
+            passed: workspace_dry_run_passed,
+            output: workspace_dry_run_output,
+        },
+        package: "all".to_string(),
+    });
 
     // Per-package dry-run results (used for Package mode)
     let per_package_dry_run: std::collections::BTreeMap<String, bool> =
@@ -149,6 +215,15 @@ pub fn run_preflight(
     for p in &ws.plan.packages {
         let already_published = reg.version_exists(&p.name, &p.version)?;
         let is_new_crate = reg.check_new_crate(&p.name)?;
+        if is_new_crate {
+            event_log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::PreflightNewCrateDetected {
+                    crate_name: p.name.clone(),
+                },
+                package: format!("{}@{}", p.name, p.version),
+            });
+        }
 
         // Determine dry-run result for this package
         let dry_run_passed = if opts.verify_mode == VerifyMode::Package {
@@ -186,6 +261,15 @@ pub fn run_preflight(
             false
         };
 
+        event_log.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::PreflightOwnershipCheck {
+                crate_name: p.name.clone(),
+                verified: ownership_verified,
+            },
+            package: format!("{}@{}", p.name, p.version),
+        });
+
         if !ownership_verified {
             any_ownership_unverified = true;
         }
@@ -213,6 +297,15 @@ pub fn run_preflight(
         Finishability::Proven
     };
 
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PreflightComplete {
+            finishability: finishability.clone(),
+        },
+        package: "all".to_string(),
+    });
+    event_log.write_to_file(&events_path)?;
+
     Ok(PreflightReport {
         plan_id: ws.plan.plan_id.clone(),
         token_detected,
@@ -222,6 +315,45 @@ pub fn run_preflight(
     })
 }
 
+/// Execute the publish operation for all packages in the workspace.
+///
+/// This is the main publishing function that:
+/// 1. Acquires a distributed lock to prevent concurrent publishes
+/// 2. Checks git cleanliness (if configured)
+/// 3. Initializes or resumes from existing state
+/// 4. Publishes each package in dependency order
+/// 5. Verifies visibility on the registry after each publish
+/// 6. Writes a receipt with full evidence upon completion
+///
+/// # Arguments
+///
+/// * `ws` - The planned workspace containing packages to publish
+/// * `opts` - Runtime options controlling retry, readiness, policy, etc.
+/// * `reporter` - A reporter for outputting progress and warnings
+///
+/// # Returns
+///
+/// Returns a [`Receipt`] containing:
+/// - The plan ID and registry
+/// - Start and finish timestamps
+/// - Per-package receipts with evidence
+/// - Git context and environment fingerprint
+/// - Path to the event log
+///
+/// # Behavior
+///
+/// - **Resumability**: If interrupted, the state is persisted and `run_resume` can continue
+/// - **Parallel publishing**: If `opts.parallel.enabled` is true, uses parallel publishing
+/// - **Readiness checks**: Verifies crate visibility after publishing (configurable)
+/// - **Retry logic**: Retries transient failures with exponential backoff
+///
+/// # Error Handling
+///
+/// Returns an error if:
+/// - Lock acquisition fails
+/// - Git check fails (when required)
+/// - A permanent error occurs (e.g., authentication failure)
+/// - All retry attempts are exhausted
 pub fn run_publish(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
@@ -284,6 +416,15 @@ pub fn run_publish(
         event_type: EventType::ExecutionStarted,
         package: "all".to_string(),
     });
+    // Send webhook notification: publish started
+    webhook::maybe_send_event(
+        &opts.webhook,
+        WebhookEvent::PublishStarted {
+            plan_id: ws.plan.plan_id.clone(),
+            package_count: ws.plan.packages.len(),
+            registry: ws.plan.registry.name.clone(),
+        },
+    );
     // Event: PlanCreated
     event_log.record(PublishEvent {
         timestamp: run_started,
@@ -567,7 +708,13 @@ pub fn run_publish(
                             ));
                         }
                         ErrorClass::Retryable | ErrorClass::Ambiguous => {
-                            let delay = backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                            let delay = backoff_delay(
+                                opts.base_delay,
+                                opts.max_delay,
+                                attempt,
+                                opts.retry_strategy,
+                                opts.retry_jitter,
+                            );
                             reporter.warn(&format!(
                                 "{}@{}: retrying in {}",
                                 p.name,
@@ -608,10 +755,27 @@ pub fn run_publish(
                 event_log.write_to_file(&events_path)?;
                 event_log.clear();
 
+                // Send webhook notification: package succeeded
+                webhook::maybe_send_event(
+                    &opts.webhook,
+                    WebhookEvent::PublishSucceeded {
+                        plan_id: ws.plan.plan_id.clone(),
+                        package_name: p.name.clone(),
+                        package_version: p.version.clone(),
+                        duration_ms: start_instant.elapsed().as_millis() as u64,
+                    },
+                );
+
                 break;
             } else {
                 last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
-                let delay = backoff_delay(opts.base_delay, opts.max_delay, attempt);
+                let delay = backoff_delay(
+                    opts.base_delay,
+                    opts.max_delay,
+                    attempt,
+                    opts.retry_strategy,
+                    opts.retry_jitter,
+                );
                 thread::sleep(delay);
             }
         }
@@ -649,13 +813,25 @@ pub fn run_publish(
                 event_log.record(PublishEvent {
                     timestamp: Utc::now(),
                     event_type: EventType::PackageFailed {
-                        class,
+                        class: class.clone(),
                         message: msg.clone(),
                     },
                     package: pkg_label.clone(),
                 });
                 event_log.write_to_file(&events_path)?;
                 event_log.clear();
+
+                // Send webhook notification: package failed
+                webhook::maybe_send_event(
+                    &opts.webhook,
+                    WebhookEvent::PublishFailed {
+                        plan_id: ws.plan.plan_id.clone(),
+                        package_name: p.name.clone(),
+                        package_version: p.version.clone(),
+                        error_class: format!("{:?}", class.clone()),
+                        message: msg.clone(),
+                    },
+                );
 
                 let progress = st
                     .packages
@@ -711,11 +887,43 @@ pub fn run_publish(
     event_log.record(PublishEvent {
         timestamp: Utc::now(),
         event_type: EventType::ExecutionFinished {
-            result: exec_result,
+            result: exec_result.clone(),
         },
         package: "all".to_string(),
     });
     event_log.write_to_file(&events_path)?;
+
+    // Calculate publish completion statistics
+    let total_packages = receipts.len();
+    let success_count = receipts
+        .iter()
+        .filter(|r| matches!(r.state, PackageState::Published))
+        .count();
+    let failure_count = receipts
+        .iter()
+        .filter(|r| matches!(r.state, PackageState::Failed { .. }))
+        .count();
+    let skipped_count = receipts
+        .iter()
+        .filter(|r| matches!(r.state, PackageState::Skipped { .. }))
+        .count();
+
+    // Send webhook notification: all complete
+    webhook::maybe_send_event(
+        &opts.webhook,
+        WebhookEvent::PublishCompleted {
+            plan_id: ws.plan.plan_id.clone(),
+            total_packages,
+            success_count,
+            failure_count,
+            skipped_count,
+            result: match exec_result {
+                ExecutionResult::Success => "success".to_string(),
+                ExecutionResult::PartialFailure => "partial_failure".to_string(),
+                ExecutionResult::CompleteFailure => "complete_failure".to_string(),
+            },
+        },
+    );
 
     let receipt = Receipt {
         receipt_version: "shipper.receipt.v2".to_string(),
@@ -734,6 +942,41 @@ pub fn run_publish(
     Ok(receipt)
 }
 
+/// Resume a previously interrupted publish operation.
+///
+/// This function loads existing state from the state directory and continues
+/// publishing from where it left off. It handles:
+/// - Packages that were never attempted (Pending)
+/// - Packages that failed and should be retried
+/// - Packages that were uploaded but not verified (Uploaded)
+/// - Already-successful packages (Published/Skipped) - skipped automatically
+///
+/// # Arguments
+///
+/// * `ws` - The planned workspace (should match the original plan)
+/// * `opts` - Runtime options
+/// * `reporter` - A reporter for outputting progress
+///
+/// # Returns
+///
+/// Returns a [`Receipt`] similar to [`run_publish`].
+///
+/// # Error Handling
+///
+/// Returns an error if:
+/// - No existing state is found in the state directory
+/// - The plan ID doesn't match (use `opts.force_resume` to override)
+/// - Lock acquisition fails
+///
+/// # Example
+///
+/// ```ignore
+/// let ws = plan::build_plan(&spec)?;
+/// let opts = types::RuntimeOptions { /* ... */ };
+/// let mut reporter = MyReporter::default();
+/// let receipt = engine::run_resume(&ws, &opts, &mut reporter)?;
+/// println!("Published {} packages", receipt.packages.len());
+/// ```
 pub fn run_resume(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
@@ -912,18 +1155,21 @@ pub(crate) fn classify_cargo_failure(stderr: &str, stdout: &str) -> (ErrorClass,
     )
 }
 
-pub(crate) fn backoff_delay(base: Duration, max: Duration, attempt: u32) -> Duration {
-    let pow = attempt.saturating_sub(1).min(16);
-    let mut delay = base.saturating_mul(2_u32.saturating_pow(pow));
-    if delay > max {
-        delay = max;
-    }
-
-    // 0.5x..1.5x jitter
-    let jitter: f64 = rand::random::<f64>(); // Random value between 0 and 1
-    let jitter = 0.5 + jitter; // Scale to 0.5..1.5
-    let millis = (delay.as_millis() as f64 * jitter).round() as u128;
-    Duration::from_millis(millis as u64)
+pub(crate) fn backoff_delay(
+    base: Duration,
+    max: Duration,
+    attempt: u32,
+    strategy: crate::retry::RetryStrategyType,
+    jitter: f64,
+) -> Duration {
+    let config = crate::retry::RetryStrategyConfig {
+        strategy,
+        max_attempts: 10, // Not used for delay calculation
+        base_delay: base,
+        max_delay: max,
+        jitter,
+    };
+    crate::retry::calculate_delay(&config, attempt)
 }
 
 #[cfg(test)]
@@ -941,7 +1187,7 @@ mod tests {
 
     use super::*;
     use crate::plan::PlannedWorkspace;
-    use crate::types::{PlannedPackage, Registry, ReleasePlan};
+    use crate::types::{AuthType, PlannedPackage, Registry, ReleasePlan};
 
     #[derive(Default)]
     struct CollectingReporter {
@@ -1179,6 +1425,12 @@ mod tests {
             force: false,
             lock_timeout: Duration::from_secs(3600),
             parallel: crate::types::ParallelConfig::default(),
+            webhook: crate::webhook::WebhookConfig::default(),
+            retry_strategy: crate::retry::RetryStrategyType::Exponential,
+            retry_jitter: 0.0,
+            retry_per_error: crate::retry::PerErrorConfig::default(),
+            encryption: crate::encryption::EncryptionConfig::default(),
+            registries: vec![],
         }
     }
 
@@ -1247,8 +1499,20 @@ mod tests {
     fn backoff_delay_is_bounded_with_jitter() {
         let base = Duration::from_millis(100);
         let max = Duration::from_millis(500);
-        let d1 = backoff_delay(base, max, 1);
-        let d20 = backoff_delay(base, max, 20);
+        let d1 = backoff_delay(
+            base,
+            max,
+            1,
+            crate::retry::RetryStrategyType::Exponential,
+            0.5,
+        );
+        let d20 = backoff_delay(
+            base,
+            max,
+            20,
+            crate::retry::RetryStrategyType::Exponential,
+            0.5,
+        );
 
         assert!(d1 >= Duration::from_millis(50));
         assert!(d1 <= Duration::from_millis(150));
@@ -1279,7 +1543,8 @@ mod tests {
             method: crate::types::ReadinessMethod::Api,
             initial_delay: Duration::from_millis(0),
             max_delay: Duration::from_millis(50),
-            max_total_wait: Duration::from_millis(500),
+            // Keep this generous to avoid timing flakes under highly parallel test execution.
+            max_total_wait: Duration::from_secs(2),
             poll_interval: Duration::from_millis(1),
             jitter_factor: 0.0,
             index_path: None,
@@ -1587,6 +1852,126 @@ mod tests {
                     .infos
                     .iter()
                     .any(|i| i.contains("new crate, skipping ownership check"))
+            );
+            server.join();
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_preflight_writes_preflight_events() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([("SHIPPER_CARGO_EXIT", Some("0".to_string()))]);
+        temp_env::with_vars(env_vars, || {
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.allow_dirty = true;
+            opts.skip_ownership_check = true;
+
+            let mut reporter = CollectingReporter::default();
+            let _ = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+            let events_path = td.path().join(".shipper").join("events.jsonl");
+            let log = crate::events::EventLog::read_from_file(&events_path).expect("read events");
+            let events = log.all_events();
+
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.event_type, EventType::PreflightStarted))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.event_type, EventType::PreflightWorkspaceVerify { .. }))
+            );
+            assert!(
+                events.iter().any(|e| {
+                    matches!(e.event_type, EventType::PreflightNewCrateDetected { .. })
+                })
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.event_type, EventType::PreflightOwnershipCheck { .. }))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.event_type, EventType::PreflightComplete { .. }))
+            );
+            server.join();
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_preflight_detects_trusted_publishing_auth_type() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+            (
+                "CARGO_HOME",
+                Some(td.path().to_str().expect("utf8").to_string()),
+            ),
+            ("CARGO_REGISTRY_TOKEN", None::<String>),
+            ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<String>),
+            (
+                "ACTIONS_ID_TOKEN_REQUEST_URL",
+                Some("https://example.invalid/oidc".to_string()),
+            ),
+            (
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+                Some("oidc-token".to_string()),
+            ),
+        ]);
+        temp_env::with_vars(env_vars, || {
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.allow_dirty = true;
+            opts.skip_ownership_check = true;
+
+            let mut reporter = CollectingReporter::default();
+            let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+            assert!(!report.token_detected);
+            assert_eq!(
+                report.packages[0].auth_type,
+                Some(crate::types::AuthType::TrustedPublishing)
             );
             server.join();
         });

@@ -1,10 +1,10 @@
 use std::env;
-use std::io::Read as _;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+
+use crate::process;
 
 #[derive(Debug, Clone)]
 pub struct CargoOutput {
@@ -81,7 +81,7 @@ fn redact_line(line: &str) -> String {
     out
 }
 
-/// Find the start position of a CARGO_REGISTRY_TOKEN or CARGO_REGISTRIES_<NAME>_TOKEN pattern.
+/// Find the start position of a `CARGO_REGISTRY_TOKEN` or `CARGO_REGISTRIES_<NAME>_TOKEN` pattern.
 fn find_cargo_token_env(s: &str) -> Option<usize> {
     // Check for CARGO_REGISTRY_TOKEN
     if let Some(pos) = s.find("CARGO_REGISTRY_TOKEN") {
@@ -107,89 +107,32 @@ pub fn cargo_publish(
     timeout: Option<Duration>,
 ) -> Result<CargoOutput> {
     let start = Instant::now();
-    let mut cmd = Command::new(cargo_program());
-    cmd.arg("publish").arg("-p").arg(package_name);
+    let mut args: Vec<&str> = Vec::new();
+    args.push("publish");
+    args.push("-p");
+    args.push(package_name);
 
     // If the user configured a non-default registry, pass it through.
     if !registry_name.trim().is_empty() && registry_name != "crates-io" {
-        cmd.arg("--registry").arg(registry_name);
+        args.push("--registry");
+        args.push(registry_name);
     }
 
     if allow_dirty {
-        cmd.arg("--allow-dirty");
+        args.push("--allow-dirty");
     }
     if no_verify {
-        cmd.arg("--no-verify");
+        args.push("--no-verify");
     }
 
-    cmd.current_dir(workspace_root);
-
-    let (exit_code, stdout, stderr, timed_out) = if let Some(timeout_dur) = timeout {
-        // Use spawn + polling to enforce timeout
-        let mut child = cmd
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+    let output =
+        process::run_command_with_timeout(&cargo_program(), &args, workspace_root, timeout)
             .context("failed to execute cargo publish; is Cargo installed?")?;
 
-        let deadline = Instant::now() + timeout_dur;
-        loop {
-            match child.try_wait().context("failed to poll cargo process")? {
-                Some(status) => {
-                    let mut stdout_bytes = Vec::new();
-                    let mut stderr_bytes = Vec::new();
-                    if let Some(mut out) = child.stdout.take() {
-                        let _ = out.read_to_end(&mut stdout_bytes);
-                    }
-                    if let Some(mut err) = child.stderr.take() {
-                        let _ = err.read_to_end(&mut stderr_bytes);
-                    }
-                    break (
-                        status.code().unwrap_or(-1),
-                        String::from_utf8_lossy(&stdout_bytes).to_string(),
-                        String::from_utf8_lossy(&stderr_bytes).to_string(),
-                        false,
-                    );
-                }
-                None => {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        let mut stdout_bytes = Vec::new();
-                        let mut stderr_bytes = Vec::new();
-                        if let Some(mut out) = child.stdout.take() {
-                            let _ = out.read_to_end(&mut stdout_bytes);
-                        }
-                        if let Some(mut err) = child.stderr.take() {
-                            let _ = err.read_to_end(&mut stderr_bytes);
-                        }
-                        let mut stderr_str = String::from_utf8_lossy(&stderr_bytes).to_string();
-                        stderr_str.push_str(&format!(
-                            "\ncargo publish timed out after {}",
-                            humantime::format_duration(timeout_dur)
-                        ));
-                        break (
-                            -1,
-                            String::from_utf8_lossy(&stdout_bytes).to_string(),
-                            stderr_str,
-                            true,
-                        );
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    } else {
-        let out = cmd
-            .output()
-            .context("failed to execute cargo publish; is Cargo installed?")?;
-        (
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stdout).to_string(),
-            String::from_utf8_lossy(&out.stderr).to_string(),
-            false,
-        )
-    };
+    let exit_code = output.exit_code;
+    let stdout = output.stdout;
+    let stderr = output.stderr;
+    let timed_out = output.timed_out;
 
     let duration = start.elapsed();
 
@@ -209,34 +152,35 @@ pub fn cargo_publish_dry_run_workspace(
     output_lines: usize,
 ) -> Result<CargoOutput> {
     let start = Instant::now();
-    let mut cmd = Command::new(cargo_program());
-    cmd.arg("publish").arg("--workspace").arg("--dry-run");
+    let mut args: Vec<&str> = vec!["publish", "--workspace", "--dry-run"];
 
     // If the user configured a non-default registry, pass it through.
     if !registry_name.trim().is_empty() && registry_name != "crates-io" {
-        cmd.arg("--registry").arg(registry_name);
+        args.push("--registry");
+        args.push(registry_name);
     }
 
     if allow_dirty {
-        cmd.arg("--allow-dirty");
+        args.push("--allow-dirty");
     }
 
-    let out = cmd
-        .current_dir(workspace_root)
-        .output()
-        .context("failed to execute cargo publish --dry-run --workspace; is Cargo installed?")?;
+    let output = process::run_command_with_timeout(&cargo_program(), &args, workspace_root, None)
+        .context(
+        "failed to execute cargo publish --dry-run --workspace; is Cargo installed?",
+    )?;
 
     let duration = start.elapsed();
-    let exit_code = out.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let exit_code = output.exit_code;
+    let stdout = output.stdout;
+    let stderr = output.stderr;
+    let timed_out = output.timed_out;
 
     Ok(CargoOutput {
         exit_code,
         stdout_tail: tail_lines(&stdout, output_lines),
         stderr_tail: tail_lines(&stderr, output_lines),
         duration,
-        timed_out: false,
+        timed_out,
     })
 }
 
@@ -248,35 +192,34 @@ pub fn cargo_publish_dry_run_package(
     output_lines: usize,
 ) -> Result<CargoOutput> {
     let start = Instant::now();
-    let mut cmd = Command::new(cargo_program());
-    cmd.arg("publish")
-        .arg("-p")
-        .arg(package_name)
-        .arg("--dry-run");
+    let mut args: Vec<&str> = vec!["publish", "-p", package_name, "--dry-run"];
 
     if !registry_name.trim().is_empty() && registry_name != "crates-io" {
-        cmd.arg("--registry").arg(registry_name);
+        args.push("--registry");
+        args.push(registry_name);
     }
 
     if allow_dirty {
-        cmd.arg("--allow-dirty");
+        args.push("--allow-dirty");
     }
 
-    let out = cmd.current_dir(workspace_root).output().with_context(|| {
+    let output = process::run_command_with_timeout(&cargo_program(), &args, workspace_root, None)
+        .with_context(|| {
         format!("failed to execute cargo publish --dry-run -p {package_name}; is Cargo installed?")
     })?;
 
     let duration = start.elapsed();
-    let exit_code = out.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let exit_code = output.exit_code;
+    let stdout = output.stdout;
+    let stderr = output.stderr;
+    let timed_out = output.timed_out;
 
     Ok(CargoOutput {
         exit_code,
         stdout_tail: tail_lines(&stdout, output_lines),
         stderr_tail: tail_lines(&stderr, output_lines),
         duration,
-        timed_out: false,
+        timed_out,
     })
 }
 

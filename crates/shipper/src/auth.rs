@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::types::AuthType;
 use anyhow::{Context, Result};
 
 /// Attempt to resolve a registry token the way Cargo users typically configure it.
@@ -28,6 +29,33 @@ pub fn resolve_token(registry_name: &str) -> Result<Option<String>> {
     }
 
     Ok(None)
+}
+
+/// Detect the best-known authentication mode for publish/preflight diagnostics.
+///
+/// Resolution order:
+/// 1) Explicit Cargo token configuration (`AuthType::Token`)
+/// 2) Trusted publishing OIDC environment (`AuthType::TrustedPublishing`)
+/// 3) Partial trusted-publishing environment (`AuthType::Unknown`)
+/// 4) No known auth configured (`None`)
+pub fn detect_auth_type(registry_name: &str) -> Result<Option<AuthType>> {
+    let token = resolve_token(registry_name)?;
+    Ok(detect_auth_type_from_token(token.as_deref()))
+}
+
+pub(crate) fn detect_auth_type_from_token(token: Option<&str>) -> Option<AuthType> {
+    if token.map(str::trim).map(|s| !s.is_empty()).unwrap_or(false) {
+        return Some(AuthType::Token);
+    }
+
+    let has_oidc_url = env::var_os("ACTIONS_ID_TOKEN_REQUEST_URL").is_some();
+    let has_oidc_token = env::var_os("ACTIONS_ID_TOKEN_REQUEST_TOKEN").is_some();
+
+    match (has_oidc_url, has_oidc_token) {
+        (true, true) => Some(AuthType::TrustedPublishing),
+        (true, false) | (false, true) => Some(AuthType::Unknown),
+        (false, false) => None,
+    }
 }
 
 fn token_from_env(registry_name: &str) -> Option<String> {
@@ -500,6 +528,90 @@ token = "fallback-token"
             || {
                 let tok = resolve_token("private-reg").expect("resolve");
                 assert!(tok.is_none());
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn detect_auth_type_prefers_token_when_present() {
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", Some("env-token")),
+                (
+                    "ACTIONS_ID_TOKEN_REQUEST_URL",
+                    Some("https://example.invalid/oidc"),
+                ),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", Some("oidc-token")),
+            ],
+            || {
+                let auth = detect_auth_type("crates-io").expect("detect");
+                assert_eq!(auth, Some(AuthType::Token));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn detect_auth_type_detects_trusted_publishing_from_oidc_env() {
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+                (
+                    "ACTIONS_ID_TOKEN_REQUEST_URL",
+                    Some("https://example.invalid/oidc"),
+                ),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", Some("oidc-token")),
+            ],
+            || {
+                let auth = detect_auth_type("crates-io").expect("detect");
+                assert_eq!(auth, Some(AuthType::TrustedPublishing));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn detect_auth_type_returns_unknown_for_partial_oidc_env() {
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+                (
+                    "ACTIONS_ID_TOKEN_REQUEST_URL",
+                    Some("https://example.invalid/oidc"),
+                ),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None::<&str>),
+            ],
+            || {
+                let auth = detect_auth_type("crates-io").expect("detect");
+                assert_eq!(auth, Some(AuthType::Unknown));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn detect_auth_type_returns_none_without_known_auth() {
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+                ("ACTIONS_ID_TOKEN_REQUEST_URL", None::<&str>),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None::<&str>),
+            ],
+            || {
+                let auth = detect_auth_type("crates-io").expect("detect");
+                assert!(auth.is_none());
             },
         );
     }

@@ -2,7 +2,7 @@
 
 ## Pre-Release Tasks
 
-- [x] Run `cargo test --workspace` — all passing (229 lib + 13 CLI unit + 20 E2E)
+- [x] Run `cargo test --workspace` — all passing (273 lib + 16 CLI unit + 22 E2E + 5 other)
 - [x] Run `cargo clippy --workspace -- -D warnings` — clean
 - [x] Run `cargo fmt --check` — clean
 - [x] Update version to 0.2.0 in workspace Cargo.toml
@@ -13,7 +13,7 @@
 
 - [x] All clippy warnings resolved
 - [x] Code formatting passes (`cargo fmt --check`)
-- [x] All tests pass (262 total: 229 lib, 13 CLI unit, 20 CLI E2E)
+- [x] All tests pass (316 total: 273 lib, 16 CLI unit, 22 CLI E2E, 5 other)
 - [x] No dead code warnings
 - [x] No unused dependencies
 
