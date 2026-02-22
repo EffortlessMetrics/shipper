@@ -258,8 +258,8 @@ jobs:
 
       - name: Run fuzz targets briefly
         run: |
-          cargo fuzz run load_state -- -max_total_time=60
-          cargo fuzz run resolve_token -- -max_total_time=60
+          cargo fuzz run load_state --target x86_64-unknown-linux-gnu -- -max_total_time=60
+          cargo fuzz run resolve_token --target x86_64-unknown-linux-gnu -- -max_total_time=60
 
   cross-platform:
     name: Build (${{ matrix.os }}, ${{ matrix.target }})
@@ -296,8 +296,15 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
       - name: Build for target
         run: cargo build --workspace --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
 
   release-build:
     name: Release Build

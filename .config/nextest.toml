@@ -9,7 +9,7 @@ fail-fast = false
 retries = { count = 2, backoff = "exponential", delay = "1s" }
 
 # JUnit output for CI reporting
-junit = { path = "junit.xml" }
+junit = { path = "target/nextest/ci/junit.xml", report-successful = true }
 
 # Timeout for individual tests
 test-threads = "num-cpus"
@@ -19,10 +19,6 @@ status-level = "pass"
 
 # Final status level at end of run
 final-status-level = "flaky"
-
-[profile.ci.junit]
-# Report all tests, not just failures
-report-successful = true
 
 [profile.stress]
 # Stress testing profile - run tests multiple times

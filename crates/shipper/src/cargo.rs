@@ -81,7 +81,7 @@ fn redact_line(line: &str) -> String {
     out
 }
 
-/// Find the start position of a CARGO_REGISTRY_TOKEN or CARGO_REGISTRIES_<NAME>_TOKEN pattern.
+/// Find the start position of a `CARGO_REGISTRY_TOKEN` or `CARGO_REGISTRIES_<NAME>_TOKEN` pattern.
 fn find_cargo_token_env(s: &str) -> Option<usize> {
     // Check for CARGO_REGISTRY_TOKEN
     if let Some(pos) = s.find("CARGO_REGISTRY_TOKEN") {

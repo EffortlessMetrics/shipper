@@ -30,7 +30,7 @@ struct Cli {
     #[arg(long, global = true)]
     registry: Option<String>,
 
-    /// Registry API base URL (default: https://crates.io)
+    /// Registry API base URL (default: <https://crates.io>)
     #[arg(long, global = true)]
     api_base: Option<String>,
 
