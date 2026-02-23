@@ -548,6 +548,21 @@ mod error_handling {
             .success();
     }
 
+    // Scenario: Invalid schema versions are rejected by shared store validation
+    #[test]
+    fn given_invalid_schema_version_when_store_validation_runs_then_error() {
+        let err =
+            shipper::store::validate_schema_version("shipper.receipt.v").expect_err("must fail");
+        assert!(err.to_string().contains("invalid"));
+    }
+
+    // Scenario: Supported schema versions pass shared store validation
+    #[test]
+    fn given_supported_schema_version_when_store_validation_runs_then_ok() {
+        shipper::store::validate_schema_version(shipper::state::CURRENT_RECEIPT_VERSION)
+            .expect("schema version should be accepted");
+    }
+
     // Scenario: Missing manifest is rejected
     #[test]
     fn given_missing_manifest_when_cli_then_error() {

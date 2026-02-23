@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 shipper = { path = "../crates/shipper" }
 shipper-duration = { path = "../crates/shipper-duration" }
+shipper-schema = { path = "../crates/shipper-schema" }
 tempfile = "3"
 temp-env = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -33,6 +34,13 @@ bench = false
 [[bin]]
 name = "duration_codec"
 path = "fuzz_targets/duration_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "schema_version"
+path = "fuzz_targets/schema_version.rs"
 test = false
 doc = false
 bench = false

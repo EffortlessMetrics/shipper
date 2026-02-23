@@ -2277,6 +2277,7 @@ dependencies = [
  "shipper-process",
  "shipper-registry",
  "shipper-retry",
+ "shipper-schema",
  "shipper-state",
  "shipper-storage",
  "shipper-store",
@@ -2473,6 +2474,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "shipper-schema"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "proptest",
+]
+
+[[package]]
 name = "shipper-state"
 version = "0.2.0"
 dependencies = [
@@ -2482,6 +2491,7 @@ dependencies = [
  "serde_json",
  "shipper-encrypt",
  "shipper-environment",
+ "shipper-schema",
  "shipper-types",
  "tempfile",
 ]
@@ -2505,6 +2515,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shipper-events",
+ "shipper-schema",
  "shipper-state",
  "shipper-types",
  "tempfile",
