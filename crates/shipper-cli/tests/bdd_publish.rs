@@ -73,6 +73,71 @@ utils = { path = "../utils" }
     write_file(&root.join("app/src/lib.rs"), "pub fn app() {}\n");
 }
 
+fn create_parallel_workspace(root: &Path) {
+    write_file(
+        &root.join("Cargo.toml"),
+        r#"
+[workspace]
+members = ["core", "api", "cli", "app"]
+resolver = "2"
+"#,
+    );
+
+    write_file(
+        &root.join("core/Cargo.toml"),
+        r#"
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    write_file(&root.join("core/src/lib.rs"), "pub fn core() {}\n");
+
+    write_file(
+        &root.join("api/Cargo.toml"),
+        r#"
+[package]
+name = "api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core" }
+"#,
+    );
+    write_file(&root.join("api/src/lib.rs"), "pub fn api() {}\n");
+
+    write_file(
+        &root.join("cli/Cargo.toml"),
+        r#"
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core" }
+"#,
+    );
+    write_file(&root.join("cli/src/lib.rs"), "pub fn cli() {}\n");
+
+    write_file(
+        &root.join("app/Cargo.toml"),
+        r#"
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+api = { path = "../api" }
+cli = { path = "../cli" }
+"#,
+    );
+    write_file(&root.join("app/src/lib.rs"), "pub fn app() {}\n");
+}
+
 fn create_fake_cargo_proxy(bin_dir: &Path) {
     #[cfg(windows)]
     {
@@ -177,6 +242,47 @@ mod deterministic_publish_order {
         // core should come before utils, and utils before app
         assert!(core_pos < utils_pos, "core should be listed before utils");
         assert!(utils_pos < app_pos, "utils should be listed before app");
+    }
+
+    // Scenario: Workspace fan-out/fan-in groups independent crates into a shared parallel level
+    #[test]
+    fn given_parallelizable_workspace_when_grouping_levels_then_independent_crates_share_level() {
+        let td = tempdir().expect("tempdir");
+        create_parallel_workspace(td.path());
+
+        let spec = shipper::types::ReleaseSpec {
+            manifest_path: td.path().join("Cargo.toml"),
+            registry: shipper::types::Registry::crates_io(),
+            selected_packages: None,
+        };
+        let ws = shipper::plan::build_plan(&spec).expect("plan");
+        let levels = ws.plan.group_by_levels();
+
+        assert_eq!(levels.len(), 3);
+        assert_eq!(
+            levels[0]
+                .packages
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["core"]
+        );
+        assert_eq!(
+            levels[1]
+                .packages
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["api", "cli"]
+        );
+        assert_eq!(
+            levels[2]
+                .packages
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["app"]
+        );
     }
 }
 

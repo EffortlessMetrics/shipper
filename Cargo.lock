@@ -2273,6 +2273,7 @@ dependencies = [
  "shipper-environment",
  "shipper-events",
  "shipper-git",
+ "shipper-levels",
  "shipper-lock",
  "shipper-plan",
  "shipper-policy",
@@ -2422,6 +2423,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shipper-levels"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "shipper-lock"
 version = "0.2.0"
 dependencies = [
@@ -2550,6 +2558,7 @@ dependencies = [
  "serde_with",
  "shipper-duration",
  "shipper-encrypt",
+ "shipper-levels",
  "shipper-retry",
  "shipper-webhook",
 ]

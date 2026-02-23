@@ -23,6 +23,7 @@ members = [
   "crates/shipper-store",
   "crates/shipper-storage",
   "crates/shipper-policy",
+  "crates/shipper-levels",
 ]
 exclude = ["fuzz"]
 resolver = "3"

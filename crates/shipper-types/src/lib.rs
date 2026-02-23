@@ -668,42 +668,17 @@ impl ReleasePlan {
     /// Packages at the same level have no dependencies on each other and can
     /// be published concurrently.
     pub fn group_by_levels(&self) -> Vec<PublishLevel> {
-        use std::collections::HashMap;
-
-        if self.packages.is_empty() {
-            return Vec::new();
-        }
-
-        let mut levels: Vec<PublishLevel> = Vec::new();
-        let mut pkg_level: HashMap<String, usize> = HashMap::new();
-
-        for pkg in &self.packages {
-            let deps = self
-                .dependencies
-                .get(&pkg.name)
-                .cloned()
-                .unwrap_or_default();
-
-            let max_dep_level = deps
-                .iter()
-                .filter_map(|dep| pkg_level.get(dep).copied())
-                .max()
-                .unwrap_or(0);
-
-            let level = max_dep_level + 1;
-            pkg_level.insert(pkg.name.clone(), level);
-
-            while levels.len() < level {
-                levels.push(PublishLevel {
-                    level: levels.len(),
-                    packages: Vec::new(),
-                });
-            }
-
-            levels[level - 1].packages.push(pkg.clone());
-        }
-
-        levels
+        shipper_levels::group_packages_by_levels(
+            &self.packages,
+            |pkg| pkg.name.as_str(),
+            &self.dependencies,
+        )
+        .into_iter()
+        .map(|level| PublishLevel {
+            level: level.level,
+            packages: level.packages,
+        })
+        .collect()
     }
 }
 
