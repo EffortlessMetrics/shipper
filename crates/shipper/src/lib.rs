@@ -86,7 +86,7 @@
 //! ## Stability
 //!
 //! The library API is subject to change before v1.0.0. Breaking changes will be
-//! documented in the [changelog](https://github.com/cmrigney/shipper/blob/main/CHANGELOG.md).
+//! documented in the [changelog](https://github.com/effortlessmetrics/shipper/blob/main/CHANGELOG.md).
 //!
 //! ## CLI Usage
 //!

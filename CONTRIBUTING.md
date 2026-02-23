@@ -69,7 +69,7 @@ cargo run --package shipper-cli -- plan --help
 
 ### Before You Start
 
-- Check existing [issues](https://github.com/cmrigney/shipper/issues) for related work
+- Check existing [issues](https://github.com/effortlessmetrics/shipper/issues) for related work
 - For significant changes, open an issue first to discuss the approach
 - Keep changes focused and atomic
 
@@ -224,7 +224,7 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 
 ## Questions?
 
-- Open a [discussion](https://github.com/cmrigney/shipper/discussions) for questions
-- Open an [issue](https://github.com/cmrigney/shipper/issues) for bugs or features
+- Open a [discussion](https://github.com/effortlessmetrics/shipper/discussions) for questions
+- Open an [issue](https://github.com/effortlessmetrics/shipper/issues) for bugs or features
 
 Thank you for contributing!
