@@ -98,7 +98,6 @@ cargo +nightly fuzz run load_state --corpus fuzz/corpus/load_state
 
 # Run schema version parser target
 cargo +nightly fuzz run schema_version -- -max_total_time=60
-
 # Run policy effect evaluator target
 cargo +nightly fuzz run policy_effects -- -max_total_time=60
 
