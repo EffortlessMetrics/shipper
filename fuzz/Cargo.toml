@@ -62,7 +62,6 @@ path = "fuzz_targets/cargo_failure_classifier.rs"
 test = false
 doc = false
 bench = false
-
 [[bin]]
 name = "release_levels"
 path = "fuzz_targets/release_levels.rs"
