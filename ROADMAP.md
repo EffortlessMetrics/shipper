@@ -539,7 +539,7 @@ Roadmap items are prioritized based on:
 
 To suggest a feature:
 
-1. Check existing [GitHub Issues](https://github.com/cmrigney/shipper/issues)
+1. Check existing [GitHub Issues](https://github.com/effortlessmetrics/shipper/issues)
 2. Open a new issue with the `enhancement` label
 3. Describe your use case and expected behavior
 4. Include: User story, technical approach (if known), priority justification

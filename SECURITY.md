@@ -18,7 +18,7 @@ We appreciate responsible disclosure of security vulnerabilities.
 ### How to Report
 
 **Preferred Method:**
-1. Go to [GitHub Security Advisories](https://github.com/cmrigney/shipper/security/advisories)
+1. Go to [GitHub Security Advisories](https://github.com/effortlessmetrics/shipper/security/advisories)
 2. Click "Report a vulnerability"
 3. Provide details about the vulnerability
 
@@ -102,7 +102,7 @@ Shipper itself is published to crates.io. To verify authenticity:
 1. **Verify the source**:
    ```bash
    cargo download shipper-cli
-   # Compare with source at github.com/cmrigney/shipper
+   # Compare with source at github.com/effortlessmetrics/shipper
    ```
 
 2. **Verify the checksum**:
@@ -112,7 +112,7 @@ Shipper itself is published to crates.io. To verify authenticity:
 
 3. **Build from source** for maximum trust:
    ```bash
-   git clone https://github.com/cmrigney/shipper.git
+   git clone https://github.com/effortlessmetrics/shipper.git
    cd shipper
    cargo build --release -p shipper-cli
    ```
@@ -146,7 +146,7 @@ Registry traffic could be intercepted. Mitigation:
 ## Security Updates
 
 Security updates will be:
-- Announced in [GitHub Releases](https://github.com/cmrigney/shipper/releases)
+- Announced in [GitHub Releases](https://github.com/effortlessmetrics/shipper/releases)
 - Documented in [CHANGELOG.md](CHANGELOG.md)
 - Tagged with `security` label
 
@@ -155,8 +155,8 @@ Security updates will be:
 ## Contact
 
 For security concerns:
-- **GitHub Security**: [Report a vulnerability](https://github.com/cmrigney/shipper/security/advisories)
-- **Issues**: For non-sensitive security questions, open a [GitHub Issue](https://github.com/cmrigney/shipper/issues)
+- **GitHub Security**: [Report a vulnerability](https://github.com/effortlessmetrics/shipper/security/advisories)
+- **Issues**: For non-sensitive security questions, open a [GitHub Issue](https://github.com/effortlessmetrics/shipper/issues)
 
 ---
 
