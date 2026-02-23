@@ -1,0 +1,21 @@
+[package]
+name = "shipper-sparse-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Cargo sparse-index path and version lookup helpers for shipper"
+repository = "https://github.com/EffortlessMetrics/shipper"
+documentation = "https://docs.rs/shipper-sparse-index"
+keywords = ["cargo", "registry", "sparse-index", "publish"]
+categories = ["development-tools", "algorithms"]
+
+[dependencies]
+serde.workspace = true
+serde_json = "1.0"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

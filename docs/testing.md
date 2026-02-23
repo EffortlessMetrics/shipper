@@ -58,6 +58,9 @@ cargo test -p shipper-cargo-failure
 # Run release-level grouping microcrate tests (unit + property)
 cargo test -p shipper-levels
 
+# Run sparse-index microcrate tests (unit + property + integration)
+cargo test -p shipper-sparse-index
+
 # Run release-level integration contracts
 cargo test -p shipper-types --test release_levels_integration
 cargo test -p shipper --test parallel_levels_integration
@@ -104,6 +107,9 @@ cargo +nightly fuzz run cargo_failure_classifier -- -max_total_time=60
 
 # Run release dependency-level grouping target
 cargo +nightly fuzz run release_levels -- -max_total_time=60
+
+# Run sparse-index path/version parsing target
+cargo +nightly fuzz run sparse_index -- -max_total_time=60
 ```
 
 ## Test Categories
@@ -202,6 +208,7 @@ Fuzz targets for security-critical parsing:
 - `policy_effects` - Publish policy effect invariants across all flag combinations
 - `cargo_failure_classifier` - Cargo publish failure classification robustness and determinism
 - `release_levels` - Dependency-level grouping determinism and ordering invariants
+- `sparse_index` - Sparse-index path + version lookup determinism and parser hardening
 
 ## CI Pipeline
 

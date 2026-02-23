@@ -276,6 +276,12 @@ fn main() -> Result<()> {
         return run_completion(shell);
     }
 
+    let api_base = cli
+        .api_base
+        .clone()
+        .unwrap_or_else(|| "https://crates.io".to_string());
+    let index_base = cli.api_base.as_ref().map(|_| api_base.clone());
+
     let spec = ReleaseSpec {
         manifest_path: cli.manifest_path.clone(),
         registry: Registry {
@@ -283,11 +289,8 @@ fn main() -> Result<()> {
                 .registry
                 .clone()
                 .unwrap_or_else(|| "crates-io".to_string()),
-            api_base: cli
-                .api_base
-                .clone()
-                .unwrap_or_else(|| "https://crates.io".to_string()),
-            index_base: None,
+            api_base,
+            index_base,
         },
         selected_packages: if cli.packages.is_empty() {
             None
@@ -334,6 +337,7 @@ fn main() -> Result<()> {
         }
         if cli.api_base.is_none() {
             planned.plan.registry.api_base = reg_config.api_base.clone();
+            planned.plan.registry.index_base = reg_config.index_base.clone();
         }
     }
 

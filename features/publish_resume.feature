@@ -33,3 +33,8 @@ Feature: Resumable publishing
     Given cargo publish output contains "429 too many requests"
     When publish failure classification runs
     Then the failure class is "Retryable"
+
+  Scenario: Index readiness mode accepts published version from sparse metadata
+    Given a fake registry returns sparse index metadata containing "demo@0.1.0"
+    When I run "shipper publish" with "--readiness-method index"
+    Then the exit code is 0

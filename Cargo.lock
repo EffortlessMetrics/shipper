@@ -2281,6 +2281,7 @@ dependencies = [
  "shipper-registry",
  "shipper-retry",
  "shipper-schema",
+ "shipper-sparse-index",
  "shipper-state",
  "shipper-storage",
  "shipper-store",
@@ -2486,6 +2487,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "shipper-sparse-index",
  "tempfile",
 ]
 
@@ -2505,6 +2507,15 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "proptest",
+]
+
+[[package]]
+name = "shipper-sparse-index"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

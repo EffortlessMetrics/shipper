@@ -139,13 +139,7 @@ impl RegistryClient {
     ///
     /// All names are lowercased per Cargo convention.
     fn calculate_index_path(&self, crate_name: &str) -> String {
-        let lower = crate_name.to_ascii_lowercase();
-        match lower.len() {
-            1 => format!("1/{}", lower),
-            2 => format!("2/{}", lower),
-            3 => format!("3/{}/{}", &lower[..1], lower),
-            _ => format!("{}/{}/{}", &lower[..2], &lower[2..4], lower),
-        }
+        shipper_sparse_index::sparse_index_path(crate_name)
     }
 
     /// Fetch the index file content from the registry.
@@ -170,16 +164,7 @@ impl RegistryClient {
 
     /// Parse the index content (line-delimited JSON) and check if the version exists.
     fn parse_version_from_index(&self, content: &str, version: &str) -> Result<bool> {
-        #[derive(Deserialize)]
-        struct IndexVersion {
-            vers: String,
-        }
-
-        Ok(content
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .filter_map(|l| serde_json::from_str::<IndexVersion>(l).ok())
-            .any(|v| v.vers == version))
+        Ok(shipper_sparse_index::contains_version(content, version))
     }
 
     /// Attempt ownership verification for a crate.

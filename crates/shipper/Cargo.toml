@@ -36,6 +36,7 @@ shipper-schema = { path = "../shipper-schema" }
 shipper-policy = { path = "../shipper-policy" }
 shipper-cargo-failure = { path = "../shipper-cargo-failure" }
 shipper-levels = { path = "../shipper-levels" }
+shipper-sparse-index = { path = "../shipper-sparse-index" }
 
 anyhow = "1.0.101"
 thiserror = "2.0.18"

@@ -6,6 +6,7 @@
 use std::fs;
 use std::path::Path;
 use std::thread;
+use std::time::Duration;
 
 use assert_cmd::Command;
 use predicates::str::contains;
@@ -71,6 +72,28 @@ utils = { path = "../utils" }
 "#,
     );
     write_file(&root.join("app/src/lib.rs"), "pub fn app() {}\n");
+}
+
+fn create_single_crate_workspace(root: &Path) {
+    write_file(
+        &root.join("Cargo.toml"),
+        r#"
+[workspace]
+members = ["demo"]
+resolver = "2"
+"#,
+    );
+
+    write_file(
+        &root.join("demo/Cargo.toml"),
+        r#"
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    write_file(&root.join("demo/src/lib.rs"), "pub fn demo() {}\n");
 }
 
 fn create_parallel_workspace(root: &Path) {
@@ -198,6 +221,49 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
             req.respond(resp).expect("respond");
         }
     });
+    TestRegistry { base_url, handle }
+}
+
+fn spawn_index_readiness_registry(crate_name: &str, version: &str) -> TestRegistry {
+    let server = Server::http("127.0.0.1:0").expect("server");
+    let base_url = format!("http://{}", server.server_addr());
+    let api_path = format!("/api/v1/crates/{crate_name}/{version}");
+    let lower = crate_name.to_ascii_lowercase();
+    let index_suffix = match lower.len() {
+        1 => format!("1/{lower}"),
+        2 => format!("2/{lower}"),
+        3 => format!("3/{}/{lower}", &lower[..1]),
+        _ => format!("{}/{}/{lower}", &lower[..2], &lower[2..4]),
+    };
+    let index_path = format!("/{index_suffix}");
+    let index_body = format!(
+        "{{\"name\":\"{crate_name}\",\"vers\":\"{version}\",\"deps\":[],\"cksum\":\"deadbeef\"}}"
+    );
+
+    let handle = thread::spawn(move || {
+        for _ in 0..4 {
+            let req = match server.recv_timeout(Duration::from_secs(5)) {
+                Ok(Some(req)) => req,
+                _ => break,
+            };
+
+            let (status, body) = if req.url() == api_path {
+                (404, "{}".to_string())
+            } else if req.url() == index_path {
+                (200, index_body.clone())
+            } else {
+                (404, "{}".to_string())
+            };
+
+            let resp = Response::from_string(body)
+                .with_status_code(StatusCode(status))
+                .with_header(
+                    Header::from_bytes("Content-Type", "application/json").expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        }
+    });
+
     TestRegistry { base_url, handle }
 }
 
@@ -489,6 +555,72 @@ mod resumability {
         assert!(stdout.contains("plan_id:"));
 
         registry2.join();
+    }
+}
+
+// ============================================================================
+// Feature: Readiness Modes
+// ============================================================================
+
+mod readiness_modes {
+    use super::*;
+
+    // Scenario: Index readiness mode accepts published version from sparse metadata
+    #[test]
+    fn given_index_readiness_mode_when_publish_then_reads_sparse_index_metadata() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let bin_dir = td.path().join("fake-bin");
+        fs::create_dir_all(&bin_dir).expect("mkdir");
+        create_fake_cargo_proxy(&bin_dir);
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let mut new_path = bin_dir.display().to_string();
+        if !old_path.is_empty() {
+            new_path.push_str(path_sep());
+            new_path.push_str(&old_path);
+        }
+        let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        #[cfg(windows)]
+        let fake_cargo = bin_dir.join("cargo.cmd");
+        #[cfg(not(windows))]
+        let fake_cargo = bin_dir.join("cargo");
+
+        let registry = spawn_index_readiness_registry("demo", "0.1.0");
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--readiness-method")
+            .arg("index")
+            .arg("--readiness-timeout")
+            .arg("250ms")
+            .arg("--readiness-poll")
+            .arg("10ms")
+            .arg("--state-dir")
+            .arg(".shipper")
+            .arg("publish")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+            .assert()
+            .success();
+
+        let receipt_path = td.path().join(".shipper").join("receipt.json");
+        let receipt_json = fs::read_to_string(receipt_path).expect("receipt");
+        let receipt: serde_json::Value = serde_json::from_str(&receipt_json).expect("json");
+        let packages = receipt["packages"].as_array().expect("packages");
+        assert!(packages.iter().any(|pkg| {
+            pkg["name"].as_str() == Some("demo")
+                && pkg["state"]["state"].as_str() == Some("published")
+        }));
+
+        registry.join();
     }
 }
 

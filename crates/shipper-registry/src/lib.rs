@@ -203,7 +203,7 @@ impl RegistryClient {
         version: &str,
     ) -> Result<bool> {
         let content = self.fetch_sparse_index_file(index_base, name)?;
-        parse_version_from_sparse_index(&content, version)
+        Ok(shipper_sparse_index::contains_version(&content, version))
     }
 
     /// Fetch sparse-index content for a crate.
@@ -294,28 +294,9 @@ pub struct OwnersResponse {
     pub users: Vec<OwnersApiUser>,
 }
 
-fn parse_version_from_sparse_index(content: &str, version: &str) -> Result<bool> {
-    #[derive(Deserialize)]
-    struct IndexVersion {
-        vers: String,
-    }
-
-    Ok(content
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|line| serde_json::from_str::<IndexVersion>(line).ok())
-        .any(|value| value.vers == version))
-}
-
 /// Compute the sparse-index path for a crate name.
 pub fn sparse_index_path(crate_name: &str) -> String {
-    let lower = crate_name.to_ascii_lowercase();
-    match lower.len() {
-        1 => format!("1/{}", lower),
-        2 => format!("2/{}", lower),
-        3 => format!("3/{}/{}", &lower[..1], lower),
-        _ => format!("{}/{}/{}", &lower[..2], &lower[2..4], lower),
-    }
+    shipper_sparse_index::sparse_index_path(crate_name)
 }
 
 /// Check if a crate version is visible on the registry
