@@ -68,7 +68,6 @@ path = "fuzz_targets/release_levels.rs"
 test = false
 doc = false
 bench = false
-
 [[bin]]
 name = "sparse_index"
 path = "fuzz_targets/sparse_index.rs"
