@@ -2272,6 +2272,7 @@ dependencies = [
  "shipper-events",
  "shipper-git",
  "shipper-lock",
+ "shipper-plan",
  "shipper-process",
  "shipper-registry",
  "shipper-retry",
@@ -2407,6 +2408,22 @@ dependencies = [
  "gethostname",
  "serde",
  "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "shipper-plan"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "cargo_metadata",
+ "chrono",
+ "hex",
+ "proptest",
+ "sha2",
+ "shipper-cargo",
+ "shipper-state",
+ "shipper-types",
  "tempfile",
 ]
 

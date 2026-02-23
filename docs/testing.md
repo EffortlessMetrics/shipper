@@ -24,7 +24,7 @@ Shipper employs a multi-layered testing approach:
 cargo test --workspace
 
 # Run with the in-crate modular backends via feature flags
-# (auth, git, events, lock, encryption, environment, storage, cargo, registry, process, webhook, types, config, state, store)
+# (auth, git, events, lock, encryption, environment, storage, cargo, plan, registry, process, webhook, types, config, state, store)
 cargo test -p shipper --features micro-all
 
 # Run individual backend toggles
@@ -36,6 +36,7 @@ cargo test -p shipper --features micro-encrypt
 cargo test -p shipper --features micro-environment
 cargo test -p shipper --features micro-storage
 cargo test -p shipper --features micro-cargo
+cargo test -p shipper --features micro-plan
 # Run with the new registry/process/webhook micro backends
 cargo test -p shipper --features micro-registry
 cargo test -p shipper --features micro-process
@@ -147,6 +148,7 @@ cargo test -p shipper-cli --test bdd_publish --features micro-encrypt
 cargo test -p shipper-cli --test bdd_publish --features micro-environment
 cargo test -p shipper-cli --test bdd_publish --features micro-storage
 cargo test -p shipper-cli --test bdd_publish --features micro-cargo
+cargo test -p shipper-cli --test bdd_publish --features micro-plan
 cargo test -p shipper-cli --test bdd_publish --features micro-registry
 cargo test -p shipper-cli --test bdd_publish --features micro-process
 cargo test -p shipper-cli --test bdd_publish --features micro-webhook
