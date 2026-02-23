@@ -2,6 +2,7 @@
 members = [
   "crates/shipper",
   "crates/shipper-cli",
+  "crates/shipper-duration",
   "crates/shipper-retry",
   "crates/shipper-lock",
   "crates/shipper-encrypt",

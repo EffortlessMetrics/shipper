@@ -2267,6 +2267,7 @@ dependencies = [
  "shipper-auth",
  "shipper-cargo",
  "shipper-config",
+ "shipper-duration",
  "shipper-encrypt",
  "shipper-environment",
  "shipper-events",
@@ -2324,7 +2325,6 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
- "humantime",
  "indicatif",
  "insta",
  "predicates",
@@ -2332,6 +2332,7 @@ dependencies = [
  "serde_yaml",
  "serial_test",
  "shipper",
+ "shipper-duration",
  "temp-env",
  "tempfile",
  "tiny_http",
@@ -2350,6 +2351,17 @@ dependencies = [
  "shipper-types",
  "shipper-webhook",
  "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "shipper-duration"
+version = "0.2.0"
+dependencies = [
+ "humantime",
+ "proptest",
+ "serde",
+ "serde_json",
  "toml",
 ]
 
@@ -2503,11 +2515,11 @@ name = "shipper-types"
 version = "0.2.0"
 dependencies = [
  "chrono",
- "humantime",
  "proptest",
  "serde",
  "serde_json",
  "serde_with",
+ "shipper-duration",
  "shipper-encrypt",
  "shipper-retry",
  "shipper-webhook",

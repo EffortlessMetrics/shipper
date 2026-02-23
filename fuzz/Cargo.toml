@@ -10,8 +10,11 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 shipper = { path = "../crates/shipper" }
+shipper-duration = { path = "../crates/shipper-duration" }
 tempfile = "3"
 temp-env = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [[bin]]
 name = "load_state"
@@ -23,6 +26,13 @@ bench = false
 [[bin]]
 name = "resolve_token"
 path = "fuzz_targets/resolve_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "duration_codec"
+path = "fuzz_targets/duration_codec.rs"
 test = false
 doc = false
 bench = false

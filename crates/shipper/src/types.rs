@@ -26,38 +26,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_with::{DurationMilliSeconds, serde_as};
 
 use crate::encryption::EncryptionConfig as EncryptionSettings;
 use crate::webhook::WebhookConfig;
-
-/// Deserialize a Duration from either a string (human-readable) or u64 (milliseconds)
-pub(crate) fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum DurationHelper {
-        String(String),
-        U64(u64),
-    }
-
-    match DurationHelper::deserialize(deserializer)? {
-        DurationHelper::String(s) => humantime::parse_duration(&s)
-            .map_err(|e| serde::de::Error::custom(format!("invalid duration: {}", e))),
-        DurationHelper::U64(ms) => Ok(Duration::from_millis(ms)),
-    }
-}
-
-/// Serialize a Duration as milliseconds (u64) so it roundtrips with deserialize_duration
-pub(crate) fn serialize_duration<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_u64(duration.as_millis() as u64)
-}
+pub(crate) use shipper_duration::{deserialize_duration, serialize_duration};
 
 /// Represents a Cargo registry for publishing crates.
 ///

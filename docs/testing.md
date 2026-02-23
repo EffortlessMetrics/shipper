@@ -172,6 +172,7 @@ End-to-end tests simulate the full CLI workflow:
 Fuzz targets for security-critical parsing:
 - `load_state` - State JSON parsing
 - `resolve_token` - Credentials TOML parsing
+- `duration_codec` - Duration parsing and serde codec hardening
 - `encrypt_decrypt` - Encryption roundtrip
 - `retry_strategy` - Delay calculation invariants
 - `types_serialization` - JSON serialization

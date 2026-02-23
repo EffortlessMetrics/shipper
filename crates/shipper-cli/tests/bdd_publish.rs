@@ -530,6 +530,24 @@ mod error_handling {
             .stderr(contains("invalid duration"));
     }
 
+    // Scenario: Valid duration is accepted
+    #[test]
+    fn given_valid_duration_when_cli_then_plan_succeeds() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--base-delay")
+            .arg("250ms")
+            .arg("--max-delay")
+            .arg("2s")
+            .arg("plan")
+            .assert()
+            .success();
+    }
+
     // Scenario: Missing manifest is rejected
     #[test]
     fn given_missing_manifest_when_cli_then_error() {

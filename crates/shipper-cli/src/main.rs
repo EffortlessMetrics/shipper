@@ -502,7 +502,7 @@ fn main() -> Result<()> {
 }
 
 fn parse_duration(s: &str) -> Result<Duration> {
-    humantime::parse_duration(s).with_context(|| format!("invalid duration: {s}"))
+    shipper_duration::parse_duration(s).with_context(|| format!("invalid duration: {s}"))
 }
 
 fn parse_policy(s: &str) -> Result<shipper::types::PublishPolicy> {
