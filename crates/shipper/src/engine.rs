@@ -18,7 +18,7 @@ use crate::state;
 use crate::types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, Finishability,
     PackageProgress, PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent,
-    PublishPolicy, ReadinessEvidence, Receipt, RuntimeOptions,
+    ReadinessEvidence, Receipt, RuntimeOptions,
 };
 use crate::webhook::{self, WebhookEvent};
 
@@ -28,34 +28,20 @@ pub trait Reporter {
     fn error(&mut self, msg: &str);
 }
 
-pub(crate) struct PolicyEffects {
-    pub(crate) run_dry_run: bool,
-    pub(crate) check_ownership: bool,
-    pub(crate) strict_ownership: bool,
-    pub(crate) readiness_enabled: bool,
-}
+pub(crate) fn policy_effects(opts: &RuntimeOptions) -> shipper_policy::PolicyEffects {
+    let policy = match opts.policy {
+        crate::types::PublishPolicy::Safe => shipper_policy::PolicyKind::Safe,
+        crate::types::PublishPolicy::Balanced => shipper_policy::PolicyKind::Balanced,
+        crate::types::PublishPolicy::Fast => shipper_policy::PolicyKind::Fast,
+    };
 
-pub(crate) fn apply_policy(opts: &RuntimeOptions) -> PolicyEffects {
-    match opts.policy {
-        PublishPolicy::Safe => PolicyEffects {
-            run_dry_run: !opts.no_verify,
-            check_ownership: !opts.skip_ownership_check,
-            strict_ownership: opts.strict_ownership,
-            readiness_enabled: opts.readiness.enabled,
-        },
-        PublishPolicy::Balanced => PolicyEffects {
-            run_dry_run: !opts.no_verify,
-            check_ownership: false,
-            strict_ownership: false,
-            readiness_enabled: opts.readiness.enabled,
-        },
-        PublishPolicy::Fast => PolicyEffects {
-            run_dry_run: false,
-            check_ownership: false,
-            strict_ownership: false,
-            readiness_enabled: false,
-        },
-    }
+    shipper_policy::evaluate(
+        policy,
+        opts.no_verify,
+        opts.skip_ownership_check,
+        opts.strict_ownership,
+        opts.readiness.enabled,
+    )
 }
 
 /// Run preflight verification checks before publishing.
@@ -95,7 +81,7 @@ pub fn run_preflight(
     reporter: &mut dyn Reporter,
 ) -> Result<PreflightReport> {
     let workspace_root = &ws.workspace_root;
-    let effects = apply_policy(opts);
+    let effects = policy_effects(opts);
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
     let events_path = events::events_path(&state_dir);
     let mut event_log = events::EventLog::new();
@@ -361,7 +347,7 @@ pub fn run_publish(
 ) -> Result<Receipt> {
     let workspace_root = &ws.workspace_root;
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
-    let effects = apply_policy(opts);
+    let effects = policy_effects(opts);
 
     // Acquire lock
     let lock_timeout = if opts.force {

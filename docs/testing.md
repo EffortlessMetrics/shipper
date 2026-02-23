@@ -85,6 +85,9 @@ cargo +nightly fuzz run load_state --corpus fuzz/corpus/load_state
 
 # Run schema version parser target
 cargo +nightly fuzz run schema_version -- -max_total_time=60
+
+# Run policy effect evaluator target
+cargo +nightly fuzz run policy_effects -- -max_total_time=60
 ```
 
 ## Test Categories
@@ -180,6 +183,7 @@ Fuzz targets for security-critical parsing:
 - `retry_strategy` - Delay calculation invariants
 - `types_serialization` - JSON serialization
 - `schema_version` - Schema version parsing and compatibility validation
+- `policy_effects` - Publish policy effect invariants across all flag combinations
 
 ## CI Pipeline
 

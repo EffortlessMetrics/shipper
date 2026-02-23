@@ -1,0 +1,21 @@
+[package]
+name = "shipper-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Publish policy evaluation logic for shipper"
+repository = "https://github.com/EffortlessMetrics/shipper"
+documentation = "https://docs.rs/shipper-policy"
+keywords = ["policy", "publish", "workflow"]
+categories = ["development-tools"]
+
+[dependencies]
+shipper-types = { path = "../shipper-types" }
+
+[dev-dependencies]
+proptest.workspace = true
+shipper-retry = { path = "../shipper-retry" }
+
+[lints]
+workspace = true

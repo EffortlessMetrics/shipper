@@ -428,6 +428,45 @@ mod policy_modes {
 
         registry.join();
     }
+
+    // Scenario: Balanced policy ignores strict ownership mode
+    #[test]
+    fn given_balanced_policy_with_strict_ownership_and_no_token_when_preflight_then_succeeds() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+        // 3 crates x (version check + new crate check) = 6 requests
+        let registry = spawn_registry(vec![404, 404, 404, 404, 404, 404], 6);
+
+        let mut cmd = shipper_cmd();
+        let out = cmd
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--policy")
+            .arg("balanced")
+            .arg("--strict-ownership")
+            .arg("--no-verify")
+            .arg("preflight")
+            .env("CARGO_HOME", td.path().join("cargo-home"))
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(out).expect("utf8");
+        assert!(
+            stdout.contains("Token Detected: ✗") || stdout.contains("\"token_detected\":false")
+        );
+
+        registry.join();
+    }
 }
 
 // ============================================================================

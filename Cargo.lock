@@ -2274,6 +2274,7 @@ dependencies = [
  "shipper-git",
  "shipper-lock",
  "shipper-plan",
+ "shipper-policy",
  "shipper-process",
  "shipper-registry",
  "shipper-retry",
@@ -2438,6 +2439,15 @@ dependencies = [
  "shipper-state",
  "shipper-types",
  "tempfile",
+]
+
+[[package]]
+name = "shipper-policy"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "shipper-retry",
+ "shipper-types",
 ]
 
 [[package]]

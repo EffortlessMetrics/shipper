@@ -21,6 +21,7 @@ members = [
   "crates/shipper-webhook",
   "crates/shipper-store",
   "crates/shipper-storage",
+  "crates/shipper-policy",
 ]
 exclude = ["fuzz"]
 resolver = "3"
