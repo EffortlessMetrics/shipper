@@ -1077,68 +1077,14 @@ fn verify_published(
 }
 
 pub(crate) fn classify_cargo_failure(stderr: &str, stdout: &str) -> (ErrorClass, String) {
-    let hay = format!("{}\n{}", stderr, stdout).to_lowercase();
+    let outcome = shipper_cargo_failure::classify_publish_failure(stderr, stdout);
+    let class = match outcome.class {
+        shipper_cargo_failure::CargoFailureClass::Retryable => ErrorClass::Retryable,
+        shipper_cargo_failure::CargoFailureClass::Permanent => ErrorClass::Permanent,
+        shipper_cargo_failure::CargoFailureClass::Ambiguous => ErrorClass::Ambiguous,
+    };
 
-    // Retryable: backpressure and transient network failures.
-    let retryable_patterns = [
-        "too many requests",
-        "429",
-        "timeout",
-        "timed out",
-        "connection reset",
-        "connection refused",
-        "connection closed",
-        "dns",
-        "tls",
-        "temporarily unavailable",
-        "failed to download",
-        "failed to send",
-        "server error",
-        "502",
-        "503",
-        "504",
-    ];
-
-    if retryable_patterns.iter().any(|p| hay.contains(p)) {
-        return (
-            ErrorClass::Retryable,
-            "transient failure (retryable)".into(),
-        );
-    }
-
-    // Permanent: manifest / packaging / validation failures.
-    let permanent_patterns = [
-        "failed to parse manifest",
-        "invalid",
-        "missing",
-        "license",
-        "description",
-        "readme",
-        "repository",
-        "could not compile",
-        "compilation failed",
-        "failed to verify",
-        "package is not allowed to be published",
-        "publish is disabled",
-        "yanked",
-        "forbidden",
-        "permission denied",
-        "not authorized",
-        "unauthorized",
-    ];
-
-    if permanent_patterns.iter().any(|p| hay.contains(p)) {
-        return (
-            ErrorClass::Permanent,
-            "permanent failure (fix required)".into(),
-        );
-    }
-
-    // Ambiguous: default. We'll always verify registry before failing.
-    (
-        ErrorClass::Ambiguous,
-        "publish outcome ambiguous; registry did not show version".into(),
-    )
+    (class, outcome.message.to_string())
 }
 
 pub(crate) fn backoff_delay(

@@ -2266,6 +2266,7 @@ dependencies = [
  "sha2",
  "shipper-auth",
  "shipper-cargo",
+ "shipper-cargo-failure",
  "shipper-config",
  "shipper-duration",
  "shipper-encrypt",
@@ -2315,6 +2316,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "shipper-cargo-failure"
+version = "0.2.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]

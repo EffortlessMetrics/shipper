@@ -13,6 +13,7 @@ shipper = { path = "../crates/shipper" }
 shipper-duration = { path = "../crates/shipper-duration" }
 shipper-schema = { path = "../crates/shipper-schema" }
 shipper-policy = { path = "../crates/shipper-policy" }
+shipper-cargo-failure = { path = "../crates/shipper-cargo-failure" }
 tempfile = "3"
 temp-env = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -49,6 +50,13 @@ bench = false
 [[bin]]
 name = "policy_effects"
 path = "fuzz_targets/policy_effects.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cargo_failure_classifier"
+path = "fuzz_targets/cargo_failure_classifier.rs"
 test = false
 doc = false
 bench = false

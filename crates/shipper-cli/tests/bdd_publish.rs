@@ -552,6 +552,17 @@ mod output_formats {
 mod error_handling {
     use super::*;
 
+    // Scenario: Retryable publish output is classified for retry logic
+    #[test]
+    fn given_retryable_publish_output_when_failure_classification_runs_then_retryable() {
+        let outcome =
+            shipper::cargo_failure::classify_publish_failure("HTTP 429 too many requests", "");
+        assert_eq!(
+            outcome.class,
+            shipper::cargo_failure::CargoFailureClass::Retryable
+        );
+    }
+
     // Scenario: Invalid duration is rejected
     #[test]
     fn given_invalid_duration_when_cli_then_error() {

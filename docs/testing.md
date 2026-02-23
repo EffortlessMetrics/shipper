@@ -51,6 +51,9 @@ cargo nextest run --workspace
 
 # Run specific test file
 cargo test -p shipper-cli --test bdd_publish
+
+# Run classifier microcrate tests (unit + property + integration)
+cargo test -p shipper-cargo-failure
 ```
 
 ### CI-Simulated Run
@@ -88,6 +91,9 @@ cargo +nightly fuzz run schema_version -- -max_total_time=60
 
 # Run policy effect evaluator target
 cargo +nightly fuzz run policy_effects -- -max_total_time=60
+
+# Run cargo publish failure classifier target
+cargo +nightly fuzz run cargo_failure_classifier -- -max_total_time=60
 ```
 
 ## Test Categories
@@ -184,6 +190,7 @@ Fuzz targets for security-critical parsing:
 - `types_serialization` - JSON serialization
 - `schema_version` - Schema version parsing and compatibility validation
 - `policy_effects` - Publish policy effect invariants across all flag combinations
+- `cargo_failure_classifier` - Cargo publish failure classification robustness and determinism
 
 ## CI Pipeline
 

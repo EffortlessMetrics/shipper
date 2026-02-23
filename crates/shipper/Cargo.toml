@@ -34,6 +34,7 @@ shipper-store = { path = "../shipper-store", optional = true }
 shipper-duration = { path = "../shipper-duration" }
 shipper-schema = { path = "../shipper-schema" }
 shipper-policy = { path = "../shipper-policy" }
+shipper-cargo-failure = { path = "../shipper-cargo-failure" }
 
 anyhow = "1.0.101"
 thiserror = "2.0.18"

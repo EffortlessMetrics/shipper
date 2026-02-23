@@ -15,6 +15,7 @@ members = [
   "crates/shipper-git",
   "crates/shipper-registry",
   "crates/shipper-cargo",
+  "crates/shipper-cargo-failure",
   "crates/shipper-environment",
   "crates/shipper-plan",
   "crates/shipper-process",

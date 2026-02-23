@@ -28,3 +28,8 @@ Feature: Resumable publishing
     When I run "shipper publish"
     Then the receipt shows package "demo@0.1.0" in state "Skipped"
     And the skip reason contains "already published"
+
+  Scenario: Retryable cargo failures are classified for retry logic
+    Given cargo publish output contains "429 too many requests"
+    When publish failure classification runs
+    Then the failure class is "Retryable"
