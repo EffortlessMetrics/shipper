@@ -18,9 +18,12 @@ shipper-policy = { path = "../crates/shipper-policy" }
 shipper-output-sanitizer = { path = "../crates/shipper-output-sanitizer" }
 shipper-config-runtime = { path = "../crates/shipper-config-runtime" }
 shipper-cargo-failure = { path = "../crates/shipper-cargo-failure" }
+shipper-execution-core = { path = "../crates/shipper-execution-core" }
 shipper-levels = { path = "../crates/shipper-levels" }
 shipper-chunking = { path = "../crates/shipper-chunking" }
 shipper-sparse-index = { path = "../crates/shipper-sparse-index" }
+chrono = "0.4.43"
+shipper-types = { path = "../crates/shipper-types" }
 tempfile = "3"
 temp-env = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -70,6 +73,13 @@ bench = false
 [[bin]]
 name = "engine_parallel_chunks"
 path = "fuzz_targets/engine_parallel_chunks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "execution_core"
+path = "fuzz_targets/execution_core.rs"
 test = false
 doc = false
 bench = false

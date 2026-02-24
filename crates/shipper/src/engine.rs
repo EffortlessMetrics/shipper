@@ -6,6 +6,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
+use shipper_execution_core::{
+    backoff_delay, classify_cargo_failure, pkg_key, resolve_state_dir, short_state, update_state,
+};
 use crate::auth;
 use crate::cargo;
 use crate::environment;
@@ -995,45 +998,6 @@ pub(crate) fn init_state(ws: &PlannedWorkspace, state_dir: &Path) -> Result<Exec
     Ok(st)
 }
 
-fn update_state(
-    st: &mut ExecutionState,
-    state_dir: &Path,
-    key: &str,
-    new_state: PackageState,
-) -> Result<()> {
-    let pr = st
-        .packages
-        .get_mut(key)
-        .context("missing package in state")?;
-    pr.state = new_state;
-    pr.last_updated_at = Utc::now();
-    st.updated_at = Utc::now();
-    state::save_state(state_dir, st)
-}
-
-pub(crate) fn resolve_state_dir(workspace_root: &Path, state_dir: &PathBuf) -> PathBuf {
-    if state_dir.is_absolute() {
-        state_dir.clone()
-    } else {
-        workspace_root.join(state_dir)
-    }
-}
-
-pub(crate) fn pkg_key(name: &str, version: &str) -> String {
-    format!("{}@{}", name, version)
-}
-
-pub(crate) fn short_state(st: &PackageState) -> &'static str {
-    match st {
-        PackageState::Pending => "pending",
-        PackageState::Uploaded => "uploaded",
-        PackageState::Published => "published",
-        PackageState::Skipped { .. } => "skipped",
-        PackageState::Failed { .. } => "failed",
-        PackageState::Ambiguous { .. } => "ambiguous",
-    }
-}
-
 fn verify_published(
     reg: &RegistryClient,
     crate_name: &str,
@@ -1062,34 +1026,6 @@ fn verify_published(
         ));
     }
     Ok((visible, evidence))
-}
-
-pub(crate) fn classify_cargo_failure(stderr: &str, stdout: &str) -> (ErrorClass, String) {
-    let outcome = shipper_cargo_failure::classify_publish_failure(stderr, stdout);
-    let class = match outcome.class {
-        shipper_cargo_failure::CargoFailureClass::Retryable => ErrorClass::Retryable,
-        shipper_cargo_failure::CargoFailureClass::Permanent => ErrorClass::Permanent,
-        shipper_cargo_failure::CargoFailureClass::Ambiguous => ErrorClass::Ambiguous,
-    };
-
-    (class, outcome.message.to_string())
-}
-
-pub(crate) fn backoff_delay(
-    base: Duration,
-    max: Duration,
-    attempt: u32,
-    strategy: crate::retry::RetryStrategyType,
-    jitter: f64,
-) -> Duration {
-    let config = crate::retry::RetryStrategyConfig {
-        strategy,
-        max_attempts: 10, // Not used for delay calculation
-        base_delay: base,
-        max_delay: max,
-        jitter,
-    };
-    crate::retry::calculate_delay(&config, attempt)
 }
 
 #[cfg(test)]

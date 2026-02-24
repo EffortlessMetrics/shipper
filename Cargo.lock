@@ -2274,6 +2274,7 @@ dependencies = [
  "shipper-engine-parallel",
  "shipper-environment",
  "shipper-events",
+ "shipper-execution-core",
  "shipper-git",
  "shipper-levels",
  "shipper-lock",
@@ -2424,10 +2425,10 @@ dependencies = [
  "serde_json",
  "serial_test",
  "shipper-cargo",
- "shipper-cargo-failure",
  "shipper-chunking",
  "shipper-encrypt",
  "shipper-events",
+ "shipper-execution-core",
  "shipper-plan",
  "shipper-policy",
  "shipper-registry",
@@ -2461,6 +2462,20 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "shipper-types",
+ "tempfile",
+]
+
+[[package]]
+name = "shipper-execution-core"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "proptest",
+ "shipper-cargo-failure",
+ "shipper-retry",
+ "shipper-state",
  "shipper-types",
  "tempfile",
 ]

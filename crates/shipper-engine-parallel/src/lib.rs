@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 use chrono::Utc;
 
 use shipper_cargo as cargo;
+use shipper_execution_core::{backoff_delay, classify_cargo_failure, pkg_key, update_state_locked};
 
 use shipper_events as events;
 use shipper_registry::RegistryClient;
@@ -16,7 +17,6 @@ use shipper_types::{
     PackageReceipt, PackageState, PlannedPackage, PublishEvent, PublishLevel, ReadinessConfig,
     ReadinessEvidence, ReadinessMethod, RuntimeOptions,
 };
-use shipper_cargo_failure;
 use shipper_policy;
 use shipper_retry;
 mod webhook;
@@ -726,15 +726,6 @@ mod property_tests {
 }
 
 
-/// Helper function to update state while holding the lock
-fn update_state_locked(st: &mut ExecutionState, key: &str, new_state: PackageState) {
-    if let Some(pr) = st.packages.get_mut(key) {
-        pr.state = new_state;
-        pr.last_updated_at = Utc::now();
-    }
-    st.updated_at = Utc::now();
-}
-
 /// Publish packages in a single level in parallel
 #[allow(clippy::too_many_arguments)]
 fn run_publish_level(
@@ -971,39 +962,6 @@ fn policy_effects(opts: &RuntimeOptions) -> shipper_policy::PolicyEffects {
         opts.strict_ownership,
         opts.readiness.enabled,
     )
-}
-
-fn classify_cargo_failure(stderr: &str, stdout: &str) -> (ErrorClass, String) {
-    let outcome = shipper_cargo_failure::classify_publish_failure(stderr, stdout);
-    let class = match outcome.class {
-        shipper_cargo_failure::CargoFailureClass::Retryable => ErrorClass::Retryable,
-        shipper_cargo_failure::CargoFailureClass::Permanent => ErrorClass::Permanent,
-        shipper_cargo_failure::CargoFailureClass::Ambiguous => ErrorClass::Ambiguous,
-    };
-
-    (class, outcome.message.to_string())
-}
-
-fn backoff_delay(
-    base: std::time::Duration,
-    max: std::time::Duration,
-    attempt: u32,
-    strategy: shipper_retry::RetryStrategyType,
-    jitter: f64,
-) -> std::time::Duration {
-    let config = shipper_retry::RetryStrategyConfig {
-        strategy,
-        max_attempts: 10,
-        base_delay: base,
-        max_delay: max,
-        jitter,
-    };
-
-    shipper_retry::calculate_delay(&config, attempt)
-}
-
-fn pkg_key(name: &str, version: &str) -> String {
-    format!("{}@{}", name, version)
 }
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ shipper-encrypt = { path = "../shipper-encrypt", optional = true }
 shipper-auth = { path = "../shipper-auth", optional = true }
 shipper-git = { path = "../shipper-git", optional = true }
 shipper-events = { path = "../shipper-events", optional = true }
+shipper-execution-core = { path = "../shipper-execution-core" }
 shipper-environment = { path = "../shipper-environment", optional = true }
 shipper-storage = { path = "../shipper-storage", optional = true }
 shipper-cargo = { path = "../shipper-cargo", optional = true }
