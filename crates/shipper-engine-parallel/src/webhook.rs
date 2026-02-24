@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub type WebhookConfig = shipper_webhook::WebhookConfig;
 
 /// Webhook events published during a publish run.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum WebhookEvent {

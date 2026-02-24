@@ -52,7 +52,10 @@ mod tests {
     fn chunking_preserves_order_and_total_items() {
         let items = vec![1, 2, 3, 4, 5];
         let chunks = chunk_by_max_concurrent(&items, 10);
-        let flattened: Vec<i32> = chunks.iter().flat_map(|chunk| chunk.iter().cloned()).collect();
+        let flattened: Vec<i32> = chunks
+            .iter()
+            .flat_map(|chunk| chunk.iter().cloned())
+            .collect();
 
         assert_eq!(flattened, items);
         assert_eq!(chunks.len(), 1);

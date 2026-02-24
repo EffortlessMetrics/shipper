@@ -1,13 +1,8 @@
 use std::time::Duration;
 
 use shipper_retry::{
+    ErrorClass, PerErrorConfig, RetryExecutor, RetryPolicy, RetryStrategyConfig, RetryStrategyType,
     config_for_error,
-    ErrorClass,
-    PerErrorConfig,
-    RetryExecutor,
-    RetryPolicy,
-    RetryStrategyConfig,
-    RetryStrategyType,
 };
 
 #[test]
@@ -45,11 +40,7 @@ fn integration_executor_executes_with_backoff_config() {
     let mut attempts = 0u32;
     let result = executor.run(|attempt| {
         attempts = attempt;
-        if attempt < 2 {
-            Err("retry")
-        } else {
-            Ok(())
-        }
+        if attempt < 2 { Err("retry") } else { Ok(()) }
     });
 
     assert!(result.is_ok());

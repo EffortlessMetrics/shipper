@@ -17,8 +17,6 @@ use shipper_types::{
     PackageReceipt, PackageState, PlannedPackage, PublishEvent, PublishLevel, ReadinessConfig,
     ReadinessEvidence, ReadinessMethod, RuntimeOptions,
 };
-use shipper_policy;
-use shipper_retry;
 mod webhook;
 use webhook::{WebhookEvent, maybe_send_event};
 
@@ -69,12 +67,11 @@ fn is_version_visible_with_backoff(
             Duration::ZERO
         } else {
             let base_delay = config.poll_interval;
-            let exponential_delay = base_delay
-                .saturating_mul(2_u32.saturating_pow(attempt.saturating_sub(2).min(16)));
+            let exponential_delay =
+                base_delay.saturating_mul(2_u32.saturating_pow(attempt.saturating_sub(2).min(16)));
             let capped_delay = exponential_delay.min(config.max_delay);
             let jitter_range = config.jitter_factor;
-            let jitter =
-                1.0 + (rand::random::<f64>() * 2.0 * jitter_range - jitter_range);
+            let jitter = 1.0 + (rand::random::<f64>() * 2.0 * jitter_range - jitter_range);
             Duration::from_millis((capped_delay.as_millis() as f64 * jitter).round() as u64)
         };
 
@@ -120,8 +117,7 @@ fn is_version_visible_with_backoff(
             base_delay.saturating_mul(2_u32.saturating_pow(attempt.saturating_sub(1).min(16)));
         let capped_delay = exponential_delay.min(config.max_delay);
         let jitter_range = config.jitter_factor;
-        let jitter =
-            1.0 + (rand::random::<f64>() * 2.0 * jitter_range - jitter_range);
+        let jitter = 1.0 + (rand::random::<f64>() * 2.0 * jitter_range - jitter_range);
         let next_delay =
             Duration::from_millis((capped_delay.as_millis() as f64 * jitter).round() as u64);
         thread::sleep(next_delay);
@@ -136,7 +132,11 @@ fn is_version_visible_via_index(
 ) -> Result<bool> {
     let content = if let Some(path) = &config.index_path {
         std::fs::read_to_string(path).map_err(|e| {
-            anyhow::anyhow!("failed to read local sparse-index path {}: {}", path.display(), e)
+            anyhow::anyhow!(
+                "failed to read local sparse-index path {}: {}",
+                path.display(),
+                e
+            )
         })?
     } else {
         reg.fetch_sparse_index_file(reg.base_url(), crate_name)?
@@ -382,8 +382,7 @@ fn publish_package(
                     break;
                 }
 
-                let (class, msg) =
-                    classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
+                let (class, msg) = classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
                 last_err = Some((class.clone(), msg.clone()));
 
                 // Event: PackageFailed
@@ -470,7 +469,8 @@ fn publish_package(
             ));
         }
 
-        let verify_result = is_version_visible_with_backoff(reg, &p.name, &p.version, &readiness_config);
+        let verify_result =
+            is_version_visible_with_backoff(reg, &p.name, &p.version, &readiness_config);
 
         match verify_result {
             Ok((visible, checks)) => {
@@ -583,7 +583,7 @@ fn publish_package(
             }
 
             // Send webhook notification: package succeeded
-                maybe_send_event(
+            maybe_send_event(
                 &opts.webhook,
                 WebhookEvent::PublishSucceeded {
                     plan_id: ws.plan.plan_id.clone(),
@@ -659,7 +659,7 @@ fn publish_package(
     }
 
     // Send webhook notification: package succeeded
-            maybe_send_event(
+    maybe_send_event(
         &opts.webhook,
         WebhookEvent::PublishSucceeded {
             plan_id: ws.plan.plan_id.clone(),
@@ -718,13 +718,12 @@ mod property_tests {
                 if max_size == 1 {
                     prop_assert!(chunks.iter().all(|chunk| chunk.len() <= 1));
                 } else {
-                    prop_assert!(chunks.iter().all(|chunk| chunk.len() > 0 && chunk.len() <= max_size));
+                    prop_assert!(chunks.iter().all(|chunk| !chunk.is_empty() && chunk.len() <= max_size));
                 }
             }
         }
     }
 }
-
 
 /// Publish packages in a single level in parallel
 #[allow(clippy::too_many_arguments)]
@@ -2035,7 +2034,3 @@ mod tests {
         server.join();
     }
 }
-
-
-
-

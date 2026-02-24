@@ -321,30 +321,6 @@ fn compute_plan_id(registry_api_base: &str, packages: &[PlannedPackage]) -> Stri
     hex::encode(digest)
 }
 
-#[cfg(not(feature = "micro-types"))]
-impl ReleasePlan {
-    /// Group packages by dependency level for parallel publishing.
-    ///
-    /// Packages at the same level have no dependencies on each other and can be
-    /// published in parallel. Level 0 packages have no dependencies on other packages
-    /// in the plan. Level N packages depend only on packages in levels < N.
-    ///
-    /// This method uses the `dependencies` field of the ReleasePlan to determine levels.
-    pub fn group_by_levels(&self) -> Vec<crate::types::PublishLevel> {
-        shipper_levels::group_packages_by_levels(
-            &self.packages,
-            |pkg| pkg.name.as_str(),
-            &self.dependencies,
-        )
-        .into_iter()
-        .map(|level| crate::types::PublishLevel {
-            level: level.level,
-            packages: level.packages,
-        })
-        .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;

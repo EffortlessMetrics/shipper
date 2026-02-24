@@ -6,8 +6,10 @@ use std::time::Instant;
 use anyhow::{Result, bail};
 use chrono::Utc;
 
+use shipper_execution_core::{backoff_delay, classify_cargo_failure, pkg_key, update_state_locked};
+
 use crate::cargo;
-use crate::engine::{self, Reporter};
+use crate::engine::Reporter;
 use crate::events;
 use crate::registry::RegistryClient;
 use crate::state;
@@ -38,7 +40,7 @@ fn publish_package(
     events_path: &Path,
     reporter: &Arc<Mutex<dyn Reporter + Send>>,
 ) -> PackagePublishResult {
-    let key = engine::pkg_key(&p.name, &p.version);
+    let key = pkg_key(&p.name, &p.version);
     let pkg_label = format!("{}@{}", p.name, p.version);
     let started_at = Utc::now();
     let start_instant = Instant::now();
@@ -256,8 +258,7 @@ fn publish_package(
                     break;
                 }
 
-                let (class, msg) =
-                    engine::classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
+                let (class, msg) = classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
                 last_err = Some((class.clone(), msg.clone()));
 
                 // Event: PackageFailed
@@ -312,7 +313,7 @@ fn publish_package(
                         };
                     }
                     ErrorClass::Retryable | ErrorClass::Ambiguous => {
-                        let delay = engine::backoff_delay(
+                        let delay = backoff_delay(
                             opts.base_delay,
                             opts.max_delay,
                             attempt,
@@ -386,7 +387,7 @@ fn publish_package(
                     break;
                 } else {
                     last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
-                    let delay = engine::backoff_delay(
+                    let delay = backoff_delay(
                         opts.base_delay,
                         opts.max_delay,
                         attempt,
@@ -398,7 +399,7 @@ fn publish_package(
             }
             Err(_) => {
                 last_err = Some((ErrorClass::Ambiguous, "readiness check failed".into()));
-                let delay = engine::backoff_delay(
+                let delay = backoff_delay(
                     opts.base_delay,
                     opts.max_delay,
                     attempt,
@@ -564,15 +565,6 @@ fn publish_package(
             },
         }),
     }
-}
-
-/// Helper function to update state while holding the lock
-fn update_state_locked(st: &mut ExecutionState, key: &str, new_state: PackageState) {
-    if let Some(pr) = st.packages.get_mut(key) {
-        pr.state = new_state;
-        pr.last_updated_at = Utc::now();
-    }
-    st.updated_at = Utc::now();
 }
 
 /// Publish packages in a single level in parallel
@@ -997,7 +989,7 @@ mod tests {
         pkg_name: &str,
         pkg_version: &str,
     ) -> ExecutionState {
-        let key = engine::pkg_key(pkg_name, pkg_version);
+        let key = pkg_key(pkg_name, pkg_version);
         let mut packages = BTreeMap::new();
         packages.insert(
             key,
@@ -1334,7 +1326,7 @@ mod tests {
         let mut packages = BTreeMap::new();
         for p in &ws.plan.packages {
             packages.insert(
-                engine::pkg_key(&p.name, &p.version),
+                pkg_key(&p.name, &p.version),
                 PackageProgress {
                     name: p.name.clone(),
                     version: p.version.clone(),
@@ -1522,7 +1514,7 @@ mod tests {
         let mut packages = BTreeMap::new();
         for p in &ws.plan.packages {
             packages.insert(
-                engine::pkg_key(&p.name, &p.version),
+                pkg_key(&p.name, &p.version),
                 PackageProgress {
                     name: p.name.clone(),
                     version: p.version.clone(),
@@ -1598,7 +1590,7 @@ mod tests {
         let opts = default_opts(state_dir.clone());
 
         // Set the initial state to Uploaded (cargo publish succeeded previously)
-        let key = engine::pkg_key("demo", "0.1.0");
+        let key = pkg_key("demo", "0.1.0");
         let mut packages = BTreeMap::new();
         packages.insert(
             key.clone(),
@@ -1803,7 +1795,7 @@ mod tests {
         let mut state_packages = BTreeMap::new();
         for p in &packages {
             state_packages.insert(
-                engine::pkg_key(&p.name, &p.version),
+                pkg_key(&p.name, &p.version),
                 PackageProgress {
                     name: p.name.clone(),
                     version: p.version.clone(),

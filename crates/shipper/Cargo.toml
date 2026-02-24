@@ -16,7 +16,7 @@ categories = ["development-tools", "development-tools::build-utils"]
 # Workspace microcrates
 shipper-retry = { path = "../shipper-retry" }
 shipper-lock = { path = "../shipper-lock", optional = true }
-shipper-encrypt = { path = "../shipper-encrypt", optional = true }
+shipper-encrypt = { path = "../shipper-encrypt" }
 shipper-auth = { path = "../shipper-auth", optional = true }
 shipper-git = { path = "../shipper-git", optional = true }
 shipper-events = { path = "../shipper-events", optional = true }
@@ -28,9 +28,9 @@ shipper-engine-parallel = { path = "../shipper-engine-parallel", optional = true
 shipper-plan = { path = "../shipper-plan", optional = true }
 shipper-registry = { path = "../shipper-registry", optional = true }
 shipper-process = { path = "../shipper-process", optional = true }
-shipper-webhook = { path = "../shipper-webhook", optional = true }
-shipper-types = { path = "../shipper-types", optional = true }
-shipper-config = { path = "../shipper-config", optional = true }
+shipper-webhook = { path = "../shipper-webhook" }
+shipper-types = { path = "../shipper-types" }
+shipper-config = { path = "../shipper-config" }
 shipper-state = { path = "../shipper-state", optional = true }
 shipper-config-runtime = { path = "../shipper-config-runtime" }
 shipper-store = { path = "../shipper-store", optional = true }
@@ -69,7 +69,7 @@ micro-auth = ["dep:shipper-auth"]
 micro-git = ["dep:shipper-git"]
 micro-events = ["dep:shipper-events", "micro-types"]
 micro-lock = ["dep:shipper-lock"]
-micro-encrypt = ["dep:shipper-encrypt"]
+micro-encrypt = []
 micro-environment = ["dep:shipper-environment", "micro-types"]
 micro-storage = ["dep:shipper-storage"]
 micro-cargo = ["dep:shipper-cargo"]
@@ -77,9 +77,9 @@ micro-plan = ["dep:shipper-plan", "micro-types"]
 micro-registry = ["dep:shipper-registry"]
 micro-process = ["dep:shipper-process"]
 micro-policy = ["dep:shipper-policy"]
-micro-webhook = ["dep:shipper-webhook"]
-micro-types = ["dep:shipper-types", "micro-webhook", "micro-encrypt", "micro-config"]
-micro-config = ["dep:shipper-config", "micro-types", "micro-storage"]
+micro-webhook = []
+micro-types = ["micro-webhook", "micro-encrypt", "micro-config"]
+micro-config = ["micro-types", "micro-storage"]
 micro-state = ["dep:shipper-state", "micro-types", "micro-environment", "micro-encrypt"]
 micro-store = ["dep:shipper-store", "micro-types", "micro-events", "micro-state"]
 micro-parallel = ["micro-types", "micro-plan", "micro-registry", "dep:shipper-engine-parallel"]

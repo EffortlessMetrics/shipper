@@ -1,8 +1,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use shipper_config::{
+    EncryptionConfig, ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, Registry,
+    RuntimeOptions, VerifyMode, WebhookConfig,
+};
 use shipper_config_runtime::into_runtime_options;
-use shipper_config::{EncryptionConfig, ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, Registry, RuntimeOptions, VerifyMode, WebhookConfig};
 
 fn sample_runtime_options(base_url: &str, registry_count: usize) -> RuntimeOptions {
     RuntimeOptions {
@@ -13,7 +16,7 @@ fn sample_runtime_options(base_url: &str, registry_count: usize) -> RuntimeOptio
         max_attempts: 9,
         base_delay: Duration::from_secs(2),
         max_delay: Duration::from_secs(30),
-        retry_strategy: shipper_types::RetryStrategyType::Linear,
+        retry_strategy: shipper_retry::RetryStrategyType::Linear,
         retry_jitter: 0.35,
         retry_per_error: shipper_retry::PerErrorConfig::default(),
         verify_timeout: Duration::from_secs(120),

@@ -196,7 +196,7 @@ fn create_fake_cargo_with_sensitive_output(bin_dir: &Path) -> PathBuf {
             "@echo off\r\nif \"%1\"==\"publish\" (\r\n  echo Authorization: Bearer super_secret_publish_token\r\n  echo CARGO_REGISTRY_TOKEN=super_secret_publish_token\r\n  echo token = \"super_secret_publish_token\" 1>&2\r\n  if \"%SHIPPER_FAKE_PUBLISH_EXIT%\"==\"\" (exit /b 0) else (exit /b %SHIPPER_FAKE_PUBLISH_EXIT%)\r\n)\r\n\"%REAL_CARGO%\" %*\r\nexit /b %ERRORLEVEL%\r\n",
         )
         .expect("write fake cargo");
-        return path;
+        path
     }
 
     #[cfg(not(windows))]
@@ -212,7 +212,7 @@ fn create_fake_cargo_with_sensitive_output(bin_dir: &Path) -> PathBuf {
         let mut perms = fs::metadata(&path).expect("meta").permissions();
         perms.set_mode(0o755);
         fs::set_permissions(path, perms).expect("chmod");
-        return path;
+        path
     }
 }
 
@@ -1133,7 +1133,8 @@ mod output_sanitization {
 
     // Scenario: Publish output that contains tokens is redacted before writing receipt evidence
     #[test]
-    fn given_publish_outputs_sensitive_tokens_when_publish_succeeds_then_receipt_attempt_evidence_is_redacted() {
+    fn given_publish_outputs_sensitive_tokens_when_publish_succeeds_then_receipt_attempt_evidence_is_redacted()
+     {
         let td = tempdir().expect("tempdir");
         create_single_crate_workspace(td.path());
 

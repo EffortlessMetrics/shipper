@@ -44,4 +44,3 @@ fn bdd_given_max_concurrent_one_and_many_items_when_chunking_then_runs_serially(
         assert_eq!(chunk, &[items[idx]]);
     }
 }
-

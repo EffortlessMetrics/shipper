@@ -38,6 +38,8 @@ fn chunking_contract_uses_realistic_parallel_workloads() {
     assert_eq!(chunks[0][0].package, "base");
     assert_eq!(chunks[0][1].package, "api");
     assert_eq!(chunks[2][0].package, "app");
-    assert_eq!(chunks.iter().flat_map(|chunk| chunk.iter()).count(), items.len());
+    assert_eq!(
+        chunks.iter().flat_map(|chunk| chunk.iter()).count(),
+        items.len()
+    );
 }
-

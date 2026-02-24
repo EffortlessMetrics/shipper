@@ -3,7 +3,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use shipper_output_sanitizer::{redact_sensitive as sanitize_sensitive, tail_lines as sanitize_tail_lines};
+use shipper_output_sanitizer::{
+    redact_sensitive as sanitize_sensitive, tail_lines as sanitize_tail_lines,
+};
 
 use crate::process;
 
@@ -427,7 +429,13 @@ mod tests {
         ]
         .join("\n");
 
-        assert_eq!(redact_sensitive(&input), shipper_output_sanitizer::redact_sensitive(&input));
-        assert_eq!(tail_lines(&input, 2), shipper_output_sanitizer::tail_lines(&input, 2));
+        assert_eq!(
+            redact_sensitive(&input),
+            shipper_output_sanitizer::redact_sensitive(&input)
+        );
+        assert_eq!(
+            tail_lines(&input, 2),
+            shipper_output_sanitizer::tail_lines(&input, 2)
+        );
     }
 }

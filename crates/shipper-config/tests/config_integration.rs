@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use tempfile::tempdir;
 use shipper_types::PublishPolicy;
+use tempfile::tempdir;
 
 use shipper_config::ShipperConfig;
 
@@ -10,8 +10,7 @@ fn default_toml_template_is_loadable_via_file_api() {
     let td = tempdir().expect("tempdir");
     let path = td.path().join(".shipper.toml");
 
-    std::fs::write(&path, ShipperConfig::default_toml_template())
-        .expect("write config template");
+    std::fs::write(&path, ShipperConfig::default_toml_template()).expect("write config template");
 
     let loaded = ShipperConfig::load_from_file(Path::new(&path)).expect("load template");
     assert_eq!(loaded.retry.max_attempts, 6);

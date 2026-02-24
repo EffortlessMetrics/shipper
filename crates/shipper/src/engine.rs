@@ -1,14 +1,11 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
-use shipper_execution_core::{
-    backoff_delay, classify_cargo_failure, pkg_key, resolve_state_dir, short_state, update_state,
-};
 use crate::auth;
 use crate::cargo;
 use crate::environment;
@@ -24,6 +21,9 @@ use crate::types::{
     ReadinessEvidence, Receipt, RuntimeOptions,
 };
 use crate::webhook::{self, WebhookEvent};
+use shipper_execution_core::{
+    backoff_delay, classify_cargo_failure, pkg_key, resolve_state_dir, short_state, update_state,
+};
 
 pub trait Reporter {
     fn info(&mut self, msg: &str);

@@ -110,10 +110,10 @@ impl ProgressReporter {
 
     /// Marks the package at the current index as completed.
     pub fn finish_package(&mut self) {
-        if self.is_tty {
-            if let Some(ref pb) = self.progress_bar {
-                pb.inc(1);
-            }
+        if self.is_tty
+            && let Some(ref pb) = self.progress_bar
+        {
+            pb.inc(1);
         }
     }
 
@@ -135,7 +135,10 @@ impl ProgressReporter {
         if self.is_tty {
             if let Some(pb) = self.progress_bar {
                 let elapsed = self.start_time.elapsed();
-                let msg = format!("Completed {} packages in {:?}", self.total_packages, elapsed);
+                let msg = format!(
+                    "Completed {} packages in {:?}",
+                    self.total_packages, elapsed
+                );
                 pb.set_message(msg);
                 pb.finish();
             }
@@ -204,11 +207,8 @@ mod property_tests {
     use super::*;
 
     fn simple_token() -> impl Strategy<Value = String> {
-        prop::collection::vec('a'..='z', 1..12).prop_map(|chars| {
-            chars
-                .into_iter()
-                .collect::<String>()
-        })
+        prop::collection::vec(prop::char::range('a', 'z'), 1..12)
+            .prop_map(|chars: Vec<char>| chars.into_iter().collect::<String>())
     }
 
     proptest! {

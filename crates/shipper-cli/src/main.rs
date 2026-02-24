@@ -413,9 +413,7 @@ fn main() -> Result<()> {
 
     // Merge CLI overrides with config (or defaults if no config)
     let config_for_merge = config.clone().unwrap_or_default();
-    let opts: RuntimeOptions = config_for_merge
-        .build_runtime_options(cli_overrides)
-        .into();
+    let opts: RuntimeOptions = config_for_merge.build_runtime_options(cli_overrides);
 
     let mut reporter = CliReporter;
 
@@ -1855,7 +1853,7 @@ mode = "fast"
             ..Default::default()
         };
 
-        let merged: RuntimeOptions = config.build_runtime_options(cli).into();
+        let merged: RuntimeOptions = config.build_runtime_options(cli);
 
         // CLI values should win where set
         assert!(merged.allow_dirty, "CLI allow_dirty should win");

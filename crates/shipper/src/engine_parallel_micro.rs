@@ -1,10 +1,10 @@
 use std::path::Path;
 
-use shipper_engine_parallel as micro;
-use shipper_registry;
 use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
 use crate::types::{ExecutionState, PackageReceipt, RuntimeOptions};
+use shipper_engine_parallel as micro;
+use shipper_registry;
 
 /// Reporter implementation is intentionally delegated from the host crate so `shipper` can keep a
 /// single reporting interface while reusing the dedicated parallel execution engine.

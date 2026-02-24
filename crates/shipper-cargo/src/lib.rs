@@ -29,7 +29,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use cargo_metadata::{Metadata, MetadataCommand, Package};
 use serde::{Deserialize, Serialize};
-use shipper_output_sanitizer::{redact_sensitive, tail_lines};
+pub use shipper_output_sanitizer::redact_sensitive;
+use shipper_output_sanitizer::tail_lines;
 
 #[derive(Debug, Clone)]
 pub struct CargoOutput {

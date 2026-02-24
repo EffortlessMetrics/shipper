@@ -3,13 +3,7 @@
 //! This crate isolates config/runtime mapping so that callers can reuse a
 //! single conversion surface instead of duplicating this logic.
 
-use std::time::Duration;
-
-use shipper_config::{
-    EncryptionConfig, ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, RuntimeOptions,
-    VerifyMode, Registry, WebhookConfig,
-};
-use shipper_types;
+use shipper_config::RuntimeOptions;
 
 /// Convert a `shipper_config::RuntimeOptions` value into `shipper_types::RuntimeOptions`.
 ///
@@ -48,8 +42,13 @@ pub fn into_runtime_options(value: RuntimeOptions) -> shipper_types::RuntimeOpti
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use shipper_config::{
+        EncryptionConfig, ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod,
+        Registry, VerifyMode, WebhookConfig,
+    };
     use shipper_types as expected_types;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn sample_runtime_options() -> RuntimeOptions {
         RuntimeOptions {
@@ -60,7 +59,7 @@ mod tests {
             max_attempts: 8,
             base_delay: Duration::from_secs(2),
             max_delay: Duration::from_secs(45),
-            retry_strategy: shipper_types::RetryStrategyType::Exponential,
+            retry_strategy: shipper_retry::RetryStrategyType::Exponential,
             retry_jitter: 0.25,
             retry_per_error: shipper_retry::PerErrorConfig::default(),
             verify_timeout: Duration::from_secs(120),
@@ -88,19 +87,16 @@ mod tests {
                 max_concurrent: 6,
                 per_package_timeout: Duration::from_secs(180),
             },
-            webhook: {
-                let mut webhook = WebhookConfig::default();
-                webhook.url = "https://example.internal/webhook".to_string();
-                webhook.secret = Some("shh".to_string());
-                webhook.timeout_secs = 15;
-                webhook
+            webhook: WebhookConfig {
+                url: "https://example.internal/webhook".to_string(),
+                secret: Some("shh".to_string()),
+                timeout_secs: 15,
+                ..WebhookConfig::default()
             },
-            encryption: {
-                let mut encryption = EncryptionConfig::default();
-                encryption.enabled = true;
-                encryption.passphrase = Some("password".to_string());
-                encryption.env_var = Some("SHIPPER_ENCRYPT_KEY".to_string());
-                encryption
+            encryption: EncryptionConfig {
+                enabled: true,
+                passphrase: Some("password".to_string()),
+                env_var: Some("SHIPPER_ENCRYPT_KEY".to_string()),
             },
             registries: vec![
                 Registry {
@@ -119,16 +115,10 @@ mod tests {
 
     #[test]
     fn maps_simple_discriminants() {
+        assert_eq!(PublishPolicy::Fast, expected_types::PublishPolicy::Fast);
+        assert_eq!(VerifyMode::Package, expected_types::VerifyMode::Package);
         assert_eq!(
-            expected_types::PublishPolicy::from(PublishPolicy::Fast),
-            expected_types::PublishPolicy::Fast
-        );
-        assert_eq!(
-            expected_types::VerifyMode::from(VerifyMode::Package),
-            expected_types::VerifyMode::Package
-        );
-        assert_eq!(
-            expected_types::ReadinessMethod::from(ReadinessMethod::Index),
+            ReadinessMethod::Index,
             expected_types::ReadinessMethod::Index
         );
     }
@@ -140,40 +130,43 @@ mod tests {
 
         assert_eq!(converted.policy, expected_types::PublishPolicy::Balanced);
         assert_eq!(converted.verify_mode, expected_types::VerifyMode::Package);
-        assert_eq!(converted.readiness.method, expected_types::ReadinessMethod::Both);
+        assert_eq!(
+            converted.readiness.method,
+            expected_types::ReadinessMethod::Both
+        );
         assert_eq!(converted.parallel.max_concurrent, 6);
         assert_eq!(converted.webhook.url, "https://example.internal/webhook");
         assert_eq!(converted.webhook.secret.as_deref(), Some("shh"));
         assert_eq!(converted.webhook.timeout_secs, 15);
-        assert_eq!(converted.encryption.enabled, true);
+        assert!(converted.encryption.enabled);
         assert_eq!(converted.encryption.passphrase.as_deref(), Some("password"));
         assert_eq!(converted.registries.len(), 2);
     }
 
     #[test]
     fn maps_readiness_config_fields() {
-        let source = sample_runtime_options().readiness;
-        let converted: expected_types::ReadinessConfig = source.into();
+        let converted = sample_runtime_options().readiness;
 
-        assert_eq!(converted.enabled, true);
-        assert_eq!(converted.prefer_index, true);
-        assert_eq!(converted.index_path.as_deref(), Some(std::path::Path::new("ci-index")));
+        assert!(converted.enabled);
+        assert!(converted.prefer_index);
+        assert_eq!(
+            converted.index_path.as_deref(),
+            Some(std::path::Path::new("ci-index"))
+        );
     }
 
     #[test]
     fn maps_parallel_config() {
-        let source = sample_runtime_options().parallel;
-        let converted: expected_types::ParallelConfig = source.into();
+        let converted = sample_runtime_options().parallel;
 
-        assert_eq!(converted.enabled, true);
+        assert!(converted.enabled);
         assert_eq!(converted.max_concurrent, 6);
         assert_eq!(converted.per_package_timeout, Duration::from_secs(180));
     }
 
     #[test]
     fn maps_registry() {
-        let source = sample_runtime_options().registries[0].clone();
-        let converted: expected_types::Registry = source.into();
+        let converted = sample_runtime_options().registries[0].clone();
 
         assert_eq!(converted.name, "crates-io");
         assert_eq!(converted.api_base, "https://crates.io");
@@ -218,17 +211,17 @@ mod tests {
             use_secret in any::<bool>(),
             registry_count in registry_count_strategy(),
         ) {
-            let mut webhook = WebhookConfig::default();
-            webhook.url = webhook_url.clone();
-            if use_secret {
-                webhook.secret = Some("secret".to_string());
-            }
+            let webhook = WebhookConfig {
+                url: webhook_url.clone(),
+                secret: if use_secret { Some("secret".to_string()) } else { None },
+                ..WebhookConfig::default()
+            };
 
-            let mut encryption = EncryptionConfig::default();
-            encryption.enabled = true;
-            if use_secret {
-                encryption.passphrase = Some("secret-pass".to_string());
-            }
+            let encryption = EncryptionConfig {
+                enabled: true,
+                passphrase: if use_secret { Some("secret-pass".to_string()) } else { None },
+                ..EncryptionConfig::default()
+            };
 
             let registries = (0..registry_count)
                 .map(|idx| Registry {
@@ -246,7 +239,7 @@ mod tests {
                 max_attempts,
                 base_delay: Duration::from_millis(base_delay_ms),
                 max_delay: Duration::from_millis(max_delay_ms.max(base_delay_ms + 1)),
-                retry_strategy: shipper_types::RetryStrategyType::Exponential,
+                retry_strategy: shipper_retry::RetryStrategyType::Exponential,
                 retry_jitter: 0.25,
                 retry_per_error: shipper_retry::PerErrorConfig::default(),
                 verify_timeout: Duration::from_secs(30),
@@ -286,10 +279,10 @@ mod tests {
             prop_assert_eq!(converted.strict_ownership, strict_ownership);
             prop_assert_eq!(converted.no_verify, no_verify);
             prop_assert_eq!(converted.max_attempts, max_attempts);
-            prop_assert_eq!(converted.policy, expected_types::PublishPolicy::from(policy));
-            prop_assert_eq!(converted.verify_mode, expected_types::VerifyMode::from(verify_mode));
-            prop_assert_eq!(converted.readiness.enabled, true);
-            prop_assert_eq!(converted.readiness.method, expected_types::ReadinessMethod::from(readiness_method));
+            prop_assert_eq!(converted.policy, policy);
+            prop_assert_eq!(converted.verify_mode, verify_mode);
+            prop_assert!(converted.readiness.enabled);
+            prop_assert_eq!(converted.readiness.method, readiness_method);
             prop_assert_eq!(converted.webhook.url, webhook_url);
             prop_assert_eq!(converted.webhook.secret.is_some(), use_secret);
             prop_assert_eq!(converted.registries.len(), registry_count);
