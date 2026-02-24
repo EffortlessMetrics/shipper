@@ -38,9 +38,11 @@ jobs:
         target:
           - load_state
           - resolve_token
+          - policy_effects
           - encrypt_decrypt
           - retry_strategy
           - types_serialization
+          - redact_output
 
     steps:
       - uses: actions/checkout@v4

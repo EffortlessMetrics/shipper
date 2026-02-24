@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use shipper_output_sanitizer::{redact_sensitive as sanitize_sensitive, tail_lines as sanitize_tail_lines};
 
 use crate::process;
 
@@ -16,85 +17,13 @@ pub struct CargoOutput {
 }
 
 fn tail_lines(s: &str, n: usize) -> String {
-    let lines: Vec<&str> = s.lines().collect();
-    let tail = if lines.len() <= n {
-        s.to_string()
-    } else {
-        lines[lines.len() - n..].join("\n")
-    };
-    redact_sensitive(&tail)
+    sanitize_tail_lines(s, n)
 }
 
 /// Redact sensitive patterns (tokens, credentials) from output strings.
 /// Applied to stdout/stderr tails before they are stored in receipts and event logs.
 pub(crate) fn redact_sensitive(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    for line in s.lines() {
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str(&redact_line(line));
-    }
-    // Preserve trailing newline if present
-    if s.ends_with('\n') {
-        result.push('\n');
-    }
-    result
-}
-
-fn redact_line(line: &str) -> String {
-    let mut out = line.to_string();
-
-    // Authorization: Bearer <token>
-    if let Some(pos) = out.to_ascii_lowercase().find("authorization:") {
-        let after = &out[pos..];
-        if let Some(bearer_pos) = after.to_ascii_lowercase().find("bearer ") {
-            let redact_start = pos + bearer_pos + "bearer ".len();
-            out = format!("{}[REDACTED]", &out[..redact_start]);
-        }
-    }
-
-    // token = "<value>" or token = '<value>' or token = <value>
-    if let Some(pos) = out.to_ascii_lowercase().find("token") {
-        let after_key = &out[pos + "token".len()..];
-        let trimmed = after_key.trim_start();
-        if trimmed.starts_with("= ") || trimmed.starts_with("=") {
-            let eq_offset = pos + "token".len() + (after_key.len() - trimmed.len());
-            let after_eq = trimmed.trim_start_matches('=').trim_start();
-            // Check for quoted or unquoted value
-            if after_eq.starts_with('"') || after_eq.starts_with('\'') {
-                out = format!("{}= \"[REDACTED]\"", &out[..eq_offset]);
-            } else if !after_eq.is_empty() {
-                out = format!("{}= [REDACTED]", &out[..eq_offset]);
-            }
-        }
-    }
-
-    // CARGO_REGISTRY_TOKEN=<value> and CARGO_REGISTRIES_<NAME>_TOKEN=<value>
-    if let Some(pos) = find_cargo_token_env(&out)
-        && let Some(eq_pos) = out[pos..].find('=')
-    {
-        let abs_eq = pos + eq_pos;
-        out = format!("{}=[REDACTED]", &out[..abs_eq]);
-    }
-
-    out
-}
-
-/// Find the start position of a `CARGO_REGISTRY_TOKEN` or `CARGO_REGISTRIES_<NAME>_TOKEN` pattern.
-fn find_cargo_token_env(s: &str) -> Option<usize> {
-    // Check for CARGO_REGISTRY_TOKEN
-    if let Some(pos) = s.find("CARGO_REGISTRY_TOKEN") {
-        return Some(pos);
-    }
-    // Check for CARGO_REGISTRIES_<NAME>_TOKEN
-    if let Some(pos) = s.find("CARGO_REGISTRIES_") {
-        let after = &s[pos + "CARGO_REGISTRIES_".len()..];
-        if after.contains("_TOKEN") {
-            return Some(pos);
-        }
-    }
-    None
+    sanitize_sensitive(s)
 }
 
 pub fn cargo_publish(
@@ -487,5 +416,18 @@ mod tests {
         let out = redact_sensitive(input);
         assert!(out.contains("[REDACTED]"));
         assert!(!out.contains("secret123"));
+    }
+
+    #[test]
+    fn redaction_matches_output_sanitizer_contract() {
+        let input = [
+            "line one",
+            "Authorization: Bearer secret_value",
+            "CARGO_REGISTRIES_PRIVATE_REG_TOKEN=secret_value",
+        ]
+        .join("\n");
+
+        assert_eq!(redact_sensitive(&input), shipper_output_sanitizer::redact_sensitive(&input));
+        assert_eq!(tail_lines(&input, 2), shipper_output_sanitizer::tail_lines(&input, 2));
     }
 }

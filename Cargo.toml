@@ -2,6 +2,7 @@
 members = [
   "crates/shipper",
   "crates/shipper-cli",
+  "crates/shipper-engine-parallel",
   "crates/shipper-schema",
   "crates/shipper-duration",
   "crates/shipper-retry",
@@ -17,6 +18,7 @@ members = [
   "crates/shipper-sparse-index",
   "crates/shipper-cargo",
   "crates/shipper-cargo-failure",
+  "crates/shipper-chunking",
   "crates/shipper-environment",
   "crates/shipper-plan",
   "crates/shipper-process",
@@ -24,7 +26,9 @@ members = [
   "crates/shipper-store",
   "crates/shipper-storage",
   "crates/shipper-policy",
-  "crates/shipper-levels",
+    "crates/shipper-output-sanitizer",
+    "crates/shipper-levels",
+    "crates/shipper-config-runtime",
 ]
 exclude = ["fuzz"]
 resolver = "3"

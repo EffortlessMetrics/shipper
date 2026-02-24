@@ -1,41 +1,31 @@
-//! Progress reporting module with TTY detection.
+//! Progress reporting primitives for CLI flows.
 //!
-//! This module provides progress bar functionality that automatically detects
-//! whether stdout is a TTY and falls back to non-interactive output when not.
+//! This microcrate extracts the publish progress output behavior from
+//! `shipper-cli` so it can be tested, fuzzed, and reused independently.
 
 use std::time::Instant;
 
 use atty::Stream;
 use indicatif::{ProgressBar, ProgressStyle};
 
-/// Detects whether stdout is connected to a TTY.
+/// Returns `true` when standard output is connected to a terminal.
 pub fn is_tty() -> bool {
     atty::is(Stream::Stdout)
 }
 
-/// Progress reporter that shows progress bars in TTY mode
-/// and falls back to simple text output when not in a TTY.
+/// Progress reporter that emits an interactive progress bar in TTY mode and
+/// falls back to non-interactive text output otherwise.
 pub struct ProgressReporter {
-    /// Whether we're running in TTY mode
     is_tty: bool,
-    /// The total number of packages to publish
     total_packages: usize,
-    /// Current package being published (1-indexed)
     current_package: usize,
-    /// Current package name
     current_name: String,
-    /// Progress bar (only used in TTY mode)
     progress_bar: Option<ProgressBar>,
-    /// Start time for calculating elapsed time
     start_time: Instant,
 }
 
 impl ProgressReporter {
-    /// Creates a new progress reporter.
-    ///
-    /// # Arguments
-    /// * `total_packages` - Total number of packages to publish
-    /// * `name` - Optional name for the current package
+    /// Creates a new reporter for the given total package count.
     pub fn new(total_packages: usize) -> Self {
         let is_tty = is_tty();
         let progress_bar = if is_tty {
@@ -61,9 +51,7 @@ impl ProgressReporter {
         }
     }
 
-    /// Creates a silent progress reporter that always uses non-TTY mode.
-    /// Use this when you explicitly want to disable progress bars regardless of TTY.
-    #[allow(dead_code)]
+    /// Creates a silent reporter that always uses non-TTY behavior.
     pub fn silent(total_packages: usize) -> Self {
         Self {
             is_tty: false,
@@ -75,15 +63,30 @@ impl ProgressReporter {
         }
     }
 
-    /// Sets the current package being published.
-    ///
-    /// # Arguments
-    /// * `index` - The 1-indexed position of the package in the publish order
-    /// * `name` - The name of the package
-    /// * `version` - The version of the package
+    /// Returns whether this reporter is currently emitting TTY-style output.
+    pub fn is_tty_mode(&self) -> bool {
+        self.is_tty
+    }
+
+    /// Returns the configured package count.
+    pub fn total_packages(&self) -> usize {
+        self.total_packages
+    }
+
+    /// Returns the current 1-indexed package position.
+    pub fn current_package(&self) -> usize {
+        self.current_package
+    }
+
+    /// Returns the currently active package label (`name@version`).
+    pub fn current_name(&self) -> &str {
+        &self.current_name
+    }
+
+    /// Records the active package being published.
     pub fn set_package(&mut self, index: usize, name: &str, version: &str) {
         self.current_package = index;
-        self.current_name = format!("{}@{}", name, version);
+        self.current_name = format!("{name}@{version}");
 
         if self.is_tty {
             if let Some(ref pb) = self.progress_bar {
@@ -93,7 +96,8 @@ impl ProgressReporter {
                     self.current_package, self.total_packages, self.current_name
                 );
                 pb.set_message(msg);
-                pb.set_position((self.current_package - 1) as u64);
+                let position = index.saturating_sub(1) as u64;
+                pb.set_position(position);
             }
         } else {
             let elapsed = self.start_time.elapsed();
@@ -104,9 +108,7 @@ impl ProgressReporter {
         }
     }
 
-    /// Marks the current package as completed.
-    #[allow(clippy::collapsible_if)]
-    #[allow(dead_code)]
+    /// Marks the package at the current index as completed.
     pub fn finish_package(&mut self) {
         if self.is_tty {
             if let Some(ref pb) = self.progress_bar {
@@ -115,8 +117,7 @@ impl ProgressReporter {
         }
     }
 
-    /// Sets a status message (e.g., "Waiting for registry...").
-    #[allow(dead_code)]
+    /// Updates the message for the current package state.
     pub fn set_status(&self, status: &str) {
         if self.is_tty {
             if let Some(ref pb) = self.progress_bar {
@@ -125,19 +126,16 @@ impl ProgressReporter {
                 pb.set_message(msg);
             }
         } else {
-            eprintln!("[status] {}", status);
+            eprintln!("[status] {status}");
         }
     }
 
-    /// Finishes the progress reporting.
+    /// Finishes reporting and prints completion summary in non-TTY mode.
     pub fn finish(self) {
         if self.is_tty {
             if let Some(pb) = self.progress_bar {
                 let elapsed = self.start_time.elapsed();
-                let msg = format!(
-                    "Completed {} packages in {:?}",
-                    self.total_packages, elapsed
-                );
+                let msg = format!("Completed {} packages in {:?}", self.total_packages, elapsed);
                 pb.set_message(msg);
                 pb.finish();
             }
@@ -164,23 +162,25 @@ mod tests {
     #[test]
     fn test_progress_reporter_creation() {
         let reporter = ProgressReporter::new(5);
-        assert_eq!(reporter.total_packages, 5);
-        assert_eq!(reporter.current_package, 0);
+        assert_eq!(reporter.total_packages(), 5);
+        assert_eq!(reporter.current_package(), 0);
+        assert_eq!(reporter.current_name(), "");
+        assert_eq!(reporter.is_tty_mode(), is_tty());
     }
 
     #[test]
     fn test_silent_reporter_disables_tty() {
         let reporter = ProgressReporter::silent(3);
-        assert!(!reporter.is_tty);
-        assert!(reporter.progress_bar.is_none());
+        assert!(!reporter.is_tty_mode());
+        assert_eq!(reporter.total_packages(), 3);
     }
 
     #[test]
     fn test_set_package_updates_state() {
         let mut reporter = ProgressReporter::silent(3);
         reporter.set_package(1, "test-crate", "1.0.0");
-        assert_eq!(reporter.current_package, 1);
-        assert_eq!(reporter.current_name, "test-crate@1.0.0");
+        assert_eq!(reporter.current_package(), 1);
+        assert_eq!(reporter.current_name(), "test-crate@1.0.0");
     }
 
     #[test]
@@ -188,12 +188,49 @@ mod tests {
         let mut reporter = ProgressReporter::silent(3);
         reporter.set_package(1, "test-crate", "1.0.0");
         reporter.finish_package();
-        // Silent mode doesn't track position, but method should be callable
     }
 
     #[test]
     fn test_finish_completes_without_panic() {
         let reporter = ProgressReporter::silent(3);
         reporter.finish();
+    }
+}
+
+#[cfg(test)]
+mod property_tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn simple_token() -> impl Strategy<Value = String> {
+        prop::collection::vec('a'..='z', 1..12).prop_map(|chars| {
+            chars
+                .into_iter()
+                .collect::<String>()
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn silent_reporter_tracks_random_package_updates(
+            total in 1usize..64,
+            index_offset in 0usize..64,
+            name in simple_token(),
+            version in simple_token(),
+        ) {
+            let index = index_offset % total + 1;
+            let mut reporter = ProgressReporter::silent(total);
+
+            reporter.set_package(index, &name, &version);
+
+            assert_eq!(reporter.total_packages(), total);
+            assert_eq!(reporter.current_package(), index);
+            assert_eq!(reporter.current_name(), format!("{name}@{version}"));
+
+            reporter.finish_package();
+            reporter.set_status("ready");
+            reporter.finish();
+        }
     }
 }

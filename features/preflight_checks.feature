@@ -13,6 +13,13 @@ Feature: Preflight verification
     And the preflight report shows finishability "Proven"
     And all packages are marked as new crates
 
+  Scenario: Preflight uses policy from .shipper.toml
+    Given a workspace with crates "core" and "app" where "app" depends on "core"
+    And a file named ".shipper.toml" with policy set to "fast"
+    When I run "shipper preflight" without passing --policy
+    Then the exit code is 0
+    And the preflight report shows token not detected
+
   Scenario: Preflight detects already published versions
     Given a valid registry token is configured
     And the registry returns "published" for "core@0.1.0"

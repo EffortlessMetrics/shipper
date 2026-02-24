@@ -10,15 +10,16 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use shipper_types::{
-    ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, Registry, RuntimeOptions,
-    VerifyMode, deserialize_duration, serialize_duration,
+pub use shipper_encrypt::EncryptionConfig;
+pub use shipper_types::{
+    deserialize_duration, serialize_duration, ParallelConfig, PublishPolicy, ReadinessConfig,
+    ReadinessMethod, Registry, RuntimeOptions, VerifyMode,
 };
-
+pub use shipper_webhook::WebhookConfig;
 use shipper_encrypt::EncryptionConfig as EncryptionSettings;
+
 use shipper_retry::{PerErrorConfig, RetryPolicy, RetryStrategyType};
 use shipper_storage::{CloudStorageConfig, StorageType};
-use shipper_webhook::WebhookConfig;
 
 /// Nested policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1209,5 +1210,71 @@ enabled = true
         let opts2 = config.build_runtime_options(cli2);
         assert!(opts2.parallel.enabled); // from config
         assert_eq!(opts2.parallel.max_concurrent, 2); // from CLI
+    }
+
+    #[cfg(test)]
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn cli_max_attempts_overrides_custom_retry_settings(
+                cfg_max_attempts in 1u32..300,
+                cli_max_attempts in proptest::option::of(1u32..300),
+                max_delay in 1u64..10_000,
+                base_delay in 1u64..5_000,
+                no_readiness in any::<bool>(),
+                allow_dirty in any::<bool>(),
+                skip_ownership in any::<bool>(),
+                strict_ownership in any::<bool>(),
+            ) {
+                let config = ShipperConfig {
+                    retry: RetryConfig {
+                        policy: RetryPolicy::Custom,
+                        max_attempts: cfg_max_attempts,
+                        base_delay: Duration::from_millis(base_delay),
+                        max_delay: Duration::from_millis(max_delay.max(base_delay)),
+                        strategy: RetryStrategyType::Exponential,
+                        jitter: 0.5,
+                        per_error: PerErrorConfig::default(),
+                    },
+                    flags: FlagsConfig {
+                        allow_dirty,
+                        skip_ownership_check: skip_ownership,
+                        strict_ownership,
+                    },
+                    readiness: ReadinessConfig { enabled: !no_readiness, ..Default::default() },
+                    parallel: ParallelConfig {
+                        enabled: true,
+                        max_concurrent: 4,
+                        per_package_timeout: Duration::from_secs(600),
+                    },
+                    ..Default::default()
+                };
+
+                let cli = CliOverrides {
+                    max_attempts: cli_max_attempts,
+                    output_lines: Some(73),
+                    no_readiness,
+                    allow_dirty,
+                    skip_ownership_check: skip_ownership,
+                    strict_ownership,
+                    ..Default::default()
+                };
+
+                let opts = config.build_runtime_options(cli);
+
+                assert_eq!(
+                    opts.max_attempts,
+                    cli_max_attempts.unwrap_or(cfg_max_attempts)
+                );
+                assert_eq!(opts.allow_dirty, allow_dirty);
+                assert_eq!(opts.skip_ownership_check, skip_ownership);
+                assert_eq!(opts.strict_ownership, strict_ownership);
+                assert_eq!(opts.readiness.enabled, !no_readiness);
+                assert_eq!(opts.parallel.max_concurrent, 4);
+            }
+        }
     }
 }

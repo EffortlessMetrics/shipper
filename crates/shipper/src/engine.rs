@@ -28,20 +28,8 @@ pub trait Reporter {
     fn error(&mut self, msg: &str);
 }
 
-pub(crate) fn policy_effects(opts: &RuntimeOptions) -> shipper_policy::PolicyEffects {
-    let policy = match opts.policy {
-        crate::types::PublishPolicy::Safe => shipper_policy::PolicyKind::Safe,
-        crate::types::PublishPolicy::Balanced => shipper_policy::PolicyKind::Balanced,
-        crate::types::PublishPolicy::Fast => shipper_policy::PolicyKind::Fast,
-    };
-
-    shipper_policy::evaluate(
-        policy,
-        opts.no_verify,
-        opts.skip_ownership_check,
-        opts.strict_ownership,
-        opts.readiness.enabled,
-    )
+pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::policy::PolicyEffects {
+    crate::policy::policy_effects(opts)
 }
 
 /// Run preflight verification checks before publishing.

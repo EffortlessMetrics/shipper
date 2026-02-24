@@ -578,3 +578,97 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn expected_exponential(base: Duration, max: Duration, attempt: u32) -> Duration {
+        let delay = base.saturating_mul(2_u32.saturating_pow(attempt.saturating_sub(1).min(16)));
+        delay.min(max)
+    }
+
+    fn expected_linear(base: Duration, max: Duration, attempt: u32) -> Duration {
+        base.saturating_mul(attempt).min(max)
+    }
+
+    proptest! {
+        #[test]
+        fn exponential_delay_matches_formula_with_no_jitter(
+            base_ms in 1u64..10_000,
+            extra_ms in 0u64..290_000,
+            attempt in 1u32..40,
+        ) {
+            let base_delay = Duration::from_millis(base_ms);
+            let max_delay = Duration::from_millis(base_ms.saturating_add(extra_ms).min(300_000));
+
+            let config = RetryStrategyConfig {
+                strategy: RetryStrategyType::Exponential,
+                max_attempts: 100,
+                base_delay,
+                max_delay,
+                jitter: 0.0,
+            };
+
+            let expected = expected_exponential(base_delay, max_delay, attempt);
+            prop_assert_eq!(calculate_delay(&config, attempt), expected);
+            prop_assert!(calculate_delay(&config, attempt) <= max_delay);
+        }
+
+        #[test]
+        fn linear_delay_matches_formula_with_no_jitter(
+            base_ms in 1u64..5_000,
+            extra_ms in 0u64..295_000,
+            attempt in 1u32..60,
+        ) {
+            let base_delay = Duration::from_millis(base_ms);
+            let max_delay = Duration::from_millis(base_ms.saturating_add(extra_ms).min(300_000));
+
+            let config = RetryStrategyConfig {
+                strategy: RetryStrategyType::Linear,
+                max_attempts: 100,
+                base_delay,
+                max_delay,
+                jitter: 0.0,
+            };
+
+            let expected = expected_linear(base_delay, max_delay, attempt);
+            prop_assert_eq!(calculate_delay(&config, attempt), expected);
+            prop_assert!(calculate_delay(&config, attempt) <= max_delay);
+        }
+
+        #[test]
+        fn constant_and_immediate_hold_edge_invariants(
+            base_ms in 0u64..20_000,
+            extra_ms in 0u64..50_000,
+            jitter_byte in 0u8..=255,
+        ) {
+            let base_delay = Duration::from_millis(base_ms);
+            let max_delay = Duration::from_millis((base_ms + extra_ms).min(300_000));
+            let jitter = (jitter_byte as f64) / 255.0;
+
+            let constant = RetryStrategyConfig {
+                strategy: RetryStrategyType::Constant,
+                max_attempts: 100,
+                base_delay,
+                max_delay,
+                jitter,
+            };
+            let delay = calculate_delay(&constant, 4);
+            prop_assert!(delay <= max_delay.saturating_mul(2));
+
+            let no_jitter = RetryStrategyConfig {
+                jitter: 0.0,
+                ..constant.clone()
+            };
+            prop_assert_eq!(calculate_delay(&no_jitter, 5), base_delay.min(max_delay));
+
+            let immediate = RetryStrategyConfig {
+                strategy: RetryStrategyType::Immediate,
+                ..constant
+            };
+            prop_assert_eq!(calculate_delay(&immediate, 9), Duration::ZERO);
+        }
+    }
+}

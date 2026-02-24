@@ -9,12 +9,17 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+shipper-engine-parallel = { path = "../crates/shipper-engine-parallel" }
 shipper = { path = "../crates/shipper" }
 shipper-duration = { path = "../crates/shipper-duration" }
+shipper-config = { path = "../crates/shipper-config" }
 shipper-schema = { path = "../crates/shipper-schema" }
 shipper-policy = { path = "../crates/shipper-policy" }
+shipper-output-sanitizer = { path = "../crates/shipper-output-sanitizer" }
+shipper-config-runtime = { path = "../crates/shipper-config-runtime" }
 shipper-cargo-failure = { path = "../crates/shipper-cargo-failure" }
 shipper-levels = { path = "../crates/shipper-levels" }
+shipper-chunking = { path = "../crates/shipper-chunking" }
 shipper-sparse-index = { path = "../crates/shipper-sparse-index" }
 tempfile = "3"
 temp-env = "0.3"
@@ -63,14 +68,35 @@ test = false
 doc = false
 bench = false
 [[bin]]
+name = "engine_parallel_chunks"
+path = "fuzz_targets/engine_parallel_chunks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "release_levels"
 path = "fuzz_targets/release_levels.rs"
 test = false
 doc = false
 bench = false
 [[bin]]
+name = "redact_output"
+path = "fuzz_targets/redact_output.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "sparse_index"
 path = "fuzz_targets/sparse_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_runtime_adapter"
+path = "fuzz_targets/config_runtime_adapter.rs"
 test = false
 doc = false
 bench = false

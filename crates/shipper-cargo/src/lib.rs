@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use cargo_metadata::{Metadata, MetadataCommand, Package};
 use serde::{Deserialize, Serialize};
+use shipper_output_sanitizer::{redact_sensitive, tail_lines};
 
 #[derive(Debug, Clone)]
 pub struct CargoOutput {
@@ -228,81 +229,6 @@ pub fn cargo_publish_dry_run_package(
         duration,
         timed_out: false,
     })
-}
-
-fn tail_lines(s: &str, n: usize) -> String {
-    let lines: Vec<&str> = s.lines().collect();
-    let tail = if lines.len() <= n {
-        s.to_string()
-    } else {
-        lines[lines.len() - n..].join("\n")
-    };
-    redact_sensitive(&tail)
-}
-
-/// Redact sensitive patterns (tokens, credentials) from output strings.
-/// Applied to stdout/stderr tails before they are stored in receipts and event logs.
-pub fn redact_sensitive(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    for line in s.lines() {
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str(&redact_line(line));
-    }
-    if s.ends_with('\n') {
-        result.push('\n');
-    }
-    result
-}
-
-fn redact_line(line: &str) -> String {
-    let mut out = line.to_string();
-
-    if let Some(pos) = out.to_ascii_lowercase().find("authorization:") {
-        let after = &out[pos..];
-        if let Some(bearer_pos) = after.to_ascii_lowercase().find("bearer ") {
-            let redact_start = pos + bearer_pos + "bearer ".len();
-            out = format!("{}[REDACTED]", &out[..redact_start]);
-        }
-    }
-
-    if let Some(pos) = out.to_ascii_lowercase().find("token") {
-        let after_key = &out[pos + "token".len()..];
-        let trimmed = after_key.trim_start();
-        if trimmed.starts_with("= ") || trimmed.starts_with("=") {
-            let eq_offset = pos + "token".len() + (after_key.len() - trimmed.len());
-            let after_eq = trimmed.trim_start_matches('=').trim_start();
-            if after_eq.starts_with('"') || after_eq.starts_with('\'') {
-                out = format!("{}= \"[REDACTED]\"", &out[..eq_offset]);
-            } else if !after_eq.is_empty() {
-                out = format!("{}= [REDACTED]", &out[..eq_offset]);
-            }
-        }
-    }
-
-    if let Some(pos) = find_cargo_token_env(&out)
-        && let Some(eq_pos) = out[pos..].find('=')
-    {
-        let abs_eq = pos + eq_pos;
-        out = format!("{}=[REDACTED]", &out[..abs_eq]);
-    }
-
-    out
-}
-
-/// Find the start position of a `CARGO_REGISTRY_TOKEN` or `CARGO_REGISTRIES_<NAME>_TOKEN` pattern.
-fn find_cargo_token_env(s: &str) -> Option<usize> {
-    if let Some(pos) = s.find("CARGO_REGISTRY_TOKEN") {
-        return Some(pos);
-    }
-    if let Some(pos) = s.find("CARGO_REGISTRIES_") {
-        let after = &s[pos + "CARGO_REGISTRIES_".len()..];
-        if after.contains("_TOKEN") {
-            return Some(pos);
-        }
-    }
-    None
 }
 
 fn cargo_program() -> String {

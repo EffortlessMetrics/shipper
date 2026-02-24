@@ -37,6 +37,7 @@ cargo test -p shipper --features micro-environment
 cargo test -p shipper --features micro-storage
 cargo test -p shipper --features micro-cargo
 cargo test -p shipper --features micro-plan
+cargo test -p shipper --features micro-policy
 # Run with the new registry/process/webhook micro backends
 cargo test -p shipper --features micro-registry
 cargo test -p shipper --features micro-process
@@ -109,6 +110,9 @@ cargo +nightly fuzz run release_levels -- -max_total_time=60
 
 # Run sparse-index path/version parsing target
 cargo +nightly fuzz run sparse_index -- -max_total_time=60
+
+# Run output redaction target
+cargo +nightly fuzz run redact_output -- -max_total_time=60
 ```
 
 ## Test Categories
@@ -176,6 +180,7 @@ cargo test -p shipper-cli --test bdd_publish --features micro-environment
 cargo test -p shipper-cli --test bdd_publish --features micro-storage
 cargo test -p shipper-cli --test bdd_publish --features micro-cargo
 cargo test -p shipper-cli --test bdd_publish --features micro-plan
+cargo test -p shipper-cli --test bdd_publish --features micro-policy
 cargo test -p shipper-cli --test bdd_publish --features micro-registry
 cargo test -p shipper-cli --test bdd_publish --features micro-process
 cargo test -p shipper-cli --test bdd_publish --features micro-webhook
@@ -206,6 +211,7 @@ Fuzz targets for security-critical parsing:
 - `schema_version` - Schema version parsing and compatibility validation
 - `policy_effects` - Publish policy effect invariants across all flag combinations
 - `cargo_failure_classifier` - Cargo publish failure classification robustness and determinism
+- `redact_output` - Cargo output redaction and tail sanitization invariants
 - `release_levels` - Dependency-level grouping determinism and ordering invariants
 - `sparse_index` - Sparse-index path + version lookup determinism and parser hardening
 

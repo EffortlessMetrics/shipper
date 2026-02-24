@@ -10,9 +10,7 @@ use shipper::config::{CliOverrides, ShipperConfig};
 use shipper::engine::{self, Reporter};
 use shipper::plan;
 use shipper::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
-
-mod progress;
-use progress::ProgressReporter;
+use shipper_progress::ProgressReporter;
 
 #[derive(Parser, Debug)]
 #[command(name = "shipper", version)]
@@ -415,7 +413,9 @@ fn main() -> Result<()> {
 
     // Merge CLI overrides with config (or defaults if no config)
     let config_for_merge = config.clone().unwrap_or_default();
-    let opts = config_for_merge.build_runtime_options(cli_overrides);
+    let opts: RuntimeOptions = config_for_merge
+        .build_runtime_options(cli_overrides)
+        .into();
 
     let mut reporter = CliReporter;
 
@@ -509,29 +509,29 @@ fn parse_duration(s: &str) -> Result<Duration> {
     shipper_duration::parse_duration(s).with_context(|| format!("invalid duration: {s}"))
 }
 
-fn parse_policy(s: &str) -> Result<shipper::types::PublishPolicy> {
+fn parse_policy(s: &str) -> Result<shipper::config::PublishPolicy> {
     match s.to_lowercase().as_str() {
-        "safe" => Ok(shipper::types::PublishPolicy::Safe),
-        "balanced" => Ok(shipper::types::PublishPolicy::Balanced),
-        "fast" => Ok(shipper::types::PublishPolicy::Fast),
+        "safe" => Ok(shipper::config::PublishPolicy::Safe),
+        "balanced" => Ok(shipper::config::PublishPolicy::Balanced),
+        "fast" => Ok(shipper::config::PublishPolicy::Fast),
         _ => bail!("invalid policy: {s} (expected: safe, balanced, fast)"),
     }
 }
 
-fn parse_verify_mode(s: &str) -> Result<shipper::types::VerifyMode> {
+fn parse_verify_mode(s: &str) -> Result<shipper::config::VerifyMode> {
     match s.to_lowercase().as_str() {
-        "workspace" => Ok(shipper::types::VerifyMode::Workspace),
-        "package" => Ok(shipper::types::VerifyMode::Package),
-        "none" => Ok(shipper::types::VerifyMode::None),
+        "workspace" => Ok(shipper::config::VerifyMode::Workspace),
+        "package" => Ok(shipper::config::VerifyMode::Package),
+        "none" => Ok(shipper::config::VerifyMode::None),
         _ => bail!("invalid verify-mode: {s} (expected: workspace, package, none)"),
     }
 }
 
-fn parse_readiness_method(s: &str) -> Result<shipper::types::ReadinessMethod> {
+fn parse_readiness_method(s: &str) -> Result<shipper::config::ReadinessMethod> {
     match s.to_lowercase().as_str() {
-        "api" => Ok(shipper::types::ReadinessMethod::Api),
-        "index" => Ok(shipper::types::ReadinessMethod::Index),
-        "both" => Ok(shipper::types::ReadinessMethod::Both),
+        "api" => Ok(shipper::config::ReadinessMethod::Api),
+        "index" => Ok(shipper::config::ReadinessMethod::Index),
+        "both" => Ok(shipper::config::ReadinessMethod::Both),
         _ => bail!("invalid readiness-method: {s} (expected: api, index, both)"),
     }
 }
@@ -1804,7 +1804,7 @@ mode = "fast"
         assert!(config.is_some(), "should return Some when config exists");
         assert_eq!(
             config.unwrap().policy.mode,
-            shipper::types::PublishPolicy::Fast
+            shipper::config::PublishPolicy::Fast
         );
     }
 
@@ -1812,12 +1812,12 @@ mode = "fast"
     fn config_merge_with_cli_overrides() {
         let config = ShipperConfig {
             policy: shipper::config::PolicyConfig {
-                mode: shipper::types::PublishPolicy::Safe,
+                mode: shipper::config::PublishPolicy::Safe,
             },
             verify: shipper::config::VerifyConfig {
-                mode: shipper::types::VerifyMode::Workspace,
+                mode: shipper::config::VerifyMode::Workspace,
             },
-            readiness: shipper::types::ReadinessConfig::default(),
+            readiness: shipper::config::ReadinessConfig::default(),
             output: shipper::config::OutputConfig { lines: 100 },
             lock: shipper::config::LockConfig {
                 timeout: Duration::from_secs(1800),
@@ -1839,8 +1839,8 @@ mode = "fast"
             state_dir: None,
             registry: None,
             registries: shipper::config::MultiRegistryConfig::default(),
-            parallel: shipper::types::ParallelConfig::default(),
-            webhook: shipper::webhook::WebhookConfig::default(),
+            parallel: shipper::config::ParallelConfig::default(),
+            webhook: shipper::config::WebhookConfig::default(),
             encryption: shipper::config::EncryptionConfigInner::default(),
             storage: shipper::config::StorageConfigInner::default(),
         };
@@ -1850,12 +1850,12 @@ mode = "fast"
             allow_dirty: true,
             max_attempts: Some(3),
             output_lines: Some(50),
-            policy: Some(shipper::types::PublishPolicy::Fast),
-            verify_mode: Some(shipper::types::VerifyMode::None),
+            policy: Some(shipper::config::PublishPolicy::Fast),
+            verify_mode: Some(shipper::config::VerifyMode::None),
             ..Default::default()
         };
 
-        let merged = config.build_runtime_options(cli);
+        let merged: RuntimeOptions = config.build_runtime_options(cli).into();
 
         // CLI values should win where set
         assert!(merged.allow_dirty, "CLI allow_dirty should win");

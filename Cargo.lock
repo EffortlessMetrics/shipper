@@ -2268,13 +2268,16 @@ dependencies = [
  "shipper-cargo",
  "shipper-cargo-failure",
  "shipper-config",
+ "shipper-config-runtime",
  "shipper-duration",
  "shipper-encrypt",
+ "shipper-engine-parallel",
  "shipper-environment",
  "shipper-events",
  "shipper-git",
  "shipper-levels",
  "shipper-lock",
+ "shipper-output-sanitizer",
  "shipper-plan",
  "shipper-policy",
  "shipper-process",
@@ -2317,6 +2320,7 @@ dependencies = [
  "humantime",
  "serde",
  "serde_json",
+ "shipper-output-sanitizer",
  "tempfile",
 ]
 
@@ -2328,16 +2332,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "shipper-chunking"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "shipper-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
- "atty",
  "chrono",
  "clap",
  "clap_complete",
- "indicatif",
  "insta",
  "predicates",
  "serde_json",
@@ -2345,6 +2354,7 @@ dependencies = [
  "serial_test",
  "shipper",
  "shipper-duration",
+ "shipper-progress",
  "temp-env",
  "tempfile",
  "tiny_http",
@@ -2355,6 +2365,7 @@ name = "shipper-config"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "proptest",
  "serde",
  "serde_with",
  "shipper-encrypt",
@@ -2364,6 +2375,16 @@ dependencies = [
  "shipper-webhook",
  "tempfile",
  "toml",
+]
+
+[[package]]
+name = "shipper-config-runtime"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "shipper-config",
+ "shipper-retry",
+ "shipper-types",
 ]
 
 [[package]]
@@ -2388,6 +2409,36 @@ dependencies = [
  "serde",
  "sha2",
  "tempfile",
+]
+
+[[package]]
+name = "shipper-engine-parallel"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "humantime",
+ "proptest",
+ "rand 0.10.0",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "shipper-cargo",
+ "shipper-cargo-failure",
+ "shipper-chunking",
+ "shipper-encrypt",
+ "shipper-events",
+ "shipper-plan",
+ "shipper-policy",
+ "shipper-registry",
+ "shipper-retry",
+ "shipper-sparse-index",
+ "shipper-state",
+ "shipper-types",
+ "shipper-webhook",
+ "temp-env",
+ "tempfile",
+ "tiny_http",
 ]
 
 [[package]]
@@ -2443,6 +2494,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shipper-output-sanitizer"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "shipper-plan"
 version = "0.2.0"
 dependencies = [
@@ -2477,6 +2535,15 @@ dependencies = [
  "serde_json",
  "tempfile",
  "which",
+]
+
+[[package]]
+name = "shipper-progress"
+version = "0.2.0"
+dependencies = [
+ "atty",
+ "indicatif",
+ "proptest",
 ]
 
 [[package]]

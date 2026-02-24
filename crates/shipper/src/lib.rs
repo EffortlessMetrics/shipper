@@ -126,6 +126,10 @@ pub mod config;
 pub mod engine;
 
 /// Wave-based parallel publishing engine.
+#[cfg(feature = "micro-parallel")]
+#[path = "engine_parallel_micro.rs"]
+pub mod engine_parallel;
+#[cfg(not(feature = "micro-parallel"))]
 pub mod engine_parallel;
 
 /// Environment fingerprinting (OS, arch, tool versions).
@@ -169,6 +173,12 @@ pub mod plan;
 pub mod registry;
 #[cfg(not(feature = "micro-registry"))]
 pub mod registry;
+
+#[cfg(feature = "micro-policy")]
+#[path = "policy_micro.rs"]
+pub(crate) mod policy;
+#[cfg(not(feature = "micro-policy"))]
+pub(crate) mod policy;
 
 /// State and receipt persistence.
 #[cfg(feature = "micro-state")]

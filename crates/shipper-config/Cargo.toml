@@ -23,6 +23,7 @@ shipper-retry = { path = "../shipper-retry" }
 
 [dev-dependencies]
 tempfile = "3"
+proptest = { workspace = true }
 
 [lints]
 workspace = true

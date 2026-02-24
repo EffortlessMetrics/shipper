@@ -1,0 +1,21 @@
+[package]
+name = "shipper-progress"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "CLI progress reporting utilities for shipper"
+repository = "https://github.com/EffortlessMetrics/shipper"
+documentation = "https://docs.rs/shipper-progress"
+keywords = ["cli", "progress", "publishing", "terminal"]
+categories = ["development-tools"]
+
+[dependencies]
+atty = "0.2"
+indicatif = "0.17"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

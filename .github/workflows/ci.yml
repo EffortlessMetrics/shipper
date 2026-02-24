@@ -206,7 +206,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        feature-set: ["", "micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-registry", "micro-process", "micro-webhook", "micro-types", "micro-config", "micro-state", "micro-store", "micro-all"]
+        feature-set: ["", "micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-policy", "micro-registry", "micro-process", "micro-webhook", "micro-types", "micro-config", "micro-state", "micro-store", "micro-all"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -263,7 +263,9 @@ jobs:
           cargo fuzz run load_state --target x86_64-unknown-linux-gnu -- -max_total_time=60
           cargo fuzz run resolve_token --target x86_64-unknown-linux-gnu -- -max_total_time=60
           cargo fuzz run schema_version --target x86_64-unknown-linux-gnu -- -max_total_time=60
+          cargo fuzz run policy_effects --target x86_64-unknown-linux-gnu -- -max_total_time=60
           cargo fuzz run release_levels --target x86_64-unknown-linux-gnu -- -max_total_time=60
+          cargo fuzz run redact_output --target x86_64-unknown-linux-gnu -- -max_total_time=60
 
   cross-platform:
     name: Build (${{ matrix.os }}, ${{ matrix.target }})
