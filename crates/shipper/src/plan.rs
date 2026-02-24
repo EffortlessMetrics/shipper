@@ -331,48 +331,17 @@ impl ReleasePlan {
     ///
     /// This method uses the `dependencies` field of the ReleasePlan to determine levels.
     pub fn group_by_levels(&self) -> Vec<crate::types::PublishLevel> {
-        use std::collections::HashMap;
-
-        if self.packages.is_empty() {
-            return Vec::new();
-        }
-
-        // Assign levels using a simple algorithm:
-        // Level 0: packages with no dependencies
-        // Level N: packages whose maximum dependency level is N-1
-        let mut levels: Vec<crate::types::PublishLevel> = Vec::new();
-        let mut pkg_level: HashMap<String, usize> = HashMap::new();
-
-        for pkg in &self.packages {
-            let deps = self
-                .dependencies
-                .get(&pkg.name)
-                .cloned()
-                .unwrap_or_default();
-
-            // Find the maximum level of all dependencies
-            let max_dep_level = deps
-                .iter()
-                .filter_map(|dep| pkg_level.get(dep).copied())
-                .max()
-                .unwrap_or(0);
-
-            // This package goes to the next level
-            let level = max_dep_level + 1;
-            pkg_level.insert(pkg.name.clone(), level);
-
-            // Ensure we have enough levels
-            while levels.len() < level {
-                levels.push(crate::types::PublishLevel {
-                    level: levels.len(),
-                    packages: Vec::new(),
-                });
-            }
-
-            levels[level - 1].packages.push(pkg.clone());
-        }
-
-        levels
+        shipper_levels::group_packages_by_levels(
+            &self.packages,
+            |pkg| pkg.name.as_str(),
+            &self.dependencies,
+        )
+        .into_iter()
+        .map(|level| crate::types::PublishLevel {
+            level: level.level,
+            packages: level.packages,
+        })
+        .collect()
     }
 }
 

@@ -45,41 +45,11 @@ pub trait StateStore: Send + Sync {
 
 /// Validate any schema version
 pub fn validate_schema_version(version: &str) -> Result<()> {
-    // Parse version string (e.g., "shipper.receipt.v2" -> 2)
-    let version_num = parse_schema_version(version)
-        .with_context(|| format!("invalid schema version format: {}", version))?;
-
-    let minimum_num =
-        parse_schema_version(crate::state::MINIMUM_SUPPORTED_VERSION).with_context(|| {
-            format!(
-                "invalid minimum version format: {}",
-                crate::state::MINIMUM_SUPPORTED_VERSION
-            )
-        })?;
-
-    if version_num < minimum_num {
-        anyhow::bail!(
-            "schema version {} is too old. Minimum supported version is {}",
-            version,
-            crate::state::MINIMUM_SUPPORTED_VERSION
-        );
-    }
-
-    Ok(())
-}
-
-/// Parse schema version number from version string (e.g., "shipper.receipt.v2" -> 2)
-fn parse_schema_version(version: &str) -> Result<u32> {
-    let parts: Vec<&str> = version.split('.').collect();
-    if parts.len() != 3 || !parts[0].starts_with("shipper") || !parts[2].starts_with('v') {
-        anyhow::bail!("invalid schema version format: {}", version);
-    }
-
-    // Extract the version number from the last part (e.g., "v2" -> 2)
-    let version_part = &parts[2][1..]; // Skip 'v'
-    version_part
-        .parse::<u32>()
-        .with_context(|| format!("invalid version number in schema version: {}", version))
+    shipper_schema::validate_schema_version(
+        version,
+        crate::state::MINIMUM_SUPPORTED_VERSION,
+        "schema",
+    )
 }
 
 /// Filesystem-based state store implementation.
@@ -356,37 +326,40 @@ mod tests {
 
     #[test]
     fn parse_schema_version_in_store_extracts_number_from_v1() {
-        let result = parse_schema_version("shipper.receipt.v1").expect("should parse");
+        let result =
+            shipper_schema::parse_schema_version("shipper.receipt.v1").expect("should parse");
         assert_eq!(result, 1);
     }
 
     #[test]
     fn parse_schema_version_in_store_extracts_number_from_v2() {
-        let result = parse_schema_version("shipper.receipt.v2").expect("should parse");
+        let result =
+            shipper_schema::parse_schema_version("shipper.receipt.v2").expect("should parse");
         assert_eq!(result, 2);
     }
 
     #[test]
     fn parse_schema_version_in_store_handles_large_version() {
-        let result = parse_schema_version("shipper.receipt.v100").expect("should parse");
+        let result =
+            shipper_schema::parse_schema_version("shipper.receipt.v100").expect("should parse");
         assert_eq!(result, 100);
     }
 
     #[test]
     fn parse_schema_version_in_store_rejects_invalid_format_no_prefix() {
-        let result = parse_schema_version("receipt.v2");
+        let result = shipper_schema::parse_schema_version("receipt.v2");
         assert!(result.is_err());
     }
 
     #[test]
     fn parse_schema_version_in_store_rejects_invalid_format_no_version() {
-        let result = parse_schema_version("shipper.receipt");
+        let result = shipper_schema::parse_schema_version("shipper.receipt");
         assert!(result.is_err());
     }
 
     #[test]
     fn parse_schema_version_in_store_rejects_invalid_format_missing_v() {
-        let result = parse_schema_version("shipper.receipt.2");
+        let result = shipper_schema::parse_schema_version("shipper.receipt.2");
         assert!(result.is_err());
     }
 

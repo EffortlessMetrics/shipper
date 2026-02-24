@@ -130,7 +130,7 @@ fn publish_package(
     }
 
     // Apply policy effects for readiness (Fix 7: parallel mode must respect PublishPolicy::Fast)
-    let effects = crate::engine::apply_policy(opts);
+    let effects = crate::engine::policy_effects(opts);
     let readiness_config = types::ReadinessConfig {
         enabled: effects.readiness_enabled,
         ..opts.readiness.clone()

@@ -24,7 +24,7 @@ Shipper employs a multi-layered testing approach:
 cargo test --workspace
 
 # Run with the in-crate modular backends via feature flags
-# (auth, git, events, lock, encryption, environment, storage, cargo, registry, process, webhook, types, config, state, store)
+# (auth, git, events, lock, encryption, environment, storage, cargo, plan, registry, process, webhook, types, config, state, store)
 cargo test -p shipper --features micro-all
 
 # Run individual backend toggles
@@ -36,6 +36,7 @@ cargo test -p shipper --features micro-encrypt
 cargo test -p shipper --features micro-environment
 cargo test -p shipper --features micro-storage
 cargo test -p shipper --features micro-cargo
+cargo test -p shipper --features micro-plan
 # Run with the new registry/process/webhook micro backends
 cargo test -p shipper --features micro-registry
 cargo test -p shipper --features micro-process
@@ -50,6 +51,19 @@ cargo nextest run --workspace
 
 # Run specific test file
 cargo test -p shipper-cli --test bdd_publish
+
+# Run classifier microcrate tests (unit + property + integration)
+cargo test -p shipper-cargo-failure
+
+# Run release-level grouping microcrate tests (unit + property)
+cargo test -p shipper-levels
+
+# Run sparse-index microcrate tests (unit + property + integration)
+cargo test -p shipper-sparse-index
+
+# Run release-level integration contracts
+cargo test -p shipper-types --test release_levels_integration
+cargo test -p shipper --test parallel_levels_integration
 ```
 
 ### CI-Simulated Run
@@ -81,6 +95,21 @@ cargo +nightly fuzz run load_state -- -max_total_time=60
 
 # Run with corpus seed
 cargo +nightly fuzz run load_state --corpus fuzz/corpus/load_state
+
+# Run schema version parser target
+cargo +nightly fuzz run schema_version -- -max_total_time=60
+
+# Run policy effect evaluator target
+cargo +nightly fuzz run policy_effects -- -max_total_time=60
+
+# Run cargo publish failure classifier target
+cargo +nightly fuzz run cargo_failure_classifier -- -max_total_time=60
+
+# Run release dependency-level grouping target
+cargo +nightly fuzz run release_levels -- -max_total_time=60
+
+# Run sparse-index path/version parsing target
+cargo +nightly fuzz run sparse_index -- -max_total_time=60
 ```
 
 ## Test Categories
@@ -147,6 +176,7 @@ cargo test -p shipper-cli --test bdd_publish --features micro-encrypt
 cargo test -p shipper-cli --test bdd_publish --features micro-environment
 cargo test -p shipper-cli --test bdd_publish --features micro-storage
 cargo test -p shipper-cli --test bdd_publish --features micro-cargo
+cargo test -p shipper-cli --test bdd_publish --features micro-plan
 cargo test -p shipper-cli --test bdd_publish --features micro-registry
 cargo test -p shipper-cli --test bdd_publish --features micro-process
 cargo test -p shipper-cli --test bdd_publish --features micro-webhook
@@ -170,9 +200,15 @@ End-to-end tests simulate the full CLI workflow:
 Fuzz targets for security-critical parsing:
 - `load_state` - State JSON parsing
 - `resolve_token` - Credentials TOML parsing
+- `duration_codec` - Duration parsing and serde codec hardening
 - `encrypt_decrypt` - Encryption roundtrip
 - `retry_strategy` - Delay calculation invariants
 - `types_serialization` - JSON serialization
+- `schema_version` - Schema version parsing and compatibility validation
+- `policy_effects` - Publish policy effect invariants across all flag combinations
+- `cargo_failure_classifier` - Cargo publish failure classification robustness and determinism
+- `release_levels` - Dependency-level grouping determinism and ordering invariants
+- `sparse_index` - Sparse-index path + version lookup determinism and parser hardening
 
 ## CI Pipeline
 

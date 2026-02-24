@@ -81,6 +81,7 @@
 //! - [`storage`] — Storage backends with pluggable `StorageBackend` trait
 //! - [`cargo`] — Workspace metadata via `cargo_metadata`
 //! - [`process`] — Cross-platform command execution with timeout support
+//! - [`cargo_failure`] — Cargo publish failure classification heuristics
 //! - [`webhook`] — Webhook notifications for publish events
 //!
 //! ## Stability
@@ -156,6 +157,10 @@ pub mod lock;
 pub mod lock;
 
 /// Workspace analysis and topological plan generation.
+#[cfg(feature = "micro-plan")]
+#[path = "plan_micro.rs"]
+pub mod plan;
+#[cfg(not(feature = "micro-plan"))]
 pub mod plan;
 
 /// Registry API and sparse-index client.
@@ -196,6 +201,10 @@ pub mod types;
 /// Configurable retry strategies with backoff and jitter.
 /// Re-exported from shipper-retry microcrate.
 pub use shipper_retry as retry;
+
+/// Cargo publish failure classification heuristics.
+/// Re-exported from shipper-cargo-failure microcrate.
+pub use shipper_cargo_failure as cargo_failure;
 
 /// Webhook notifications for publish events.
 #[cfg(feature = "micro-webhook")]

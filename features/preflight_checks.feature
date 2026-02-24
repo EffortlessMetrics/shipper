@@ -41,3 +41,10 @@ Feature: Preflight verification
     When I run "shipper preflight" with "--strict-ownership"
     Then the exit code is non-zero
     And the error message mentions token or ownership
+
+  Scenario: Balanced policy ignores strict ownership requirement
+    Given no registry token is configured
+    And the registry returns "not found" for all crates
+    When I run "shipper preflight" with "--policy balanced --strict-ownership --no-verify"
+    Then the exit code is 0
+    And the preflight report shows token not detected

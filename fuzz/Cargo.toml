@@ -10,8 +10,16 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 shipper = { path = "../crates/shipper" }
+shipper-duration = { path = "../crates/shipper-duration" }
+shipper-schema = { path = "../crates/shipper-schema" }
+shipper-policy = { path = "../crates/shipper-policy" }
+shipper-cargo-failure = { path = "../crates/shipper-cargo-failure" }
+shipper-levels = { path = "../crates/shipper-levels" }
+shipper-sparse-index = { path = "../crates/shipper-sparse-index" }
 tempfile = "3"
 temp-env = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [[bin]]
 name = "load_state"
@@ -23,6 +31,48 @@ bench = false
 [[bin]]
 name = "resolve_token"
 path = "fuzz_targets/resolve_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "duration_codec"
+path = "fuzz_targets/duration_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "schema_version"
+path = "fuzz_targets/schema_version.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_effects"
+path = "fuzz_targets/policy_effects.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cargo_failure_classifier"
+path = "fuzz_targets/cargo_failure_classifier.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "release_levels"
+path = "fuzz_targets/release_levels.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sparse_index"
+path = "fuzz_targets/sparse_index.rs"
 test = false
 doc = false
 bench = false

@@ -18,11 +18,11 @@ path = "src/main.rs"
 
 [dependencies]
 shipper = { path = "../shipper", version = "0.2.0" }
+shipper-duration = { path = "../shipper-duration" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 serde_json = "1"
-humantime = "2"
 chrono = { version = "0.4", features = ["serde"] }
 atty = "0.2"
 indicatif = "0.17"
@@ -40,6 +40,7 @@ micro-encrypt = ["shipper/micro-encrypt"]
 micro-environment = ["shipper/micro-environment"]
 micro-storage = ["shipper/micro-storage"]
 micro-cargo = ["shipper/micro-cargo"]
+micro-plan = ["shipper/micro-plan"]
 micro-registry = ["shipper/micro-registry"]
 micro-process = ["shipper/micro-process"]
 micro-webhook = ["shipper/micro-webhook"]

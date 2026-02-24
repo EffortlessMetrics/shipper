@@ -28,3 +28,13 @@ Feature: Resumable publishing
     When I run "shipper publish"
     Then the receipt shows package "demo@0.1.0" in state "Skipped"
     And the skip reason contains "already published"
+
+  Scenario: Retryable cargo failures are classified for retry logic
+    Given cargo publish output contains "429 too many requests"
+    When publish failure classification runs
+    Then the failure class is "Retryable"
+
+  Scenario: Index readiness mode accepts published version from sparse metadata
+    Given a fake registry returns sparse index metadata containing "demo@0.1.0"
+    When I run "shipper publish" with "--readiness-method index"
+    Then the exit code is 0

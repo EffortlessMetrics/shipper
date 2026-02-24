@@ -18,6 +18,7 @@ chrono = { version = "0.4", features = ["serde"] }
 shipper-types = { path = "../shipper-types" }
 shipper-environment = { path = "../shipper-environment" }
 shipper-encrypt = { path = "../shipper-encrypt" }
+shipper-schema = { path = "../shipper-schema" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -18,6 +18,7 @@ chrono = { version = "0.4", features = ["serde"] }
 shipper-events = { path = "../shipper-events" }
 shipper-types = { path = "../shipper-types" }
 shipper-state = { path = "../shipper-state" }
+shipper-schema = { path = "../shipper-schema" }
 
 [dev-dependencies]
 tempfile = "3"

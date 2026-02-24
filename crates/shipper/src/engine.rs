@@ -18,7 +18,7 @@ use crate::state;
 use crate::types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, Finishability,
     PackageProgress, PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent,
-    PublishPolicy, ReadinessEvidence, Receipt, RuntimeOptions,
+    ReadinessEvidence, Receipt, RuntimeOptions,
 };
 use crate::webhook::{self, WebhookEvent};
 
@@ -28,34 +28,20 @@ pub trait Reporter {
     fn error(&mut self, msg: &str);
 }
 
-pub(crate) struct PolicyEffects {
-    pub(crate) run_dry_run: bool,
-    pub(crate) check_ownership: bool,
-    pub(crate) strict_ownership: bool,
-    pub(crate) readiness_enabled: bool,
-}
+pub(crate) fn policy_effects(opts: &RuntimeOptions) -> shipper_policy::PolicyEffects {
+    let policy = match opts.policy {
+        crate::types::PublishPolicy::Safe => shipper_policy::PolicyKind::Safe,
+        crate::types::PublishPolicy::Balanced => shipper_policy::PolicyKind::Balanced,
+        crate::types::PublishPolicy::Fast => shipper_policy::PolicyKind::Fast,
+    };
 
-pub(crate) fn apply_policy(opts: &RuntimeOptions) -> PolicyEffects {
-    match opts.policy {
-        PublishPolicy::Safe => PolicyEffects {
-            run_dry_run: !opts.no_verify,
-            check_ownership: !opts.skip_ownership_check,
-            strict_ownership: opts.strict_ownership,
-            readiness_enabled: opts.readiness.enabled,
-        },
-        PublishPolicy::Balanced => PolicyEffects {
-            run_dry_run: !opts.no_verify,
-            check_ownership: false,
-            strict_ownership: false,
-            readiness_enabled: opts.readiness.enabled,
-        },
-        PublishPolicy::Fast => PolicyEffects {
-            run_dry_run: false,
-            check_ownership: false,
-            strict_ownership: false,
-            readiness_enabled: false,
-        },
-    }
+    shipper_policy::evaluate(
+        policy,
+        opts.no_verify,
+        opts.skip_ownership_check,
+        opts.strict_ownership,
+        opts.readiness.enabled,
+    )
 }
 
 /// Run preflight verification checks before publishing.
@@ -95,7 +81,7 @@ pub fn run_preflight(
     reporter: &mut dyn Reporter,
 ) -> Result<PreflightReport> {
     let workspace_root = &ws.workspace_root;
-    let effects = apply_policy(opts);
+    let effects = policy_effects(opts);
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
     let events_path = events::events_path(&state_dir);
     let mut event_log = events::EventLog::new();
@@ -361,7 +347,7 @@ pub fn run_publish(
 ) -> Result<Receipt> {
     let workspace_root = &ws.workspace_root;
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
-    let effects = apply_policy(opts);
+    let effects = policy_effects(opts);
 
     // Acquire lock
     let lock_timeout = if opts.force {
@@ -1091,68 +1077,14 @@ fn verify_published(
 }
 
 pub(crate) fn classify_cargo_failure(stderr: &str, stdout: &str) -> (ErrorClass, String) {
-    let hay = format!("{}\n{}", stderr, stdout).to_lowercase();
+    let outcome = shipper_cargo_failure::classify_publish_failure(stderr, stdout);
+    let class = match outcome.class {
+        shipper_cargo_failure::CargoFailureClass::Retryable => ErrorClass::Retryable,
+        shipper_cargo_failure::CargoFailureClass::Permanent => ErrorClass::Permanent,
+        shipper_cargo_failure::CargoFailureClass::Ambiguous => ErrorClass::Ambiguous,
+    };
 
-    // Retryable: backpressure and transient network failures.
-    let retryable_patterns = [
-        "too many requests",
-        "429",
-        "timeout",
-        "timed out",
-        "connection reset",
-        "connection refused",
-        "connection closed",
-        "dns",
-        "tls",
-        "temporarily unavailable",
-        "failed to download",
-        "failed to send",
-        "server error",
-        "502",
-        "503",
-        "504",
-    ];
-
-    if retryable_patterns.iter().any(|p| hay.contains(p)) {
-        return (
-            ErrorClass::Retryable,
-            "transient failure (retryable)".into(),
-        );
-    }
-
-    // Permanent: manifest / packaging / validation failures.
-    let permanent_patterns = [
-        "failed to parse manifest",
-        "invalid",
-        "missing",
-        "license",
-        "description",
-        "readme",
-        "repository",
-        "could not compile",
-        "compilation failed",
-        "failed to verify",
-        "package is not allowed to be published",
-        "publish is disabled",
-        "yanked",
-        "forbidden",
-        "permission denied",
-        "not authorized",
-        "unauthorized",
-    ];
-
-    if permanent_patterns.iter().any(|p| hay.contains(p)) {
-        return (
-            ErrorClass::Permanent,
-            "permanent failure (fix required)".into(),
-        );
-    }
-
-    // Ambiguous: default. We'll always verify registry before failing.
-    (
-        ErrorClass::Ambiguous,
-        "publish outcome ambiguous; registry did not show version".into(),
-    )
+    (class, outcome.message.to_string())
 }
 
 pub(crate) fn backoff_delay(

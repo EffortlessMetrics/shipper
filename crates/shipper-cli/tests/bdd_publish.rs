@@ -6,6 +6,7 @@
 use std::fs;
 use std::path::Path;
 use std::thread;
+use std::time::Duration;
 
 use assert_cmd::Command;
 use predicates::str::contains;
@@ -68,6 +69,93 @@ edition = "2021"
 [dependencies]
 core = { path = "../core" }
 utils = { path = "../utils" }
+"#,
+    );
+    write_file(&root.join("app/src/lib.rs"), "pub fn app() {}\n");
+}
+
+fn create_single_crate_workspace(root: &Path) {
+    write_file(
+        &root.join("Cargo.toml"),
+        r#"
+[workspace]
+members = ["demo"]
+resolver = "2"
+"#,
+    );
+
+    write_file(
+        &root.join("demo/Cargo.toml"),
+        r#"
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    write_file(&root.join("demo/src/lib.rs"), "pub fn demo() {}\n");
+}
+
+fn create_parallel_workspace(root: &Path) {
+    write_file(
+        &root.join("Cargo.toml"),
+        r#"
+[workspace]
+members = ["core", "api", "cli", "app"]
+resolver = "2"
+"#,
+    );
+
+    write_file(
+        &root.join("core/Cargo.toml"),
+        r#"
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    write_file(&root.join("core/src/lib.rs"), "pub fn core() {}\n");
+
+    write_file(
+        &root.join("api/Cargo.toml"),
+        r#"
+[package]
+name = "api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core" }
+"#,
+    );
+    write_file(&root.join("api/src/lib.rs"), "pub fn api() {}\n");
+
+    write_file(
+        &root.join("cli/Cargo.toml"),
+        r#"
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core" }
+"#,
+    );
+    write_file(&root.join("cli/src/lib.rs"), "pub fn cli() {}\n");
+
+    write_file(
+        &root.join("app/Cargo.toml"),
+        r#"
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+api = { path = "../api" }
+cli = { path = "../cli" }
 "#,
     );
     write_file(&root.join("app/src/lib.rs"), "pub fn app() {}\n");
@@ -136,6 +224,49 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
     TestRegistry { base_url, handle }
 }
 
+fn spawn_index_readiness_registry(crate_name: &str, version: &str) -> TestRegistry {
+    let server = Server::http("127.0.0.1:0").expect("server");
+    let base_url = format!("http://{}", server.server_addr());
+    let api_path = format!("/api/v1/crates/{crate_name}/{version}");
+    let lower = crate_name.to_ascii_lowercase();
+    let index_suffix = match lower.len() {
+        1 => format!("1/{lower}"),
+        2 => format!("2/{lower}"),
+        3 => format!("3/{}/{lower}", &lower[..1]),
+        _ => format!("{}/{}/{lower}", &lower[..2], &lower[2..4]),
+    };
+    let index_path = format!("/{index_suffix}");
+    let index_body = format!(
+        "{{\"name\":\"{crate_name}\",\"vers\":\"{version}\",\"deps\":[],\"cksum\":\"deadbeef\"}}"
+    );
+
+    let handle = thread::spawn(move || {
+        for _ in 0..4 {
+            let req = match server.recv_timeout(Duration::from_secs(5)) {
+                Ok(Some(req)) => req,
+                _ => break,
+            };
+
+            let (status, body) = if req.url() == api_path {
+                (404, "{}".to_string())
+            } else if req.url() == index_path {
+                (200, index_body.clone())
+            } else {
+                (404, "{}".to_string())
+            };
+
+            let resp = Response::from_string(body)
+                .with_status_code(StatusCode(status))
+                .with_header(
+                    Header::from_bytes("Content-Type", "application/json").expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        }
+    });
+
+    TestRegistry { base_url, handle }
+}
+
 fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper"))
 }
@@ -177,6 +308,47 @@ mod deterministic_publish_order {
         // core should come before utils, and utils before app
         assert!(core_pos < utils_pos, "core should be listed before utils");
         assert!(utils_pos < app_pos, "utils should be listed before app");
+    }
+
+    // Scenario: Workspace fan-out/fan-in groups independent crates into a shared parallel level
+    #[test]
+    fn given_parallelizable_workspace_when_grouping_levels_then_independent_crates_share_level() {
+        let td = tempdir().expect("tempdir");
+        create_parallel_workspace(td.path());
+
+        let spec = shipper::types::ReleaseSpec {
+            manifest_path: td.path().join("Cargo.toml"),
+            registry: shipper::types::Registry::crates_io(),
+            selected_packages: None,
+        };
+        let ws = shipper::plan::build_plan(&spec).expect("plan");
+        let levels = ws.plan.group_by_levels();
+
+        assert_eq!(levels.len(), 3);
+        assert_eq!(
+            levels[0]
+                .packages
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["core"]
+        );
+        assert_eq!(
+            levels[1]
+                .packages
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["api", "cli"]
+        );
+        assert_eq!(
+            levels[2]
+                .packages
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["app"]
+        );
     }
 }
 
@@ -387,6 +559,72 @@ mod resumability {
 }
 
 // ============================================================================
+// Feature: Readiness Modes
+// ============================================================================
+
+mod readiness_modes {
+    use super::*;
+
+    // Scenario: Index readiness mode accepts published version from sparse metadata
+    #[test]
+    fn given_index_readiness_mode_when_publish_then_reads_sparse_index_metadata() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let bin_dir = td.path().join("fake-bin");
+        fs::create_dir_all(&bin_dir).expect("mkdir");
+        create_fake_cargo_proxy(&bin_dir);
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let mut new_path = bin_dir.display().to_string();
+        if !old_path.is_empty() {
+            new_path.push_str(path_sep());
+            new_path.push_str(&old_path);
+        }
+        let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        #[cfg(windows)]
+        let fake_cargo = bin_dir.join("cargo.cmd");
+        #[cfg(not(windows))]
+        let fake_cargo = bin_dir.join("cargo");
+
+        let registry = spawn_index_readiness_registry("demo", "0.1.0");
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--readiness-method")
+            .arg("index")
+            .arg("--readiness-timeout")
+            .arg("250ms")
+            .arg("--readiness-poll")
+            .arg("10ms")
+            .arg("--state-dir")
+            .arg(".shipper")
+            .arg("publish")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+            .assert()
+            .success();
+
+        let receipt_path = td.path().join(".shipper").join("receipt.json");
+        let receipt_json = fs::read_to_string(receipt_path).expect("receipt");
+        let receipt: serde_json::Value = serde_json::from_str(&receipt_json).expect("json");
+        let packages = receipt["packages"].as_array().expect("packages");
+        assert!(packages.iter().any(|pkg| {
+            pkg["name"].as_str() == Some("demo")
+                && pkg["state"]["state"].as_str() == Some("published")
+        }));
+
+        registry.join();
+    }
+}
+
+// ============================================================================
 // Feature: Policy Modes
 // ============================================================================
 
@@ -425,6 +663,45 @@ mod policy_modes {
         let stdout = String::from_utf8(out).expect("utf8");
         // Fast policy should show dry-run passed (skipped)
         assert!(stdout.contains("Dry-run") || stdout.contains("dry_run"));
+
+        registry.join();
+    }
+
+    // Scenario: Balanced policy ignores strict ownership mode
+    #[test]
+    fn given_balanced_policy_with_strict_ownership_and_no_token_when_preflight_then_succeeds() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+        // 3 crates x (version check + new crate check) = 6 requests
+        let registry = spawn_registry(vec![404, 404, 404, 404, 404, 404], 6);
+
+        let mut cmd = shipper_cmd();
+        let out = cmd
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--policy")
+            .arg("balanced")
+            .arg("--strict-ownership")
+            .arg("--no-verify")
+            .arg("preflight")
+            .env("CARGO_HOME", td.path().join("cargo-home"))
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(out).expect("utf8");
+        assert!(
+            stdout.contains("Token Detected: ✗") || stdout.contains("\"token_detected\":false")
+        );
 
         registry.join();
     }
@@ -513,6 +790,17 @@ mod output_formats {
 mod error_handling {
     use super::*;
 
+    // Scenario: Retryable publish output is classified for retry logic
+    #[test]
+    fn given_retryable_publish_output_when_failure_classification_runs_then_retryable() {
+        let outcome =
+            shipper::cargo_failure::classify_publish_failure("HTTP 429 too many requests", "");
+        assert_eq!(
+            outcome.class,
+            shipper::cargo_failure::CargoFailureClass::Retryable
+        );
+    }
+
     // Scenario: Invalid duration is rejected
     #[test]
     fn given_invalid_duration_when_cli_then_error() {
@@ -528,6 +816,39 @@ mod error_handling {
             .assert()
             .failure()
             .stderr(contains("invalid duration"));
+    }
+
+    // Scenario: Valid duration is accepted
+    #[test]
+    fn given_valid_duration_when_cli_then_plan_succeeds() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--base-delay")
+            .arg("250ms")
+            .arg("--max-delay")
+            .arg("2s")
+            .arg("plan")
+            .assert()
+            .success();
+    }
+
+    // Scenario: Invalid schema versions are rejected by shared store validation
+    #[test]
+    fn given_invalid_schema_version_when_store_validation_runs_then_error() {
+        let err =
+            shipper::store::validate_schema_version("shipper.receipt.v").expect_err("must fail");
+        assert!(err.to_string().contains("invalid"));
+    }
+
+    // Scenario: Supported schema versions pass shared store validation
+    #[test]
+    fn given_supported_schema_version_when_store_validation_runs_then_ok() {
+        shipper::store::validate_schema_version(shipper::state::CURRENT_RECEIPT_VERSION)
+            .expect("schema version should be accepted");
     }
 
     // Scenario: Missing manifest is rejected

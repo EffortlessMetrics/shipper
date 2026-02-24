@@ -26,38 +26,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_with::{DurationMilliSeconds, serde_as};
 
+pub use shipper_duration::{deserialize_duration, serialize_duration};
 use shipper_encrypt::EncryptionConfig as EncryptionSettings;
 use shipper_webhook::WebhookConfig;
-
-/// Deserialize a Duration from either a string (human-readable) or u64 (milliseconds)
-pub fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum DurationHelper {
-        String(String),
-        U64(u64),
-    }
-
-    match DurationHelper::deserialize(deserializer)? {
-        DurationHelper::String(s) => humantime::parse_duration(&s)
-            .map_err(|e| serde::de::Error::custom(format!("invalid duration: {}", e))),
-        DurationHelper::U64(ms) => Ok(Duration::from_millis(ms)),
-    }
-}
-
-/// Serialize a Duration as milliseconds (u64) so it roundtrips with deserialize_duration
-pub fn serialize_duration<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_u64(duration.as_millis() as u64)
-}
 
 /// Represents a Cargo registry for publishing crates.
 ///
@@ -694,42 +668,17 @@ impl ReleasePlan {
     /// Packages at the same level have no dependencies on each other and can
     /// be published concurrently.
     pub fn group_by_levels(&self) -> Vec<PublishLevel> {
-        use std::collections::HashMap;
-
-        if self.packages.is_empty() {
-            return Vec::new();
-        }
-
-        let mut levels: Vec<PublishLevel> = Vec::new();
-        let mut pkg_level: HashMap<String, usize> = HashMap::new();
-
-        for pkg in &self.packages {
-            let deps = self
-                .dependencies
-                .get(&pkg.name)
-                .cloned()
-                .unwrap_or_default();
-
-            let max_dep_level = deps
-                .iter()
-                .filter_map(|dep| pkg_level.get(dep).copied())
-                .max()
-                .unwrap_or(0);
-
-            let level = max_dep_level + 1;
-            pkg_level.insert(pkg.name.clone(), level);
-
-            while levels.len() < level {
-                levels.push(PublishLevel {
-                    level: levels.len(),
-                    packages: Vec::new(),
-                });
-            }
-
-            levels[level - 1].packages.push(pkg.clone());
-        }
-
-        levels
+        shipper_levels::group_packages_by_levels(
+            &self.packages,
+            |pkg| pkg.name.as_str(),
+            &self.dependencies,
+        )
+        .into_iter()
+        .map(|level| PublishLevel {
+            level: level.level,
+            packages: level.packages,
+        })
+        .collect()
     }
 }
 

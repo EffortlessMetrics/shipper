@@ -2,6 +2,8 @@
 members = [
   "crates/shipper",
   "crates/shipper-cli",
+  "crates/shipper-schema",
+  "crates/shipper-duration",
   "crates/shipper-retry",
   "crates/shipper-lock",
   "crates/shipper-encrypt",
@@ -12,12 +14,17 @@ members = [
   "crates/shipper-config",
   "crates/shipper-git",
   "crates/shipper-registry",
+  "crates/shipper-sparse-index",
   "crates/shipper-cargo",
+  "crates/shipper-cargo-failure",
   "crates/shipper-environment",
+  "crates/shipper-plan",
   "crates/shipper-process",
   "crates/shipper-webhook",
   "crates/shipper-store",
   "crates/shipper-storage",
+  "crates/shipper-policy",
+  "crates/shipper-levels",
 ]
 exclude = ["fuzz"]
 resolver = "3"
