@@ -556,6 +556,8 @@ pub struct RuntimeOptions {
     pub encryption: EncryptionSettings,
     /// Target registries for multi-registry publishing
     pub registries: Vec<Registry>,
+    /// Optional package name to resume from (skips all packages before this one)
+    pub resume_from: Option<String>,
 }
 
 /// A package in the publish plan.

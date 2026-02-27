@@ -31,6 +31,10 @@ impl RegistryClient {
         &self.registry
     }
 
+    pub fn inner(&self) -> &shipper_registry::RegistryClient {
+        &self.registry_client
+    }
+
     pub fn version_exists(&self, crate_name: &str, version: &str) -> Result<bool> {
         self.registry_client
             .version_exists(crate_name, version)

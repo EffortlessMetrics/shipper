@@ -417,6 +417,8 @@ pub struct CliOverrides {
     pub registries: Option<Vec<String>>,
     /// Publish to all configured registries
     pub all_registries: bool,
+    /// Optional package name to resume from
+    pub resume_from: Option<String>,
 }
 
 impl Default for ShipperConfig {
@@ -767,6 +769,7 @@ impl ShipperConfig {
                     vec![]
                 }
             },
+            resume_from: cli.resume_from,
         }
     }
 

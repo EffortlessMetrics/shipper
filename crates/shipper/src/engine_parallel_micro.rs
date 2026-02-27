@@ -4,7 +4,6 @@ use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
 use crate::types::{ExecutionState, PackageReceipt, RuntimeOptions};
 use shipper_engine_parallel as micro;
-use shipper_registry;
 
 /// Reporter implementation is intentionally delegated from the host crate so `shipper` can keep a
 /// single reporting interface while reusing the dedicated parallel execution engine.
@@ -36,7 +35,7 @@ pub fn run_publish_parallel(
     reg: &RegistryClient,
     reporter: &mut dyn crate::engine::Reporter,
 ) -> anyhow::Result<Vec<PackageReceipt>> {
-    let reg = shipper_registry::RegistryClient::new(&reg.registry().api_base);
+    let reg = reg.inner();
     let mut adapter = ReporterAdapter { inner: reporter };
-    micro::run_publish_parallel(ws, opts, st, state_dir, &reg, &mut adapter)
+    micro::run_publish_parallel(ws, opts, st, state_dir, reg, &mut adapter)
 }

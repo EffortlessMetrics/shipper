@@ -11,6 +11,7 @@ use crate::types::{ReadinessConfig, ReadinessEvidence, ReadinessMethod, Registry
 pub struct RegistryClient {
     registry: Registry,
     http: Client,
+    cache_dir: Option<std::path::PathBuf>,
 }
 
 impl RegistryClient {
@@ -20,7 +21,17 @@ impl RegistryClient {
             .build()
             .context("failed to build HTTP client")?;
 
-        Ok(Self { registry, http })
+        Ok(Self {
+            registry,
+            http,
+            cache_dir: None,
+        })
+    }
+
+    /// Set the cache directory for sparse index fragments
+    pub fn with_cache_dir(mut self, cache_dir: std::path::PathBuf) -> Self {
+        self.cache_dir = Some(cache_dir);
+        self
     }
 
     pub fn registry(&self) -> &Registry {
@@ -147,12 +158,45 @@ impl RegistryClient {
         let index_base = self.registry.get_index_base();
         let url = format!("{}/{}", index_base.trim_end_matches('/'), index_path);
 
-        let resp = self.http.get(&url).send().context("index request failed")?;
+        let cache_file = self.cache_dir.as_ref().map(|d| d.join(index_path));
+        let etag_file = cache_file.as_ref().map(|f| f.with_extension("etag"));
+
+        let mut request = self.http.get(&url);
+
+        if let Some(ref path) = etag_file
+            && let Ok(etag) = std::fs::read_to_string(path)
+        {
+            request = request.header(reqwest::header::IF_NONE_MATCH, etag.trim());
+        }
+
+        let resp = request.send().context("index request failed")?;
 
         match resp.status() {
             StatusCode::OK => {
+                let etag = resp
+                    .headers()
+                    .get(reqwest::header::ETAG)
+                    .and_then(|h| h.to_str().ok())
+                    .map(|s| s.to_string());
                 let content = resp.text().context("failed to read index response body")?;
+
+                if let Some(ref path) = cache_file {
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(path, &content);
+                    if let (Some(ref etag_val), Some(etag_path)) = (etag, etag_file) {
+                        let _ = std::fs::write(etag_path, etag_val);
+                    }
+                }
                 Ok(content)
+            }
+            StatusCode::NOT_MODIFIED => {
+                if let Some(ref path) = cache_file {
+                    std::fs::read_to_string(path).context("failed to read cached index file")
+                } else {
+                    bail!("received 304 Not Modified but no cache file available")
+                }
             }
             StatusCode::NOT_FOUND => {
                 // The crate doesn't exist in the index yet

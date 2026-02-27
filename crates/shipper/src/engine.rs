@@ -18,7 +18,7 @@ use crate::state;
 use crate::types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, Finishability,
     PackageProgress, PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent,
-    ReadinessEvidence, Receipt, RuntimeOptions,
+    ReadinessEvidence, Receipt, Registry, RuntimeOptions,
 };
 use crate::webhook::{self, WebhookEvent};
 use shipper_execution_core::{
@@ -66,6 +66,11 @@ pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::policy::PolicyEffe
 /// let report = engine::run_preflight(&ws, &opts, &mut reporter)?;
 /// println!("Finishability: {:?}", report.finishability);
 /// ```
+fn init_registry_client(registry: Registry, state_dir: &Path) -> Result<RegistryClient> {
+    let cache_dir = state_dir.join("cache");
+    RegistryClient::new(registry).map(|c| c.with_cache_dir(cache_dir))
+}
+
 pub fn run_preflight(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
@@ -91,7 +96,7 @@ pub fn run_preflight(
     }
 
     reporter.info("initializing registry client...");
-    let reg = RegistryClient::new(ws.plan.registry.clone())?;
+    let reg = init_registry_client(ws.plan.registry.clone(), &state_dir)?;
 
     let token = auth::resolve_token(&ws.plan.registry.name)?;
     let token_detected = token.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
@@ -355,6 +360,13 @@ pub fn run_publish(
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
     let effects = policy_effects(opts);
 
+    // Validate resume_from if specified
+    if let Some(ref target) = opts.resume_from
+        && !ws.plan.packages.iter().any(|p| &p.name == target)
+    {
+        bail!("resume-from package '{}' not found in publish plan", target);
+    }
+
     // Acquire lock
     let lock_timeout = if opts.force {
         Duration::ZERO
@@ -373,7 +385,7 @@ pub fn run_publish(
         git::ensure_git_clean(workspace_root)?;
     }
 
-    let reg = RegistryClient::new(ws.plan.registry.clone())?;
+    let reg = init_registry_client(ws.plan.registry.clone(), &state_dir)?;
 
     // Initialize event log
     let events_path = events::events_path(&state_dir);
@@ -443,6 +455,9 @@ pub fn run_publish(
     st.updated_at = Utc::now();
     state::save_state(&state_dir, &st)?;
 
+    // Track if we've reached the resume point if one was specified
+    let mut reached_resume_point = opts.resume_from.is_none();
+
     // Check for parallel mode
     if opts.parallel.enabled {
         let parallel_receipts = crate::engine_parallel::run_publish_parallel(
@@ -493,6 +508,34 @@ pub fn run_publish(
             .get(&key)
             .context("missing package progress in state")?
             .clone();
+
+        // Check if we've reached the resume point
+        if !reached_resume_point {
+            if Some(&p.name) == opts.resume_from.as_ref() {
+                reached_resume_point = true;
+            } else {
+                // If it's already done, just skip it silently
+                if matches!(
+                    progress.state,
+                    PackageState::Published | PackageState::Skipped { .. }
+                ) {
+                    reporter.info(&format!(
+                        "{}@{}: already complete (skipping)",
+                        p.name, p.version
+                    ));
+                    continue;
+                } else {
+                    // It's not done, but we're skipping it because of resume_from
+                    reporter.warn(&format!(
+                        "{}@{}: skipping (before resume point {})",
+                        p.name,
+                        p.version,
+                        opts.resume_from.as_ref().unwrap()
+                    ));
+                    continue;
+                }
+            }
+        }
 
         // Track whether cargo publish already succeeded (e.g. from Uploaded state on resume)
         let mut cargo_succeeded = false;
@@ -1302,6 +1345,7 @@ mod tests {
             retry_per_error: crate::retry::PerErrorConfig::default(),
             encryption: crate::encryption::EncryptionConfig::default(),
             registries: vec![],
+            resume_from: None,
         }
     }
 
@@ -3111,6 +3155,74 @@ mod tests {
                 "expected readiness verification to be exercised, reporter infos: {:?}",
                 reporter.infos
             );
+
+            server.join();
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_resume_from_skips_initial_packages() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let args_log = td.path().join("cargo_args.txt");
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+            (
+                "SHIPPER_CARGO_ARGS_LOG",
+                Some(args_log.to_str().expect("utf8").to_string()),
+            ),
+        ]);
+        temp_env::with_vars(env_vars, || {
+            // Mock registry for two packages
+            // We expect 2 requests total (pkg2 exists? then pkg2 readiness)
+            // pkg1 is skipped because of resume_from
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/pkg1/0.1.0".to_string(),
+                        vec![(404, "{}".to_string()), (200, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/pkg2/0.1.0".to_string(),
+                        vec![(404, "{}".to_string()), (200, "{}".to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let mut ws = planned_workspace(td.path(), server.base_url.clone());
+            // Update plan to have two packages
+            ws.plan.packages = vec![
+                PlannedPackage {
+                    name: "pkg1".to_string(),
+                    version: "0.1.0".to_string(),
+                    manifest_path: td.path().join("pkg1/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "pkg2".to_string(),
+                    version: "0.1.0".to_string(),
+                    manifest_path: td.path().join("pkg2/Cargo.toml"),
+                },
+            ];
+
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            // Resume from second package
+            opts.resume_from = Some("pkg2".to_string());
+
+            let mut reporter = CollectingReporter::default();
+            let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
+
+            // Should only have 1 package in receipt (pkg2)
+            assert_eq!(receipt.packages.len(), 1);
+            assert_eq!(receipt.packages[0].name, "pkg2");
+
+            // Cargo log should only contain publish for pkg2
+            let log = std::fs::read_to_string(&args_log).expect("read log");
+            assert!(!log.contains("pkg1"));
+            assert!(log.contains("pkg2"));
 
             server.join();
         });

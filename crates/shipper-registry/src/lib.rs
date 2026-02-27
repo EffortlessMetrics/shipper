@@ -225,10 +225,10 @@ impl RegistryClient {
 
         let mut request = self.client.get(&url);
 
-        if let Some(ref path) = etag_file {
-            if let Ok(etag) = std::fs::read_to_string(path) {
-                request = request.header(reqwest::header::IF_NONE_MATCH, etag.trim());
-            }
+        if let Some(ref path) = etag_file
+            && let Ok(etag) = std::fs::read_to_string(path)
+        {
+            request = request.header(reqwest::header::IF_NONE_MATCH, etag.trim());
         }
 
         let response = request.send().context("index request failed")?;
@@ -467,7 +467,7 @@ mod tests {
         let cache_dir = td.path().to_path_buf();
 
         let handle = std::thread::spawn({
-            let base_url = base_url.clone();
+            let _base_url = base_url.clone();
             move || {
                 // First request: return 200 OK with ETag
                 let req = server.recv().expect("request 1");

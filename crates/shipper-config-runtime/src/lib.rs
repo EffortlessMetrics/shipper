@@ -35,6 +35,7 @@ pub fn into_runtime_options(value: RuntimeOptions) -> shipper_types::RuntimeOpti
         webhook: value.webhook,
         encryption: value.encryption,
         registries: value.registries,
+        resume_from: value.resume_from,
     }
 }
 
@@ -110,6 +111,7 @@ mod tests {
                     index_base: None,
                 },
             ],
+            resume_from: Some("my-crate".to_string()),
         }
     }
 
@@ -270,6 +272,7 @@ mod tests {
                 webhook,
                 encryption,
                 registries,
+                resume_from: None,
             };
 
             let converted = into_runtime_options(input);

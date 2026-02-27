@@ -30,6 +30,7 @@ fn sample_runtime_options() -> RuntimeOptions {
         webhook: Default::default(),
         encryption: Default::default(),
         registries: vec![],
+        resume_from: None,
     }
 }
 

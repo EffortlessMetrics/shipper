@@ -708,7 +708,74 @@ pub fn run_publish_parallel(
 
     let mut all_receipts: Vec<PackageReceipt> = Vec::new();
 
+    // Track if we've reached the resume point if one was specified
+    let mut reached_resume_point = opts.resume_from.is_none();
+
     for level in &levels {
+        // If we haven't reached the resume point, check if it's in this level
+        if !reached_resume_point {
+            if level
+                .packages
+                .iter()
+                .any(|p| Some(&p.name) == opts.resume_from.as_ref())
+            {
+                reached_resume_point = true;
+            } else {
+                // Check if all packages in this level are already done in state
+                let mut level_done = true;
+                {
+                    let st_guard = st_arc.lock().unwrap();
+                    for p in &level.packages {
+                        let key = pkg_key(&p.name, &p.version);
+                        if let Some(progress) = st_guard.packages.get(&key) {
+                            if !matches!(
+                                progress.state,
+                                PackageState::Published | PackageState::Skipped { .. }
+                            ) {
+                                level_done = false;
+                                break;
+                            }
+                        } else {
+                            level_done = false;
+                            break;
+                        }
+                    }
+                }
+
+                if level_done {
+                    reporter.info(&format!("Level {}: already complete (skipping)", level.level));
+                } else {
+                    reporter.warn(&format!(
+                        "Level {}: skipping (before resume point {})",
+                        level.level,
+                        opts.resume_from.as_ref().unwrap()
+                    ));
+                }
+
+                // Still need to "collect" receipts for these skipped packages
+                for p in &level.packages {
+                    let key = pkg_key(&p.name, &p.version);
+                    let st_guard = st_arc.lock().unwrap();
+                    if let Some(progress) = st_guard.packages.get(&key) {
+                        all_receipts.push(PackageReceipt {
+                            name: p.name.clone(),
+                            version: p.version.clone(),
+                            attempts: progress.attempts,
+                            state: progress.state.clone(),
+                            started_at: Utc::now(),
+                            finished_at: Utc::now(),
+                            duration_ms: 0,
+                            evidence: crate::types::PackageEvidence {
+                                attempts: vec![],
+                                readiness_checks: vec![],
+                            },
+                        });
+                    }
+                }
+                continue;
+            }
+        }
+
         let level_receipts = run_publish_level(
             level,
             ws,
