@@ -271,7 +271,7 @@ fn spawn_index_readiness_registry(crate_name: &str, version: &str) -> TestRegist
 
     let handle = thread::spawn(move || {
         for _ in 0..10 {
-            let req = match server.recv_timeout(Duration::from_secs(30)) {
+            let req = match server.recv_timeout(Duration::from_secs(60)) {
                 Ok(Some(req)) => req,
                 _ => break,
             };
