@@ -41,8 +41,8 @@ impl LockFile {
     /// This will fail if a lock already exists and is not stale.
     /// Use `is_locked` first to check, or use `acquire_with_timeout` for
     /// automatic stale lock handling.
-    pub fn acquire(state_dir: &Path) -> Result<Self> {
-        let lock_path = state_dir.join(LOCK_FILE);
+    pub fn acquire(state_dir: &Path, workspace_root: Option<&Path>) -> Result<Self> {
+        let lock_path = lock_path(state_dir, workspace_root);
 
         // Create state directory if it doesn't exist
         fs::create_dir_all(state_dir)
@@ -50,7 +50,7 @@ impl LockFile {
 
         // Check if lock already exists
         if lock_path.exists() {
-            let existing_info = Self::read_lock_info(state_dir)?;
+            let existing_info = Self::read_lock_info(state_dir, workspace_root)?;
             bail!(
                 "lock already held by pid {} on {} since {} (plan_id: {:?})",
                 existing_info.pid,
@@ -96,11 +96,15 @@ impl LockFile {
     }
 
     /// Acquire a lock, automatically removing stale locks older than timeout
-    pub fn acquire_with_timeout(state_dir: &Path, timeout: Duration) -> Result<Self> {
-        let lock_path = state_dir.join(LOCK_FILE);
+    pub fn acquire_with_timeout(
+        state_dir: &Path,
+        workspace_root: Option<&Path>,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let lock_path = lock_path(state_dir, workspace_root);
 
         if lock_path.exists() {
-            if let Ok(info) = Self::read_lock_info(state_dir) {
+            if let Ok(info) = Self::read_lock_info(state_dir, workspace_root) {
                 let age = Utc::now() - info.acquired_at;
                 // chrono::Duration doesn't have to_std(), use num_seconds directly
                 if age.num_seconds().unsigned_abs() > timeout.as_secs() {
@@ -125,7 +129,7 @@ impl LockFile {
             }
         }
 
-        Self::acquire(state_dir)
+        Self::acquire(state_dir, workspace_root)
     }
 
     /// Release the lock file
@@ -168,13 +172,13 @@ impl LockFile {
     }
 
     /// Check if a lock file exists
-    pub fn is_locked(state_dir: &Path) -> Result<bool> {
-        Ok(state_dir.join(LOCK_FILE).exists())
+    pub fn is_locked(state_dir: &Path, workspace_root: Option<&Path>) -> Result<bool> {
+        Ok(lock_path(state_dir, workspace_root).exists())
     }
 
     /// Read the lock file information
-    pub fn read_lock_info(state_dir: &Path) -> Result<LockInfo> {
-        read_lock_info_from_path(&state_dir.join(LOCK_FILE))
+    pub fn read_lock_info(state_dir: &Path, workspace_root: Option<&Path>) -> Result<LockInfo> {
+        read_lock_info_from_path(&lock_path(state_dir, workspace_root))
     }
 }
 
@@ -195,8 +199,17 @@ fn read_lock_info_from_path(path: &Path) -> Result<LockInfo> {
 }
 
 /// Get the lock file path for a state directory
-pub fn lock_path(state_dir: &Path) -> PathBuf {
-    state_dir.join(LOCK_FILE)
+pub fn lock_path(state_dir: &Path, workspace_root: Option<&Path>) -> PathBuf {
+    if let Some(root) = workspace_root {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+        let mut hasher = DefaultHasher::new();
+        root.hash(&mut hasher);
+        let hash = hasher.finish();
+        state_dir.join(format!("{}_{:016x}", LOCK_FILE, hash))
+    } else {
+        state_dir.join(LOCK_FILE)
+    }
 }
 
 #[cfg(test)]
@@ -208,24 +221,24 @@ mod tests {
     #[test]
     fn lock_path_returns_expected_path() {
         let base = PathBuf::from("x");
-        assert_eq!(lock_path(&base), PathBuf::from("x").join(LOCK_FILE));
+        assert_eq!(lock_path(&base, None), PathBuf::from("x").join(LOCK_FILE));
     }
 
     #[test]
     fn acquire_creates_lock_file() {
         let td = tempdir().expect("tempdir");
-        let mut lock = LockFile::acquire(td.path()).expect("acquire");
-        assert!(lock_path(td.path()).exists());
+        let mut lock = LockFile::acquire(td.path(), None).expect("acquire");
+        assert!(lock_path(td.path(), None).exists());
         lock.release().expect("release");
-        assert!(!lock_path(td.path()).exists());
+        assert!(!lock_path(td.path(), None).exists());
     }
 
     #[test]
     fn acquire_fails_when_locked() {
         let td = tempdir().expect("tempdir");
-        let _lock1 = LockFile::acquire(td.path()).expect("first acquire");
+        let _lock1 = LockFile::acquire(td.path(), None).expect("first acquire");
 
-        let result = LockFile::acquire(td.path());
+        let result = LockFile::acquire(td.path(), None);
         assert!(result.is_err());
         assert!(
             result
@@ -239,19 +252,19 @@ mod tests {
     fn drop_releases_lock() {
         let td = tempdir().expect("tempdir");
         {
-            let _lock = LockFile::acquire(td.path()).expect("acquire");
-            assert!(lock_path(td.path()).exists());
+            let _lock = LockFile::acquire(td.path(), None).expect("acquire");
+            assert!(lock_path(td.path(), None).exists());
         }
         // Lock should be released after drop
-        assert!(!lock_path(td.path()).exists());
+        assert!(!lock_path(td.path(), None).exists());
     }
 
     #[test]
     fn read_lock_info_returns_correct_info() {
         let td = tempdir().expect("tempdir");
-        let _lock = LockFile::acquire(td.path()).expect("acquire");
+        let _lock = LockFile::acquire(td.path(), None).expect("acquire");
 
-        let info = LockFile::read_lock_info(td.path()).expect("read info");
+        let info = LockFile::read_lock_info(td.path(), None).expect("read info");
         assert_eq!(info.pid, std::process::id());
         assert!(!info.hostname.is_empty());
         assert!(info.plan_id.is_none());
@@ -260,21 +273,21 @@ mod tests {
     #[test]
     fn set_plan_id_updates_lock() {
         let td = tempdir().expect("tempdir");
-        let lock = LockFile::acquire(td.path()).expect("acquire");
+        let lock = LockFile::acquire(td.path(), None).expect("acquire");
 
         lock.set_plan_id("test-plan-123").expect("set plan_id");
 
-        let info = LockFile::read_lock_info(td.path()).expect("read info");
+        let info = LockFile::read_lock_info(td.path(), None).expect("read info");
         assert_eq!(info.plan_id, Some("test-plan-123".to_string()));
     }
 
     #[test]
     fn is_locked_returns_correct_status() {
         let td = tempdir().expect("tempdir");
-        assert!(!LockFile::is_locked(td.path()).expect("is_locked"));
+        assert!(!LockFile::is_locked(td.path(), None).expect("is_locked"));
 
-        let _lock = LockFile::acquire(td.path()).expect("acquire");
-        assert!(LockFile::is_locked(td.path()).expect("is_locked"));
+        let _lock = LockFile::acquire(td.path(), None).expect("acquire");
+        assert!(LockFile::is_locked(td.path(), None).expect("is_locked"));
     }
 
     #[test]
@@ -282,7 +295,7 @@ mod tests {
         let td = tempdir().expect("tempdir");
 
         // Create a lock with old timestamp
-        let lock_path = lock_path(td.path());
+        let lock_path = lock_path(td.path(), None);
         let old_info = LockInfo {
             pid: 12345,
             hostname: "test-host".to_string(),
@@ -296,10 +309,10 @@ mod tests {
         .expect("write stale lock");
 
         // Acquire with 1 hour timeout - should succeed and remove stale lock
-        let _lock = LockFile::acquire_with_timeout(td.path(), Duration::from_secs(3600))
+        let _lock = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(3600))
             .expect("acquire with timeout");
 
-        let info = LockFile::read_lock_info(td.path()).expect("read info");
+        let info = LockFile::read_lock_info(td.path(), None).expect("read info");
         assert_eq!(info.pid, std::process::id());
         assert_ne!(info.pid, 12345);
     }
@@ -309,10 +322,10 @@ mod tests {
         let td = tempdir().expect("tempdir");
 
         // Create a fresh lock
-        let _lock1 = LockFile::acquire(td.path()).expect("first acquire");
+        let _lock1 = LockFile::acquire(td.path(), None).expect("first acquire");
 
         // Try to acquire with timeout - should fail
-        let result = LockFile::acquire_with_timeout(td.path(), Duration::from_secs(3600));
+        let result = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(3600));
         assert!(result.is_err());
         assert!(
             result

@@ -48,10 +48,11 @@ Checks the sparse index for the crate version entry.
 - More accurate - directly verifies the crate index
 - Less affected by API rate limits
 - Better for large registries
+- **Fast performance** - Shipper uses ETag-based disk caching to avoid redundant downloads when polling
 
 **Disadvantages:**
-- Slower - requires downloading and parsing index files
-- More network overhead
+- Slower than API for the *first* check (requires downloading index file)
+- More initial network overhead
 
 ```bash
 # Use index-based readiness

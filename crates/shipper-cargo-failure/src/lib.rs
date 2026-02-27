@@ -23,7 +23,7 @@ pub struct CargoFailureOutcome {
     pub message: &'static str,
 }
 
-const RETRYABLE_PATTERNS: [&str; 16] = [
+const RETRYABLE_PATTERNS: [&str; 20] = [
     "too many requests",
     "429",
     "timeout",
@@ -37,12 +37,16 @@ const RETRYABLE_PATTERNS: [&str; 16] = [
     "failed to download",
     "failed to send",
     "server error",
+    "500",
     "502",
     "503",
     "504",
+    "broken pipe",
+    "reset by peer",
+    "network unreachable",
 ];
 
-const PERMANENT_PATTERNS: [&str; 17] = [
+const PERMANENT_PATTERNS: [&str; 22] = [
     "failed to parse manifest",
     "invalid",
     "missing",
@@ -60,6 +64,11 @@ const PERMANENT_PATTERNS: [&str; 17] = [
     "permission denied",
     "not authorized",
     "unauthorized",
+    "version already exists",
+    "is already uploaded",
+    "token is invalid",
+    "invalid credentials",
+    "checksum mismatch",
 ];
 
 /// Classify cargo publish output into retry behavior categories.

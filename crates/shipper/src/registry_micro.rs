@@ -21,6 +21,12 @@ impl RegistryClient {
         })
     }
 
+    /// Enable local disk caching for sparse index fragments.
+    pub fn with_cache_dir(mut self, cache_dir: std::path::PathBuf) -> Self {
+        self.registry_client = self.registry_client.with_cache_dir(cache_dir);
+        self
+    }
+
     pub fn registry(&self) -> &Registry {
         &self.registry
     }

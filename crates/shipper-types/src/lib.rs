@@ -1347,6 +1347,8 @@ pub struct PreflightReport {
     pub finishability: Finishability,
     pub packages: Vec<PreflightPackage>,
     pub timestamp: DateTime<Utc>,
+    /// Detailed output from workspace-level dry-run verification
+    pub dry_run_output: Option<String>,
 }
 
 /// Preflight status for a single package.
@@ -1367,6 +1369,7 @@ pub struct PreflightReport {
 ///     auth_type: Some(AuthType::Token),
 ///     ownership_verified: true,
 ///     dry_run_passed: true,
+///     dry_run_output: None,
 /// };
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1378,6 +1381,8 @@ pub struct PreflightPackage {
     pub auth_type: Option<AuthType>,
     pub ownership_verified: bool,
     pub dry_run_passed: bool,
+    /// Detailed output from package-level dry-run verification
+    pub dry_run_output: Option<String>,
 }
 
 #[cfg(test)]
@@ -1526,6 +1531,7 @@ mod tests {
                         auth_type: if i % 2 == 0 { Some(AuthType::Token) } else { None },
                         ownership_verified: i % 3 != 0,
                         dry_run_passed: i % 5 != 0,
+                        dry_run_output: if i % 5 == 0 { Some("failed".to_string()) } else { None },
                     })
                     .collect();
 
@@ -1535,6 +1541,7 @@ mod tests {
                     finishability,
                     packages: packages.clone(),
                     timestamp: Utc::now(),
+                    dry_run_output: Some("workspace dry-run output".to_string()),
                 };
 
                 // Serialize and deserialize
@@ -1546,6 +1553,7 @@ mod tests {
                 assert_eq!(parsed.token_detected, report.token_detected);
                 assert_eq!(parsed.finishability, report.finishability);
                 assert_eq!(parsed.packages.len(), report.packages.len());
+                assert_eq!(parsed.dry_run_output, report.dry_run_output);
                 for (orig, parsed_pkg) in report.packages.iter().zip(parsed.packages.iter()) {
                     assert_eq!(parsed_pkg.name, orig.name);
                     assert_eq!(parsed_pkg.version, orig.version);
@@ -1554,6 +1562,7 @@ mod tests {
                     assert_eq!(parsed_pkg.auth_type, orig.auth_type);
                     assert_eq!(parsed_pkg.ownership_verified, orig.ownership_verified);
                     assert_eq!(parsed_pkg.dry_run_passed, orig.dry_run_passed);
+                    assert_eq!(parsed_pkg.dry_run_output, orig.dry_run_output);
                 }
             }
 
@@ -1567,6 +1576,7 @@ mod tests {
                 auth_type_variant in 0u8..4,
                 ownership_verified in any::<bool>(),
                 dry_run_passed in any::<bool>(),
+                dry_run_output in proptest::option::of(".*"),
             ) {
                 let auth_type = match auth_type_variant {
                     0 => Some(AuthType::Token),
@@ -1583,6 +1593,7 @@ mod tests {
                     auth_type: auth_type.clone(),
                     ownership_verified,
                     dry_run_passed,
+                    dry_run_output: dry_run_output.clone(),
                 };
 
                 // Serialize and deserialize
@@ -1597,6 +1608,7 @@ mod tests {
                 assert_eq!(parsed.auth_type, pkg.auth_type);
                 assert_eq!(parsed.ownership_verified, pkg.ownership_verified);
                 assert_eq!(parsed.dry_run_passed, pkg.dry_run_passed);
+                assert_eq!(parsed.dry_run_output, pkg.dry_run_output);
             }
 
             // AuthType serialization roundtrip

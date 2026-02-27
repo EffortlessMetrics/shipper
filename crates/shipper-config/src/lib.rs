@@ -240,6 +240,10 @@ pub struct FlagsConfig {
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipperConfig {
+    /// Schema version for the configuration file (e.g., `shipper.config.v1`)
+    #[serde(default = "default_schema_version")]
+    pub schema_version: String,
+
     /// Publish policy configuration
     #[serde(default)]
     pub policy: PolicyConfig,
@@ -418,6 +422,7 @@ pub struct CliOverrides {
 impl Default for ShipperConfig {
     fn default() -> Self {
         Self {
+            schema_version: default_schema_version(),
             policy: PolicyConfig {
                 mode: PublishPolicy::default(),
             },
@@ -460,6 +465,10 @@ fn default_output_lines() -> usize {
     50
 }
 
+fn default_schema_version() -> String {
+    "shipper.config.v1".to_string()
+}
+
 fn default_lock_timeout() -> Duration {
     Duration::from_secs(3600) // 1 hour
 }
@@ -496,11 +505,24 @@ impl ShipperConfig {
         let config: ShipperConfig = toml::from_str(&content)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
+        // Validate schema version
+        if let Err(e) = shipper_schema::validate_schema_version(
+            &config.schema_version,
+            "shipper.config.v1",
+            "config",
+        ) {
+            bail!("{} in file: {}", e, path.display());
+        }
+
         Ok(config)
     }
 
     /// Validate the configuration
     pub fn validate(&self) -> Result<()> {
+        // Validate schema version format
+        shipper_schema::parse_schema_version(&self.schema_version)
+            .context("invalid schema_version format")?;
+
         // Validate output_lines
         if self.output.lines == 0 {
             bail!("output.lines must be greater than 0");
@@ -753,6 +775,9 @@ impl ShipperConfig {
         r#"# Shipper configuration file
 # This file should be placed in your workspace root as .shipper.toml
 
+# Schema version for the configuration file
+schema_version = "shipper.config.v1"
+
 [policy]
 # Publishing policy: safe (verify+strict), balanced (verify when needed), or fast (no verify)
 mode = "safe"
@@ -907,6 +932,7 @@ mod tests {
     #[test]
     fn test_validate_invalid_registry() {
         let mut config = ShipperConfig {
+            schema_version: default_schema_version(),
             registry: Some(RegistryConfig {
                 name: String::new(),
                 api_base: "https://crates.io".to_string(),
@@ -1059,6 +1085,7 @@ enabled = true
     #[test]
     fn test_build_runtime_options_cli_overrides_config() {
         let config = ShipperConfig {
+            schema_version: default_schema_version(),
             retry: RetryConfig {
                 policy: RetryPolicy::Custom,
                 max_attempts: 10,
@@ -1091,6 +1118,7 @@ enabled = true
     #[test]
     fn test_build_runtime_options_config_used_when_cli_none() {
         let config = ShipperConfig {
+            schema_version: default_schema_version(),
             retry: RetryConfig {
                 policy: RetryPolicy::Custom,
                 max_attempts: 10,
@@ -1230,6 +1258,7 @@ enabled = true
                 strict_ownership in any::<bool>(),
             ) {
                 let config = ShipperConfig {
+                    schema_version: default_schema_version(),
                     retry: RetryConfig {
                         policy: RetryPolicy::Custom,
                         max_attempts: cfg_max_attempts,

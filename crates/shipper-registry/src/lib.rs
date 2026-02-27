@@ -37,6 +37,7 @@ pub struct RegistryClient {
     base_url: String,
     timeout: Duration,
     client: reqwest::blocking::Client,
+    cache_dir: Option<std::path::PathBuf>,
 }
 
 impl RegistryClient {
@@ -52,7 +53,14 @@ impl RegistryClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             client,
+            cache_dir: None,
         }
+    }
+
+    /// Set the cache directory for sparse index fragments
+    pub fn with_cache_dir(mut self, cache_dir: std::path::PathBuf) -> Self {
+        self.cache_dir = Some(cache_dir);
+        self
     }
 
     /// Create a client for crates.io
@@ -212,16 +220,50 @@ impl RegistryClient {
         let index_path = sparse_index_path(name);
         let url = format!("{}/{}", index_base, index_path);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .context("index request failed")?;
+        let cache_file = self.cache_dir.as_ref().map(|d| d.join(&index_path));
+        let etag_file = cache_file.as_ref().map(|f| f.with_extension("etag"));
+
+        let mut request = self.client.get(&url);
+
+        if let Some(ref path) = etag_file {
+            if let Ok(etag) = std::fs::read_to_string(path) {
+                request = request.header(reqwest::header::IF_NONE_MATCH, etag.trim());
+            }
+        }
+
+        let response = request.send().context("index request failed")?;
 
         match response.status() {
-            reqwest::StatusCode::OK => response
-                .text()
-                .context("failed to read index response body"),
+            reqwest::StatusCode::OK => {
+                let etag = response
+                    .headers()
+                    .get(reqwest::header::ETAG)
+                    .and_then(|h| h.to_str().ok())
+                    .map(|s| s.to_string());
+                let content = response
+                    .text()
+                    .context("failed to read index response body")?;
+
+                if let Some(ref path) = cache_file {
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(path, &content);
+                    if let (Some(ref etag_val), Some(etag_path)) = (etag, etag_file) {
+                        let _ = std::fs::write(etag_path, etag_val);
+                    }
+                }
+                Ok(content)
+            }
+            reqwest::StatusCode::NOT_MODIFIED => {
+                if let Some(ref path) = cache_file {
+                    std::fs::read_to_string(path).context("failed to read cached index file")
+                } else {
+                    Err(anyhow::anyhow!(
+                        "received 304 Not Modified but no cache file available"
+                    ))
+                }
+            }
             reqwest::StatusCode::NOT_FOUND => Err(anyhow::anyhow!("index file not found: {url}")),
             status => Err(anyhow::anyhow!(
                 "unexpected status while fetching index: {status}"
@@ -412,5 +454,58 @@ mod tests {
     fn user_agent_includes_version() {
         assert!(USER_AGENT.starts_with("shipper/"));
         assert!(USER_AGENT.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn test_sparse_index_caching() {
+        use tiny_http::{Header, Response, Server, StatusCode};
+
+        let server = Server::http("127.0.0.1:0").expect("server");
+        let base_url = format!("http://{}", server.server_addr());
+
+        let td = tempfile::tempdir().expect("tempdir");
+        let cache_dir = td.path().to_path_buf();
+
+        let handle = std::thread::spawn({
+            let base_url = base_url.clone();
+            move || {
+                // First request: return 200 OK with ETag
+                let req = server.recv().expect("request 1");
+                assert_eq!(req.url(), "/de/mo/demo");
+                let resp = Response::from_string("{\"vers\":\"0.1.0\"}")
+                    .with_status_code(StatusCode(200))
+                    .with_header(Header::from_bytes("ETag", "W/\"123\"").unwrap());
+                req.respond(resp).expect("respond 1");
+
+                // Second request: expect If-None-Match and return 304
+                let req = server.recv().expect("request 2");
+                assert_eq!(req.url(), "/de/mo/demo");
+                let etag_header = req
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("If-None-Match"))
+                    .expect("missing If-None-Match");
+                assert_eq!(etag_header.value.as_str(), "W/\"123\"");
+
+                let resp = Response::from_string("").with_status_code(StatusCode(304));
+                req.respond(resp).expect("respond 2");
+            }
+        });
+
+        let client = RegistryClient::new(&base_url).with_cache_dir(cache_dir);
+
+        // First call: should fetch and cache
+        let content1 = client
+            .fetch_sparse_index_file(&base_url, "demo")
+            .expect("fetch 1");
+        assert_eq!(content1, "{\"vers\":\"0.1.0\"}");
+
+        // Second call: should use 304 and read from cache
+        let content2 = client
+            .fetch_sparse_index_file(&base_url, "demo")
+            .expect("fetch 2");
+        assert_eq!(content2, "{\"vers\":\"0.1.0\"}");
+
+        handle.join().expect("join");
     }
 }

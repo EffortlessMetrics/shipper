@@ -3,9 +3,10 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use shipper_output_sanitizer::{
-    redact_sensitive as sanitize_sensitive, tail_lines as sanitize_tail_lines,
-};
+use shipper_output_sanitizer::tail_lines as sanitize_tail_lines;
+
+#[cfg(test)]
+use shipper_output_sanitizer::redact_sensitive as sanitize_sensitive;
 
 use crate::process;
 
@@ -24,6 +25,7 @@ fn tail_lines(s: &str, n: usize) -> String {
 
 /// Redact sensitive patterns (tokens, credentials) from output strings.
 /// Applied to stdout/stderr tails before they are stored in receipts and event logs.
+#[cfg(test)]
 pub(crate) fn redact_sensitive(s: &str) -> String {
     sanitize_sensitive(s)
 }

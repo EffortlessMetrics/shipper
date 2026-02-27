@@ -2,6 +2,14 @@
 
 Shipper supports project-specific configuration via a `.shipper.toml` file in your workspace root. This allows you to define publishing policies, readiness settings, and other options without passing CLI flags every time.
 
+## Schema Versioning
+
+Configuration files include a `schema_version` field to ensure compatibility with future versions of Shipper. The current version is `shipper.config.v1`.
+
+```toml
+schema_version = "shipper.config.v1"
+```
+
 ## Creating a Configuration File
 
 Generate a default configuration file by running:
@@ -215,6 +223,9 @@ The `--policy fast` flag will override the config file and use `fast` mode.
 ```toml
 # Shipper configuration file
 # This file should be placed in your workspace root as .shipper.toml
+
+# Schema version
+schema_version = "shipper.config.v1"
 
 [policy]
 # Publishing policy: safe (verify+strict), balanced (verify when needed), or fast (no verify)

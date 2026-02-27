@@ -30,7 +30,7 @@ chrono = { version = "0.4", features = ["serde"] }
 workspace = true
 
 [features]
-default = []
+default = ["micro-all"]
 micro-auth = ["shipper/micro-auth"]
 micro-git = ["shipper/micro-git"]
 micro-events = ["shipper/micro-events"]

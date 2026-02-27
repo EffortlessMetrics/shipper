@@ -8,6 +8,7 @@ use shipper_types::{ParallelConfig, PublishPolicy, VerifyMode};
 #[test]
 fn converts_config_to_runtime_contract_with_registry_overrides() {
     let source = ShipperConfig {
+        schema_version: "shipper.config.v1".to_string(),
         policy: PolicyConfig {
             mode: PublishPolicy::Safe,
         },

@@ -2371,6 +2371,7 @@ dependencies = [
  "serde_with",
  "shipper-encrypt",
  "shipper-retry",
+ "shipper-schema",
  "shipper-storage",
  "shipper-types",
  "shipper-webhook",
@@ -2571,6 +2572,7 @@ dependencies = [
  "serde_json",
  "shipper-sparse-index",
  "tempfile",
+ "tiny_http",
 ]
 
 [[package]]

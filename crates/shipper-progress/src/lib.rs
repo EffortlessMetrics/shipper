@@ -17,6 +17,7 @@ pub fn is_tty() -> bool {
 /// falls back to non-interactive text output otherwise.
 pub struct ProgressReporter {
     is_tty: bool,
+    quiet: bool,
     total_packages: usize,
     current_package: usize,
     current_name: String,
@@ -26,8 +27,8 @@ pub struct ProgressReporter {
 
 impl ProgressReporter {
     /// Creates a new reporter for the given total package count.
-    pub fn new(total_packages: usize) -> Self {
-        let is_tty = is_tty();
+    pub fn new(total_packages: usize, quiet: bool) -> Self {
+        let is_tty = is_tty() && !quiet;
         let progress_bar = if is_tty {
             let pb = ProgressBar::new(total_packages as u64);
             pb.set_style(
@@ -43,6 +44,7 @@ impl ProgressReporter {
 
         Self {
             is_tty,
+            quiet,
             total_packages,
             current_package: 0,
             current_name: String::new(),
@@ -51,10 +53,11 @@ impl ProgressReporter {
         }
     }
 
-    /// Creates a silent reporter that always uses non-TTY behavior.
+    /// Creates a silent reporter that always uses non-TTY behavior and suppresses output.
     pub fn silent(total_packages: usize) -> Self {
         Self {
             is_tty: false,
+            quiet: true,
             total_packages,
             current_package: 0,
             current_name: String::new(),
@@ -88,6 +91,10 @@ impl ProgressReporter {
         self.current_package = index;
         self.current_name = format!("{name}@{version}");
 
+        if self.quiet {
+            return;
+        }
+
         if self.is_tty {
             if let Some(ref pb) = self.progress_bar {
                 let elapsed = self.start_time.elapsed();
@@ -110,15 +117,28 @@ impl ProgressReporter {
 
     /// Marks the package at the current index as completed.
     pub fn finish_package(&mut self) {
-        if self.is_tty
-            && let Some(ref pb) = self.progress_bar
-        {
-            pb.inc(1);
+        if self.quiet {
+            return;
+        }
+
+        if self.is_tty {
+            if let Some(ref pb) = self.progress_bar {
+                pb.inc(1);
+            }
+        } else {
+            eprintln!(
+                "[{}/{}] Finished {}",
+                self.current_package, self.total_packages, self.current_name
+            );
         }
     }
 
     /// Updates the message for the current package state.
     pub fn set_status(&self, status: &str) {
+        if self.quiet {
+            return;
+        }
+
         if self.is_tty {
             if let Some(ref pb) = self.progress_bar {
                 let current = pb.position();
@@ -132,6 +152,10 @@ impl ProgressReporter {
 
     /// Finishes reporting and prints completion summary in non-TTY mode.
     pub fn finish(self) {
+        if self.quiet {
+            return;
+        }
+
         if self.is_tty {
             if let Some(pb) = self.progress_bar {
                 let elapsed = self.start_time.elapsed();
@@ -164,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_progress_reporter_creation() {
-        let reporter = ProgressReporter::new(5);
+        let reporter = ProgressReporter::new(5, false);
         assert_eq!(reporter.total_packages(), 5);
         assert_eq!(reporter.current_package(), 0);
         assert_eq!(reporter.current_name(), "");

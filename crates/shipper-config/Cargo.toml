@@ -20,6 +20,7 @@ shipper-encrypt = { path = "../shipper-encrypt" }
 shipper-storage = { path = "../shipper-storage" }
 shipper-webhook = { path = "../shipper-webhook" }
 shipper-retry = { path = "../shipper-retry" }
+shipper-schema = { path = "../shipper-schema" }
 
 [dev-dependencies]
 tempfile = "3"

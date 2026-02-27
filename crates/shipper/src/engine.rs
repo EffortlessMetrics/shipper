@@ -152,13 +152,13 @@ pub fn run_preflight(
         timestamp: Utc::now(),
         event_type: EventType::PreflightWorkspaceVerify {
             passed: workspace_dry_run_passed,
-            output: workspace_dry_run_output,
+            output: workspace_dry_run_output.clone(),
         },
         package: "all".to_string(),
     });
 
     // Per-package dry-run results (used for Package mode)
-    let per_package_dry_run: std::collections::BTreeMap<String, bool> =
+    let per_package_dry_run: std::collections::BTreeMap<String, (bool, Option<String>)> =
         if effects.run_dry_run && opts.verify_mode == VerifyMode::Package {
             reporter.info("running per-package dry-run verification...");
             let mut results = std::collections::BTreeMap::new();
@@ -170,14 +170,20 @@ pub fn run_preflight(
                     opts.allow_dirty,
                     opts.output_lines,
                 );
-                let passed = match &result {
-                    Ok(output) => output.exit_code == 0,
-                    Err(_) => false,
+                let (passed, output) = match &result {
+                    Ok(out) => (
+                        out.exit_code == 0,
+                        Some(format!(
+                            "exit_code={}; stdout_tail={:?}; stderr_tail={:?}",
+                            out.exit_code, out.stdout_tail, out.stderr_tail
+                        )),
+                    ),
+                    Err(e) => (false, Some(format!("dry-run failed: {e:#}"))),
                 };
                 if !passed {
                     reporter.warn(&format!("{}@{}: dry-run failed", p.name, p.version));
                 }
-                results.insert(p.name.clone(), passed);
+                results.insert(p.name.clone(), (passed, output));
             }
             results
         } else {
@@ -203,10 +209,13 @@ pub fn run_preflight(
         }
 
         // Determine dry-run result for this package
-        let dry_run_passed = if opts.verify_mode == VerifyMode::Package {
-            *per_package_dry_run.get(&p.name).unwrap_or(&true)
+        let (dry_run_passed, dry_run_output) = if opts.verify_mode == VerifyMode::Package {
+            per_package_dry_run
+                .get(&p.name)
+                .cloned()
+                .unwrap_or((true, None))
         } else {
-            workspace_dry_run_passed
+            (workspace_dry_run_passed, Some(workspace_dry_run_output.clone()))
         };
 
         // Ownership verification (best-effort), gated by policy
@@ -259,6 +268,7 @@ pub fn run_preflight(
             auth_type: auth_type.clone(),
             ownership_verified,
             dry_run_passed,
+            dry_run_output,
         });
     }
 
@@ -289,6 +299,11 @@ pub fn run_preflight(
         finishability,
         packages,
         timestamp: Utc::now(),
+        dry_run_output: if opts.verify_mode == VerifyMode::Workspace {
+            Some(workspace_dry_run_output)
+        } else {
+            None
+        },
     })
 }
 
@@ -346,7 +361,7 @@ pub fn run_publish(
     } else {
         opts.lock_timeout
     };
-    let _lock = lock::LockFile::acquire_with_timeout(&state_dir, lock_timeout)
+    let _lock = lock::LockFile::acquire_with_timeout(&state_dir, Some(workspace_root), lock_timeout)
         .context("failed to acquire publish lock")?;
     _lock.set_plan_id(&ws.plan.plan_id)?;
 
@@ -2396,8 +2411,10 @@ mod tests {
                 auth_type: Some(AuthType::Token),
                 ownership_verified: true,
                 dry_run_passed: true,
+                dry_run_output: None,
             }],
             timestamp: Utc::now(),
+            dry_run_output: None,
         };
 
         let json = serde_json::to_string(&report).expect("serialize");
@@ -2422,8 +2439,10 @@ mod tests {
                 auth_type: Some(AuthType::Token),
                 ownership_verified: true,
                 dry_run_passed: true,
+                dry_run_output: None,
             }],
             timestamp: Utc::now(),
+            dry_run_output: None,
         };
 
         assert_eq!(report.finishability, Finishability::Proven);
@@ -2443,8 +2462,10 @@ mod tests {
                 auth_type: Some(AuthType::Token),
                 ownership_verified: false,
                 dry_run_passed: true,
+                dry_run_output: None,
             }],
             timestamp: Utc::now(),
+            dry_run_output: None,
         };
 
         assert_eq!(report.finishability, Finishability::NotProven);
@@ -2464,8 +2485,10 @@ mod tests {
                 auth_type: Some(AuthType::Token),
                 ownership_verified: true,
                 dry_run_passed: false,
+                dry_run_output: None,
             }],
             timestamp: Utc::now(),
+            dry_run_output: None,
         };
 
         assert_eq!(report.finishability, Finishability::Failed);
@@ -2481,6 +2504,7 @@ mod tests {
             auth_type: Some(AuthType::Token),
             ownership_verified: true,
             dry_run_passed: true,
+                dry_run_output: None,
         };
 
         let json = serde_json::to_string(&pkg).expect("serialize");

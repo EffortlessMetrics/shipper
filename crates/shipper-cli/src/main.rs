@@ -171,6 +171,10 @@ struct Cli {
     #[arg(long, global = true)]
     verbose: bool,
 
+    /// Suppress informational output
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     cmd: Commands,
 }
@@ -245,15 +249,21 @@ enum ConfigCommands {
     },
 }
 
-struct CliReporter;
+struct CliReporter {
+    quiet: bool,
+}
 
 impl Reporter for CliReporter {
     fn info(&mut self, msg: &str) {
-        eprintln!("[info] {msg}");
+        if !self.quiet {
+            eprintln!("[info] {msg}");
+        }
     }
 
     fn warn(&mut self, msg: &str) {
-        eprintln!("[warn] {msg}");
+        if !self.quiet {
+            eprintln!("[warn] {msg}");
+        }
     }
 
     fn error(&mut self, msg: &str) {
@@ -415,7 +425,7 @@ fn main() -> Result<()> {
     let config_for_merge = config.clone().unwrap_or_default();
     let opts: RuntimeOptions = config_for_merge.build_runtime_options(cli_overrides);
 
-    let mut reporter = CliReporter;
+    let mut reporter = CliReporter { quiet: cli.quiet };
 
     match cli.cmd {
         Commands::Plan => {
@@ -427,7 +437,7 @@ fn main() -> Result<()> {
         }
         Commands::Publish => {
             let total_packages = planned.plan.packages.len();
-            let mut progress = ProgressReporter::new(total_packages);
+            let mut progress = ProgressReporter::new(total_packages, cli.quiet);
 
             // Show initial progress if we have packages
             if total_packages > 0 {
@@ -448,7 +458,7 @@ fn main() -> Result<()> {
         }
         Commands::Resume => {
             let total_packages = planned.plan.packages.len();
-            let mut progress = ProgressReporter::new(total_packages);
+            let mut progress = ProgressReporter::new(total_packages, cli.quiet);
 
             // Show initial progress if we have packages
             if total_packages > 0 {
@@ -786,6 +796,29 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
                 "└─────────────────────┴─────────┴──────────┴──────────┴───────────────┴─────────────┴─────────────┘"
             );
             println!();
+
+            // Display dry-run failures if any
+            let failed_packages: Vec<_> = rep
+                .packages
+                .iter()
+                .filter(|p| !p.dry_run_passed && p.dry_run_output.is_some())
+                .collect();
+
+            if !failed_packages.is_empty() {
+                println!("Dry-run Failures:");
+                println!("-----------------");
+                for p in failed_packages {
+                    println!("Package: {}@{}", p.name, p.version);
+                    println!("{}", p.dry_run_output.as_ref().unwrap());
+                    println!();
+                }
+            } else if rep.finishability == Finishability::Failed && rep.dry_run_output.is_some() {
+                // Check if workspace dry-run failed
+                println!("Workspace Dry-run Failure:");
+                println!("--------------------------");
+                println!("{}", rep.dry_run_output.as_ref().unwrap());
+                println!();
+            }
 
             // Summary
             let total = rep.packages.len();
@@ -1290,7 +1323,7 @@ fn run_clean(
     let state_path = abs_state.join(shipper::state::STATE_FILE);
     let receipt_path = abs_state.join(shipper::state::RECEIPT_FILE);
     let events_path = abs_state.join(shipper::events::EVENTS_FILE);
-    let lock_path = abs_state.join(shipper::lock::LOCK_FILE);
+    let lock_path = shipper::lock::lock_path(&abs_state, Some(workspace_root));
 
     // Check for active lock
     if lock_path.exists() {
@@ -1302,7 +1335,7 @@ fn run_clean(
             std::fs::remove_file(&lock_path)
                 .with_context(|| format!("failed to remove lock file {}", lock_path.display()))?;
         } else {
-            match shipper::lock::LockFile::read_lock_info(&abs_state) {
+            match shipper::lock::LockFile::read_lock_info(&abs_state, Some(workspace_root)) {
                 Ok(lock_info) => {
                     eprintln!("[warn] Active lock found:");
                     eprintln!("[warn]   PID: {}", lock_info.pid);
@@ -1451,7 +1484,7 @@ mod tests {
 
     #[test]
     fn cli_reporter_methods_are_callable() {
-        let mut rep = CliReporter;
+        let mut rep = CliReporter { quiet: false };
         rep.info("info");
         rep.warn("warn");
         rep.error("error");
@@ -1809,6 +1842,7 @@ mode = "fast"
     #[test]
     fn config_merge_with_cli_overrides() {
         let config = ShipperConfig {
+            schema_version: "shipper.config.v1".to_string(),
             policy: shipper::config::PolicyConfig {
                 mode: shipper::config::PublishPolicy::Safe,
             },
@@ -1901,15 +1935,16 @@ mode = "fast"
             acquired_at: Utc::now(),
             plan_id: Some("plan-123".to_string()),
         };
+        let lock_path = shipper::lock::lock_path(&abs_state, Some(td.path()));
         fs::write(
-            abs_state.join(shipper::lock::LOCK_FILE),
+            &lock_path,
             serde_json::to_string(&lock_info).expect("serialize"),
         )
         .expect("write lock");
 
         let err = run_clean(&state_dir, td.path(), false, false).expect_err("must fail");
         assert!(err.to_string().contains("cannot clean: active lock exists"));
-        assert!(abs_state.join(shipper::lock::LOCK_FILE).exists());
+        assert!(lock_path.exists());
     }
 
     #[test]
@@ -1922,7 +1957,7 @@ mode = "fast"
         let state_path = abs_state.join(shipper::state::STATE_FILE);
         let receipt_path = abs_state.join(shipper::state::RECEIPT_FILE);
         let events_path = abs_state.join(shipper::events::EVENTS_FILE);
-        let lock_path = abs_state.join(shipper::lock::LOCK_FILE);
+        let lock_path = shipper::lock::lock_path(&abs_state, Some(td.path()));
 
         fs::write(&state_path, "{}").expect("write state");
         fs::write(&receipt_path, "{}").expect("write receipt");
