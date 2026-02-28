@@ -1,8 +1,8 @@
-# Release Notes - Shipper v0.3.0
+# Release Notes - Shipper v0.3.0-rc.1
 
 ## Overview
 
-Shipper v0.3.0 is a significant upgrade that brings massive improvements to user experience, performance, and enterprise-grade features. This release transitions Shipper into a fully modular architecture and adds support for complex multi-registry workflows.
+Shipper v0.3.0-rc.1 is a significant upgrade that brings massive improvements to user experience, performance, and enterprise-grade features. This release transitions Shipper into a fully modular architecture and adds support for complex multi-registry workflows.
 
 ## Key Features
 
@@ -40,7 +40,7 @@ The `doctor` command has been expanded to perform deep health checks on your env
 
 ## Installation
 ```bash
-cargo install shipper-cli --version 0.3.0
+cargo install shipper-cli --version 0.3.0-rc.1
 ```
 
 ## Contributors

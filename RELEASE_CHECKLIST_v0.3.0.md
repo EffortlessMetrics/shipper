@@ -1,13 +1,13 @@
-# Release Checklist for v0.3.0
+# Release Checklist for v0.3.0-rc.1
 
 ## Pre-Release Tasks
 
 - [x] Run `cargo test --workspace --all-features` — all passing
 - [x] Run `cargo clippy --workspace --all-features -- -D warnings` — clean
-- [x] Verify `Cargo.toml` workspace version is `0.3.0`
-- [x] Update `CHANGELOG.md` with 0.3.0 entry
+- [x] Verify `Cargo.toml` workspace version is `0.3.0-rc.1`
+- [x] Update `CHANGELOG.md` with 0.3.0-rc.1 entry
 - [x] Update `ROADMAP.md` current version
-- [x] Create `RELEASE_NOTES_v0.3.0.md`
+- [x] Create `RELEASE_NOTES_v0.3.0-rc.1.md`
 - [x] Verify `--help` output reflects all new flags
 - [x] Test `shipper completion` for at least one shell
 - [x] Test `shipper doctor` in a real workspace
@@ -15,8 +15,8 @@
 
 ## Release Execution
 
-- [ ] Commit all changes with message "release: v0.3.0"
-- [ ] Tag the commit: `git tag -a v0.3.0 -m "Release v0.3.0"`
+- [ ] Commit all changes with message "release: v0.3.0-rc.1"
+- [ ] Tag the commit: `git tag -a v0.3.0-rc.1 -m "Release v0.3.0-rc.1"`
 - [ ] Push commit and tag: `git push origin main --tags`
 - [ ] Publish to crates.io (dry-run first):
   ```bash

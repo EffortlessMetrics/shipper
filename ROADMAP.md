@@ -20,9 +20,9 @@ This document outlines the planned development trajectory for Shipper, a reliabi
 
 ---
 
-## Current Release: v0.3.0
+## Current Release: v0.3.0-rc.1
 
-Shipper v0.3.0 is a major milestone focusing on User Experience, multi-registry support, and performance optimizations. It provides:
+Shipper v0.3.0-rc.1 is a major milestone focusing on User Experience, multi-registry support, and performance optimizations. It provides:
 
 - **Multi-registry publishing** - Orchestrate publishes across multiple registries in one run
 - **Sparse index caching** - ETag-based disk caching for faster readiness verification

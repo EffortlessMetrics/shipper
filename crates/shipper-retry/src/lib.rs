@@ -223,12 +223,9 @@ pub fn calculate_delay(config: &RetryStrategyConfig, attempt: u32) -> Duration {
 /// Apply jitter to a delay value.
 /// Jitter factor of 0.5 means delay * (0.5 to 1.5).
 fn apply_jitter(delay: Duration, jitter: f64) -> Duration {
-    use rand::Rng;
-
     // Generate a random factor between (1 - jitter) and (1 + jitter)
     let jitter_range = 2.0 * jitter;
-    let mut rng = rand::thread_rng();
-    let random_value: f64 = rng.r#gen();
+    let random_value: f64 = rand::random();
     let random_factor = 1.0 - jitter + (random_value * jitter_range);
     let millis = (delay.as_millis() as f64 * random_factor).round() as u64;
     Duration::from_millis(millis)

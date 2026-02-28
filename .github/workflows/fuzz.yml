@@ -45,7 +45,7 @@ jobs:
           - redact_output
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
@@ -58,7 +58,7 @@ jobs:
           tool: cargo-fuzz
 
       - name: Cache Cargo + fuzz
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -101,7 +101,7 @@ jobs:
 
       - name: Upload crashers
         if: steps.check_crashers.outputs.crashers_found == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: fuzz-crashers-${{ matrix.target }}
           path: artifacts/
@@ -109,7 +109,7 @@ jobs:
 
       - name: Upload corpus
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: fuzz-corpus-${{ matrix.target }}
           path: fuzz/corpus/${{ matrix.target }}/
