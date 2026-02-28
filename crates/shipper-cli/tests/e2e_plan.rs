@@ -214,7 +214,10 @@ fn plan_respects_dependency_ordering() {
                 let trimmed = line.trim();
                 if trimmed.contains(name) && trimmed.contains('.') {
                     // Parse the leading number: "1. core-lib@0.2.0"
-                    trimmed.split('.').next().and_then(|n| n.trim().parse::<usize>().ok())
+                    trimmed
+                        .split('.')
+                        .next()
+                        .and_then(|n| n.trim().parse::<usize>().ok())
                 } else {
                     None
                 }

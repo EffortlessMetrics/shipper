@@ -1,7 +1,7 @@
 //! Integration tests for `shipper-storage` FileStorage backend.
 
 use shipper_storage::{
-    build_storage_backend, CloudStorageConfig, FileStorage, StorageBackend, StorageType,
+    CloudStorageConfig, FileStorage, StorageBackend, StorageType, build_storage_backend,
 };
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -245,9 +245,7 @@ fn read_missing_file_returns_error() {
 
 #[test]
 fn read_from_nonexistent_base_returns_error() {
-    let storage = FileStorage::new(PathBuf::from(
-        "totally_nonexistent_dir_12345/sub",
-    ));
+    let storage = FileStorage::new(PathBuf::from("totally_nonexistent_dir_12345/sub"));
 
     assert!(storage.read("anything.txt").is_err());
 }

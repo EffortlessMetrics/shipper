@@ -127,11 +127,7 @@ fn create_fake_cargo_proxy(bin_dir: &Path) {
 }
 
 fn path_sep() -> &'static str {
-    if cfg!(windows) {
-        ";"
-    } else {
-        ":"
-    }
+    if cfg!(windows) { ";" } else { ":" }
 }
 
 struct TestRegistry {
@@ -514,7 +510,10 @@ mod state_directory {
 
         let receipt_json = fs::read_to_string(&receipt_path).expect("read receipt");
         let receipt: serde_json::Value = serde_json::from_str(&receipt_json).expect("parse json");
-        assert!(receipt.get("plan_id").is_some(), "receipt should have plan_id");
+        assert!(
+            receipt.get("plan_id").is_some(),
+            "receipt should have plan_id"
+        );
 
         registry.join();
     }

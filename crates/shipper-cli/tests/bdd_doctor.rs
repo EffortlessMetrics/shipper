@@ -187,9 +187,7 @@ mod missing_token {
             .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN");
 
         // Then: Output indicates no authentication was found
-        cmd.assert()
-            .success()
-            .stdout(contains("NONE FOUND"));
+        cmd.assert().success().stdout(contains("NONE FOUND"));
 
         registry.join();
     }

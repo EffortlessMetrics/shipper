@@ -46,7 +46,10 @@ fn config_init_output_flag_writes_to_custom_path() {
         .success()
         .stdout(contains("Created configuration file"));
 
-    assert!(custom.exists(), "config file should be written to custom path");
+    assert!(
+        custom.exists(),
+        "config file should be written to custom path"
+    );
 
     let content = fs::read_to_string(&custom).expect("read");
     assert!(content.contains("schema_version"));

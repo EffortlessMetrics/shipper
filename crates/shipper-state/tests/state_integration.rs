@@ -6,9 +6,9 @@ use chrono::Utc;
 use tempfile::tempdir;
 
 use shipper_state::{
-    clear_state, has_incomplete_state, load_receipt, load_state, receipt_path, save_state,
-    state_path, write_receipt, CURRENT_RECEIPT_VERSION, CURRENT_STATE_VERSION, RECEIPT_FILE,
-    STATE_FILE,
+    CURRENT_RECEIPT_VERSION, CURRENT_STATE_VERSION, RECEIPT_FILE, STATE_FILE, clear_state,
+    has_incomplete_state, load_receipt, load_state, receipt_path, save_state, state_path,
+    write_receipt,
 };
 use shipper_types::{
     EnvironmentFingerprint, ErrorClass, ExecutionState, PackageEvidence, PackageProgress,
@@ -361,7 +361,11 @@ fn receipt_v1_migrated_to_v2_on_load() {
         "event_log_path": ".shipper/events.jsonl"
     });
 
-    fs::write(receipt_path(&dir), serde_json::to_string_pretty(&v1).unwrap()).unwrap();
+    fs::write(
+        receipt_path(&dir),
+        serde_json::to_string_pretty(&v1).unwrap(),
+    )
+    .unwrap();
 
     let receipt = load_receipt(&dir).unwrap().expect("receipt must exist");
     assert_eq!(receipt.receipt_version, CURRENT_RECEIPT_VERSION);

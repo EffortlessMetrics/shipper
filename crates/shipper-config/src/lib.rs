@@ -1496,30 +1496,30 @@ per_package_timeout = "15m"
                 arb_readiness_method(),
             );
             let retry_nums = (
-                1u32..100,      // max_attempts
-                1u64..3600,     // base_delay secs
-                0u64..3600,     // extra secs added to base for max_delay
-                0.0f64..=1.0,   // jitter
+                1u32..100,    // max_attempts
+                1u64..3600,   // base_delay secs
+                0u64..3600,   // extra secs added to base for max_delay
+                0.0f64..=1.0, // jitter
             );
             let config_nums = (
-                1usize..500,    // output lines
-                1u64..7200,     // lock_timeout secs
-                1usize..32,     // max_concurrent
-                1u64..7200,     // per_package_timeout secs
+                1usize..500, // output lines
+                1u64..7200,  // lock_timeout secs
+                1usize..32,  // max_concurrent
+                1u64..7200,  // per_package_timeout secs
             );
             let booleans = (
-                any::<bool>(),  // allow_dirty
-                any::<bool>(),  // skip_ownership
-                any::<bool>(),  // strict_ownership
-                any::<bool>(),  // readiness enabled
-                any::<bool>(),  // parallel enabled
+                any::<bool>(), // allow_dirty
+                any::<bool>(), // skip_ownership
+                any::<bool>(), // strict_ownership
+                any::<bool>(), // readiness enabled
+                any::<bool>(), // parallel enabled
             );
             let readiness_nums = (
-                1u64..600,      // initial_delay secs
-                1u64..600,      // max_delay secs
-                1u64..600,      // max_total_wait secs
-                1u64..60,       // poll_interval secs
-                0.0f64..=1.0,   // jitter_factor
+                1u64..600,    // initial_delay secs
+                1u64..600,    // max_delay secs
+                1u64..600,    // max_total_wait secs
+                1u64..60,     // poll_interval secs
+                0.0f64..=1.0, // jitter_factor
             );
 
             (enums, retry_nums, config_nums, booleans, readiness_nums).prop_map(
@@ -1527,7 +1527,13 @@ per_package_timeout = "15m"
                     (policy, verify, retry_policy, retry_strategy, readiness_method),
                     (max_attempts, base_delay, extra_delay, jitter),
                     (output_lines, lock_timeout, max_concurrent, per_package_timeout),
-                    (allow_dirty, skip_ownership, strict_ownership, readiness_enabled, parallel_enabled),
+                    (
+                        allow_dirty,
+                        skip_ownership,
+                        strict_ownership,
+                        readiness_enabled,
+                        parallel_enabled,
+                    ),
                     (r_initial, r_max_delay, r_max_total, r_poll, r_jitter),
                 )| {
                     ShipperConfig {
@@ -1545,7 +1551,9 @@ per_package_timeout = "15m"
                             index_path: None,
                             prefer_index: false,
                         },
-                        output: OutputConfig { lines: output_lines },
+                        output: OutputConfig {
+                            lines: output_lines,
+                        },
                         lock: LockConfig {
                             timeout: Duration::from_secs(lock_timeout),
                         },

@@ -1032,12 +1032,16 @@ mod tests {
 
         /// Strategy for semver-like version strings.
         fn version_strategy() -> impl Strategy<Value = String> {
-            (0u32..100, 0u32..100, 0u32..100, proptest::option::of("[a-z]{1,8}")).prop_map(
-                |(major, minor, patch, pre)| match pre {
+            (
+                0u32..100,
+                0u32..100,
+                0u32..100,
+                proptest::option::of("[a-z]{1,8}"),
+            )
+                .prop_map(|(major, minor, patch, pre)| match pre {
                     Some(tag) => format!("{major}.{minor}.{patch}-{tag}"),
                     None => format!("{major}.{minor}.{patch}"),
-                },
-            )
+                })
         }
 
         proptest! {

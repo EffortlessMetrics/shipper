@@ -333,8 +333,7 @@ mod tests {
     /// Build a `temp_env::with_vars` list that clears all CI vars
     /// plus sets the provided overrides.
     fn ci_env<'a>(overrides: &'a [(&'a str, Option<&'a str>)]) -> Vec<(&'a str, Option<&'a str>)> {
-        let mut vars: Vec<(&str, Option<&str>)> =
-            ALL_CI_VARS.iter().map(|&v| (v, None)).collect();
+        let mut vars: Vec<(&str, Option<&str>)> = ALL_CI_VARS.iter().map(|&v| (v, None)).collect();
         for &(k, v) in overrides {
             if let Some(pos) = vars.iter().position(|(key, _)| *key == k) {
                 vars[pos] = (k, v);
@@ -427,10 +426,13 @@ mod tests {
     #[test]
     #[serial]
     fn detect_jenkins() {
-        temp_env::with_vars(ci_env(&[("JENKINS_URL", Some("http://jenkins.local"))]), || {
-            assert_eq!(detect_environment(), CiEnvironment::Jenkins);
-            assert!(is_ci());
-        });
+        temp_env::with_vars(
+            ci_env(&[("JENKINS_URL", Some("http://jenkins.local"))]),
+            || {
+                assert_eq!(detect_environment(), CiEnvironment::Jenkins);
+                assert!(is_ci());
+            },
+        );
     }
 
     #[test]
@@ -455,7 +457,10 @@ mod tests {
     #[serial]
     fn detect_environment_priority_github_over_others() {
         temp_env::with_vars(
-            ci_env(&[("GITHUB_ACTIONS", Some("true")), ("GITLAB_CI", Some("true"))]),
+            ci_env(&[
+                ("GITHUB_ACTIONS", Some("true")),
+                ("GITLAB_CI", Some("true")),
+            ]),
             || {
                 assert_eq!(detect_environment(), CiEnvironment::GitHubActions);
             },
@@ -686,7 +691,10 @@ mod tests {
     #[serial]
     fn get_ci_branch_github_actions() {
         temp_env::with_vars(
-            ci_env(&[("GITHUB_ACTIONS", Some("true")), ("GITHUB_REF_NAME", Some("main"))]),
+            ci_env(&[
+                ("GITHUB_ACTIONS", Some("true")),
+                ("GITHUB_REF_NAME", Some("main")),
+            ]),
             || {
                 assert_eq!(get_ci_branch(), Some("main".to_string()));
             },
@@ -697,7 +705,10 @@ mod tests {
     #[serial]
     fn get_ci_branch_gitlab_ci() {
         temp_env::with_vars(
-            ci_env(&[("GITLAB_CI", Some("true")), ("CI_COMMIT_REF_NAME", Some("develop"))]),
+            ci_env(&[
+                ("GITLAB_CI", Some("true")),
+                ("CI_COMMIT_REF_NAME", Some("develop")),
+            ]),
             || {
                 assert_eq!(get_ci_branch(), Some("develop".to_string()));
             },
@@ -708,7 +719,10 @@ mod tests {
     #[serial]
     fn get_ci_branch_circleci() {
         temp_env::with_vars(
-            ci_env(&[("CIRCLECI", Some("true")), ("CIRCLE_BRANCH", Some("feature/test"))]),
+            ci_env(&[
+                ("CIRCLECI", Some("true")),
+                ("CIRCLE_BRANCH", Some("feature/test")),
+            ]),
             || {
                 assert_eq!(get_ci_branch(), Some("feature/test".to_string()));
             },
@@ -719,7 +733,10 @@ mod tests {
     #[serial]
     fn get_ci_branch_travis() {
         temp_env::with_vars(
-            ci_env(&[("TRAVIS", Some("true")), ("TRAVIS_BRANCH", Some("release/v1"))]),
+            ci_env(&[
+                ("TRAVIS", Some("true")),
+                ("TRAVIS_BRANCH", Some("release/v1")),
+            ]),
             || {
                 assert_eq!(get_ci_branch(), Some("release/v1".to_string()));
             },
@@ -730,7 +747,10 @@ mod tests {
     #[serial]
     fn get_ci_branch_azure() {
         temp_env::with_vars(
-            ci_env(&[("TF_BUILD", Some("True")), ("BUILD_SOURCEBRANCHNAME", Some("main"))]),
+            ci_env(&[
+                ("TF_BUILD", Some("True")),
+                ("BUILD_SOURCEBRANCHNAME", Some("main")),
+            ]),
             || {
                 assert_eq!(get_ci_branch(), Some("main".to_string()));
             },
@@ -741,7 +761,10 @@ mod tests {
     #[serial]
     fn get_ci_branch_jenkins() {
         temp_env::with_vars(
-            ci_env(&[("JENKINS_URL", Some("http://ci.local")), ("GIT_BRANCH", Some("origin/main"))]),
+            ci_env(&[
+                ("JENKINS_URL", Some("http://ci.local")),
+                ("GIT_BRANCH", Some("origin/main")),
+            ]),
             || {
                 assert_eq!(get_ci_branch(), Some("origin/main".to_string()));
             },
@@ -752,7 +775,10 @@ mod tests {
     #[serial]
     fn get_ci_branch_bitbucket() {
         temp_env::with_vars(
-            ci_env(&[("BITBUCKET_BUILD_NUMBER", Some("99")), ("BITBUCKET_BRANCH", Some("hotfix"))]),
+            ci_env(&[
+                ("BITBUCKET_BUILD_NUMBER", Some("99")),
+                ("BITBUCKET_BRANCH", Some("hotfix")),
+            ]),
             || {
                 assert_eq!(get_ci_branch(), Some("hotfix".to_string()));
             },
@@ -784,7 +810,10 @@ mod tests {
     #[serial]
     fn get_ci_commit_sha_github() {
         temp_env::with_vars(
-            ci_env(&[("GITHUB_ACTIONS", Some("true")), ("GITHUB_SHA", Some("abc123def456"))]),
+            ci_env(&[
+                ("GITHUB_ACTIONS", Some("true")),
+                ("GITHUB_SHA", Some("abc123def456")),
+            ]),
             || {
                 assert_eq!(get_ci_commit_sha(), Some("abc123def456".to_string()));
             },
@@ -795,7 +824,10 @@ mod tests {
     #[serial]
     fn get_ci_commit_sha_gitlab() {
         temp_env::with_vars(
-            ci_env(&[("GITLAB_CI", Some("true")), ("CI_COMMIT_SHA", Some("deadbeef"))]),
+            ci_env(&[
+                ("GITLAB_CI", Some("true")),
+                ("CI_COMMIT_SHA", Some("deadbeef")),
+            ]),
             || {
                 assert_eq!(get_ci_commit_sha(), Some("deadbeef".to_string()));
             },
@@ -806,7 +838,10 @@ mod tests {
     #[serial]
     fn get_ci_commit_sha_circleci() {
         temp_env::with_vars(
-            ci_env(&[("CIRCLECI", Some("true")), ("CIRCLE_SHA1", Some("cafebabe"))]),
+            ci_env(&[
+                ("CIRCLECI", Some("true")),
+                ("CIRCLE_SHA1", Some("cafebabe")),
+            ]),
             || {
                 assert_eq!(get_ci_commit_sha(), Some("cafebabe".to_string()));
             },
@@ -817,7 +852,10 @@ mod tests {
     #[serial]
     fn get_ci_commit_sha_travis() {
         temp_env::with_vars(
-            ci_env(&[("TRAVIS", Some("true")), ("TRAVIS_COMMIT", Some("aabbccdd"))]),
+            ci_env(&[
+                ("TRAVIS", Some("true")),
+                ("TRAVIS_COMMIT", Some("aabbccdd")),
+            ]),
             || {
                 assert_eq!(get_ci_commit_sha(), Some("aabbccdd".to_string()));
             },
@@ -828,7 +866,10 @@ mod tests {
     #[serial]
     fn get_ci_commit_sha_azure() {
         temp_env::with_vars(
-            ci_env(&[("TF_BUILD", Some("True")), ("BUILD_SOURCEVERSION", Some("11223344"))]),
+            ci_env(&[
+                ("TF_BUILD", Some("True")),
+                ("BUILD_SOURCEVERSION", Some("11223344")),
+            ]),
             || {
                 assert_eq!(get_ci_commit_sha(), Some("11223344".to_string()));
             },
@@ -839,7 +880,10 @@ mod tests {
     #[serial]
     fn get_ci_commit_sha_jenkins() {
         temp_env::with_vars(
-            ci_env(&[("JENKINS_URL", Some("http://ci.local")), ("GIT_COMMIT", Some("55667788"))]),
+            ci_env(&[
+                ("JENKINS_URL", Some("http://ci.local")),
+                ("GIT_COMMIT", Some("55667788")),
+            ]),
             || {
                 assert_eq!(get_ci_commit_sha(), Some("55667788".to_string()));
             },
@@ -850,7 +894,10 @@ mod tests {
     #[serial]
     fn get_ci_commit_sha_bitbucket() {
         temp_env::with_vars(
-            ci_env(&[("BITBUCKET_BUILD_NUMBER", Some("1")), ("BITBUCKET_COMMIT", Some("99aabb"))]),
+            ci_env(&[
+                ("BITBUCKET_BUILD_NUMBER", Some("1")),
+                ("BITBUCKET_COMMIT", Some("99aabb")),
+            ]),
             || {
                 assert_eq!(get_ci_commit_sha(), Some("99aabb".to_string()));
             },
@@ -882,7 +929,10 @@ mod tests {
     #[serial]
     fn is_pull_request_github_true() {
         temp_env::with_vars(
-            ci_env(&[("GITHUB_ACTIONS", Some("true")), ("GITHUB_EVENT_NAME", Some("pull_request"))]),
+            ci_env(&[
+                ("GITHUB_ACTIONS", Some("true")),
+                ("GITHUB_EVENT_NAME", Some("pull_request")),
+            ]),
             || {
                 assert!(is_pull_request());
             },
@@ -893,7 +943,10 @@ mod tests {
     #[serial]
     fn is_pull_request_github_false_on_push() {
         temp_env::with_vars(
-            ci_env(&[("GITHUB_ACTIONS", Some("true")), ("GITHUB_EVENT_NAME", Some("push"))]),
+            ci_env(&[
+                ("GITHUB_ACTIONS", Some("true")),
+                ("GITHUB_EVENT_NAME", Some("push")),
+            ]),
             || {
                 assert!(!is_pull_request());
             },
@@ -904,7 +957,10 @@ mod tests {
     #[serial]
     fn is_pull_request_gitlab_true() {
         temp_env::with_vars(
-            ci_env(&[("GITLAB_CI", Some("true")), ("CI_MERGE_REQUEST_ID", Some("42"))]),
+            ci_env(&[
+                ("GITLAB_CI", Some("true")),
+                ("CI_MERGE_REQUEST_ID", Some("42")),
+            ]),
             || {
                 assert!(is_pull_request());
             },
@@ -928,7 +984,10 @@ mod tests {
         temp_env::with_vars(
             ci_env(&[
                 ("CIRCLECI", Some("true")),
-                ("CIRCLE_PULL_REQUEST", Some("https://github.com/org/repo/pull/1")),
+                (
+                    "CIRCLE_PULL_REQUEST",
+                    Some("https://github.com/org/repo/pull/1"),
+                ),
             ]),
             || {
                 assert!(is_pull_request());
@@ -940,7 +999,10 @@ mod tests {
     #[serial]
     fn is_pull_request_travis_true() {
         temp_env::with_vars(
-            ci_env(&[("TRAVIS", Some("true")), ("TRAVIS_PULL_REQUEST", Some("42"))]),
+            ci_env(&[
+                ("TRAVIS", Some("true")),
+                ("TRAVIS_PULL_REQUEST", Some("42")),
+            ]),
             || {
                 assert!(is_pull_request());
             },
@@ -951,7 +1013,10 @@ mod tests {
     #[serial]
     fn is_pull_request_travis_false_when_false_string() {
         temp_env::with_vars(
-            ci_env(&[("TRAVIS", Some("true")), ("TRAVIS_PULL_REQUEST", Some("false"))]),
+            ci_env(&[
+                ("TRAVIS", Some("true")),
+                ("TRAVIS_PULL_REQUEST", Some("false")),
+            ]),
             || {
                 assert!(!is_pull_request());
             },
@@ -962,7 +1027,10 @@ mod tests {
     #[serial]
     fn is_pull_request_azure_true() {
         temp_env::with_vars(
-            ci_env(&[("TF_BUILD", Some("True")), ("BUILD_REASON", Some("PullRequest"))]),
+            ci_env(&[
+                ("TF_BUILD", Some("True")),
+                ("BUILD_REASON", Some("PullRequest")),
+            ]),
             || {
                 assert!(is_pull_request());
             },

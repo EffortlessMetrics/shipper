@@ -342,12 +342,12 @@ fn status_output_format_name_at_version_colon_status() {
     let stdout = String::from_utf8(output).expect("utf8");
 
     // Verify each package line matches the "name@version: status" pattern
-    let pkg_lines: Vec<&str> = stdout
-        .lines()
-        .filter(|l| l.contains('@'))
-        .collect();
+    let pkg_lines: Vec<&str> = stdout.lines().filter(|l| l.contains('@')).collect();
 
-    assert!(!pkg_lines.is_empty(), "should have at least one package line");
+    assert!(
+        !pkg_lines.is_empty(),
+        "should have at least one package line"
+    );
     for line in &pkg_lines {
         assert!(
             line.contains(": published") || line.contains(": missing"),
@@ -379,8 +379,14 @@ fn status_mixed_published_and_missing() {
 
     let stdout = String::from_utf8(output).expect("utf8");
     // At least one published and one missing
-    assert!(stdout.contains("published"), "expected at least one published crate");
-    assert!(stdout.contains("missing"), "expected at least one missing crate");
+    assert!(
+        stdout.contains("published"),
+        "expected at least one published crate"
+    );
+    assert!(
+        stdout.contains("missing"),
+        "expected at least one missing crate"
+    );
 
     registry.join();
 }

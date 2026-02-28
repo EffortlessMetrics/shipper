@@ -1528,9 +1528,10 @@ mod tests {
                         manifest_path: PathBuf::from("crates/my-cli/Cargo.toml"),
                     },
                 ],
-                dependencies: BTreeMap::from([
-                    ("my-cli".to_string(), vec!["core-lib".to_string()]),
-                ]),
+                dependencies: BTreeMap::from([(
+                    "my-cli".to_string(),
+                    vec!["core-lib".to_string()],
+                )]),
             };
             insta::assert_yaml_snapshot!(plan);
         }
@@ -1541,14 +1542,25 @@ mod tests {
                 ("pending", PackageState::Pending),
                 ("uploaded", PackageState::Uploaded),
                 ("published", PackageState::Published),
-                ("skipped", PackageState::Skipped { reason: "already published".to_string() }),
-                ("failed", PackageState::Failed {
-                    class: ErrorClass::Retryable,
-                    message: "network timeout".to_string(),
-                }),
-                ("ambiguous", PackageState::Ambiguous {
-                    message: "unclear outcome".to_string(),
-                }),
+                (
+                    "skipped",
+                    PackageState::Skipped {
+                        reason: "already published".to_string(),
+                    },
+                ),
+                (
+                    "failed",
+                    PackageState::Failed {
+                        class: ErrorClass::Retryable,
+                        message: "network timeout".to_string(),
+                    },
+                ),
+                (
+                    "ambiguous",
+                    PackageState::Ambiguous {
+                        message: "unclear outcome".to_string(),
+                    },
+                ),
             ];
             for (label, state) in variants {
                 insta::assert_yaml_snapshot!(format!("package_state_{label}"), state);

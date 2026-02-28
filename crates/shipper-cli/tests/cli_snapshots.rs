@@ -15,10 +15,7 @@ fn shipper_cmd() -> Command {
 
 #[test]
 fn help_text() {
-    let output = shipper_cmd()
-        .arg("--help")
-        .output()
-        .expect("failed to run");
+    let output = shipper_cmd().arg("--help").output().expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_snapshot!("help_text", redact_version(&stdout));
 }
