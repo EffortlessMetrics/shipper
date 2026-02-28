@@ -2243,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "shipper"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2301,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-auth"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2314,7 +2314,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-cargo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -2327,21 +2327,21 @@ dependencies = [
 
 [[package]]
 name = "shipper-cargo-failure"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "shipper-chunking"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "shipper-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2363,7 +2363,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "proptest",
@@ -2381,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-config-runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "shipper-config",
@@ -2391,7 +2391,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-duration"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "humantime",
  "proptest",
@@ -2402,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-encrypt"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2415,7 +2415,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-engine-parallel"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2445,7 +2445,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-environment"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2457,7 +2457,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-events"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2469,7 +2469,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-execution-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-git"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -2492,14 +2492,14 @@ dependencies = [
 
 [[package]]
 name = "shipper-levels"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "shipper-lock"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2511,14 +2511,14 @@ dependencies = [
 
 [[package]]
 name = "shipper-output-sanitizer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "shipper-plan"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -2534,7 +2534,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-policy"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "shipper-retry",
@@ -2543,7 +2543,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-process"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "humantime",
@@ -2555,7 +2555,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-progress"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "atty",
  "indicatif",
@@ -2564,7 +2564,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-registry"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-retry"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "humantime-serde",
  "proptest",
@@ -2587,7 +2587,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-schema"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "proptest",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-sparse-index"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "serde",
@@ -2604,7 +2604,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-state"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2619,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -2629,7 +2629,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2644,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-types"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "proptest",
@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-webhook"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "hmac",

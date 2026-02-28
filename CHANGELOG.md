@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-27
+
+### Added
+
+- **Multi-Registry Publishing**: Publish crates to multiple registries in a single command (`--all-registries` or `--registries name1,name2`).
+- **Sparse Index Caching**: High-performance ETag-based disk caching for Cargo sparse index fragments, significantly accelerating readiness polling and reducing bandwidth.
+- **Selective Resume**: New `--resume-from <package>` flag to start publishing from a specific crate in the plan.
+- **Enhanced Diagnostics**: Substantially improved `shipper doctor` with network reachability checks, permission validation, and git context detection.
+- **Deep Dry-Run Visibility**: Preflight reports now capture and display detailed stdout/stderr from cargo dry-run failures.
+- **Global Quiet Mode**: New global `--quiet` flag for cleaner CI/CD logs.
+- **Shell Completions**: Support for generating shell completion scripts via `shipper completion <shell>`.
+- **New CI Templates**: Added Azure DevOps and CircleCI workflow snippets (`shipper ci azure-devops`, `shipper ci circleci`).
+
+### Changed
+
+- **Granular Locking**: Moved from global file locking to workspace-aware locking using path hashing, allowing parallel publishes of different workspaces.
+- **Atomic State Operations**: Improved robustness of lock and state file writes using atomic filesystem operations.
+- **CI Progress Reporting**: Optimized progress reporter to emit one-line status updates in non-TTY environments.
+- **Expanded Error Classification**: Added dozens of new patterns to `shipper-cargo-failure` for more accurate retryable vs. permanent detection.
+- **Config Schema Tracking**: Added `schema_version` validation to `.shipper.toml` for future migration support.
+
+### Fixed
+
+- Fixed flaky BDD publish tests by introducing more robust mock server synchronization.
+- Fixed race conditions in lock acquisition.
+- Resolved clippy warnings across the workspace.
+
 ## [0.2.0] - 2026-02-14
 
 ### Added

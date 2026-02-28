@@ -20,18 +20,18 @@ This document outlines the planned development trajectory for Shipper, a reliabi
 
 ---
 
-## Current Release: v0.2.0
+## Current Release: v0.3.0
 
-Shipper v0.2.0 is feature-complete and stable. It provides:
+Shipper v0.3.0 is a major milestone focusing on User Experience, multi-registry support, and performance optimizations. It provides:
 
-- **Deterministic publish planning** - Reproducible crate publish order based on dependency graph analysis
-- **Preflight verification** - Comprehensive checks before publishing (finishability assessment, ownership verification, dry-run)
-- **Readiness checking** - Verify crates are available on crates.io via API, index, or both methods
-- **Evidence capture** - Receipts and event logs for complete audit trails
-- **Parallel publishing** - Publish independent crates concurrently with wave-based execution
-- **Configuration file support** - `.shipper.toml` for workspace settings with CLI flag overrides
+- **Multi-registry publishing** - Orchestrate publishes across multiple registries in one run
+- **Sparse index caching** - ETag-based disk caching for faster readiness verification
+- **Selective resumability** - Start publishing from any package in the plan with `--resume-from`
+- **Shell completions** - Built-in support for generating shell completion scripts
+- **Enhanced diagnostics** - Deep `doctor` command for environment health checks
+- **Improved locking** - Workspace-aware hashing to prevent global lock collisions
 
-See the [RELEASE_NOTES_v0.2.0.md](RELEASE_NOTES_v0.2.0.md) for complete details.
+See the [CHANGELOG.md](CHANGELOG.md) for complete details.
 
 ---
 

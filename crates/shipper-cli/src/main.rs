@@ -1449,10 +1449,11 @@ fn run_clean(
     let mut dirs_to_clean = vec![abs_state.clone()];
     if let Ok(entries) = std::fs::read_dir(&abs_state) {
         for entry in entries.flatten() {
-            if let Ok(file_type) = entry.file_type() {
-                if file_type.is_dir() && entry.file_name() != "cache" {
-                    dirs_to_clean.push(entry.path());
-                }
+            if let Ok(file_type) = entry.file_type()
+                && file_type.is_dir()
+                && entry.file_name() != "cache"
+            {
+                dirs_to_clean.push(entry.path());
             }
         }
     }

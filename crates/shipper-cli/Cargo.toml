@@ -17,9 +17,9 @@ name = "shipper"
 path = "src/main.rs"
 
 [dependencies]
-shipper = { path = "../shipper", version = "0.2.0" }
+shipper = { path = "../shipper", version = "0.3.0" }
 shipper-duration = { path = "../shipper-duration" }
-shipper-progress = { path = "../shipper-progress", version = "0.2.0" }
+shipper-progress = { path = "../shipper-progress", version = "0.3.0" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
