@@ -62,6 +62,17 @@ pub enum RetryPolicy {
 
 impl RetryPolicy {
     /// Get the default retry configuration for this policy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shipper_retry::RetryPolicy;
+    /// use std::time::Duration;
+    ///
+    /// let config = RetryPolicy::Default.to_config();
+    /// assert_eq!(config.max_attempts, 6);
+    /// assert_eq!(config.base_delay, Duration::from_secs(2));
+    /// ```
     pub fn to_config(&self) -> RetryStrategyConfig {
         match self {
             RetryPolicy::Default => RetryStrategyConfig {
@@ -243,6 +254,30 @@ fn apply_jitter(delay: Duration, jitter: f64) -> Duration {
 /// # Returns
 ///
 /// The appropriate retry configuration for the error class.
+///
+/// # Examples
+///
+/// ```
+/// use shipper_retry::{RetryStrategyConfig, RetryStrategyType, ErrorClass, PerErrorConfig, config_for_error};
+///
+/// let default = RetryStrategyConfig::default();
+/// let per_error = PerErrorConfig {
+///     retryable: Some(RetryStrategyConfig {
+///         strategy: RetryStrategyType::Immediate,
+///         max_attempts: 10,
+///         ..Default::default()
+///     }),
+///     ..Default::default()
+/// };
+///
+/// // Uses per-error config for retryable errors
+/// let config = config_for_error(&default, Some(&per_error), ErrorClass::Retryable);
+/// assert_eq!(config.strategy, RetryStrategyType::Immediate);
+///
+/// // Falls back to default for ambiguous errors
+/// let config = config_for_error(&default, Some(&per_error), ErrorClass::Ambiguous);
+/// assert_eq!(config.strategy, RetryStrategyType::Exponential);
+/// ```
 pub fn config_for_error(
     default_config: &RetryStrategyConfig,
     per_error_config: Option<&PerErrorConfig>,

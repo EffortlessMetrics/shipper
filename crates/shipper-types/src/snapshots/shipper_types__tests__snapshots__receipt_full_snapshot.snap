@@ -1,0 +1,48 @@
+---
+source: crates/shipper-types/src/lib.rs
+assertion_line: 1608
+expression: receipt
+---
+receipt_version: shipper.receipt.v1
+plan_id: plan-42
+registry:
+  name: crates-io
+  api_base: "https://crates.io"
+  index_base: "https://index.crates.io"
+started_at: "2025-01-15T12:00:00Z"
+finished_at: "2025-01-15T12:00:00Z"
+packages:
+  - name: demo
+    version: 1.0.0
+    attempts: 1
+    state:
+      state: published
+    started_at: "2025-01-15T12:00:00Z"
+    finished_at: "2025-01-15T12:00:00Z"
+    duration_ms: 4500
+    evidence:
+      attempts:
+        - attempt_number: 1
+          command: cargo publish -p demo
+          exit_code: 0
+          stdout_tail: Uploading demo v1.0.0
+          stderr_tail: ""
+          timestamp: "2025-01-15T12:00:00Z"
+          duration: 4200
+      readiness_checks:
+        - attempt: 1
+          visible: true
+          timestamp: "2025-01-15T12:00:00Z"
+          delay_before: 2000
+event_log_path: ".shipper/events.jsonl"
+git_context:
+  commit: abcdef1234567890
+  branch: main
+  tag: v1.0.0
+  dirty: false
+environment:
+  shipper_version: 0.2.0
+  cargo_version: 1.82.0
+  rust_version: 1.82.0
+  os: linux
+  arch: x86_64

@@ -1,0 +1,27 @@
+---
+source: crates/shipper-types/src/lib.rs
+assertion_line: 1677
+expression: report
+---
+plan_id: plan-42
+token_detected: true
+finishability: proven
+packages:
+  - name: core-lib
+    version: 0.1.0
+    already_published: false
+    is_new_crate: true
+    auth_type: token
+    ownership_verified: true
+    dry_run_passed: true
+    dry_run_output: ~
+  - name: my-cli
+    version: 0.2.0
+    already_published: false
+    is_new_crate: false
+    auth_type: trusted_publishing
+    ownership_verified: true
+    dry_run_passed: true
+    dry_run_output: dry-run ok
+timestamp: "2025-01-15T12:00:00Z"
+dry_run_output: workspace dry-run passed

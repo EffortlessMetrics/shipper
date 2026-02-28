@@ -1502,6 +1502,182 @@ mod tests {
         assert_eq!(config.jitter_factor, 0.25);
     }
 
+    mod snapshots {
+        use super::*;
+
+        fn fixed_time() -> DateTime<Utc> {
+            "2025-01-15T12:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        }
+
+        #[test]
+        fn release_plan_snapshot() {
+            let plan = ReleasePlan {
+                plan_version: "shipper.plan.v1".to_string(),
+                plan_id: "abc123".to_string(),
+                created_at: fixed_time(),
+                registry: Registry::crates_io(),
+                packages: vec![
+                    PlannedPackage {
+                        name: "core-lib".to_string(),
+                        version: "0.1.0".to_string(),
+                        manifest_path: PathBuf::from("crates/core-lib/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "my-cli".to_string(),
+                        version: "0.2.0".to_string(),
+                        manifest_path: PathBuf::from("crates/my-cli/Cargo.toml"),
+                    },
+                ],
+                dependencies: BTreeMap::from([
+                    ("my-cli".to_string(), vec!["core-lib".to_string()]),
+                ]),
+            };
+            insta::assert_yaml_snapshot!(plan);
+        }
+
+        #[test]
+        fn package_state_all_variants() {
+            let variants: Vec<(&str, PackageState)> = vec![
+                ("pending", PackageState::Pending),
+                ("uploaded", PackageState::Uploaded),
+                ("published", PackageState::Published),
+                ("skipped", PackageState::Skipped { reason: "already published".to_string() }),
+                ("failed", PackageState::Failed {
+                    class: ErrorClass::Retryable,
+                    message: "network timeout".to_string(),
+                }),
+                ("ambiguous", PackageState::Ambiguous {
+                    message: "unclear outcome".to_string(),
+                }),
+            ];
+            for (label, state) in variants {
+                insta::assert_yaml_snapshot!(format!("package_state_{label}"), state);
+            }
+        }
+
+        #[test]
+        fn receipt_full_snapshot() {
+            let t = fixed_time();
+            let receipt = Receipt {
+                receipt_version: "shipper.receipt.v1".to_string(),
+                plan_id: "plan-42".to_string(),
+                registry: Registry::crates_io(),
+                started_at: t,
+                finished_at: t,
+                packages: vec![PackageReceipt {
+                    name: "demo".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    started_at: t,
+                    finished_at: t,
+                    duration_ms: 4500,
+                    evidence: PackageEvidence {
+                        attempts: vec![AttemptEvidence {
+                            attempt_number: 1,
+                            command: "cargo publish -p demo".to_string(),
+                            exit_code: 0,
+                            stdout_tail: "Uploading demo v1.0.0".to_string(),
+                            stderr_tail: String::new(),
+                            timestamp: t,
+                            duration: Duration::from_millis(4200),
+                        }],
+                        readiness_checks: vec![ReadinessEvidence {
+                            attempt: 1,
+                            visible: true,
+                            timestamp: t,
+                            delay_before: Duration::from_secs(2),
+                        }],
+                    },
+                }],
+                event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                git_context: Some(GitContext {
+                    commit: Some("abcdef1234567890".to_string()),
+                    branch: Some("main".to_string()),
+                    tag: Some("v1.0.0".to_string()),
+                    dirty: Some(false),
+                }),
+                environment: EnvironmentFingerprint {
+                    shipper_version: "0.2.0".to_string(),
+                    cargo_version: Some("1.82.0".to_string()),
+                    rust_version: Some("1.82.0".to_string()),
+                    os: "linux".to_string(),
+                    arch: "x86_64".to_string(),
+                },
+            };
+            insta::assert_yaml_snapshot!(receipt);
+        }
+
+        #[test]
+        fn execution_state_snapshot() {
+            let t = fixed_time();
+            let mut packages = BTreeMap::new();
+            packages.insert(
+                "core-lib@0.1.0".to_string(),
+                PackageProgress {
+                    name: "core-lib".to_string(),
+                    version: "0.1.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    last_updated_at: t,
+                },
+            );
+            packages.insert(
+                "my-cli@0.2.0".to_string(),
+                PackageProgress {
+                    name: "my-cli".to_string(),
+                    version: "0.2.0".to_string(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: t,
+                },
+            );
+            let state = ExecutionState {
+                state_version: "shipper.state.v1".to_string(),
+                plan_id: "plan-42".to_string(),
+                registry: Registry::crates_io(),
+                created_at: t,
+                updated_at: t,
+                packages,
+            };
+            insta::assert_yaml_snapshot!(state);
+        }
+
+        #[test]
+        fn preflight_report_snapshot() {
+            let report = PreflightReport {
+                plan_id: "plan-42".to_string(),
+                token_detected: true,
+                finishability: Finishability::Proven,
+                packages: vec![
+                    PreflightPackage {
+                        name: "core-lib".to_string(),
+                        version: "0.1.0".to_string(),
+                        already_published: false,
+                        is_new_crate: true,
+                        auth_type: Some(AuthType::Token),
+                        ownership_verified: true,
+                        dry_run_passed: true,
+                        dry_run_output: None,
+                    },
+                    PreflightPackage {
+                        name: "my-cli".to_string(),
+                        version: "0.2.0".to_string(),
+                        already_published: false,
+                        is_new_crate: false,
+                        auth_type: Some(AuthType::TrustedPublishing),
+                        ownership_verified: true,
+                        dry_run_passed: true,
+                        dry_run_output: Some("dry-run ok".to_string()),
+                    },
+                ],
+                timestamp: fixed_time(),
+                dry_run_output: Some("workspace dry-run passed".to_string()),
+            };
+            insta::assert_yaml_snapshot!(report);
+        }
+    }
+
     // Property-based tests using proptest
 
     #[cfg(test)]
@@ -1813,6 +1989,856 @@ mod tests {
 
                 assert_eq!(first, second, "Schema version parsing should be deterministic");
                 assert_eq!(first, Ok(version_num));
+            }
+        }
+
+        // --- PackageState roundtrip for all variants ---
+        proptest! {
+            #[test]
+            fn package_state_pending_roundtrip(_dummy in 0u8..1) {
+                let state = PackageState::Pending;
+                let json = serde_json::to_string(&state).unwrap();
+                let parsed: PackageState = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, state);
+            }
+
+            #[test]
+            fn package_state_uploaded_roundtrip(_dummy in 0u8..1) {
+                let state = PackageState::Uploaded;
+                let json = serde_json::to_string(&state).unwrap();
+                let parsed: PackageState = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, state);
+            }
+
+            #[test]
+            fn package_state_published_roundtrip(_dummy in 0u8..1) {
+                let state = PackageState::Published;
+                let json = serde_json::to_string(&state).unwrap();
+                let parsed: PackageState = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, state);
+            }
+
+            #[test]
+            fn package_state_skipped_roundtrip(reason in "\\PC{0,50}") {
+                let state = PackageState::Skipped { reason };
+                let json = serde_json::to_string(&state).unwrap();
+                let parsed: PackageState = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, state);
+            }
+
+            #[test]
+            fn package_state_failed_roundtrip(
+                class_variant in 0u8..3,
+                message in "\\PC{0,80}",
+            ) {
+                let class = match class_variant {
+                    0 => ErrorClass::Retryable,
+                    1 => ErrorClass::Permanent,
+                    _ => ErrorClass::Ambiguous,
+                };
+                let state = PackageState::Failed { class, message };
+                let json = serde_json::to_string(&state).unwrap();
+                let parsed: PackageState = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, state);
+            }
+
+            #[test]
+            fn package_state_ambiguous_roundtrip(message in "\\PC{0,80}") {
+                let state = PackageState::Ambiguous { message };
+                let json = serde_json::to_string(&state).unwrap();
+                let parsed: PackageState = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, state);
+            }
+
+            // --- ErrorClass roundtrip ---
+            #[test]
+            fn error_class_roundtrip(variant in 0u8..3) {
+                let class = match variant {
+                    0 => ErrorClass::Retryable,
+                    1 => ErrorClass::Permanent,
+                    _ => ErrorClass::Ambiguous,
+                };
+                let json = serde_json::to_string(&class).unwrap();
+                let parsed: ErrorClass = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, class);
+            }
+
+            // --- ExecutionResult roundtrip ---
+            #[test]
+            fn execution_result_roundtrip(variant in 0u8..3) {
+                let result = match variant {
+                    0 => ExecutionResult::Success,
+                    1 => ExecutionResult::PartialFailure,
+                    _ => ExecutionResult::CompleteFailure,
+                };
+                let json = serde_json::to_string(&result).unwrap();
+                let parsed: ExecutionResult = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, result);
+            }
+
+            // --- PublishPolicy roundtrip ---
+            #[test]
+            fn publish_policy_roundtrip(variant in 0u8..3) {
+                let policy = match variant {
+                    0 => PublishPolicy::Safe,
+                    1 => PublishPolicy::Balanced,
+                    _ => PublishPolicy::Fast,
+                };
+                let json = serde_json::to_string(&policy).unwrap();
+                let parsed: PublishPolicy = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, policy);
+            }
+
+            // --- VerifyMode roundtrip ---
+            #[test]
+            fn verify_mode_roundtrip(variant in 0u8..3) {
+                let mode = match variant {
+                    0 => VerifyMode::Workspace,
+                    1 => VerifyMode::Package,
+                    _ => VerifyMode::None,
+                };
+                let json = serde_json::to_string(&mode).unwrap();
+                let parsed: VerifyMode = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, mode);
+            }
+
+            // --- ReadinessMethod roundtrip ---
+            #[test]
+            fn readiness_method_roundtrip(variant in 0u8..3) {
+                let method = match variant {
+                    0 => ReadinessMethod::Api,
+                    1 => ReadinessMethod::Index,
+                    _ => ReadinessMethod::Both,
+                };
+                let json = serde_json::to_string(&method).unwrap();
+                let parsed: ReadinessMethod = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, method);
+            }
+
+            // --- PlannedPackage roundtrip ---
+            #[test]
+            fn planned_package_roundtrip(
+                name in "[a-z][a-z0-9-]{0,20}",
+                version in "[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}",
+            ) {
+                let pkg = PlannedPackage {
+                    name,
+                    version,
+                    manifest_path: PathBuf::from("crates/test/Cargo.toml"),
+                };
+                let json = serde_json::to_string(&pkg).unwrap();
+                let parsed: PlannedPackage = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.name, pkg.name);
+                assert_eq!(parsed.version, pkg.version);
+                assert_eq!(parsed.manifest_path, pkg.manifest_path);
+            }
+
+            // --- PublishLevel roundtrip ---
+            #[test]
+            fn publish_level_roundtrip(
+                level in 0usize..10,
+                pkg_count in 1usize..5,
+            ) {
+                let packages: Vec<PlannedPackage> = (0..pkg_count)
+                    .map(|i| PlannedPackage {
+                        name: format!("crate-{i}"),
+                        version: format!("{i}.0.0"),
+                        manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                    })
+                    .collect();
+                let lvl = PublishLevel { level, packages };
+                let json = serde_json::to_string(&lvl).unwrap();
+                let parsed: PublishLevel = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.level, lvl.level);
+                assert_eq!(parsed.packages.len(), lvl.packages.len());
+            }
+
+            // --- ReleasePlan roundtrip ---
+            #[test]
+            fn release_plan_roundtrip(
+                plan_id in "[a-f0-9]{8,64}",
+                pkg_count in 1usize..5,
+            ) {
+                let packages: Vec<PlannedPackage> = (0..pkg_count)
+                    .map(|i| PlannedPackage {
+                        name: format!("crate-{i}"),
+                        version: format!("{i}.0.0"),
+                        manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                    })
+                    .collect();
+                let mut deps = BTreeMap::new();
+                if pkg_count > 1 {
+                    deps.insert(
+                        "crate-1".to_string(),
+                        vec!["crate-0".to_string()],
+                    );
+                }
+                let plan = ReleasePlan {
+                    plan_version: "shipper.plan.v1".to_string(),
+                    plan_id,
+                    created_at: Utc::now(),
+                    registry: Registry::crates_io(),
+                    packages,
+                    dependencies: deps,
+                };
+                let json = serde_json::to_string(&plan).unwrap();
+                let parsed: ReleasePlan = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.plan_id, plan.plan_id);
+                assert_eq!(parsed.plan_version, plan.plan_version);
+                assert_eq!(parsed.packages.len(), plan.packages.len());
+                assert_eq!(parsed.dependencies, plan.dependencies);
+            }
+
+            // --- PackageProgress roundtrip ---
+            #[test]
+            fn package_progress_roundtrip(
+                name in "[a-z][a-z0-9-]{0,15}",
+                version in "[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}",
+                attempts in 0u32..10,
+                state_variant in 0u8..4,
+            ) {
+                let state = match state_variant {
+                    0 => PackageState::Pending,
+                    1 => PackageState::Uploaded,
+                    2 => PackageState::Published,
+                    _ => PackageState::Skipped { reason: "already exists".to_string() },
+                };
+                let progress = PackageProgress {
+                    name,
+                    version,
+                    attempts,
+                    state,
+                    last_updated_at: Utc::now(),
+                };
+                let json = serde_json::to_string(&progress).unwrap();
+                let parsed: PackageProgress = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.name, progress.name);
+                assert_eq!(parsed.version, progress.version);
+                assert_eq!(parsed.attempts, progress.attempts);
+                assert_eq!(parsed.state, progress.state);
+            }
+
+            // --- ExecutionState roundtrip ---
+            #[test]
+            fn execution_state_roundtrip(
+                plan_id in "[a-f0-9]{8,64}",
+                pkg_count in 0usize..5,
+            ) {
+                let mut packages = BTreeMap::new();
+                for i in 0..pkg_count {
+                    let key = format!("crate-{i}@{i}.0.0");
+                    packages.insert(key, PackageProgress {
+                        name: format!("crate-{i}"),
+                        version: format!("{i}.0.0"),
+                        attempts: i as u32,
+                        state: PackageState::Pending,
+                        last_updated_at: Utc::now(),
+                    });
+                }
+                let state = ExecutionState {
+                    state_version: "shipper.state.v1".to_string(),
+                    plan_id,
+                    registry: Registry::crates_io(),
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    packages,
+                };
+                let json = serde_json::to_string(&state).unwrap();
+                let parsed: ExecutionState = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.plan_id, state.plan_id);
+                assert_eq!(parsed.packages.len(), state.packages.len());
+            }
+
+            // --- ParallelConfig roundtrip ---
+            #[test]
+            fn parallel_config_roundtrip(
+                enabled in any::<bool>(),
+                max_concurrent in 1usize..32,
+                timeout_secs in 1u64..7200,
+            ) {
+                let config = ParallelConfig {
+                    enabled,
+                    max_concurrent,
+                    per_package_timeout: Duration::from_secs(timeout_secs),
+                };
+                let json = serde_json::to_string(&config).unwrap();
+                let parsed: ParallelConfig = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.enabled, config.enabled);
+                assert_eq!(parsed.max_concurrent, config.max_concurrent);
+                assert_eq!(parsed.per_package_timeout, config.per_package_timeout);
+            }
+
+            // --- AttemptEvidence roundtrip ---
+            #[test]
+            fn attempt_evidence_roundtrip(
+                attempt_number in 1u32..10,
+                exit_code in -1i32..256,
+                duration_ms in 0u64..600_000,
+            ) {
+                let evidence = AttemptEvidence {
+                    attempt_number,
+                    command: "cargo publish -p test".to_string(),
+                    exit_code,
+                    stdout_tail: "Uploading test v1.0.0".to_string(),
+                    stderr_tail: String::new(),
+                    timestamp: Utc::now(),
+                    duration: Duration::from_millis(duration_ms),
+                };
+                let json = serde_json::to_string(&evidence).unwrap();
+                let parsed: AttemptEvidence = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.attempt_number, evidence.attempt_number);
+                assert_eq!(parsed.exit_code, evidence.exit_code);
+                assert_eq!(parsed.duration, evidence.duration);
+            }
+
+            // --- ReadinessEvidence roundtrip ---
+            #[test]
+            fn readiness_evidence_roundtrip(
+                attempt in 1u32..20,
+                visible in any::<bool>(),
+                delay_ms in 0u64..120_000,
+            ) {
+                let evidence = ReadinessEvidence {
+                    attempt,
+                    visible,
+                    timestamp: Utc::now(),
+                    delay_before: Duration::from_millis(delay_ms),
+                };
+                let json = serde_json::to_string(&evidence).unwrap();
+                let parsed: ReadinessEvidence = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.attempt, evidence.attempt);
+                assert_eq!(parsed.visible, evidence.visible);
+                assert_eq!(parsed.delay_before, evidence.delay_before);
+            }
+
+            // --- PackageEvidence roundtrip ---
+            #[test]
+            fn package_evidence_roundtrip(attempt_count in 0usize..4) {
+                let attempts: Vec<AttemptEvidence> = (0..attempt_count)
+                    .map(|i| AttemptEvidence {
+                        attempt_number: i as u32 + 1,
+                        command: format!("cargo publish attempt {i}"),
+                        exit_code: if i == attempt_count - 1 { 0 } else { 1 },
+                        stdout_tail: "output".to_string(),
+                        stderr_tail: String::new(),
+                        timestamp: Utc::now(),
+                        duration: Duration::from_secs(5),
+                    })
+                    .collect();
+                let evidence = PackageEvidence {
+                    attempts,
+                    readiness_checks: vec![],
+                };
+                let json = serde_json::to_string(&evidence).unwrap();
+                let parsed: PackageEvidence = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.attempts.len(), evidence.attempts.len());
+            }
+
+            // --- PackageReceipt roundtrip ---
+            #[test]
+            fn package_receipt_roundtrip(
+                name in "[a-z][a-z0-9-]{0,15}",
+                version in "[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}",
+                attempts in 1u32..5,
+                duration_ms in 0u128..600_000,
+            ) {
+                let now = Utc::now();
+                let receipt = PackageReceipt {
+                    name,
+                    version,
+                    attempts,
+                    state: PackageState::Published,
+                    started_at: now,
+                    finished_at: now,
+                    duration_ms,
+                    evidence: PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                };
+                let json = serde_json::to_string(&receipt).unwrap();
+                let parsed: PackageReceipt = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.name, receipt.name);
+                assert_eq!(parsed.version, receipt.version);
+                assert_eq!(parsed.attempts, receipt.attempts);
+                assert_eq!(parsed.state, receipt.state);
+                assert_eq!(parsed.duration_ms, receipt.duration_ms);
+            }
+
+            // --- Receipt roundtrip ---
+            #[test]
+            fn receipt_roundtrip(
+                plan_id in "[a-f0-9]{8,64}",
+                pkg_count in 0usize..3,
+            ) {
+                let now = Utc::now();
+                let packages: Vec<PackageReceipt> = (0..pkg_count)
+                    .map(|i| PackageReceipt {
+                        name: format!("crate-{i}"),
+                        version: format!("{i}.0.0"),
+                        attempts: 1,
+                        state: PackageState::Published,
+                        started_at: now,
+                        finished_at: now,
+                        duration_ms: 1000,
+                        evidence: PackageEvidence {
+                            attempts: vec![],
+                            readiness_checks: vec![],
+                        },
+                    })
+                    .collect();
+                let receipt = Receipt {
+                    receipt_version: "shipper.receipt.v1".to_string(),
+                    plan_id,
+                    registry: Registry::crates_io(),
+                    started_at: now,
+                    finished_at: now,
+                    packages,
+                    event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                    git_context: Some(GitContext {
+                        commit: Some("abc123".to_string()),
+                        branch: Some("main".to_string()),
+                        tag: None,
+                        dirty: Some(false),
+                    }),
+                    environment: EnvironmentFingerprint {
+                        shipper_version: "0.3.0".to_string(),
+                        cargo_version: Some("1.80.0".to_string()),
+                        rust_version: Some("1.80.0".to_string()),
+                        os: "linux".to_string(),
+                        arch: "x86_64".to_string(),
+                    },
+                };
+                let json = serde_json::to_string(&receipt).unwrap();
+                let parsed: Receipt = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.plan_id, receipt.plan_id);
+                assert_eq!(parsed.packages.len(), receipt.packages.len());
+                assert_eq!(parsed.receipt_version, receipt.receipt_version);
+                assert!(parsed.git_context.is_some());
+            }
+
+            // --- PublishEvent roundtrip ---
+            #[test]
+            fn publish_event_roundtrip(variant in 0u8..5) {
+                let event_type = match variant {
+                    0 => EventType::ExecutionStarted,
+                    1 => EventType::PlanCreated {
+                        plan_id: "abc".to_string(),
+                        package_count: 3,
+                    },
+                    2 => EventType::PackageStarted {
+                        name: "test".to_string(),
+                        version: "1.0.0".to_string(),
+                    },
+                    3 => EventType::PackageFailed {
+                        class: ErrorClass::Retryable,
+                        message: "timeout".to_string(),
+                    },
+                    _ => EventType::ExecutionFinished {
+                        result: ExecutionResult::Success,
+                    },
+                };
+                let event = PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type,
+                    package: "test@1.0.0".to_string(),
+                };
+                let json = serde_json::to_string(&event).unwrap();
+                let parsed: PublishEvent = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.package, event.package);
+            }
+
+            // --- EventType all variants roundtrip ---
+            #[test]
+            fn event_type_all_variants_roundtrip(variant in 0u8..18) {
+                let event_type = match variant {
+                    0 => EventType::PlanCreated { plan_id: "id1".to_string(), package_count: 5 },
+                    1 => EventType::ExecutionStarted,
+                    2 => EventType::ExecutionFinished { result: ExecutionResult::Success },
+                    3 => EventType::PackageStarted { name: "a".to_string(), version: "1.0.0".to_string() },
+                    4 => EventType::PackageAttempted { attempt: 1, command: "cargo publish".to_string() },
+                    5 => EventType::PackageOutput { stdout_tail: "ok".to_string(), stderr_tail: "".to_string() },
+                    6 => EventType::PackagePublished { duration_ms: 100 },
+                    7 => EventType::PackageFailed { class: ErrorClass::Retryable, message: "err".to_string() },
+                    8 => EventType::PackageSkipped { reason: "exists".to_string() },
+                    9 => EventType::ReadinessStarted { method: ReadinessMethod::Api },
+                    10 => EventType::ReadinessPoll { attempt: 1, visible: false },
+                    11 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
+                    12 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
+                    13 => EventType::IndexReadinessStarted { crate_name: "a".to_string(), version: "1.0.0".to_string() },
+                    14 => EventType::IndexReadinessCheck { crate_name: "a".to_string(), version: "1.0.0".to_string(), found: true },
+                    15 => EventType::IndexReadinessComplete { crate_name: "a".to_string(), version: "1.0.0".to_string(), visible: true },
+                    16 => EventType::PreflightStarted,
+                    _ => EventType::PreflightComplete { finishability: Finishability::Proven },
+                };
+                let json = serde_json::to_string(&event_type).unwrap();
+                let _parsed: EventType = serde_json::from_str(&json).unwrap();
+            }
+        }
+
+        // ===== PackageState transition validity =====
+
+        /// Valid transitions from each PackageState
+        fn valid_next_states(state: &PackageState) -> Vec<PackageState> {
+            match state {
+                PackageState::Pending => vec![
+                    PackageState::Uploaded,
+                    PackageState::Failed {
+                        class: ErrorClass::Retryable,
+                        message: "err".to_string(),
+                    },
+                    PackageState::Skipped {
+                        reason: "already published".to_string(),
+                    },
+                ],
+                PackageState::Uploaded => vec![
+                    PackageState::Published,
+                    PackageState::Failed {
+                        class: ErrorClass::Retryable,
+                        message: "readiness timeout".to_string(),
+                    },
+                    PackageState::Ambiguous {
+                        message: "unclear".to_string(),
+                    },
+                ],
+                PackageState::Failed { .. } => vec![
+                    PackageState::Pending, // retry resets to Pending
+                ],
+                // Terminal states
+                PackageState::Published => vec![],
+                PackageState::Skipped { .. } => vec![],
+                PackageState::Ambiguous { .. } => vec![],
+            }
+        }
+
+        fn is_terminal(state: &PackageState) -> bool {
+            matches!(
+                state,
+                PackageState::Published
+                    | PackageState::Skipped { .. }
+                    | PackageState::Ambiguous { .. }
+            )
+        }
+
+        proptest! {
+            #[test]
+            fn package_state_transitions_are_valid(
+                start_variant in 0u8..6,
+            ) {
+                let start = match start_variant {
+                    0 => PackageState::Pending,
+                    1 => PackageState::Uploaded,
+                    2 => PackageState::Published,
+                    3 => PackageState::Skipped { reason: "exists".to_string() },
+                    4 => PackageState::Failed { class: ErrorClass::Retryable, message: "err".to_string() },
+                    _ => PackageState::Ambiguous { message: "unclear".to_string() },
+                };
+
+                let nexts = valid_next_states(&start);
+                if is_terminal(&start) {
+                    assert!(nexts.is_empty(), "Terminal state {:?} should have no valid transitions", start);
+                } else {
+                    assert!(!nexts.is_empty(), "Non-terminal state {:?} should have valid transitions", start);
+                }
+            }
+
+            /// Failed states can always retry back to Pending
+            #[test]
+            fn failed_state_can_retry(
+                class_variant in 0u8..3,
+                message in "[a-z ]{1,30}",
+            ) {
+                let class = match class_variant {
+                    0 => ErrorClass::Retryable,
+                    1 => ErrorClass::Permanent,
+                    _ => ErrorClass::Ambiguous,
+                };
+                let failed = PackageState::Failed { class, message };
+                let nexts = valid_next_states(&failed);
+                assert!(nexts.contains(&PackageState::Pending),
+                    "Failed state should allow retry to Pending");
+            }
+
+            /// Pending always leads to Uploaded, Failed, or Skipped
+            #[test]
+            fn pending_has_expected_transitions(_dummy in 0u8..1) {
+                let nexts = valid_next_states(&PackageState::Pending);
+                assert_eq!(nexts.len(), 3);
+                assert!(matches!(nexts[0], PackageState::Uploaded));
+                assert!(matches!(nexts[1], PackageState::Failed { .. }));
+                assert!(matches!(nexts[2], PackageState::Skipped { .. }));
+            }
+        }
+
+        // ===== Plan determinism =====
+
+        proptest! {
+            /// Same inputs produce the same plan_id (SHA256 determinism)
+            #[test]
+            fn plan_id_deterministic_for_same_inputs(
+                pkg_count in 1usize..6,
+                seed in 0u64..1000,
+            ) {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+
+                // Generate a deterministic "plan_id" from the same inputs
+                fn compute_plan_id(packages: &[PlannedPackage], registry_name: &str) -> String {
+                    let mut hasher = DefaultHasher::new();
+                    registry_name.hash(&mut hasher);
+                    for pkg in packages {
+                        pkg.name.hash(&mut hasher);
+                        pkg.version.hash(&mut hasher);
+                    }
+                    format!("{:016x}", hasher.finish())
+                }
+
+                let packages: Vec<PlannedPackage> = (0..pkg_count)
+                    .map(|i| PlannedPackage {
+                        name: format!("crate-{}-{}", seed, i),
+                        version: format!("{}.0.0", i),
+                        manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                    })
+                    .collect();
+
+                let id1 = compute_plan_id(&packages, "crates-io");
+                let id2 = compute_plan_id(&packages, "crates-io");
+                assert_eq!(id1, id2, "Same inputs must produce the same plan_id");
+            }
+
+            /// Different package lists produce different plan_ids
+            #[test]
+            fn plan_id_differs_for_different_inputs(
+                seed in 0u64..1000,
+            ) {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+
+                fn compute_plan_id(packages: &[PlannedPackage], registry_name: &str) -> String {
+                    let mut hasher = DefaultHasher::new();
+                    registry_name.hash(&mut hasher);
+                    for pkg in packages {
+                        pkg.name.hash(&mut hasher);
+                        pkg.version.hash(&mut hasher);
+                    }
+                    format!("{:016x}", hasher.finish())
+                }
+
+                let pkgs_a = vec![PlannedPackage {
+                    name: format!("crate-a-{seed}"),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("Cargo.toml"),
+                }];
+                let pkgs_b = vec![PlannedPackage {
+                    name: format!("crate-b-{seed}"),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("Cargo.toml"),
+                }];
+
+                let id_a = compute_plan_id(&pkgs_a, "crates-io");
+                let id_b = compute_plan_id(&pkgs_b, "crates-io");
+                assert_ne!(id_a, id_b, "Different inputs must produce different plan_ids");
+            }
+        }
+
+        // ===== Receipt generation from ExecutionState =====
+
+        fn build_receipt_from_state(state: &ExecutionState) -> Receipt {
+            let now = Utc::now();
+            let packages: Vec<PackageReceipt> = state
+                .packages
+                .values()
+                .map(|progress| PackageReceipt {
+                    name: progress.name.clone(),
+                    version: progress.version.clone(),
+                    attempts: progress.attempts,
+                    state: progress.state.clone(),
+                    started_at: state.created_at,
+                    finished_at: now,
+                    duration_ms: 0,
+                    evidence: PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                })
+                .collect();
+
+            Receipt {
+                receipt_version: "shipper.receipt.v1".to_string(),
+                plan_id: state.plan_id.clone(),
+                registry: state.registry.clone(),
+                started_at: state.created_at,
+                finished_at: now,
+                packages,
+                event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                git_context: None,
+                environment: EnvironmentFingerprint {
+                    shipper_version: "0.3.0".to_string(),
+                    cargo_version: None,
+                    rust_version: None,
+                    os: "test".to_string(),
+                    arch: "test".to_string(),
+                },
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn receipt_from_state_preserves_plan_id(
+                plan_id in "[a-f0-9]{8,32}",
+                pkg_count in 0usize..5,
+            ) {
+                let mut packages = BTreeMap::new();
+                for i in 0..pkg_count {
+                    packages.insert(
+                        format!("pkg-{i}@{i}.0.0"),
+                        PackageProgress {
+                            name: format!("pkg-{i}"),
+                            version: format!("{i}.0.0"),
+                            attempts: 1,
+                            state: PackageState::Published,
+                            last_updated_at: Utc::now(),
+                        },
+                    );
+                }
+                let state = ExecutionState {
+                    state_version: "shipper.state.v1".to_string(),
+                    plan_id: plan_id.clone(),
+                    registry: Registry::crates_io(),
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    packages,
+                };
+
+                let receipt = build_receipt_from_state(&state);
+                assert_eq!(receipt.plan_id, plan_id);
+                assert_eq!(receipt.packages.len(), pkg_count);
+                for pkg_receipt in &receipt.packages {
+                    assert!(state.packages.values().any(|p| p.name == pkg_receipt.name));
+                    assert_eq!(pkg_receipt.state, PackageState::Published);
+                }
+            }
+
+            #[test]
+            fn receipt_from_state_includes_all_packages(pkg_count in 1usize..8) {
+                let mut packages = BTreeMap::new();
+                for i in 0..pkg_count {
+                    let state_variant = match i % 3 {
+                        0 => PackageState::Published,
+                        1 => PackageState::Skipped { reason: "exists".to_string() },
+                        _ => PackageState::Failed {
+                            class: ErrorClass::Permanent,
+                            message: "auth failure".to_string(),
+                        },
+                    };
+                    packages.insert(
+                        format!("pkg-{i}@{i}.0.0"),
+                        PackageProgress {
+                            name: format!("pkg-{i}"),
+                            version: format!("{i}.0.0"),
+                            attempts: (i as u32) + 1,
+                            state: state_variant,
+                            last_updated_at: Utc::now(),
+                        },
+                    );
+                }
+                let state = ExecutionState {
+                    state_version: "shipper.state.v1".to_string(),
+                    plan_id: "test-plan".to_string(),
+                    registry: Registry::crates_io(),
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    packages,
+                };
+
+                let receipt = build_receipt_from_state(&state);
+                assert_eq!(receipt.packages.len(), pkg_count);
+                // Receipt should be serializable
+                let json = serde_json::to_string(&receipt).unwrap();
+                let parsed: Receipt = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.packages.len(), pkg_count);
+            }
+        }
+
+        // ===== Version string parsing roundtrips =====
+
+        /// Parse a semver-like version string and reconstruct it
+        fn parse_version(v: &str) -> Option<(u32, u32, u32, Option<String>)> {
+            let (main, pre) = if let Some(idx) = v.find('-') {
+                (&v[..idx], Some(v[idx + 1..].to_string()))
+            } else {
+                (v, None)
+            };
+            let parts: Vec<&str> = main.split('.').collect();
+            if parts.len() != 3 {
+                return None;
+            }
+            let major = parts[0].parse::<u32>().ok()?;
+            let minor = parts[1].parse::<u32>().ok()?;
+            let patch = parts[2].parse::<u32>().ok()?;
+            Some((major, minor, patch, pre))
+        }
+
+        fn format_version(major: u32, minor: u32, patch: u32, pre: Option<&str>) -> String {
+            match pre {
+                Some(p) => format!("{major}.{minor}.{patch}-{p}"),
+                None => format!("{major}.{minor}.{patch}"),
+            }
+        }
+
+        proptest! {
+            /// Parsing a version string and reformatting yields the original
+            #[test]
+            fn version_string_roundtrip(
+                major in 0u32..100,
+                minor in 0u32..100,
+                patch in 0u32..100,
+            ) {
+                let version = format!("{major}.{minor}.{patch}");
+                let (m, mi, p, pre) = parse_version(&version).unwrap();
+                assert_eq!(m, major);
+                assert_eq!(mi, minor);
+                assert_eq!(p, patch);
+                assert!(pre.is_none());
+                let reconstructed = format_version(m, mi, p, pre.as_deref());
+                assert_eq!(reconstructed, version);
+            }
+
+            /// Version with prerelease tag roundtrips
+            #[test]
+            fn version_string_with_prerelease_roundtrip(
+                major in 0u32..100,
+                minor in 0u32..100,
+                patch in 0u32..100,
+                pre_tag in "[a-z]{1,5}\\.[0-9]{1,3}",
+            ) {
+                let version = format!("{major}.{minor}.{patch}-{pre_tag}");
+                let (m, mi, p, pre) = parse_version(&version).unwrap();
+                assert_eq!(m, major);
+                assert_eq!(mi, minor);
+                assert_eq!(p, patch);
+                assert_eq!(pre.as_deref(), Some(pre_tag.as_str()));
+                let reconstructed = format_version(m, mi, p, pre.as_deref());
+                assert_eq!(reconstructed, version);
+            }
+
+            /// Version fields stored in PlannedPackage survive JSON roundtrip
+            #[test]
+            fn version_in_planned_package_roundtrip(
+                major in 0u32..100,
+                minor in 0u32..100,
+                patch in 0u32..100,
+            ) {
+                let version = format!("{major}.{minor}.{patch}");
+                let pkg = PlannedPackage {
+                    name: "test-crate".to_string(),
+                    version: version.clone(),
+                    manifest_path: PathBuf::from("Cargo.toml"),
+                };
+                let json = serde_json::to_string(&pkg).unwrap();
+                let parsed: PlannedPackage = serde_json::from_str(&json).unwrap();
+                let (m, mi, p, _) = parse_version(&parsed.version).unwrap();
+                assert_eq!((m, mi, p), (major, minor, patch));
             }
         }
 

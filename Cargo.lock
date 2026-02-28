@@ -1216,6 +1216,7 @@ checksum = "e82db8c87c7f1ccecb34ce0c24399b8a73081427f3c7c50a5d597925356115e4"
 dependencies = [
  "console 0.15.11",
  "once_cell",
+ "serde",
  "similar",
  "tempfile",
 ]
@@ -2331,6 +2332,7 @@ name = "shipper-config"
 version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
+ "insta",
  "proptest",
  "serde",
  "serde_with",
@@ -2373,7 +2375,9 @@ dependencies = [
  "anyhow",
  "base64",
  "pbkdf2",
+ "proptest",
  "serde",
+ "serde_json",
  "sha2",
  "tempfile",
 ]
@@ -2416,7 +2420,9 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "serial_test",
  "shipper-types",
+ "temp-env",
  "tempfile",
 ]
 
@@ -2426,6 +2432,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "proptest",
  "serde",
  "serde_json",
  "shipper-types",
@@ -2452,6 +2459,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 
@@ -2489,7 +2497,9 @@ dependencies = [
  "cargo_metadata",
  "chrono",
  "hex",
+ "insta",
  "proptest",
+ "serde",
  "sha2",
  "shipper-cargo",
  "shipper-state",
@@ -2532,6 +2542,7 @@ name = "shipper-registry"
 version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
+ "proptest",
  "reqwest",
  "serde",
  "serde_json",
@@ -2612,6 +2623,7 @@ name = "shipper-types"
 version = "0.3.0-rc.1"
 dependencies = [
  "chrono",
+ "insta",
  "proptest",
  "serde",
  "serde_json",
@@ -2634,6 +2646,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "tiny_http",
+ "tokio",
 ]
 
 [[package]]

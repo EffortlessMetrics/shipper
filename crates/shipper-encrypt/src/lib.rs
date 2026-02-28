@@ -371,6 +371,8 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    // ── Core encrypt/decrypt roundtrip ──────────────────────────────────
+
     #[test]
     fn encrypt_decrypt_roundtrip() {
         let plaintext = b"Hello, World! This is a test message.";
@@ -422,6 +424,164 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // ── Empty input ─────────────────────────────────────────────────────
+
+    #[test]
+    fn encrypt_decrypt_empty_input() {
+        let plaintext = b"";
+        let passphrase = "test-passphrase";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encryption should succeed");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decryption should succeed");
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn encrypt_empty_with_empty_passphrase() {
+        let plaintext = b"";
+        let passphrase = "";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encryption should succeed");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decryption should succeed");
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    // ── Large input ─────────────────────────────────────────────────────
+
+    #[test]
+    fn encrypt_decrypt_large_input() {
+        // 1 MiB of data
+        let plaintext: Vec<u8> = (0..1_048_576).map(|i| (i % 256) as u8).collect();
+        let passphrase = "large-data-passphrase";
+
+        let encrypted = encrypt(&plaintext, passphrase).expect("encryption should succeed");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decryption should succeed");
+
+        assert_eq!(plaintext, decrypted);
+    }
+
+    #[test]
+    fn encrypt_decrypt_single_byte() {
+        let plaintext = b"\x42";
+        let passphrase = "single-byte";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encryption should succeed");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decryption should succeed");
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    // ── Decrypt error cases ─────────────────────────────────────────────
+
+    #[test]
+    fn decrypt_invalid_base64_fails() {
+        let result = decrypt("not-valid-base64!!!", "passphrase");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("base64"),
+            "error should mention base64, got: {err}"
+        );
+    }
+
+    #[test]
+    fn decrypt_too_short_data_fails() {
+        // Encode data that is too short (less than salt + nonce + 16-byte tag)
+        let short_data = vec![0u8; SALT_SIZE + NONCE_SIZE + 15];
+        let encoded = BASE64.encode(&short_data);
+
+        let result = decrypt(&encoded, "passphrase");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("too short"),
+            "error should mention 'too short', got: {err}"
+        );
+    }
+
+    #[test]
+    fn decrypt_corrupted_ciphertext_fails() {
+        let plaintext = b"Some data to encrypt";
+        let passphrase = "test-pass";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encryption should succeed");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+
+        // Decode, corrupt a byte in the ciphertext region, re-encode
+        let mut raw = BASE64.decode(&encrypted_str).expect("valid base64");
+        let idx = SALT_SIZE + NONCE_SIZE + 1;
+        raw[idx] ^= 0xFF;
+        let corrupted = BASE64.encode(&raw);
+
+        let result = decrypt(&corrupted, passphrase);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_corrupted_salt_fails() {
+        let plaintext = b"Some data";
+        let passphrase = "test-pass";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encryption should succeed");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+
+        // Flip a bit in the salt region
+        let mut raw = BASE64.decode(&encrypted_str).expect("valid base64");
+        raw[0] ^= 0xFF;
+        let corrupted = BASE64.encode(&raw);
+
+        let result = decrypt(&corrupted, passphrase);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_corrupted_nonce_fails() {
+        let plaintext = b"Some data";
+        let passphrase = "test-pass";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encryption should succeed");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+
+        // Flip a bit in the nonce region
+        let mut raw = BASE64.decode(&encrypted_str).expect("valid base64");
+        raw[SALT_SIZE] ^= 0xFF;
+        let corrupted = BASE64.encode(&raw);
+
+        let result = decrypt(&corrupted, passphrase);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_empty_string_fails() {
+        let result = decrypt("", "passphrase");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_exactly_minimum_length_minus_one_fails() {
+        // Exactly salt + nonce + 15 bytes (one less than the 16-byte auth tag)
+        let data = vec![0u8; SALT_SIZE + NONCE_SIZE + 15];
+        let encoded = BASE64.encode(&data);
+        assert!(decrypt(&encoded, "pass").is_err());
+    }
+
+    #[test]
+    fn decrypt_exactly_minimum_length_fails_with_wrong_key() {
+        // salt + nonce + 16 bytes of garbage "ciphertext"
+        let data = vec![0u8; SALT_SIZE + NONCE_SIZE + 16];
+        let encoded = BASE64.encode(&data);
+        // Passes the length check but fails decryption
+        assert!(decrypt(&encoded, "pass").is_err());
+    }
+
+    // ── is_encrypted heuristic ──────────────────────────────────────────
+
     #[test]
     fn is_encrypted_detects_encrypted_data() {
         let plaintext = b"Hello, World!";
@@ -438,6 +598,200 @@ mod tests {
         let plaintext = r#"{"key": "value"}"#;
         assert!(!is_encrypted(plaintext));
     }
+
+    #[test]
+    fn is_encrypted_rejects_empty_string() {
+        assert!(!is_encrypted(""));
+    }
+
+    #[test]
+    fn is_encrypted_rejects_short_base64() {
+        // Valid base64 but too short to be encrypted data
+        let short = BASE64.encode(vec![0u8; SALT_SIZE + NONCE_SIZE + 10]);
+        assert!(!is_encrypted(&short));
+    }
+
+    #[test]
+    fn is_encrypted_rejects_non_base64() {
+        assert!(!is_encrypted("definitely not base64 $$$ !!!"));
+    }
+
+    // ── Passphrase edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn roundtrip_with_unicode_passphrase() {
+        let plaintext = b"Unicode passphrase test";
+        let passphrase = "pässwörd-密码-🔑";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encryption should succeed");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decryption should succeed");
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn roundtrip_with_very_long_passphrase() {
+        let plaintext = b"Long passphrase test";
+        let passphrase: String = "a".repeat(10_000);
+
+        let encrypted = encrypt(plaintext, &passphrase).expect("encryption should succeed");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, &passphrase).expect("decryption should succeed");
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn different_passphrases_produce_different_ciphertexts_when_decoded() {
+        let plaintext = b"Same plaintext";
+        let pass1 = "passphrase-one";
+        let pass2 = "passphrase-two";
+
+        let enc1 = encrypt(plaintext, pass1).expect("encrypt");
+        let enc2 = encrypt(plaintext, pass2).expect("encrypt");
+
+        // Different passphrases → different raw bytes (even ignoring salt/nonce randomness)
+        let raw1 = BASE64
+            .decode(String::from_utf8(enc1).expect("utf8"))
+            .expect("base64");
+        let raw2 = BASE64
+            .decode(String::from_utf8(enc2).expect("utf8"))
+            .expect("base64");
+
+        // Ciphertext portions must differ
+        let ct1 = &raw1[SALT_SIZE + NONCE_SIZE..];
+        let ct2 = &raw2[SALT_SIZE + NONCE_SIZE..];
+        assert_ne!(ct1, ct2);
+    }
+
+    // ── Binary / non-UTF8 plaintext ─────────────────────────────────────
+
+    #[test]
+    fn roundtrip_binary_data() {
+        let plaintext: Vec<u8> = (0..=255).collect();
+        let passphrase = "binary-data-test";
+
+        let encrypted = encrypt(&plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+
+        assert_eq!(plaintext, decrypted);
+    }
+
+    #[test]
+    fn roundtrip_all_zero_bytes() {
+        let plaintext = vec![0u8; 1024];
+        let passphrase = "zeroes";
+
+        let encrypted = encrypt(&plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+
+        assert_eq!(plaintext, decrypted);
+    }
+
+    // ── derive_key ──────────────────────────────────────────────────────
+
+    #[test]
+    fn derive_key_produces_consistent_output() {
+        let passphrase = "test-passphrase";
+        let salt = [0u8; SALT_SIZE];
+
+        let key1 = derive_key(passphrase, &salt);
+        let key2 = derive_key(passphrase, &salt);
+
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn derive_key_different_salts_produce_different_keys() {
+        let passphrase = "test-passphrase";
+        let salt1 = [0u8; SALT_SIZE];
+        let mut salt2 = [0u8; SALT_SIZE];
+        salt2[0] = 1;
+
+        let key1 = derive_key(passphrase, &salt1);
+        let key2 = derive_key(passphrase, &salt2);
+
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn derive_key_different_passphrases_produce_different_keys() {
+        let salt = [42u8; SALT_SIZE];
+
+        let key1 = derive_key("passphrase-a", &salt);
+        let key2 = derive_key("passphrase-b", &salt);
+
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn derive_key_empty_passphrase() {
+        let salt = [0u8; SALT_SIZE];
+        // Should not panic – just produces a deterministic key
+        let key1 = derive_key("", &salt);
+        let key2 = derive_key("", &salt);
+        assert_eq!(key1, key2);
+    }
+
+    // ── EncryptionConfig ────────────────────────────────────────────────
+
+    #[test]
+    fn encryption_config_default_is_disabled() {
+        let cfg = EncryptionConfig::default();
+        assert!(!cfg.enabled);
+        assert!(cfg.passphrase.is_none());
+        assert!(cfg.env_var.is_none());
+    }
+
+    #[test]
+    fn encryption_config_new_is_enabled() {
+        let cfg = EncryptionConfig::new("secret".to_string());
+        assert!(cfg.enabled);
+        assert_eq!(cfg.passphrase.as_deref(), Some("secret"));
+        assert!(cfg.env_var.is_none());
+    }
+
+    #[test]
+    fn encryption_config_from_env_is_enabled() {
+        let cfg = EncryptionConfig::from_env("MY_VAR".to_string());
+        assert!(cfg.enabled);
+        assert!(cfg.passphrase.is_none());
+        assert_eq!(cfg.env_var.as_deref(), Some("MY_VAR"));
+    }
+
+    #[test]
+    fn encryption_config_get_passphrase_direct() {
+        let cfg = EncryptionConfig::new("hello".to_string());
+        assert_eq!(cfg.get_passphrase().unwrap(), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn encryption_config_get_passphrase_none_when_disabled() {
+        let cfg = EncryptionConfig::default();
+        assert_eq!(cfg.get_passphrase().unwrap(), None);
+    }
+
+    #[test]
+    fn encryption_config_serde_roundtrip() {
+        let cfg = EncryptionConfig::new("test".to_string());
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let deserialized: EncryptionConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized.enabled, cfg.enabled);
+        assert_eq!(deserialized.passphrase, cfg.passphrase);
+    }
+
+    #[test]
+    fn encryption_config_serde_skips_none_fields() {
+        let cfg = EncryptionConfig::default();
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        assert!(!json.contains("passphrase"));
+        assert!(!json.contains("env_var"));
+    }
+
+    // ── StateEncryption ─────────────────────────────────────────────────
 
     #[test]
     fn state_encryption_enabled_disabled() {
@@ -458,10 +812,21 @@ mod tests {
         let data = b"Test state data";
 
         let encrypted = encryption.encrypt(data).expect("encryption should succeed");
-        // Convert to string for decrypt
         let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
         let decrypted =
             decrypt(&encrypted_str, "my-secret-passphrase").expect("decryption should succeed");
+
+        assert_eq!(data.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn state_encryption_decrypt_roundtrip() {
+        let config = EncryptionConfig::new("my-pass".to_string());
+        let encryption = StateEncryption::new(config).expect("should create");
+
+        let data = b"state data to encrypt";
+        let encrypted = encryption.encrypt(data).expect("encrypt");
+        let decrypted = encryption.decrypt(&encrypted).expect("decrypt");
 
         assert_eq!(data.to_vec(), decrypted);
     }
@@ -473,10 +838,22 @@ mod tests {
 
         let data = b"Plain text data";
 
-        // Without encryption, should return data as-is
         let result = encryption.decrypt(data).expect("should succeed");
         assert_eq!(data.to_vec(), result);
     }
+
+    #[test]
+    fn state_encryption_disabled_encrypt_passthrough_on_decrypt() {
+        // When disabled, decrypt returns data as-is even if it looks like garbage
+        let config = EncryptionConfig::default();
+        let encryption = StateEncryption::new(config).expect("should create");
+
+        let garbage = b"\x00\x01\x02\x03";
+        let result = encryption.decrypt(garbage).expect("should succeed");
+        assert_eq!(garbage.to_vec(), result);
+    }
+
+    // ── encrypt output format ───────────────────────────────────────────
 
     #[test]
     fn encrypt_produces_valid_base64() {
@@ -486,37 +863,25 @@ mod tests {
         let encrypted = encrypt(plaintext, passphrase).expect("should encrypt");
         let encrypted_str = String::from_utf8(encrypted.clone()).expect("valid UTF-8");
 
-        // Should be valid base64 - decode and check it has expected length
         let decoded = BASE64.decode(&encrypted_str).expect("valid base64");
-        // The decoded length should be greater than the plaintext (salt + nonce + ciphertext)
         assert!(decoded.len() > plaintext.len());
     }
 
     #[test]
-    fn derive_key_produces_consistent_output() {
-        let passphrase = "test-passphrase";
-        let salt = [0u8; SALT_SIZE];
+    fn encrypted_output_has_expected_structure() {
+        let plaintext = b"Hello";
+        let passphrase = "test";
 
-        let key1 = derive_key(passphrase, &salt);
-        let key2 = derive_key(passphrase, &salt);
+        let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let raw = BASE64.decode(&encrypted_str).expect("base64");
 
-        // Same passphrase and salt should produce same key
-        assert_eq!(key1, key2);
+        // raw = salt(16) + nonce(12) + ciphertext(len(plaintext) + 16 for GCM tag)
+        let expected_len = SALT_SIZE + NONCE_SIZE + plaintext.len() + 16;
+        assert_eq!(raw.len(), expected_len);
     }
 
-    #[test]
-    fn derive_key_different_salts_produce_different_keys() {
-        let passphrase = "test-passphrase";
-        let salt1 = [0u8; SALT_SIZE];
-        let mut salt2 = [0u8; SALT_SIZE];
-        salt2[0] = 1; // Different salt
-
-        let key1 = derive_key(passphrase, &salt1);
-        let key2 = derive_key(passphrase, &salt2);
-
-        // Different salts should produce different keys
-        assert_ne!(key1, key2);
-    }
+    // ── File I/O ────────────────────────────────────────────────────────
 
     #[test]
     fn read_write_encrypted_file() {
@@ -530,6 +895,39 @@ mod tests {
         let decrypted = read_decrypted(&path, passphrase).expect("read decrypted");
 
         assert_eq!(plaintext.to_vec(), decrypted.into_bytes());
+    }
+
+    #[test]
+    fn read_decrypted_wrong_passphrase_fails() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("test.enc");
+
+        write_encrypted(&path, b"data", "correct").expect("write");
+        let result = read_decrypted(&path, "wrong");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_decrypted_nonexistent_file_fails() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("does-not-exist.enc");
+
+        let result = read_decrypted(&path, "pass");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_encrypted_file_is_base64_on_disk() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("test.enc");
+
+        write_encrypted(&path, b"data", "pass").expect("write");
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+
+        // Should be valid base64
+        assert!(BASE64.decode(&on_disk).is_ok());
+        // Should NOT be the plaintext
+        assert_ne!(on_disk, "data");
     }
 
     #[test]
@@ -563,5 +961,113 @@ mod tests {
         // Should be able to read it back
         let content = encryption.read_file(&path).expect("read file");
         assert_eq!(data, content);
+    }
+
+    #[test]
+    fn state_encryption_disabled_writes_plaintext() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("plain.json");
+
+        let config = EncryptionConfig::default();
+        let encryption = StateEncryption::new(config).expect("create");
+
+        let data = b"plain text content";
+        encryption.write_file(&path, data).expect("write");
+
+        let on_disk = std::fs::read(&path).expect("read");
+        assert_eq!(data.to_vec(), on_disk);
+    }
+
+    #[test]
+    fn state_encryption_disabled_reads_plaintext() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("plain.txt");
+        std::fs::write(&path, "hello").expect("write");
+
+        let config = EncryptionConfig::default();
+        let encryption = StateEncryption::new(config).expect("create");
+
+        let content = encryption.read_file(&path).expect("read");
+        assert_eq!(content, "hello");
+    }
+
+    #[test]
+    fn state_encryption_read_nonexistent_file_fails() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("nope.json");
+
+        let config = EncryptionConfig::new("pass".to_string());
+        let encryption = StateEncryption::new(config).expect("create");
+
+        assert!(encryption.read_file(&path).is_err());
+    }
+}
+
+// ── Property-based tests ────────────────────────────────────────────────
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn roundtrip_arbitrary_data(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
+            let passphrase = "prop-test-pass";
+            let encrypted = encrypt(&data, passphrase).expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+            let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+            prop_assert_eq!(data, decrypted);
+        }
+
+        #[test]
+        fn roundtrip_arbitrary_passphrase(passphrase in "\\PC{1,200}") {
+            let plaintext = b"fixed plaintext for passphrase fuzz";
+            let encrypted = encrypt(plaintext, &passphrase).expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+            let decrypted = decrypt(&encrypted_str, &passphrase).expect("decrypt");
+            prop_assert_eq!(plaintext.to_vec(), decrypted);
+        }
+
+        #[test]
+        fn roundtrip_arbitrary_data_and_passphrase(
+            data in proptest::collection::vec(any::<u8>(), 0..1024),
+            passphrase in "\\PC{1,100}",
+        ) {
+            let encrypted = encrypt(&data, &passphrase).expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+            let decrypted = decrypt(&encrypted_str, &passphrase).expect("decrypt");
+            prop_assert_eq!(data, decrypted);
+        }
+
+        #[test]
+        fn encrypted_output_is_valid_base64(data in proptest::collection::vec(any::<u8>(), 0..512)) {
+            let encrypted = encrypt(&data, "test").expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+            prop_assert!(BASE64.decode(&encrypted_str).is_ok());
+        }
+
+        #[test]
+        fn wrong_passphrase_always_fails(
+            data in proptest::collection::vec(any::<u8>(), 1..512),
+            correct in "[a-z]{8,16}",
+            wrong in "[A-Z]{8,16}",
+        ) {
+            // Ensure passphrases actually differ
+            prop_assume!(correct != wrong);
+            let encrypted = encrypt(&data, &correct).expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+            prop_assert!(decrypt(&encrypted_str, &wrong).is_err());
+        }
+
+        #[test]
+        fn encrypted_size_is_deterministic(data in proptest::collection::vec(any::<u8>(), 0..2048)) {
+            let encrypted = encrypt(&data, "pass").expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+            let raw = BASE64.decode(&encrypted_str).expect("base64");
+            // salt(16) + nonce(12) + plaintext_len + gcm_tag(16)
+            let expected = SALT_SIZE + NONCE_SIZE + data.len() + 16;
+            prop_assert_eq!(raw.len(), expected);
+        }
     }
 }

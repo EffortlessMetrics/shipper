@@ -382,4 +382,463 @@ mod tests {
         assert!(json.contains("\"success\":true"));
         assert!(json.contains("\"stdout\":\"output\""));
     }
+
+    // ── CommandResult unit tests ──────────────────────────────────────
+
+    #[test]
+    fn command_result_ok_returns_self_ref() {
+        let result = CommandResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: "hello".to_string(),
+            stderr: String::new(),
+            duration_ms: 10,
+        };
+        let r = result.ok().expect("should be ok");
+        assert_eq!(r.stdout, "hello");
+    }
+
+    #[test]
+    fn command_result_err_contains_exit_code_and_stderr() {
+        let result = CommandResult {
+            success: false,
+            exit_code: Some(42),
+            stdout: String::new(),
+            stderr: "boom".to_string(),
+            duration_ms: 5,
+        };
+        let err = result.ok().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("42"), "should mention exit code: {msg}");
+        assert!(msg.contains("boom"), "should mention stderr: {msg}");
+    }
+
+    #[test]
+    fn command_result_err_none_exit_code() {
+        let result = CommandResult {
+            success: false,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: "signal".to_string(),
+            duration_ms: 1,
+        };
+        let err = result.ok().unwrap_err();
+        assert!(err.to_string().contains("None"));
+    }
+
+    #[test]
+    fn command_result_from_output_success() {
+        let output = std::process::Output {
+            status: make_exit_status(0),
+            stdout: b"out".to_vec(),
+            stderr: b"err".to_vec(),
+        };
+        let r = CommandResult::from_output(&output, Duration::from_millis(250));
+        assert!(r.success);
+        assert_eq!(r.exit_code, Some(0));
+        assert_eq!(r.stdout, "out");
+        assert_eq!(r.stderr, "err");
+        assert_eq!(r.duration_ms, 250);
+    }
+
+    #[test]
+    fn command_result_from_output_failure() {
+        let output = std::process::Output {
+            status: make_exit_status(1),
+            stdout: Vec::new(),
+            stderr: b"fail".to_vec(),
+        };
+        let r = CommandResult::from_output(&output, Duration::from_millis(50));
+        assert!(!r.success);
+        assert_eq!(r.exit_code, Some(1));
+        assert_eq!(r.stderr, "fail");
+    }
+
+    #[test]
+    fn command_result_deserialization() {
+        let json = r#"{
+            "success": false,
+            "exit_code": 7,
+            "stdout": "hi",
+            "stderr": "lo",
+            "duration_ms": 99
+        }"#;
+        let r: CommandResult = serde_json::from_str(json).expect("deser");
+        assert!(!r.success);
+        assert_eq!(r.exit_code, Some(7));
+        assert_eq!(r.stdout, "hi");
+        assert_eq!(r.stderr, "lo");
+        assert_eq!(r.duration_ms, 99);
+    }
+
+    #[test]
+    fn command_result_roundtrip_serde() {
+        let original = CommandResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: "data\nwith\nnewlines".to_string(),
+            stderr: String::new(),
+            duration_ms: 1000,
+        };
+        let json = serde_json::to_string(&original).expect("ser");
+        let decoded: CommandResult = serde_json::from_str(&json).expect("deser");
+        assert_eq!(decoded.success, original.success);
+        assert_eq!(decoded.exit_code, original.exit_code);
+        assert_eq!(decoded.stdout, original.stdout);
+        assert_eq!(decoded.duration_ms, original.duration_ms);
+    }
+
+    // ── run_command tests ─────────────────────────────────────────────
+
+    #[test]
+    fn run_command_captures_stdout() {
+        // `cargo --version` writes to stdout
+        let r = run_command("cargo", &["--version"]).expect("run");
+        assert!(!r.stdout.is_empty());
+        assert!(r.stdout.starts_with("cargo"));
+    }
+
+    #[test]
+    fn run_command_captures_stderr_on_failure() {
+        let r = run_command("cargo", &["publish", "--help-not-real"]).expect("run");
+        // cargo writes error text to stderr for unknown flags
+        assert!(!r.success);
+        assert!(!r.stderr.is_empty());
+    }
+
+    #[test]
+    fn run_command_records_duration() {
+        let r = run_command("cargo", &["--version"]).expect("run");
+        // duration should be non-negative (and realistically > 0)
+        assert!(r.duration_ms < 30_000, "took too long: {}ms", r.duration_ms);
+    }
+
+    #[test]
+    fn run_command_nonexistent_program() {
+        let err = run_command("totally-bogus-command-xyz-999", &[]);
+        assert!(err.is_err(), "should fail for non-existent program");
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("failed to run command"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    // ── run_command_in_dir tests ──────────────────────────────────────
+
+    #[test]
+    fn run_command_in_dir_uses_working_dir() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        // `cmd /C cd` on Windows prints the current directory
+        #[cfg(windows)]
+        {
+            let r = run_command_in_dir("cmd", &["/C", "cd"], tmp.path()).expect("run");
+            assert!(r.success);
+            let normalised = r.stdout.trim().to_lowercase();
+            let expected = tmp.path().to_str().unwrap().to_lowercase();
+            assert!(
+                normalised.contains(&expected),
+                "stdout={normalised:?} expected to contain {expected:?}"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            let r = run_command_in_dir("pwd", &[], tmp.path()).expect("run");
+            assert!(r.success);
+            assert!(
+                r.stdout
+                    .trim()
+                    .ends_with(tmp.path().file_name().unwrap().to_str().unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn run_command_in_dir_nonexistent_dir() {
+        let bad = std::path::Path::new("Z:\\this\\path\\does\\not\\exist\\at\\all");
+        let err = run_command_in_dir("cargo", &["--version"], bad);
+        assert!(err.is_err());
+    }
+
+    // ── run_command_with_env tests ────────────────────────────────────
+
+    #[test]
+    fn run_command_with_env_passes_variables() {
+        #[cfg(windows)]
+        {
+            let r = run_command_with_env(
+                "cmd",
+                &["/C", "echo %SHIPPER_TEST_VAR%"],
+                &[("SHIPPER_TEST_VAR".to_string(), "hello42".to_string())],
+            )
+            .expect("run");
+            assert!(r.success);
+            assert!(
+                r.stdout.contains("hello42"),
+                "stdout should contain env value: {:?}",
+                r.stdout
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            let r = run_command_with_env(
+                "sh",
+                &["-c", "echo $SHIPPER_TEST_VAR"],
+                &[("SHIPPER_TEST_VAR".to_string(), "hello42".to_string())],
+            )
+            .expect("run");
+            assert!(r.success);
+            assert!(r.stdout.contains("hello42"));
+        }
+    }
+
+    #[test]
+    fn run_command_with_env_multiple_vars() {
+        #[cfg(windows)]
+        {
+            let r = run_command_with_env(
+                "cmd",
+                &["/C", "echo %A% %B%"],
+                &[
+                    ("A".to_string(), "foo".to_string()),
+                    ("B".to_string(), "bar".to_string()),
+                ],
+            )
+            .expect("run");
+            assert!(r.success);
+            assert!(r.stdout.contains("foo"));
+            assert!(r.stdout.contains("bar"));
+        }
+        #[cfg(not(windows))]
+        {
+            let r = run_command_with_env(
+                "sh",
+                &["-c", "echo $A $B"],
+                &[
+                    ("A".to_string(), "foo".to_string()),
+                    ("B".to_string(), "bar".to_string()),
+                ],
+            )
+            .expect("run");
+            assert!(r.success);
+            assert!(r.stdout.contains("foo"));
+            assert!(r.stdout.contains("bar"));
+        }
+    }
+
+    // ── run_command_simple tests ──────────────────────────────────────
+
+    #[test]
+    fn run_command_simple_returns_false_on_failure() {
+        let ok = run_command_simple("cargo", &["--nonexistent-flag-xyz"]).expect("run");
+        assert!(!ok);
+    }
+
+    #[test]
+    fn run_command_simple_nonexistent_program() {
+        let err = run_command_simple("bogus-not-a-command-123", &[]);
+        assert!(err.is_err());
+    }
+
+    // ── run_command_streaming tests ───────────────────────────────────
+
+    #[test]
+    fn run_command_streaming_success() {
+        // stdout/stderr are inherited so captured strings are empty,
+        // but the command should still succeed.
+        let r = run_command_streaming("cargo", &["--version"]).expect("run");
+        assert!(r.success);
+        assert_eq!(r.exit_code, Some(0));
+    }
+
+    #[test]
+    fn run_command_streaming_failure() {
+        let r = run_command_streaming("cargo", &["--nonexistent-flag-xyz"]).expect("run");
+        assert!(!r.success);
+    }
+
+    // ── run_command_with_timeout tests ────────────────────────────────
+
+    #[test]
+    fn run_command_with_timeout_none_delegates() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let r = run_command_with_timeout("cargo", &["--version"], tmp.path(), None).expect("run");
+        assert!(!r.timed_out);
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("cargo"));
+    }
+
+    #[test]
+    fn run_command_with_timeout_completes_before_deadline() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let timeout = Some(Duration::from_secs(30));
+        let r =
+            run_command_with_timeout("cargo", &["--version"], tmp.path(), timeout).expect("run");
+        assert!(!r.timed_out);
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("cargo"));
+    }
+
+    #[test]
+    fn run_command_with_timeout_exceeds_deadline() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        // Use a very short timeout so the child is killed quickly
+        let timeout = Some(Duration::from_millis(100));
+
+        #[cfg(windows)]
+        let r = run_command_with_timeout("ping", &["-n", "100", "127.0.0.1"], tmp.path(), timeout)
+            .expect("run");
+        #[cfg(not(windows))]
+        let r = run_command_with_timeout("sleep", &["60"], tmp.path(), timeout).expect("run");
+
+        assert!(r.timed_out, "should have timed out");
+        assert_eq!(r.exit_code, -1);
+        assert!(
+            r.stderr.contains("timed out"),
+            "stderr should mention timeout: {:?}",
+            r.stderr
+        );
+    }
+
+    #[test]
+    fn run_command_with_timeout_failure_before_deadline() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let timeout = Some(Duration::from_secs(30));
+        let r = run_command_with_timeout("cargo", &["--nonexistent-flag-xyz"], tmp.path(), timeout)
+            .expect("run");
+        assert!(!r.timed_out);
+        assert_ne!(r.exit_code, 0);
+    }
+
+    #[test]
+    fn run_command_with_timeout_nonexistent_program() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let err = run_command_with_timeout(
+            "bogus-not-a-command-123",
+            &[],
+            tmp.path(),
+            Some(Duration::from_secs(5)),
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn run_command_with_timeout_captures_stderr() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let timeout = Some(Duration::from_secs(30));
+        let r = run_command_with_timeout("cargo", &["--nonexistent-flag-xyz"], tmp.path(), timeout)
+            .expect("run");
+        // cargo should write an error message to stderr for the unknown flag
+        assert!(
+            !r.stderr.is_empty(),
+            "stderr should not be empty on failure"
+        );
+    }
+
+    // ── CommandOutput tests ──────────────────────────────────────────
+
+    #[test]
+    fn command_output_duration_is_reasonable() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let r = run_command_with_timeout("cargo", &["--version"], tmp.path(), None).expect("run");
+        assert!(r.duration < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn command_output_serialization_roundtrip() {
+        let co = CommandOutput {
+            exit_code: 2,
+            stdout: "out".to_string(),
+            stderr: "err".to_string(),
+            timed_out: true,
+            duration: Duration::from_millis(500),
+        };
+        let json = serde_json::to_string(&co).expect("ser");
+        let decoded: CommandOutput = serde_json::from_str(&json).expect("deser");
+        assert_eq!(decoded.exit_code, 2);
+        assert_eq!(decoded.stdout, "out");
+        assert_eq!(decoded.stderr, "err");
+        assert!(decoded.timed_out);
+        assert_eq!(decoded.duration, Duration::from_millis(500));
+    }
+
+    // ── command_exists / which tests ─────────────────────────────────
+
+    #[test]
+    fn which_nonexistent_returns_none() {
+        assert!(which("this-command-does-not-exist-xyz123").is_none());
+    }
+
+    #[test]
+    fn which_cargo_returns_valid_path() {
+        let p = which("cargo").expect("cargo should be in PATH");
+        assert!(p.exists(), "path should exist: {}", p.display());
+    }
+
+    // ── run_cargo helpers ────────────────────────────────────────────
+
+    #[test]
+    fn run_cargo_in_dir_works() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let r = run_cargo_in_dir(&["--version"], tmp.path()).expect("run");
+        assert!(r.success);
+        assert!(r.stdout.contains("cargo"));
+    }
+
+    #[test]
+    fn run_cargo_failure() {
+        let r = run_cargo(&["--nonexistent-flag-xyz"]).expect("run");
+        assert!(!r.success);
+    }
+
+    // ── Exit code tests ──────────────────────────────────────────────
+
+    #[test]
+    fn exit_code_zero_on_success() {
+        let r = run_command("cargo", &["--version"]).expect("run");
+        assert_eq!(r.exit_code, Some(0));
+    }
+
+    #[test]
+    fn exit_code_nonzero_on_failure() {
+        let r = run_command("cargo", &["--nonexistent-flag-xyz"]).expect("run");
+        assert!(r.exit_code.is_some());
+        assert_ne!(r.exit_code.unwrap(), 0);
+    }
+
+    #[test]
+    fn specific_exit_code() {
+        #[cfg(windows)]
+        {
+            let r = run_command("cmd", &["/C", "exit 42"]).expect("run");
+            assert_eq!(r.exit_code, Some(42));
+            assert!(!r.success);
+        }
+        #[cfg(not(windows))]
+        {
+            let r = run_command("sh", &["-c", "exit 42"]).expect("run");
+            assert_eq!(r.exit_code, Some(42));
+            assert!(!r.success);
+        }
+    }
+
+    // ── Helper to create ExitStatus with a given code ────────────────
+
+    /// Create an `ExitStatus` by actually running a process that exits with the given code.
+    fn make_exit_status(code: i32) -> std::process::ExitStatus {
+        #[cfg(windows)]
+        {
+            Command::new("cmd")
+                .args(["/C", &format!("exit {code}")])
+                .status()
+                .expect("cmd exit")
+        }
+        #[cfg(not(windows))]
+        {
+            Command::new("sh")
+                .args(["-c", &format!("exit {code}")])
+                .status()
+                .expect("sh exit")
+        }
+    }
 }

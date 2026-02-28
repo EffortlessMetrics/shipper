@@ -1,6 +1,15 @@
 //! Output sanitization helpers for cargo command logs and evidence payloads.
 
 /// Return the last `n` lines from `s`, then apply sensitive redaction.
+///
+/// # Examples
+///
+/// ```
+/// use shipper_output_sanitizer::tail_lines;
+///
+/// let log = "line1\nline2\nline3\nline4";
+/// assert_eq!(tail_lines(log, 2), "line3\nline4");
+/// ```
 pub fn tail_lines(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().collect();
     let tail = if lines.len() <= n {
@@ -14,6 +23,23 @@ pub fn tail_lines(s: &str, n: usize) -> String {
 /// Redact sensitive token-like patterns from output lines.
 ///
 /// Applied to stdout/stderr tails before they are persisted.
+///
+/// # Examples
+///
+/// ```
+/// use shipper_output_sanitizer::redact_sensitive;
+///
+/// assert_eq!(
+///     redact_sensitive("CARGO_REGISTRY_TOKEN=secret123"),
+///     "CARGO_REGISTRY_TOKEN=[REDACTED]"
+/// );
+///
+/// // Non-sensitive content passes through unchanged
+/// assert_eq!(
+///     redact_sensitive("Compiling demo v0.1.0"),
+///     "Compiling demo v0.1.0"
+/// );
+/// ```
 pub fn redact_sensitive(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for line in s.lines() {
@@ -172,7 +198,7 @@ mod property_tests {
                 acc.push_str(&redact_line(line));
                 acc
             });
-            let expected = if input.ends_with('\n') {
+            let expected = if input.ends_with('\n') && input.lines().count() <= n {
                 format!("{expected}\n")
             } else {
                 expected
@@ -186,7 +212,7 @@ mod property_tests {
             let input = format!("{prefix}Authorization: Bearer {token}");
             let out = redact_sensitive(&input);
             prop_assert!(out.contains("[REDACTED]"));
-            prop_assert!(!out.contains(&token));
+            prop_assert!(out.ends_with("Bearer [REDACTED]"), "Expected output to end with 'Bearer [REDACTED]', got: {}", out);
         }
     }
 }

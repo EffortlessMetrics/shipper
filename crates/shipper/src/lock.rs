@@ -201,8 +201,8 @@ fn read_lock_info_from_path(path: &Path) -> Result<LockInfo> {
 /// Get the lock file path for a state directory
 pub fn lock_path(state_dir: &Path, workspace_root: Option<&Path>) -> PathBuf {
     if let Some(root) = workspace_root {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         root.hash(&mut hasher);
         let hash = hasher.finish();

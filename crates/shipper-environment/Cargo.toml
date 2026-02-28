@@ -19,6 +19,8 @@ shipper-types = { path = "../shipper-types" }
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1.0"
+serial_test = "3"
+temp-env = "0.3"
 
 [lints]
 workspace = true

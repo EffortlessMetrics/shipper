@@ -1,0 +1,5 @@
+---
+source: crates/shipper-config/src/lib.rs
+expression: err.to_string()
+---
+retry.max_delay must be greater than or equal to retry.base_delay

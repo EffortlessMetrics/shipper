@@ -21,7 +21,9 @@ shipper-state = { path = "../shipper-state" }
 shipper-types = { path = "../shipper-types" }
 
 [dev-dependencies]
+insta = { version = "1", features = ["yaml"] }
 proptest.workspace = true
+serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 
 [lints]

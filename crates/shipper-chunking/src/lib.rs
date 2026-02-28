@@ -8,6 +8,20 @@
 /// - `max_concurrent <= 0` is treated as `1`.
 /// - Empty input returns an empty list of chunks.
 /// - Item order is preserved across chunks.
+///
+/// # Examples
+///
+/// ```
+/// use shipper_chunking::chunk_by_max_concurrent;
+///
+/// let items = vec!["a", "b", "c", "d", "e"];
+/// let chunks = chunk_by_max_concurrent(&items, 2);
+/// assert_eq!(chunks, vec![vec!["a", "b"], vec!["c", "d"], vec!["e"]]);
+///
+/// // Empty input returns no chunks
+/// let empty: Vec<i32> = vec![];
+/// assert!(chunk_by_max_concurrent(&empty, 3).is_empty());
+/// ```
 pub fn chunk_by_max_concurrent<T: Clone>(items: &[T], max_concurrent: usize) -> Vec<Vec<T>> {
     let batch_size = max_concurrent.max(1);
     if items.is_empty() {

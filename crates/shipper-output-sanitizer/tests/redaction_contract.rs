@@ -13,7 +13,7 @@ fn redaction_is_stable_for_common_credential_shapes() {
 
     let out = redact_sensitive(&input);
     assert!(out.contains("Bearer [REDACTED]"));
-    assert!(out.contains("token = [REDACTED]"));
+    assert!(out.contains(r#"token = "[REDACTED]""#));
     assert!(out.contains("CARGO_REGISTRY_TOKEN=[REDACTED]"));
     assert!(out.contains("CARGO_REGISTRIES_PRIVATE_REG_TOKEN=[REDACTED]"));
     assert!(out.contains("normal output line"));

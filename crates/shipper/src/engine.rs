@@ -220,7 +220,10 @@ pub fn run_preflight(
                 .cloned()
                 .unwrap_or((true, None))
         } else {
-            (workspace_dry_run_passed, Some(workspace_dry_run_output.clone()))
+            (
+                workspace_dry_run_passed,
+                Some(workspace_dry_run_output.clone()),
+            )
         };
 
         // Ownership verification (best-effort), gated by policy
@@ -373,8 +376,9 @@ pub fn run_publish(
     } else {
         opts.lock_timeout
     };
-    let _lock = lock::LockFile::acquire_with_timeout(&state_dir, Some(workspace_root), lock_timeout)
-        .context("failed to acquire publish lock")?;
+    let _lock =
+        lock::LockFile::acquire_with_timeout(&state_dir, Some(workspace_root), lock_timeout)
+            .context("failed to acquire publish lock")?;
     _lock.set_plan_id(&ws.plan.plan_id)?;
 
     // Collect git context and environment fingerprint at start of execution
@@ -2548,7 +2552,7 @@ mod tests {
             auth_type: Some(AuthType::Token),
             ownership_verified: true,
             dry_run_passed: true,
-                dry_run_output: None,
+            dry_run_output: None,
         };
 
         let json = serde_json::to_string(&pkg).expect("serialize");

@@ -443,4 +443,571 @@ mod tests {
             "sha256=88aab3ede8d3adf94d26ab90d3bafd4a2083070c3bcce9c014ee04a443847c0b"
         );
     }
+
+    // --- Payload construction ---
+
+    #[test]
+    fn publish_success_payload_contains_registry() {
+        let payload = publish_success_payload("foo", "2.0.0", "crates-io");
+        assert_eq!(payload.registry, Some("crates-io".to_string()));
+        assert!(payload.error.is_none());
+        assert_eq!(payload.title, Some("Package Published".to_string()));
+    }
+
+    #[test]
+    fn publish_failure_payload_has_no_registry() {
+        let payload = publish_failure_payload("foo", "0.1.0", "timeout");
+        assert!(payload.registry.is_none());
+        assert_eq!(payload.error, Some("timeout".to_string()));
+        assert_eq!(payload.title, Some("Publish Failed".to_string()));
+    }
+
+    #[test]
+    fn payload_with_all_fields() {
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("ci".to_string(), serde_json::json!("github-actions"));
+
+        let payload = WebhookPayload {
+            message: "msg".to_string(),
+            title: Some("title".to_string()),
+            success: true,
+            package: Some("pkg".to_string()),
+            version: Some("1.0.0".to_string()),
+            registry: Some("crates-io".to_string()),
+            error: None,
+            extra,
+        };
+
+        assert_eq!(payload.message, "msg");
+        assert_eq!(payload.extra.get("ci").unwrap(), "github-actions");
+    }
+
+    #[test]
+    fn payload_extra_fields_flatten_in_json() {
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("run_id".to_string(), serde_json::json!(42));
+
+        let payload = WebhookPayload {
+            message: "m".to_string(),
+            extra,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(json.contains("\"run_id\":42"));
+        // Flattened means no "extra" key wrapper
+        assert!(!json.contains("\"extra\""));
+    }
+
+    // --- Serialization round-trips ---
+
+    #[test]
+    fn webhook_payload_roundtrip() {
+        let payload = publish_success_payload("my-crate", "3.0.0", "crates-io");
+        let json = serde_json::to_string(&payload).unwrap();
+        let deserialized: WebhookPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.message, payload.message);
+        assert_eq!(deserialized.success, payload.success);
+        assert_eq!(deserialized.package, payload.package);
+        assert_eq!(deserialized.version, payload.version);
+        assert_eq!(deserialized.registry, payload.registry);
+    }
+
+    #[test]
+    fn webhook_config_roundtrip() {
+        let config = WebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            webhook_type: WebhookType::Discord,
+            secret: Some("s3cret".to_string()),
+            timeout_secs: 10,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: WebhookConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.url, config.url);
+        assert_eq!(deserialized.webhook_type, WebhookType::Discord);
+        assert_eq!(deserialized.secret, Some("s3cret".to_string()));
+        assert_eq!(deserialized.timeout_secs, 10);
+    }
+
+    #[test]
+    fn config_deserialization_defaults() {
+        // Only url is required; other fields should pick up defaults
+        let json = r#"{"url":"https://x.com"}"#;
+        let config: WebhookConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.webhook_type, WebhookType::Generic);
+        assert_eq!(config.timeout_secs, 30);
+        assert!(config.secret.is_none());
+    }
+
+    #[test]
+    fn config_secret_omitted_when_none() {
+        let config = WebhookConfig {
+            url: "https://x.com".to_string(),
+            secret: None,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("secret"));
+    }
+
+    #[test]
+    fn payload_optional_fields_omitted_when_none() {
+        let payload = WebhookPayload {
+            message: "hi".to_string(),
+            success: false,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(!json.contains("\"title\""));
+        assert!(!json.contains("\"package\""));
+        assert!(!json.contains("\"version\""));
+        assert!(!json.contains("\"registry\""));
+        assert!(!json.contains("\"error\""));
+    }
+
+    #[test]
+    fn webhook_type_all_variants_serialize() {
+        let generic = serde_json::to_string(&WebhookType::Generic).unwrap();
+        let slack = serde_json::to_string(&WebhookType::Slack).unwrap();
+        let discord = serde_json::to_string(&WebhookType::Discord).unwrap();
+        assert_eq!(generic, "\"Generic\"");
+        assert_eq!(slack, "\"Slack\"");
+        assert_eq!(discord, "\"Discord\"");
+    }
+
+    #[test]
+    fn webhook_type_all_variants_deserialize() {
+        let g: WebhookType = serde_json::from_str("\"Generic\"").unwrap();
+        let s: WebhookType = serde_json::from_str("\"Slack\"").unwrap();
+        let d: WebhookType = serde_json::from_str("\"Discord\"").unwrap();
+        assert_eq!(g, WebhookType::Generic);
+        assert_eq!(s, WebhookType::Slack);
+        assert_eq!(d, WebhookType::Discord);
+    }
+
+    // --- Slack formatting ---
+
+    #[test]
+    fn slack_payload_with_all_fields() {
+        let payload = WebhookPayload {
+            message: "deployed".to_string(),
+            title: Some("Deploy".to_string()),
+            success: false,
+            package: Some("pkg".to_string()),
+            version: Some("0.1.0".to_string()),
+            registry: Some("reg".to_string()),
+            error: Some("oops".to_string()),
+            ..Default::default()
+        };
+        let json = slack_payload(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let attachment = &parsed["attachments"][0];
+        assert_eq!(attachment["color"], "danger");
+        assert_eq!(attachment["title"], "Deploy");
+        assert_eq!(attachment["text"], "deployed");
+
+        let fields = attachment["fields"].as_array().unwrap();
+        assert_eq!(fields.len(), 4);
+    }
+
+    #[test]
+    fn slack_payload_no_optional_fields() {
+        let payload = WebhookPayload {
+            message: "hello".to_string(),
+            success: true,
+            ..Default::default()
+        };
+        let json = slack_payload(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let attachment = &parsed["attachments"][0];
+        assert_eq!(attachment["color"], "good");
+        // Default title
+        assert_eq!(attachment["title"], "Shipper Notification");
+        let fields = attachment["fields"].as_array().unwrap();
+        assert!(fields.is_empty());
+    }
+
+    // --- Discord formatting ---
+
+    #[test]
+    fn discord_payload_with_all_fields() {
+        let payload = WebhookPayload {
+            message: "done".to_string(),
+            title: Some("Release".to_string()),
+            success: true,
+            package: Some("crate-a".to_string()),
+            version: Some("2.0.0".to_string()),
+            registry: Some("crates-io".to_string()),
+            error: Some("warn".to_string()),
+            ..Default::default()
+        };
+        let json = discord_payload(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let embed = &parsed["embeds"][0];
+        assert_eq!(embed["color"], 65280);
+        assert_eq!(embed["title"], "Release");
+        assert_eq!(embed["description"], "done");
+
+        let fields = embed["fields"].as_array().unwrap();
+        assert_eq!(fields.len(), 4);
+    }
+
+    #[test]
+    fn discord_payload_no_optional_fields() {
+        let payload = WebhookPayload {
+            message: "hi".to_string(),
+            success: false,
+            ..Default::default()
+        };
+        let json = discord_payload(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let embed = &parsed["embeds"][0];
+        assert_eq!(embed["color"], 16711680);
+        assert_eq!(embed["title"], "Shipper Notification");
+        let fields = embed["fields"].as_array().unwrap();
+        assert!(fields.is_empty());
+    }
+
+    // --- Signature / HMAC ---
+
+    #[test]
+    fn signature_prefix() {
+        let sig = webhook_signature("key", "data").unwrap();
+        assert!(sig.starts_with("sha256="));
+    }
+
+    #[test]
+    fn different_secrets_produce_different_signatures() {
+        let s1 = webhook_signature("secret-a", "body").unwrap();
+        let s2 = webhook_signature("secret-b", "body").unwrap();
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn different_bodies_produce_different_signatures() {
+        let s1 = webhook_signature("key", "body-a").unwrap();
+        let s2 = webhook_signature("key", "body-b").unwrap();
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn signature_on_empty_body() {
+        let sig = webhook_signature("secret", "").unwrap();
+        assert!(sig.starts_with("sha256="));
+        assert!(sig.len() > "sha256=".len());
+    }
+
+    #[test]
+    fn hex_encode_empty() {
+        assert_eq!(hex_encode(&[]), "");
+    }
+
+    #[test]
+    fn hex_encode_known() {
+        assert_eq!(hex_encode(&[0x00, 0xff, 0xab]), "00ffab");
+    }
+
+    #[test]
+    fn hex_encode_all_single_digits() {
+        assert_eq!(hex_encode(&[0x0a, 0x0b, 0x0c]), "0a0b0c");
+    }
+
+    // --- Error handling (send_webhook against unreachable endpoints) ---
+
+    #[test]
+    fn send_webhook_invalid_url_returns_error() {
+        let config = WebhookConfig {
+            url: "not-a-url".to_string(),
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let payload = WebhookPayload {
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let result = send_webhook(&config, &payload);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn send_webhook_connection_refused_returns_error() {
+        // Port 1 is almost certainly not listening
+        let config = WebhookConfig {
+            url: "http://127.0.0.1:1/webhook".to_string(),
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let payload = WebhookPayload {
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let result = send_webhook(&config, &payload);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn send_webhook_async_connection_refused_returns_error() {
+        let config = WebhookConfig {
+            url: "http://127.0.0.1:1/webhook".to_string(),
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let payload = WebhookPayload {
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let result = send_webhook_async(&config, &payload).await;
+        assert!(result.is_err());
+    }
+
+    // --- Mock server tests ---
+
+    #[test]
+    fn send_webhook_success_with_mock_server() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+
+        let config = WebhookConfig {
+            url: format!("http://{addr}/hook"),
+            webhook_type: WebhookType::Generic,
+            timeout_secs: 5,
+            secret: None,
+        };
+        let payload = publish_success_payload("mypkg", "1.0.0", "crates-io");
+
+        let handle = std::thread::spawn(move || {
+            let req = server.recv().unwrap();
+            assert_eq!(req.method(), &tiny_http::Method::Post);
+            assert_eq!(req.url(), "/hook");
+            // Should not have signature header when no secret
+            assert!(req.headers().iter().all(|h| {
+                !h.field
+                    .as_str()
+                    .as_str()
+                    .eq_ignore_ascii_case("x-hub-signature-256")
+            }));
+            let response = tiny_http::Response::from_string("ok");
+            req.respond(response).unwrap();
+        });
+
+        let result = send_webhook(&config, &payload);
+        handle.join().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn send_webhook_with_signature_header() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+
+        let config = WebhookConfig {
+            url: format!("http://{addr}/signed"),
+            webhook_type: WebhookType::Generic,
+            timeout_secs: 5,
+            secret: Some("my-secret".to_string()),
+        };
+        let payload = WebhookPayload {
+            message: "signed".to_string(),
+            ..Default::default()
+        };
+
+        let handle = std::thread::spawn(move || {
+            let req = server.recv().unwrap();
+            let sig_header = req
+                .headers()
+                .iter()
+                .find(|h| {
+                    h.field
+                        .as_str()
+                        .as_str()
+                        .eq_ignore_ascii_case("x-hub-signature-256")
+                })
+                .expect("signature header missing");
+            assert!(sig_header.value.as_str().starts_with("sha256="));
+            let response = tiny_http::Response::from_string("ok");
+            req.respond(response).unwrap();
+        });
+
+        let result = send_webhook(&config, &payload);
+        handle.join().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn send_webhook_empty_secret_skips_signature() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+
+        let config = WebhookConfig {
+            url: format!("http://{addr}/hook"),
+            webhook_type: WebhookType::Generic,
+            timeout_secs: 5,
+            secret: Some("   ".to_string()), // whitespace-only
+        };
+        let payload = WebhookPayload {
+            message: "test".to_string(),
+            ..Default::default()
+        };
+
+        let handle = std::thread::spawn(move || {
+            let req = server.recv().unwrap();
+            // Whitespace-only secret should NOT produce a signature
+            assert!(req.headers().iter().all(|h| {
+                !h.field
+                    .as_str()
+                    .as_str()
+                    .eq_ignore_ascii_case("x-hub-signature-256")
+            }));
+            let response = tiny_http::Response::from_string("ok");
+            req.respond(response).unwrap();
+        });
+
+        let result = send_webhook(&config, &payload);
+        handle.join().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn send_webhook_server_error_returns_err() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+
+        let config = WebhookConfig {
+            url: format!("http://{addr}/fail"),
+            timeout_secs: 5,
+            ..Default::default()
+        };
+        let payload = WebhookPayload {
+            message: "test".to_string(),
+            ..Default::default()
+        };
+
+        let handle = std::thread::spawn(move || {
+            let req = server.recv().unwrap();
+            let response = tiny_http::Response::from_string("internal error")
+                .with_status_code(tiny_http::StatusCode(500));
+            req.respond(response).unwrap();
+        });
+
+        let result = send_webhook(&config, &payload);
+        handle.join().unwrap();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("500"));
+    }
+
+    #[test]
+    fn send_webhook_slack_format_to_server() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+
+        let config = WebhookConfig {
+            url: format!("http://{addr}/slack"),
+            webhook_type: WebhookType::Slack,
+            timeout_secs: 5,
+            secret: None,
+        };
+        let payload = publish_success_payload("crate-x", "0.1.0", "crates-io");
+
+        let handle = std::thread::spawn(move || {
+            let mut req = server.recv().unwrap();
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+            // Slack format has "attachments"
+            assert!(parsed["attachments"].is_array());
+            let response = tiny_http::Response::from_string("ok");
+            req.respond(response).unwrap();
+        });
+
+        let result = send_webhook(&config, &payload);
+        handle.join().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn send_webhook_discord_format_to_server() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+
+        let config = WebhookConfig {
+            url: format!("http://{addr}/discord"),
+            webhook_type: WebhookType::Discord,
+            timeout_secs: 5,
+            secret: None,
+        };
+        let payload = publish_failure_payload("crate-y", "0.2.0", "network error");
+
+        let handle = std::thread::spawn(move || {
+            let mut req = server.recv().unwrap();
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+            // Discord format has "embeds"
+            assert!(parsed["embeds"].is_array());
+            let response = tiny_http::Response::from_string("ok");
+            req.respond(response).unwrap();
+        });
+
+        let result = send_webhook(&config, &payload);
+        handle.join().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn send_webhook_async_success_with_mock_server() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+
+        let config = WebhookConfig {
+            url: format!("http://{addr}/async-hook"),
+            webhook_type: WebhookType::Generic,
+            timeout_secs: 5,
+            secret: None,
+        };
+        let payload = publish_success_payload("async-pkg", "1.0.0", "crates-io");
+
+        let handle = std::thread::spawn(move || {
+            let req = server.recv().unwrap();
+            let response = tiny_http::Response::from_string("ok");
+            req.respond(response).unwrap();
+        });
+
+        let result = send_webhook_async(&config, &payload).await;
+        handle.join().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn send_webhook_async_server_error() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+
+        let config = WebhookConfig {
+            url: format!("http://{addr}/fail"),
+            timeout_secs: 5,
+            ..Default::default()
+        };
+        let payload = WebhookPayload {
+            message: "test".to_string(),
+            ..Default::default()
+        };
+
+        let handle = std::thread::spawn(move || {
+            let req = server.recv().unwrap();
+            let response = tiny_http::Response::from_string("bad")
+                .with_status_code(tiny_http::StatusCode(403));
+            req.respond(response).unwrap();
+        });
+
+        let result = send_webhook_async(&config, &payload).await;
+        handle.join().unwrap();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("403"));
+    }
 }

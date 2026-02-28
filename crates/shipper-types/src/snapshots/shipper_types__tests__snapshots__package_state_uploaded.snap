@@ -1,0 +1,6 @@
+---
+source: crates/shipper-types/src/lib.rs
+assertion_line: 1554
+expression: state
+---
+state: uploaded

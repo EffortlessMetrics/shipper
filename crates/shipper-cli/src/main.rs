@@ -449,7 +449,10 @@ fn main() -> Result<()> {
 
             for reg in target_registries {
                 if opts.registries.len() > 1 {
-                    println!("\n🚀 Publishing to registry: {} ({})", reg.name, reg.api_base);
+                    println!(
+                        "\n🚀 Publishing to registry: {} ({})",
+                        reg.name, reg.api_base
+                    );
                 }
 
                 let mut current_planned = planned.clone();
@@ -491,7 +494,10 @@ fn main() -> Result<()> {
 
             for reg in target_registries {
                 if opts.registries.len() > 1 {
-                    println!("\n🔄 Resuming for registry: {} ({})", reg.name, reg.api_base);
+                    println!(
+                        "\n🔄 Resuming for registry: {} ({})",
+                        reg.name, reg.api_base
+                    );
                 }
 
                 let mut current_planned = planned.clone();
@@ -548,7 +554,10 @@ fn main() -> Result<()> {
 
             for reg in target_registries {
                 if opts.registries.len() > 1 {
-                    println!("\n🩺 Diagnostics for registry: {} ({})", reg.name, reg.api_base);
+                    println!(
+                        "\n🩺 Diagnostics for registry: {} ({})",
+                        reg.name, reg.api_base
+                    );
                 }
                 let mut current_planned = planned.clone();
                 current_planned.plan.registry = reg;

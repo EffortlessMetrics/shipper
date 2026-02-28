@@ -3,6 +3,16 @@
 use anyhow::{Context, Result};
 
 /// Parse schema version number from a string like `shipper.receipt.v2`.
+///
+/// # Examples
+///
+/// ```
+/// use shipper_schema::parse_schema_version;
+///
+/// assert_eq!(parse_schema_version("shipper.receipt.v2").unwrap(), 2);
+/// assert_eq!(parse_schema_version("shipper.state.v1").unwrap(), 1);
+/// assert!(parse_schema_version("invalid").is_err());
+/// ```
 pub fn parse_schema_version(version: &str) -> Result<u32> {
     let parts: Vec<&str> = version.split('.').collect();
     if parts.len() != 3 || !parts[0].starts_with("shipper") || !parts[2].starts_with('v') {
@@ -18,6 +28,18 @@ pub fn parse_schema_version(version: &str) -> Result<u32> {
 /// Validate that `version` is at least the minimum supported schema version.
 ///
 /// The `label` value is used in error messages (for example: `receipt`, `schema`).
+///
+/// # Examples
+///
+/// ```
+/// use shipper_schema::validate_schema_version;
+///
+/// // Accepted: version meets minimum
+/// assert!(validate_schema_version("shipper.receipt.v2", "shipper.receipt.v1", "receipt").is_ok());
+///
+/// // Rejected: version is too old
+/// assert!(validate_schema_version("shipper.receipt.v0", "shipper.receipt.v1", "receipt").is_err());
+/// ```
 pub fn validate_schema_version(version: &str, minimum_supported: &str, label: &str) -> Result<()> {
     let version_num = parse_schema_version(version)
         .with_context(|| format!("invalid {label} version format: {version}"))?;

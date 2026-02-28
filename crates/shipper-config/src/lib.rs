@@ -1243,10 +1243,341 @@ enabled = true
         assert_eq!(opts2.parallel.max_concurrent, 2); // from CLI
     }
 
+    mod snapshot_tests {
+        use super::*;
+
+        #[test]
+        fn snapshot_default_config() {
+            let config = ShipperConfig::default();
+            insta::assert_yaml_snapshot!("default_config", config);
+        }
+
+        #[test]
+        fn snapshot_config_all_fields_set() {
+            let config = ShipperConfig {
+                schema_version: "shipper.config.v1".to_string(),
+                policy: PolicyConfig {
+                    mode: PublishPolicy::Fast,
+                },
+                verify: VerifyConfig {
+                    mode: VerifyMode::None,
+                },
+                readiness: ReadinessConfig {
+                    enabled: false,
+                    method: ReadinessMethod::Both,
+                    initial_delay: Duration::from_secs(5),
+                    max_delay: Duration::from_secs(120),
+                    max_total_wait: Duration::from_secs(600),
+                    poll_interval: Duration::from_secs(10),
+                    jitter_factor: 0.3,
+                    index_path: Some(std::path::PathBuf::from("/tmp/index")),
+                    prefer_index: true,
+                },
+                output: OutputConfig { lines: 200 },
+                lock: LockConfig {
+                    timeout: Duration::from_secs(7200),
+                },
+                retry: RetryConfig {
+                    policy: RetryPolicy::Aggressive,
+                    max_attempts: 10,
+                    base_delay: Duration::from_millis(500),
+                    max_delay: Duration::from_secs(30),
+                    strategy: RetryStrategyType::Linear,
+                    jitter: 0.1,
+                    per_error: PerErrorConfig::default(),
+                },
+                flags: FlagsConfig {
+                    allow_dirty: true,
+                    skip_ownership_check: true,
+                    strict_ownership: true,
+                },
+                parallel: ParallelConfig {
+                    enabled: true,
+                    max_concurrent: 8,
+                    per_package_timeout: Duration::from_secs(3600),
+                },
+                state_dir: Some(std::path::PathBuf::from("/custom/state")),
+                registry: Some(RegistryConfig {
+                    name: "my-registry".to_string(),
+                    api_base: "https://my-registry.example.com".to_string(),
+                    index_base: Some("https://index.my-registry.example.com".to_string()),
+                    token: None,
+                    default: true,
+                }),
+                registries: MultiRegistryConfig::default(),
+                webhook: WebhookConfig::default(),
+                encryption: EncryptionConfigInner {
+                    enabled: true,
+                    passphrase: None,
+                    env_key: Some("MY_ENCRYPT_KEY".to_string()),
+                },
+                storage: StorageConfigInner {
+                    storage_type: StorageType::default(),
+                    bucket: Some("my-bucket".to_string()),
+                    region: Some("us-east-1".to_string()),
+                    base_path: Some("releases/".to_string()),
+                    endpoint: None,
+                    access_key_id: None,
+                    secret_access_key: None,
+                },
+            };
+            insta::assert_yaml_snapshot!("config_all_fields", config);
+        }
+
+        #[test]
+        fn snapshot_validation_error_zero_output_lines() {
+            let mut config = ShipperConfig::default();
+            config.output.lines = 0;
+            let err = config.validate().unwrap_err();
+            insta::assert_yaml_snapshot!("validation_error_zero_output_lines", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_validation_error_zero_max_attempts() {
+            let mut config = ShipperConfig::default();
+            config.retry.max_attempts = 0;
+            let err = config.validate().unwrap_err();
+            insta::assert_yaml_snapshot!("validation_error_zero_max_attempts", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_validation_error_zero_base_delay() {
+            let mut config = ShipperConfig::default();
+            config.retry.base_delay = Duration::ZERO;
+            let err = config.validate().unwrap_err();
+            insta::assert_yaml_snapshot!("validation_error_zero_base_delay", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_validation_error_max_delay_less_than_base() {
+            let mut config = ShipperConfig::default();
+            config.retry.base_delay = Duration::from_secs(10);
+            config.retry.max_delay = Duration::from_secs(5);
+            let err = config.validate().unwrap_err();
+            insta::assert_yaml_snapshot!("validation_error_max_delay_lt_base", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_validation_error_jitter_out_of_range() {
+            let mut config = ShipperConfig::default();
+            config.retry.jitter = 1.5;
+            let err = config.validate().unwrap_err();
+            insta::assert_yaml_snapshot!("validation_error_jitter_out_of_range", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_validation_error_empty_registry_name() {
+            let config = ShipperConfig {
+                registry: Some(RegistryConfig {
+                    name: String::new(),
+                    api_base: "https://crates.io".to_string(),
+                    index_base: None,
+                    token: None,
+                    default: false,
+                }),
+                ..ShipperConfig::default()
+            };
+            let err = config.validate().unwrap_err();
+            insta::assert_yaml_snapshot!("validation_error_empty_registry_name", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_toml_roundtrip() {
+            let toml_input = r#"
+schema_version = "shipper.config.v1"
+
+[policy]
+mode = "balanced"
+
+[verify]
+mode = "package"
+
+[readiness]
+enabled = true
+method = "index"
+initial_delay = "2s"
+max_delay = "30s"
+max_total_wait = "3m"
+poll_interval = "5s"
+jitter_factor = 0.25
+
+[output]
+lines = 75
+
+[lock]
+timeout = "45m"
+
+[retry]
+policy = "conservative"
+max_attempts = 3
+base_delay = "5s"
+max_delay = "1m"
+strategy = "linear"
+jitter = 0.2
+
+[flags]
+allow_dirty = false
+skip_ownership_check = false
+strict_ownership = true
+
+[parallel]
+enabled = true
+max_concurrent = 2
+per_package_timeout = "15m"
+"#;
+
+            let parsed: ShipperConfig = toml::from_str(toml_input).unwrap();
+            let re_serialized = toml::to_string_pretty(&parsed).unwrap();
+            let re_parsed: ShipperConfig = toml::from_str(&re_serialized).unwrap();
+            insta::assert_yaml_snapshot!("toml_roundtrip_parsed", re_parsed);
+        }
+
+        #[test]
+        fn snapshot_default_toml_template() {
+            let template = ShipperConfig::default_toml_template();
+            insta::assert_snapshot!("default_toml_template", template);
+        }
+    }
+
     #[cfg(test)]
     mod proptests {
         use super::*;
         use proptest::prelude::*;
+
+        fn arb_policy() -> impl Strategy<Value = PublishPolicy> {
+            prop_oneof![
+                Just(PublishPolicy::Safe),
+                Just(PublishPolicy::Balanced),
+                Just(PublishPolicy::Fast),
+            ]
+        }
+
+        fn arb_verify_mode() -> impl Strategy<Value = VerifyMode> {
+            prop_oneof![
+                Just(VerifyMode::Workspace),
+                Just(VerifyMode::Package),
+                Just(VerifyMode::None),
+            ]
+        }
+
+        fn arb_retry_policy() -> impl Strategy<Value = RetryPolicy> {
+            prop_oneof![
+                Just(RetryPolicy::Default),
+                Just(RetryPolicy::Aggressive),
+                Just(RetryPolicy::Conservative),
+                Just(RetryPolicy::Custom),
+            ]
+        }
+
+        fn arb_retry_strategy() -> impl Strategy<Value = RetryStrategyType> {
+            prop_oneof![
+                Just(RetryStrategyType::Immediate),
+                Just(RetryStrategyType::Exponential),
+                Just(RetryStrategyType::Linear),
+                Just(RetryStrategyType::Constant),
+            ]
+        }
+
+        fn arb_readiness_method() -> impl Strategy<Value = ReadinessMethod> {
+            prop_oneof![
+                Just(ReadinessMethod::Api),
+                Just(ReadinessMethod::Index),
+                Just(ReadinessMethod::Both),
+            ]
+        }
+
+        /// Generate a valid `ShipperConfig` that always passes `validate()`.
+        fn arb_valid_config() -> impl Strategy<Value = ShipperConfig> {
+            let enums = (
+                arb_policy(),
+                arb_verify_mode(),
+                arb_retry_policy(),
+                arb_retry_strategy(),
+                arb_readiness_method(),
+            );
+            let retry_nums = (
+                1u32..100,      // max_attempts
+                1u64..3600,     // base_delay secs
+                0u64..3600,     // extra secs added to base for max_delay
+                0.0f64..=1.0,   // jitter
+            );
+            let config_nums = (
+                1usize..500,    // output lines
+                1u64..7200,     // lock_timeout secs
+                1usize..32,     // max_concurrent
+                1u64..7200,     // per_package_timeout secs
+            );
+            let booleans = (
+                any::<bool>(),  // allow_dirty
+                any::<bool>(),  // skip_ownership
+                any::<bool>(),  // strict_ownership
+                any::<bool>(),  // readiness enabled
+                any::<bool>(),  // parallel enabled
+            );
+            let readiness_nums = (
+                1u64..600,      // initial_delay secs
+                1u64..600,      // max_delay secs
+                1u64..600,      // max_total_wait secs
+                1u64..60,       // poll_interval secs
+                0.0f64..=1.0,   // jitter_factor
+            );
+
+            (enums, retry_nums, config_nums, booleans, readiness_nums).prop_map(
+                |(
+                    (policy, verify, retry_policy, retry_strategy, readiness_method),
+                    (max_attempts, base_delay, extra_delay, jitter),
+                    (output_lines, lock_timeout, max_concurrent, per_package_timeout),
+                    (allow_dirty, skip_ownership, strict_ownership, readiness_enabled, parallel_enabled),
+                    (r_initial, r_max_delay, r_max_total, r_poll, r_jitter),
+                )| {
+                    ShipperConfig {
+                        schema_version: default_schema_version(),
+                        policy: PolicyConfig { mode: policy },
+                        verify: VerifyConfig { mode: verify },
+                        readiness: ReadinessConfig {
+                            enabled: readiness_enabled,
+                            method: readiness_method,
+                            initial_delay: Duration::from_secs(r_initial),
+                            max_delay: Duration::from_secs(r_max_delay),
+                            max_total_wait: Duration::from_secs(r_max_total),
+                            poll_interval: Duration::from_secs(r_poll),
+                            jitter_factor: r_jitter,
+                            index_path: None,
+                            prefer_index: false,
+                        },
+                        output: OutputConfig { lines: output_lines },
+                        lock: LockConfig {
+                            timeout: Duration::from_secs(lock_timeout),
+                        },
+                        retry: RetryConfig {
+                            policy: retry_policy,
+                            max_attempts,
+                            base_delay: Duration::from_secs(base_delay),
+                            max_delay: Duration::from_secs(base_delay + extra_delay),
+                            strategy: retry_strategy,
+                            jitter,
+                            per_error: PerErrorConfig::default(),
+                        },
+                        flags: FlagsConfig {
+                            allow_dirty,
+                            skip_ownership_check: skip_ownership,
+                            strict_ownership,
+                        },
+                        parallel: ParallelConfig {
+                            enabled: parallel_enabled,
+                            max_concurrent,
+                            per_package_timeout: Duration::from_secs(per_package_timeout),
+                        },
+                        state_dir: None,
+                        registry: None,
+                        registries: MultiRegistryConfig::default(),
+                        webhook: WebhookConfig::default(),
+                        encryption: EncryptionConfigInner::default(),
+                        storage: StorageConfigInner::default(),
+                    }
+                },
+            )
+        }
 
         proptest! {
             #[test]
@@ -1306,6 +1637,64 @@ enabled = true
                 assert_eq!(opts.strict_ownership, strict_ownership);
                 assert_eq!(opts.readiness.enabled, !no_readiness);
                 assert_eq!(opts.parallel.max_concurrent, 4);
+            }
+
+            /// Any valid config serializes to TOML and deserializes back identically.
+            #[test]
+            fn toml_roundtrip_preserves_config(config in arb_valid_config()) {
+                let toml1 = toml::to_string_pretty(&config)
+                    .expect("first serialize must succeed");
+                let parsed: ShipperConfig = toml::from_str(&toml1)
+                    .expect("deserialize of serialized config must succeed");
+                let toml2 = toml::to_string_pretty(&parsed)
+                    .expect("second serialize must succeed");
+                prop_assert_eq!(toml1, toml2);
+            }
+
+            /// Validation always succeeds for default config, regardless of seed.
+            #[test]
+            fn default_config_always_validates(_seed in any::<u64>()) {
+                let config = ShipperConfig::default();
+                prop_assert!(config.validate().is_ok());
+            }
+
+            /// Every generated valid config passes validation.
+            #[test]
+            fn generated_valid_config_passes_validation(config in arb_valid_config()) {
+                prop_assert!(config.validate().is_ok());
+            }
+
+            /// Any valid config serializes to parseable TOML.
+            #[test]
+            fn valid_config_serializes_to_valid_toml(config in arb_valid_config()) {
+                let toml_str = toml::to_string_pretty(&config)
+                    .expect("serialize must succeed");
+                let reparsed: Result<ShipperConfig, _> = toml::from_str(&toml_str);
+                prop_assert!(reparsed.is_ok(), "re-parse failed: {:?}", reparsed.err());
+            }
+
+            /// build_runtime_options with default (empty) CLI overrides preserves
+            /// config-sourced values (merge idempotency for the config side).
+            #[test]
+            fn merge_with_empty_overrides_preserves_config(config in arb_valid_config()) {
+                let cli = CliOverrides::default();
+                let opts = config.build_runtime_options(cli);
+
+                prop_assert_eq!(opts.allow_dirty, config.flags.allow_dirty);
+                prop_assert_eq!(opts.skip_ownership_check, config.flags.skip_ownership_check);
+                prop_assert_eq!(opts.strict_ownership, config.flags.strict_ownership);
+                prop_assert_eq!(opts.output_lines, config.output.lines);
+                prop_assert_eq!(opts.lock_timeout, config.lock.timeout);
+                prop_assert_eq!(opts.policy, config.policy.mode);
+                prop_assert_eq!(opts.verify_mode, config.verify.mode);
+                prop_assert_eq!(opts.readiness.enabled, config.readiness.enabled);
+                prop_assert_eq!(opts.readiness.method, config.readiness.method);
+                prop_assert_eq!(opts.parallel.enabled, config.parallel.enabled);
+                prop_assert_eq!(opts.parallel.max_concurrent, config.parallel.max_concurrent);
+                prop_assert_eq!(
+                    opts.parallel.per_package_timeout,
+                    config.parallel.per_package_timeout
+                );
             }
         }
     }

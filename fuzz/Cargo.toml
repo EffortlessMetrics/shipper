@@ -18,12 +18,18 @@ shipper-policy = { path = "../crates/shipper-policy" }
 shipper-output-sanitizer = { path = "../crates/shipper-output-sanitizer" }
 shipper-config-runtime = { path = "../crates/shipper-config-runtime" }
 shipper-cargo-failure = { path = "../crates/shipper-cargo-failure" }
+shipper-git = { path = "../crates/shipper-git" }
 shipper-execution-core = { path = "../crates/shipper-execution-core" }
 shipper-retry = { path = "../crates/shipper-retry" }
 shipper-levels = { path = "../crates/shipper-levels" }
 shipper-chunking = { path = "../crates/shipper-chunking" }
 shipper-sparse-index = { path = "../crates/shipper-sparse-index" }
+shipper-webhook = { path = "../crates/shipper-webhook" }
 chrono = "0.4.43"
+hmac = "0.12"
+sha2 = "0.10"
+url = "2"
+shipper-plan = { path = "../crates/shipper-plan" }
 shipper-types = { path = "../crates/shipper-types" }
 tempfile = "3"
 temp-env = "0.3"
@@ -108,6 +114,27 @@ bench = false
 [[bin]]
 name = "config_runtime_adapter"
 path = "fuzz_targets/config_runtime_adapter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plan_builder"
+path = "fuzz_targets/plan_builder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_context"
+path = "fuzz_targets/git_context.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webhook_payload"
+path = "fuzz_targets/webhook_payload.rs"
 test = false
 doc = false
 bench = false

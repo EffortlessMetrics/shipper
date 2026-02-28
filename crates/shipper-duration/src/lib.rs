@@ -8,6 +8,17 @@ use std::time::Duration;
 use serde::{Deserialize, Deserializer, Serializer};
 
 /// Parse a human-readable duration string (for example `2s`, `500ms`, `1m`).
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+/// use shipper_duration::parse_duration;
+///
+/// assert_eq!(parse_duration("2s").unwrap(), Duration::from_secs(2));
+/// assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
+/// assert_eq!(parse_duration("1m").unwrap(), Duration::from_secs(60));
+/// ```
 pub fn parse_duration(input: &str) -> Result<Duration, humantime::DurationError> {
     humantime::parse_duration(input)
 }

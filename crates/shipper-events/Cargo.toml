@@ -19,6 +19,7 @@ shipper-types = { path = "../shipper-types" }
 
 [dev-dependencies]
 tempfile = "3"
+proptest.workspace = true
 
 [lints]
 workspace = true

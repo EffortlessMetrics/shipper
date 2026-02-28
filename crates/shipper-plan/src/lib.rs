@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use shipper_types::{PlannedPackage, ReleasePlan, ReleaseSpec};
 
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct SkippedPackage {
     pub name: String,
     pub version: String,
@@ -623,6 +624,572 @@ c = { path = "../c", version = "0.1.0" }
         };
         let err = build_plan(&spec).expect_err("must fail");
         assert!(format!("{err:#}").contains("failed to execute cargo metadata"));
+    }
+
+    // --- Single-crate workspace ---
+
+    fn create_single_crate_workspace(root: &Path) {
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["only"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("only/Cargo.toml"),
+            r#"
+[package]
+name = "only"
+version = "1.2.3"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("only/src/lib.rs"), "pub fn only() {}\n");
+    }
+
+    #[test]
+    fn build_plan_single_crate_workspace() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws.plan.packages.len(), 1);
+        assert_eq!(ws.plan.packages[0].name, "only");
+        assert_eq!(ws.plan.packages[0].version, "1.2.3");
+        assert!(ws.skipped.is_empty());
+        // Single crate has no internal deps
+        assert_eq!(ws.plan.dependencies.get("only").map(|v| v.len()), Some(0));
+    }
+
+    // --- Determinism: same input produces identical plans ---
+
+    #[test]
+    fn build_plan_deterministic_across_runs() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let spec = spec_for(td.path());
+
+        let ws1 = build_plan(&spec).expect("plan1");
+        let ws2 = build_plan(&spec).expect("plan2");
+
+        let names1: Vec<&str> = ws1.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        let names2: Vec<&str> = ws2.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names1, names2, "package order must be deterministic");
+        assert_eq!(
+            ws1.plan.plan_id, ws2.plan.plan_id,
+            "plan_id must be deterministic"
+        );
+        assert_eq!(ws1.plan.dependencies, ws2.plan.dependencies);
+    }
+
+    // --- Skipped packages tracking ---
+
+    #[test]
+    fn build_plan_tracks_skipped_packages() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let skipped_names: Vec<&str> = ws.skipped.iter().map(|s| s.name.as_str()).collect();
+        // c (publish = false) and d (publish = ["private-reg"]) should be skipped for crates-io
+        assert!(
+            skipped_names.contains(&"c"),
+            "c should be skipped (publish=false)"
+        );
+        assert!(
+            skipped_names.contains(&"d"),
+            "d should be skipped (wrong registry)"
+        );
+        assert_eq!(ws.skipped.len(), 2);
+    }
+
+    // --- Private registry: d is included when targeting "private-reg" ---
+
+    #[test]
+    fn build_plan_includes_crate_when_registry_matches() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let spec = ReleaseSpec {
+            manifest_path: td.path().join("Cargo.toml"),
+            registry: Registry {
+                name: "private-reg".to_string(),
+                api_base: "https://private.example.com".to_string(),
+                index_base: None,
+            },
+            selected_packages: None,
+        };
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        // d publishes to private-reg, so it should be included
+        assert!(names.contains(&"d"));
+        // c is publish=false, still excluded
+        assert!(!names.contains(&"c"));
+    }
+
+    // --- Dependencies map correctness ---
+
+    #[test]
+    fn build_plan_dependencies_map_reflects_edges() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        // b depends on a
+        let b_deps = ws.plan.dependencies.get("b").expect("b in deps map");
+        assert!(b_deps.contains(&"a".to_string()));
+        // a has no internal deps
+        let a_deps = ws.plan.dependencies.get("a").expect("a in deps map");
+        assert!(a_deps.is_empty());
+        // alpha has dev-dep on a, which is NOT a normal dep so shouldn't appear
+        let alpha_deps = ws
+            .plan
+            .dependencies
+            .get("alpha")
+            .expect("alpha in deps map");
+        assert!(
+            alpha_deps.is_empty(),
+            "dev-deps should not appear in plan deps"
+        );
+    }
+
+    // --- Plan version ---
+
+    #[test]
+    fn build_plan_sets_correct_plan_version() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws.plan.plan_version, shipper_state::CURRENT_PLAN_VERSION);
+    }
+
+    // --- publish_allowed unit tests ---
+
+    #[test]
+    fn publish_allowed_none_allows_all() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let metadata = MetadataCommand::new()
+            .manifest_path(td.path().join("Cargo.toml"))
+            .exec()
+            .expect("metadata");
+        // "only" has no publish field (None) — should be allowed for any registry
+        let pkg = metadata
+            .packages
+            .iter()
+            .find(|p| p.name == "only")
+            .expect("only");
+        assert!(publish_allowed(pkg, "crates-io"));
+        assert!(publish_allowed(pkg, "some-other-reg"));
+    }
+
+    #[test]
+    fn publish_allowed_false_blocks_all() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let metadata = MetadataCommand::new()
+            .manifest_path(td.path().join("Cargo.toml"))
+            .exec()
+            .expect("metadata");
+        // "c" has publish = false → blocked everywhere
+        let pkg = metadata.packages.iter().find(|p| p.name == "c").expect("c");
+        assert!(!publish_allowed(pkg, "crates-io"));
+        assert!(!publish_allowed(pkg, "private-reg"));
+    }
+
+    #[test]
+    fn publish_allowed_list_matches_registry() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let metadata = MetadataCommand::new()
+            .manifest_path(td.path().join("Cargo.toml"))
+            .exec()
+            .expect("metadata");
+        // "d" has publish = ["private-reg"]
+        let pkg = metadata.packages.iter().find(|p| p.name == "d").expect("d");
+        assert!(publish_allowed(pkg, "private-reg"));
+        assert!(!publish_allowed(pkg, "crates-io"));
+    }
+
+    // --- compute_plan_id changes when inputs differ ---
+
+    #[test]
+    fn compute_plan_id_differs_for_different_packages() {
+        let pkgs_a = vec![PlannedPackage {
+            name: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: PathBuf::from("foo/Cargo.toml"),
+        }];
+        let pkgs_b = vec![PlannedPackage {
+            name: "bar".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: PathBuf::from("bar/Cargo.toml"),
+        }];
+        let id_a = compute_plan_id("https://crates.io", &pkgs_a);
+        let id_b = compute_plan_id("https://crates.io", &pkgs_b);
+        assert_ne!(id_a, id_b);
+    }
+
+    #[test]
+    fn compute_plan_id_differs_for_different_registries() {
+        let pkgs = vec![PlannedPackage {
+            name: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: PathBuf::from("foo/Cargo.toml"),
+        }];
+        let id1 = compute_plan_id("https://crates.io", &pkgs);
+        let id2 = compute_plan_id("https://private.example.com", &pkgs);
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn compute_plan_id_differs_for_different_versions() {
+        let pkgs1 = vec![PlannedPackage {
+            name: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: PathBuf::from("foo/Cargo.toml"),
+        }];
+        let pkgs2 = vec![PlannedPackage {
+            name: "foo".to_string(),
+            version: "2.0.0".to_string(),
+            manifest_path: PathBuf::from("foo/Cargo.toml"),
+        }];
+        let id1 = compute_plan_id("https://crates.io", &pkgs1);
+        let id2 = compute_plan_id("https://crates.io", &pkgs2);
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn compute_plan_id_empty_packages() {
+        let id = compute_plan_id("https://crates.io", &[]);
+        assert_eq!(id.len(), 64);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // --- Workspace root is set correctly ---
+
+    #[test]
+    fn build_plan_sets_workspace_root() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        // The workspace_root should be a real path pointing at our temp dir
+        assert!(ws.workspace_root.exists());
+    }
+
+    // --- topo_sort with no deps (all independent) produces name-sorted order ---
+
+    #[test]
+    fn topo_sort_independent_nodes_sorted_by_name() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let metadata = MetadataCommand::new()
+            .manifest_path(td.path().join("Cargo.toml"))
+            .exec()
+            .expect("metadata");
+
+        let pkg_map = metadata
+            .packages
+            .iter()
+            .map(|p| (p.id.clone(), p))
+            .collect::<BTreeMap<PackageId, &cargo_metadata::Package>>();
+        let mut by_name = BTreeMap::<String, PackageId>::new();
+        for pkg in &metadata.packages {
+            by_name.insert(pkg.name.to_string(), pkg.id.clone());
+        }
+
+        let alpha = by_name.get("alpha").expect("alpha").clone();
+        let zeta = by_name.get("zeta").expect("zeta").clone();
+
+        // Two independent nodes with no edges
+        let included = [alpha.clone(), zeta.clone()]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let deps_of = BTreeMap::new();
+        let dependents_of = BTreeMap::new();
+
+        let order = topo_sort(&included, &deps_of, &dependents_of, &pkg_map).expect("topo");
+        let names: Vec<&str> = order
+            .iter()
+            .map(|id| pkg_map.get(id).unwrap().name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["alpha", "zeta"],
+            "independent nodes sorted alphabetically"
+        );
+    }
+
+    // --- Multi-crate deep chain ---
+
+    #[test]
+    fn build_plan_deep_dependency_chain() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["x", "y", "z"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("x/Cargo.toml"),
+            r#"
+[package]
+name = "x"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&td.path().join("x/src/lib.rs"), "");
+        write_file(
+            &td.path().join("y/Cargo.toml"),
+            r#"
+[package]
+name = "y"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+x = { path = "../x", version = "0.1.0" }
+"#,
+        );
+        write_file(&td.path().join("y/src/lib.rs"), "");
+        write_file(
+            &td.path().join("z/Cargo.toml"),
+            r#"
+[package]
+name = "z"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+y = { path = "../y", version = "0.1.0" }
+"#,
+        );
+        write_file(&td.path().join("z/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["x", "y", "z"]);
+
+        // Dependencies map: z->y, y->x, x->[]
+        assert!(ws.plan.dependencies["x"].is_empty());
+        assert_eq!(ws.plan.dependencies["y"], vec!["x".to_string()]);
+        assert_eq!(ws.plan.dependencies["z"], vec!["y".to_string()]);
+    }
+
+    // --- All crates unpublishable produces empty plan ---
+
+    #[test]
+    fn build_plan_all_unpublishable_produces_empty_plan() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["priv"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("priv/Cargo.toml"),
+            r#"
+[package]
+name = "priv"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+        );
+        write_file(&td.path().join("priv/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert!(ws.plan.packages.is_empty());
+        assert_eq!(ws.skipped.len(), 1);
+        assert_eq!(ws.skipped[0].name, "priv");
+    }
+
+    // --- Selecting a non-publishable package errors ---
+
+    #[test]
+    fn build_plan_selecting_non_publishable_package_errors() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        // c is publish=false, not in the publishable set
+        spec.selected_packages = Some(vec!["c".to_string()]);
+        let err = build_plan(&spec).expect_err("must fail");
+        assert!(format!("{err:#}").contains("selected package not found or not publishable"));
+    }
+
+    // --- Plan registry matches spec registry ---
+
+    #[test]
+    fn build_plan_registry_in_output_matches_spec() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws.plan.registry.name, "crates-io");
+        assert_eq!(ws.plan.registry.api_base, "https://crates.io");
+    }
+
+    // ── Insta snapshot helpers ──────────────────────────────────────────
+
+    /// Stable, redacted summary of a plan suitable for snapshot testing.
+    /// Dynamic fields (plan_id, created_at, manifest_path, workspace_root) are
+    /// replaced with deterministic placeholders so snapshots stay stable across
+    /// machines and runs.
+    #[derive(serde::Serialize)]
+    struct PlanSnapshot {
+        packages: Vec<PkgSnapshot>,
+        dependencies: std::collections::BTreeMap<String, Vec<String>>,
+        skipped: Vec<SkippedPackage>,
+        registry_name: String,
+    }
+
+    #[derive(serde::Serialize)]
+    struct PkgSnapshot {
+        name: String,
+        version: String,
+    }
+
+    fn snapshot_of(ws: &PlannedWorkspace) -> PlanSnapshot {
+        PlanSnapshot {
+            packages: ws
+                .plan
+                .packages
+                .iter()
+                .map(|p| PkgSnapshot {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                })
+                .collect(),
+            dependencies: ws.plan.dependencies.clone(),
+            skipped: ws.skipped.clone(),
+            registry_name: ws.plan.registry.name.clone(),
+        }
+    }
+
+    // ── Insta snapshot tests ────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_single_crate_plan() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("single_crate_plan", snapshot_of(&ws));
+    }
+
+    #[test]
+    fn snapshot_multi_crate_plan_with_deps() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("multi_crate_plan_with_deps", snapshot_of(&ws));
+    }
+
+    #[test]
+    fn snapshot_deep_chain_plan() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["x", "y", "z"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("x/Cargo.toml"),
+            r#"
+[package]
+name = "x"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&td.path().join("x/src/lib.rs"), "");
+        write_file(
+            &td.path().join("y/Cargo.toml"),
+            r#"
+[package]
+name = "y"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+x = { path = "../x", version = "0.1.0" }
+"#,
+        );
+        write_file(&td.path().join("y/src/lib.rs"), "");
+        write_file(
+            &td.path().join("z/Cargo.toml"),
+            r#"
+[package]
+name = "z"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+y = { path = "../y", version = "0.1.0" }
+"#,
+        );
+        write_file(&td.path().join("z/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("deep_chain_plan", snapshot_of(&ws));
+    }
+
+    #[test]
+    fn snapshot_package_selection() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["b".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        insta::assert_yaml_snapshot!("package_selection_b", snapshot_of(&ws));
+    }
+
+    #[test]
+    fn snapshot_error_unknown_package() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["does-not-exist".to_string()]);
+        let err = build_plan(&spec).expect_err("must fail");
+        insta::assert_snapshot!("error_unknown_package", format!("{err:#}"));
+    }
+
+    #[test]
+    fn snapshot_error_non_publishable_dep() {
+        let td = tempdir().expect("tempdir");
+        create_workspace_with_npdep(td.path(), true);
+
+        let err = build_plan(&spec_for(td.path())).expect_err("must fail");
+        insta::assert_snapshot!("error_non_publishable_dep", format!("{err:#}"));
+    }
+
+    #[test]
+    fn snapshot_error_selecting_non_publishable() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["c".to_string()]);
+        let err = build_plan(&spec).expect_err("must fail");
+        insta::assert_snapshot!("error_selecting_non_publishable", format!("{err:#}"));
     }
 
     proptest! {

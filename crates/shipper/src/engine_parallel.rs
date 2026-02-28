@@ -743,7 +743,10 @@ pub fn run_publish_parallel(
                 }
 
                 if level_done {
-                    reporter.info(&format!("Level {}: already complete (skipping)", level.level));
+                    reporter.info(&format!(
+                        "Level {}: already complete (skipping)",
+                        level.level
+                    ));
                 } else {
                     reporter.warn(&format!(
                         "Level {}: skipping (before resume point {})",

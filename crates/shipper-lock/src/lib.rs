@@ -12,10 +12,10 @@
 //!
 //! # fn example() -> anyhow::Result<()> {
 //! // Acquire a lock
-//! let lock = LockFile::acquire(Path::new(".shipper", None))?;
+//! let lock = LockFile::acquire(Path::new(".shipper"), None)?;
 //!
 //! // Check if locked
-//! assert!(LockFile::is_locked(Path::new(".shipper", None))?);
+//! assert!(LockFile::is_locked(Path::new(".shipper"), None)?);
 //!
 //! // Lock is automatically released when dropped
 //! drop(lock);
@@ -68,7 +68,7 @@ impl LockFile {
     /// use std::path::Path;
     ///
     /// # fn example() -> anyhow::Result<()> {
-    /// let lock = LockFile::acquire(Path::new(".mylock", None), None)?;
+    /// let lock = LockFile::acquire(Path::new(".mylock"), None)?;
     /// # drop(lock);
     /// # Ok(())
     /// # }
@@ -259,8 +259,8 @@ fn read_lock_info_from_path(path: &Path) -> Result<LockInfo> {
 /// Get the lock file path for a state directory and optional workspace root
 pub fn lock_path(state_dir: &Path, workspace_root: Option<&Path>) -> PathBuf {
     if let Some(root) = workspace_root {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         root.hash(&mut hasher);
         let hash = hasher.finish();
@@ -408,5 +408,226 @@ mod tests {
         assert_eq!(parsed.pid, info.pid);
         assert_eq!(parsed.hostname, info.hostname);
         assert_eq!(parsed.plan_id, info.plan_id);
+    }
+
+    #[test]
+    fn lock_info_serde_roundtrip_no_plan_id() {
+        let info = LockInfo {
+            pid: 99,
+            hostname: "h".to_string(),
+            acquired_at: Utc::now(),
+            plan_id: None,
+        };
+        let json = serde_json::to_string(&info).expect("serialize");
+        let parsed: LockInfo = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.plan_id, None);
+    }
+
+    #[test]
+    fn lock_path_with_workspace_root_is_hashed() {
+        let base = PathBuf::from("state");
+        let root = Path::new("/some/workspace");
+        let p = lock_path(&base, Some(root));
+        // Should contain the LOCK_FILE prefix and a hex hash suffix
+        let name = p.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with(&format!("{}_", LOCK_FILE)));
+        assert!(name.len() > LOCK_FILE.len() + 1);
+    }
+
+    #[test]
+    fn lock_path_different_roots_produce_different_paths() {
+        let base = PathBuf::from("state");
+        let p1 = lock_path(&base, Some(Path::new("/workspace/a")));
+        let p2 = lock_path(&base, Some(Path::new("/workspace/b")));
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn lock_path_same_root_produces_same_path() {
+        let base = PathBuf::from("state");
+        let p1 = lock_path(&base, Some(Path::new("/workspace/a")));
+        let p2 = lock_path(&base, Some(Path::new("/workspace/a")));
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn acquire_with_workspace_root() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path().join("project");
+        let lock = LockFile::acquire(td.path(), Some(&root)).expect("acquire");
+        assert!(LockFile::is_locked(td.path(), Some(&root)).expect("is_locked"));
+        // Default path should NOT be locked
+        assert!(!LockFile::is_locked(td.path(), None).expect("is_locked none"));
+        drop(lock);
+        assert!(!LockFile::is_locked(td.path(), Some(&root)).expect("is_locked after drop"));
+    }
+
+    #[test]
+    fn multiple_locks_different_workspace_roots() {
+        let td = tempdir().expect("tempdir");
+        let root_a = td.path().join("a");
+        let root_b = td.path().join("b");
+        let lock_a = LockFile::acquire(td.path(), Some(&root_a)).expect("acquire a");
+        let lock_b = LockFile::acquire(td.path(), Some(&root_b)).expect("acquire b");
+        assert!(LockFile::is_locked(td.path(), Some(&root_a)).expect("locked a"));
+        assert!(LockFile::is_locked(td.path(), Some(&root_b)).expect("locked b"));
+        drop(lock_a);
+        assert!(!LockFile::is_locked(td.path(), Some(&root_a)).expect("unlocked a"));
+        assert!(LockFile::is_locked(td.path(), Some(&root_b)).expect("still locked b"));
+        drop(lock_b);
+    }
+
+    #[test]
+    fn acquire_creates_state_directory() {
+        let td = tempdir().expect("tempdir");
+        let nested = td.path().join("deep").join("nested").join("dir");
+        assert!(!nested.exists());
+        let lock = LockFile::acquire(&nested, None).expect("acquire");
+        assert!(nested.exists());
+        drop(lock);
+    }
+
+    #[test]
+    fn release_is_idempotent() {
+        let td = tempdir().expect("tempdir");
+        let lock = LockFile::acquire(td.path(), None).expect("acquire");
+        lock.release().expect("first release");
+        // Second release should not error even though file is gone
+        lock.release().expect("second release");
+    }
+
+    #[test]
+    fn is_locked_returns_false_after_drop() {
+        let td = tempdir().expect("tempdir");
+        let lock = LockFile::acquire(td.path(), None).expect("acquire");
+        assert!(LockFile::is_locked(td.path(), None).expect("locked"));
+        drop(lock);
+        assert!(!LockFile::is_locked(td.path(), None).expect("unlocked"));
+    }
+
+    #[test]
+    fn read_lock_info_fails_when_no_lock() {
+        let td = tempdir().expect("tempdir");
+        let result = LockFile::read_lock_info(td.path(), None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_plan_id_fails_when_lock_released() {
+        let td = tempdir().expect("tempdir");
+        let lock = LockFile::acquire(td.path(), None).expect("acquire");
+        lock.release().expect("release");
+        let result = lock.set_plan_id("some-plan");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn set_plan_id_can_be_updated_multiple_times() {
+        let td = tempdir().expect("tempdir");
+        let lock = LockFile::acquire(td.path(), None).expect("acquire");
+        lock.set_plan_id("plan-1").expect("set 1");
+        lock.set_plan_id("plan-2").expect("set 2");
+        let info = LockFile::read_lock_info(td.path(), None).expect("read");
+        assert_eq!(info.plan_id, Some("plan-2".to_string()));
+    }
+
+    #[test]
+    fn acquire_with_timeout_removes_corrupt_lock() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::write(&lp, "not-valid-json").expect("write corrupt");
+
+        let lock = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(3600))
+            .expect("acquire after corrupt");
+        let info = LockFile::read_lock_info(td.path(), None).expect("read");
+        assert_eq!(info.pid, std::process::id());
+        drop(lock);
+    }
+
+    #[test]
+    fn lock_file_contains_valid_json() {
+        let td = tempdir().expect("tempdir");
+        let _lock = LockFile::acquire(td.path(), None).expect("acquire");
+        let lp = lock_path(td.path(), None);
+        let content = fs::read_to_string(&lp).expect("read");
+        let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse json");
+        assert!(parsed.get("pid").is_some());
+        assert!(parsed.get("hostname").is_some());
+        assert!(parsed.get("acquired_at").is_some());
+    }
+
+    #[test]
+    fn acquire_with_timeout_respects_fresh_lock_age() {
+        let td = tempdir().expect("tempdir");
+        // Create a lock 30 minutes old, with a 1-hour timeout — should NOT be stale
+        let lp = lock_path(td.path(), None);
+        let info = LockInfo {
+            pid: 99999,
+            hostname: "other-host".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::minutes(30),
+            plan_id: Some("active-plan".to_string()),
+        };
+        fs::write(&lp, serde_json::to_string(&info).expect("ser")).expect("write");
+
+        let result = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(3600));
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("lock already held"));
+        assert!(err_msg.contains("99999"));
+    }
+
+    #[test]
+    fn acquire_with_timeout_and_workspace_root() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path().join("ws");
+        // Create a stale lock with workspace root
+        let lp = lock_path(td.path(), Some(&root));
+        let old_info = LockInfo {
+            pid: 11111,
+            hostname: "stale-host".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::hours(5),
+            plan_id: None,
+        };
+        fs::write(&lp, serde_json::to_string(&old_info).expect("ser")).expect("write");
+
+        let lock =
+            LockFile::acquire_with_timeout(td.path(), Some(&root), Duration::from_secs(3600))
+                .expect("acquire stale with root");
+        let info = LockFile::read_lock_info(td.path(), Some(&root)).expect("read");
+        assert_eq!(info.pid, std::process::id());
+        drop(lock);
+    }
+
+    #[test]
+    fn lock_path_none_root_is_deterministic() {
+        let base = PathBuf::from("dir");
+        assert_eq!(lock_path(&base, None), lock_path(&base, None));
+    }
+
+    #[test]
+    fn acquire_contention_error_includes_holder_details() {
+        let td = tempdir().expect("tempdir");
+        let _lock = LockFile::acquire(td.path(), None).expect("acquire");
+        let err = LockFile::acquire(td.path(), None).unwrap_err();
+        let msg = err.to_string();
+        // Should include PID of current process (the holder)
+        assert!(msg.contains(&std::process::id().to_string()));
+        assert!(msg.contains("lock already held"));
+    }
+
+    #[test]
+    fn set_plan_id_preserves_other_fields() {
+        let td = tempdir().expect("tempdir");
+        let lock = LockFile::acquire(td.path(), None).expect("acquire");
+        let before = LockFile::read_lock_info(td.path(), None).expect("read before");
+
+        lock.set_plan_id("my-plan").expect("set");
+
+        let after = LockFile::read_lock_info(td.path(), None).expect("read after");
+        assert_eq!(before.pid, after.pid);
+        assert_eq!(before.hostname, after.hostname);
+        assert_eq!(before.acquired_at, after.acquired_at);
+        assert_eq!(after.plan_id, Some("my-plan".to_string()));
     }
 }

@@ -36,6 +36,23 @@ pub struct PolicyEffects {
 }
 
 /// Evaluate policy effects directly from individual flags.
+///
+/// # Examples
+///
+/// ```
+/// use shipper_policy::{PolicyKind, evaluate};
+///
+/// let effects = evaluate(PolicyKind::Safe, false, false, true, true);
+/// assert!(effects.run_dry_run);
+/// assert!(effects.check_ownership);
+/// assert!(effects.strict_ownership);
+/// assert!(effects.readiness_enabled);
+///
+/// // Fast policy disables all safety checks
+/// let fast = evaluate(PolicyKind::Fast, false, false, true, true);
+/// assert!(!fast.run_dry_run);
+/// assert!(!fast.check_ownership);
+/// ```
 pub fn evaluate(
     policy: PolicyKind,
     no_verify: bool,

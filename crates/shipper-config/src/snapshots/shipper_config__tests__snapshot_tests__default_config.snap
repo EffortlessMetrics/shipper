@@ -1,0 +1,62 @@
+---
+source: crates/shipper-config/src/lib.rs
+expression: config
+---
+schema_version: shipper.config.v1
+policy:
+  mode: safe
+verify:
+  mode: workspace
+readiness:
+  enabled: true
+  method: api
+  initial_delay: 1000
+  max_delay: 60000
+  max_total_wait: 300000
+  poll_interval: 2000
+  jitter_factor: 0.5
+  prefer_index: false
+output:
+  lines: 50
+lock:
+  timeout: 3600000
+retry:
+  policy: default
+  max_attempts: 6
+  base_delay: 2000
+  max_delay: 120000
+  strategy: exponential
+  jitter: 0.5
+  per_error:
+    retryable: ~
+    ambiguous: ~
+    permanent: ~
+flags:
+  allow_dirty: false
+  skip_ownership_check: false
+  strict_ownership: false
+parallel:
+  enabled: false
+  max_concurrent: 4
+  per_package_timeout: 1800000
+state_dir: ~
+registry: ~
+registries:
+  registries: []
+  default_registries: []
+webhook:
+  url: ""
+  webhook_type: Generic
+  timeout_secs: 30
+encryption:
+  enabled: false
+  passphrase: ~
+  env_key: ~
+storage:
+  storage_type: File
+  bucket: ~
+  region: ~
+  base_path: ~
+  endpoint: ~
+  access_key_id: ~
+  secret_access_key: ~

@@ -60,11 +60,11 @@ fn sample_runtime_options(base_url: &str, registry_count: usize) -> RuntimeOptio
                 name: format!("r{idx}"),
                 api_base: format!("https://r{idx}.example"),
                 index_base: None,
-                            })
-                            .collect(),
-                        resume_from: None,
-                    }
-                }
+            })
+            .collect(),
+        resume_from: None,
+    }
+}
 #[test]
 fn bdd_given_a_webhook_url_when_converted_then_webhook_payload_preserves_timeout_and_secret() {
     let input = sample_runtime_options("https://hooks.example.local/hook", 1);
