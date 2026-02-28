@@ -180,6 +180,8 @@ impl ProgressReporter {
 mod tests {
     use super::*;
 
+    // --- Basic construction ---
+
     #[test]
     fn test_is_tty_returns_bool() {
         let result = is_tty();
@@ -203,12 +205,93 @@ mod tests {
     }
 
     #[test]
+    fn test_new_quiet_mode_disables_tty() {
+        let reporter = ProgressReporter::new(4, true);
+        assert!(!reporter.is_tty_mode());
+        assert_eq!(reporter.total_packages(), 4);
+        assert_eq!(reporter.current_package(), 0);
+        assert_eq!(reporter.current_name(), "");
+    }
+
+    #[test]
+    fn test_silent_initial_state() {
+        let reporter = ProgressReporter::silent(0);
+        assert!(!reporter.is_tty_mode());
+        assert_eq!(reporter.total_packages(), 0);
+        assert_eq!(reporter.current_package(), 0);
+        assert_eq!(reporter.current_name(), "");
+    }
+
+    // --- set_package state tracking ---
+
+    #[test]
     fn test_set_package_updates_state() {
         let mut reporter = ProgressReporter::silent(3);
         reporter.set_package(1, "test-crate", "1.0.0");
         assert_eq!(reporter.current_package(), 1);
         assert_eq!(reporter.current_name(), "test-crate@1.0.0");
     }
+
+    #[test]
+    fn test_set_package_formats_name_at_version() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_package(1, "my-lib", "2.3.4-beta.1");
+        assert_eq!(reporter.current_name(), "my-lib@2.3.4-beta.1");
+    }
+
+    #[test]
+    fn test_set_package_overwrites_previous() {
+        let mut reporter = ProgressReporter::silent(5);
+        reporter.set_package(1, "alpha", "0.1.0");
+        assert_eq!(reporter.current_name(), "alpha@0.1.0");
+
+        reporter.set_package(2, "beta", "0.2.0");
+        assert_eq!(reporter.current_package(), 2);
+        assert_eq!(reporter.current_name(), "beta@0.2.0");
+    }
+
+    // --- Multi-crate progress tracking ---
+
+    #[test]
+    fn test_multi_crate_sequential_publish() {
+        let mut reporter = ProgressReporter::silent(4);
+        let crates = [
+            (1, "core", "0.1.0"),
+            (2, "utils", "0.2.0"),
+            (3, "macros", "0.3.0"),
+            (4, "cli", "1.0.0"),
+        ];
+
+        for (idx, name, version) in &crates {
+            reporter.set_package(*idx, name, version);
+            assert_eq!(reporter.current_package(), *idx);
+            assert_eq!(reporter.current_name(), format!("{name}@{version}"));
+            reporter.finish_package();
+        }
+
+        assert_eq!(reporter.current_package(), 4);
+        reporter.finish();
+    }
+
+    #[test]
+    fn test_multi_crate_status_updates_between_packages() {
+        let mut reporter = ProgressReporter::silent(2);
+
+        reporter.set_package(1, "dep", "0.1.0");
+        reporter.set_status("Uploading");
+        reporter.set_status("Waiting for registry");
+        reporter.finish_package();
+
+        reporter.set_package(2, "app", "1.0.0");
+        reporter.set_status("Verifying");
+        reporter.finish_package();
+
+        assert_eq!(reporter.current_package(), 2);
+        assert_eq!(reporter.current_name(), "app@1.0.0");
+        reporter.finish();
+    }
+
+    // --- finish_package / finish ---
 
     #[test]
     fn test_finish_package_increments() {
@@ -220,6 +303,159 @@ mod tests {
     #[test]
     fn test_finish_completes_without_panic() {
         let reporter = ProgressReporter::silent(3);
+        reporter.finish();
+    }
+
+    #[test]
+    fn test_finish_package_without_set_package() {
+        let mut reporter = ProgressReporter::silent(2);
+        // Calling finish_package before set_package should not panic.
+        reporter.finish_package();
+        assert_eq!(reporter.current_package(), 0);
+        assert_eq!(reporter.current_name(), "");
+    }
+
+    #[test]
+    fn test_finish_on_fresh_reporter() {
+        // Finishing immediately without any package activity should be safe.
+        let reporter = ProgressReporter::silent(5);
+        reporter.finish();
+    }
+
+    // --- set_status ---
+
+    #[test]
+    fn test_set_status_on_silent_reporter() {
+        let reporter = ProgressReporter::silent(1);
+        // Should not panic even with no active package.
+        reporter.set_status("Idle");
+        reporter.set_status("Preparing metadata");
+        reporter.set_status("");
+    }
+
+    #[test]
+    fn test_set_status_with_special_characters() {
+        let reporter = ProgressReporter::silent(1);
+        reporter.set_status("Retrying (attempt 3/5)...");
+        reporter.set_status("Rate limited — backing off 30s");
+        reporter.set_status("✓ Published successfully");
+    }
+
+    // --- Edge cases: zero packages ---
+
+    #[test]
+    fn test_zero_packages_silent() {
+        let reporter = ProgressReporter::silent(0);
+        assert_eq!(reporter.total_packages(), 0);
+        assert_eq!(reporter.current_package(), 0);
+        reporter.finish();
+    }
+
+    #[test]
+    fn test_zero_packages_new_quiet() {
+        let reporter = ProgressReporter::new(0, true);
+        assert_eq!(reporter.total_packages(), 0);
+        reporter.finish();
+    }
+
+    #[test]
+    fn test_zero_packages_set_status_and_finish() {
+        let mut reporter = ProgressReporter::silent(0);
+        reporter.set_status("Nothing to publish");
+        reporter.finish_package();
+        reporter.finish();
+    }
+
+    // --- Edge cases: very long package names ---
+
+    #[test]
+    fn test_very_long_package_name() {
+        let long_name = "a".repeat(256);
+        let long_version = "0.0.1-alpha.".to_string() + &"9".repeat(200);
+        let mut reporter = ProgressReporter::silent(1);
+
+        reporter.set_package(1, &long_name, &long_version);
+
+        let expected = format!("{long_name}@{long_version}");
+        assert_eq!(reporter.current_name(), expected);
+        reporter.finish_package();
+        reporter.finish();
+    }
+
+    // --- Edge cases: empty / unusual strings ---
+
+    #[test]
+    fn test_empty_package_name_and_version() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_package(1, "", "");
+        assert_eq!(reporter.current_name(), "@");
+        reporter.finish_package();
+        reporter.finish();
+    }
+
+    #[test]
+    fn test_unicode_package_name() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_package(1, "日本語パッケージ", "1.0.0");
+        assert_eq!(reporter.current_name(), "日本語パッケージ@1.0.0");
+    }
+
+    // --- Edge case: large total package count ---
+
+    #[test]
+    fn test_large_total_packages() {
+        let reporter = ProgressReporter::silent(10_000);
+        assert_eq!(reporter.total_packages(), 10_000);
+        reporter.finish();
+    }
+
+    // --- Repeated operations ---
+
+    #[test]
+    fn test_repeated_set_package_same_index() {
+        let mut reporter = ProgressReporter::silent(3);
+        reporter.set_package(1, "crate-a", "0.1.0");
+        reporter.set_package(1, "crate-b", "0.2.0");
+        // Last write wins.
+        assert_eq!(reporter.current_package(), 1);
+        assert_eq!(reporter.current_name(), "crate-b@0.2.0");
+    }
+
+    #[test]
+    fn test_finish_package_called_multiple_times() {
+        let mut reporter = ProgressReporter::silent(2);
+        reporter.set_package(1, "foo", "1.0.0");
+        reporter.finish_package();
+        reporter.finish_package();
+        // Should not panic; state is unchanged after extra calls.
+        assert_eq!(reporter.current_package(), 1);
+    }
+
+    // --- Non-TTY explicit construction (quiet=false but tests are not a TTY) ---
+
+    #[test]
+    fn test_new_non_quiet_in_test_environment() {
+        // In CI / test environment stdout is typically not a TTY.
+        let mut reporter = ProgressReporter::new(2, false);
+        reporter.set_package(1, "pkg", "0.1.0");
+        reporter.set_status("Publishing");
+        reporter.finish_package();
+        reporter.set_package(2, "pkg2", "0.2.0");
+        reporter.finish_package();
+        reporter.finish();
+    }
+
+    // --- Interleaved status and package operations ---
+
+    #[test]
+    fn test_status_before_and_after_package() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_status("Initializing");
+        reporter.set_package(1, "only-crate", "0.1.0");
+        reporter.set_status("Uploading tarball");
+        reporter.set_status("Waiting for index");
+        reporter.finish_package();
+        reporter.set_status("All done");
         reporter.finish();
     }
 }
