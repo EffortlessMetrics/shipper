@@ -42,10 +42,12 @@ pub fn tail_lines(s: &str, n: usize) -> String {
 /// ```
 pub fn redact_sensitive(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
+    let mut first = true;
     for line in s.lines() {
-        if !result.is_empty() {
+        if !first {
             result.push('\n');
         }
+        first = false;
         result.push_str(&redact_line(line));
     }
     // Preserve trailing newline if present.
@@ -314,6 +316,203 @@ mod tests {
         let input = "a\nb\nc";
         assert_eq!(tail_lines(input, 3), "a\nb\nc");
     }
+
+    // --- Token pattern tests ---
+
+    #[test]
+    fn redact_bearer_jwt_like_token() {
+        let input = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.rXz";
+        let out = redact_sensitive(input);
+        assert_eq!(out, "Authorization: Bearer [REDACTED]");
+    }
+
+    #[test]
+    fn redact_basic_auth_not_touched() {
+        // Only bearer tokens are redacted; Basic auth passes through
+        let input = "Authorization: Basic dXNlcjpwYXNz";
+        let out = redact_sensitive(input);
+        assert_eq!(out, "Authorization: Basic dXNlcjpwYXNz");
+    }
+
+    #[test]
+    fn redact_multiple_bearer_across_lines() {
+        let input = "Authorization: Bearer tok1\nOther line\nAuthorization: Bearer tok2";
+        let out = redact_sensitive(input);
+        assert_eq!(
+            out,
+            "Authorization: Bearer [REDACTED]\nOther line\nAuthorization: Bearer [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn redact_multiple_registries_tokens_multiline() {
+        let input = "CARGO_REGISTRIES_STAGING_TOKEN=stg\nCARGO_REGISTRIES_PROD_TOKEN=prd";
+        let out = redact_sensitive(input);
+        assert_eq!(
+            out,
+            "CARGO_REGISTRIES_STAGING_TOKEN=[REDACTED]\nCARGO_REGISTRIES_PROD_TOKEN=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn redact_token_in_url_query_param() {
+        let input = "https://crates.io/api?token=secret_api_key";
+        let out = redact_sensitive(input);
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("secret_api_key"));
+    }
+
+    #[test]
+    fn redact_bearer_with_extra_whitespace() {
+        let input = "Authorization:   Bearer   tok123";
+        let out = redact_sensitive(input);
+        assert_eq!(out, "Authorization:   Bearer [REDACTED]");
+    }
+
+    #[test]
+    fn redact_credentials_toml_format() {
+        let input = "[registries.my-reg]\ntoken = \"cio_secret\"";
+        let out = redact_sensitive(input);
+        assert!(out.contains("[registries.my-reg]"));
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("cio_secret"));
+    }
+
+    // --- No false positives ---
+
+    #[test]
+    fn no_false_positive_windows_path() {
+        let input = r"C:\Users\admin\.cargo\registry\cache\crate-0.1.0";
+        let out = redact_sensitive(input);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn no_false_positive_unix_path() {
+        let input = "/home/user/.cargo/registry/src/index.crates.io-1ecc6299db9ec823";
+        let out = redact_sensitive(input);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn no_false_positive_cargo_home_env() {
+        let input = "CARGO_HOME=/home/user/.cargo";
+        let out = redact_sensitive(input);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn no_false_positive_temp_path() {
+        let input = "/tmp/cargo-installXXXXXX/release/mycrate";
+        let out = redact_sensitive(input);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn no_false_positive_tokenize_word() {
+        let input = "We tokenize the input and parse it.";
+        let out = redact_sensitive(input);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn no_false_positive_token_in_prose_no_equals() {
+        let input = "Please provide your authentication token via the CLI.";
+        let out = redact_sensitive(input);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn no_false_positive_normal_cargo_compile_output() {
+        let input = "   Compiling serde v1.0.200\n   Compiling tokio v1.37.0\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.34s";
+        let out = redact_sensitive(input);
+        assert_eq!(out, input);
+    }
+
+    // --- Mixed content ---
+
+    #[test]
+    fn mixed_token_and_cargo_output() {
+        let input =
+            "   Compiling mycrate v0.1.0\nAuthorization: Bearer secret123\n   Finished release";
+        let out = redact_sensitive(input);
+        assert!(out.contains("Compiling mycrate v0.1.0"));
+        assert!(out.contains("Bearer [REDACTED]"));
+        assert!(out.contains("Finished release"));
+        assert!(!out.contains("secret123"));
+    }
+
+    #[test]
+    fn mixed_env_vars_sensitive_and_benign() {
+        let input = "CARGO_HOME=/usr/local/cargo\nCARGO_REGISTRY_TOKEN=secret";
+        let out = redact_sensitive(input);
+        assert!(out.contains("CARGO_HOME=/usr/local/cargo"));
+        assert!(out.contains("CARGO_REGISTRY_TOKEN=[REDACTED]"));
+        assert!(!out.contains("=secret"));
+    }
+
+    // --- Unicode ---
+
+    #[test]
+    fn unicode_cjk_not_corrupted() {
+        let input = "ビルド成功: mycrate v0.1.0";
+        let out = redact_sensitive(input);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn unicode_emoji_preserved() {
+        let input = "✅ Published successfully! 🎉 crate uploaded.";
+        let out = redact_sensitive(input);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn unicode_with_token_redaction() {
+        let input = "🔑 CARGO_REGISTRY_TOKEN=secret123";
+        let out = redact_sensitive(input);
+        assert!(out.contains("🔑"));
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("secret123"));
+    }
+
+    // --- Large output ---
+
+    #[test]
+    fn large_output_many_lines() {
+        let mut lines: Vec<String> = (0..10_000)
+            .map(|i| format!("Compiling crate_{i} v0.1.0"))
+            .collect();
+        lines[5000] = "CARGO_REGISTRY_TOKEN=hidden_secret".to_string();
+        let input = lines.join("\n");
+        let out = redact_sensitive(&input);
+        assert!(!out.contains("hidden_secret"));
+        assert!(out.contains("CARGO_REGISTRY_TOKEN=[REDACTED]"));
+        assert!(out.contains("Compiling crate_0 v0.1.0"));
+        assert!(out.contains("Compiling crate_9999 v0.1.0"));
+        assert_eq!(out.lines().count(), 10_000);
+    }
+
+    #[test]
+    fn large_single_line_with_token() {
+        let prefix = "x".repeat(100_000);
+        let input = format!("{prefix} CARGO_REGISTRY_TOKEN=longsecret");
+        let out = redact_sensitive(&input);
+        assert!(!out.contains("longsecret"));
+        assert!(out.contains("[REDACTED]"));
+    }
+
+    // --- tail_lines additional ---
+
+    #[test]
+    fn tail_lines_redacts_all_sensitive_in_window() {
+        let input = "safe\nAuthorization: Bearer tok1\ntoken = secret2\nlast";
+        let out = tail_lines(input, 3);
+        assert_eq!(
+            out,
+            "Authorization: Bearer [REDACTED]\ntoken = [REDACTED]\nlast"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -350,13 +549,11 @@ mod property_tests {
                 input.lines().collect::<Vec<_>>()[input.lines().count() - n..].to_vec()
             };
 
-            let expected = expected_tail.iter().fold(String::new(), |mut acc, line| {
-                if !acc.is_empty() {
-                    acc.push('\n');
-                }
-                acc.push_str(&redact_line(line));
-                acc
-            });
+            let expected = expected_tail
+                .iter()
+                .map(|line| redact_line(line))
+                .collect::<Vec<String>>()
+                .join("\n");
             let expected = if input.ends_with('\n') && input.lines().count() <= n {
                 format!("{expected}\n")
             } else {
@@ -372,6 +569,22 @@ mod property_tests {
             let out = redact_sensitive(&input);
             prop_assert!(out.contains("[REDACTED]"));
             prop_assert!(out.ends_with("Bearer [REDACTED]"), "Expected output to end with 'Bearer [REDACTED]', got: {}", out);
+        }
+
+        #[test]
+        fn cargo_registry_token_always_redacted(secret in "[a-z0-9]{1,30}") {
+            let input = format!("CARGO_REGISTRY_TOKEN={secret}");
+            let out = redact_sensitive(&input);
+            prop_assert!(!out.contains(&*secret), "Secret '{}' leaked in: {}", secret, out);
+            prop_assert_eq!(out, "CARGO_REGISTRY_TOKEN=[REDACTED]");
+        }
+
+        #[test]
+        fn token_assignment_always_redacted(secret in "[0-9]{3,20}") {
+            let input = format!("token = {secret}");
+            let out = redact_sensitive(&input);
+            prop_assert!(out.contains("[REDACTED]"), "Expected [REDACTED] in: {}", out);
+            prop_assert!(!out.contains(&*secret), "Secret '{}' leaked in: {}", secret, out);
         }
     }
 }
@@ -458,5 +671,24 @@ mod snapshot_tests {
     #[test]
     fn snapshot_tail_lines_newline_only() {
         assert_snapshot!(tail_lines("\n\n\n", 2));
+    }
+
+    #[test]
+    fn snapshot_multiline_mixed_token_types() {
+        let input = "Compiling foo v1.0\nAuthorization: Bearer jwt_tok_123\nCARGO_REGISTRY_TOKEN=cio_abc\ntoken = \"mysecret\"\nDone publishing";
+        assert_snapshot!(redact_sensitive(input));
+    }
+
+    #[test]
+    fn snapshot_unicode_with_redaction() {
+        let input =
+            "🚀 Déploiement: mycrate v0.1.0\n🔑 CARGO_REGISTRY_TOKEN=secret_val\n✅ Terminé!";
+        assert_snapshot!(redact_sensitive(input));
+    }
+
+    #[test]
+    fn snapshot_typical_cargo_publish_output() {
+        let input = "   Compiling mycrate v0.2.0 (/home/user/project)\n    Finished `release` profile [optimized] target(s) in 3.42s\n   Uploading mycrate v0.2.0 (/home/user/project/Cargo.toml)\n    Uploaded mycrate v0.2.0 to `crates.io`\nnote: waiting for `mycrate v0.2.0` to be available at registry `crates.io`\npublished mycrate v0.2.0 at registry `crates.io`";
+        assert_snapshot!(redact_sensitive(input));
     }
 }

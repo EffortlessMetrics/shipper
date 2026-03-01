@@ -1,0 +1,27 @@
+---
+source: crates/shipper-duration/src/lib.rs
+assertion_line: 552
+expression: formatted
+---
+[
+    (
+        "zero",
+        "0s",
+    ),
+    (
+        "half_second",
+        "500ms",
+    ),
+    (
+        "one_minute",
+        "1m",
+    ),
+    (
+        "one_hour_one_min_one_sec",
+        "1h 1m 1s",
+    ),
+    (
+        "one_day",
+        "1day",
+    ),
+]

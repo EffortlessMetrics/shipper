@@ -111,6 +111,37 @@ mod tests {
             prop_assert_eq!(reparsed, holder);
         }
     }
+
+    #[test]
+    fn serde_json_full_roundtrip() {
+        let holder = DurationHolder {
+            value: Duration::from_secs(3661),
+        };
+        let json = serde_json::to_string(&holder).unwrap();
+        let reparsed: DurationHolder = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, holder);
+    }
+
+    #[test]
+    fn serde_toml_string_deserialization() {
+        let toml_str = r#"value = "2m 30s""#;
+        let holder: DurationHolder = toml::from_str(toml_str).unwrap();
+        assert_eq!(holder.value, Duration::from_secs(150));
+    }
+
+    #[test]
+    fn deserialize_rejects_boolean() {
+        let err =
+            serde_json::from_str::<DurationHolder>(r#"{"value":true}"#).expect_err("must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn deserialize_rejects_float() {
+        let err =
+            serde_json::from_str::<DurationHolder>(r#"{"value":1.5}"#).expect_err("must fail");
+        assert!(!err.to_string().is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +233,24 @@ mod proptests {
             let toml_str = format!("value = \"{formatted}\"");
             let holder: DurationHolder = toml::from_str(&toml_str).expect("toml deserialize");
             prop_assert_eq!(holder.value, d);
+        }
+
+        /// Arbitrary UTF-8 strings never cause parse_duration to panic.
+        #[test]
+        fn arbitrary_strings_never_panic(s in "\\PC{0,64}") {
+            let _ = parse_duration(&s);
+        }
+
+        /// Adding two durations then formatting and reparsing produces the sum.
+        #[test]
+        fn combined_duration_format_roundtrip(
+            a_ms in 0u64..1_000_000u64,
+            b_ms in 0u64..1_000_000u64,
+        ) {
+            let combined = Duration::from_millis(a_ms) + Duration::from_millis(b_ms);
+            let formatted = humantime::format_duration(combined).to_string();
+            let parsed = parse_duration(&formatted).expect("should parse formatted combined duration");
+            prop_assert_eq!(parsed, combined);
         }
     }
 }
@@ -349,6 +398,79 @@ mod edge_case_tests {
         let a = parse_duration("500ms").unwrap();
         assert_eq!(a * 4, Duration::from_secs(2));
     }
+
+    // -- Combined units without spaces --
+
+    #[test]
+    fn parse_combined_no_spaces() {
+        assert_eq!(
+            parse_duration("1h30m").unwrap(),
+            Duration::from_secs(3600 + 30 * 60)
+        );
+        assert_eq!(
+            parse_duration("2m30s").unwrap(),
+            Duration::from_secs(2 * 60 + 30)
+        );
+    }
+
+    // -- Zero forms equivalence --
+
+    #[test]
+    fn parse_zero_forms_are_equivalent() {
+        let zero = Duration::ZERO;
+        assert_eq!(parse_duration("0s").unwrap(), zero);
+        assert_eq!(parse_duration("0ms").unwrap(), zero);
+        assert_eq!(parse_duration("0ns").unwrap(), zero);
+        assert_eq!(parse_duration("0us").unwrap(), zero);
+    }
+
+    // -- Invalid input patterns --
+
+    #[test]
+    fn parse_number_without_unit_is_error() {
+        assert!(parse_duration("42").is_err());
+    }
+
+    #[test]
+    fn parse_unknown_unit_is_error() {
+        assert!(parse_duration("5xyz").is_err());
+    }
+
+    #[test]
+    fn parse_negative_is_error() {
+        assert!(parse_duration("-5s").is_err());
+    }
+
+    #[test]
+    fn parse_overflow_is_error() {
+        assert!(parse_duration("99999999999999999999999999999s").is_err());
+    }
+
+    // -- Format-parse roundtrips --
+
+    #[test]
+    fn format_then_parse_roundtrip_deterministic() {
+        let cases = [
+            Duration::ZERO,
+            Duration::from_millis(250),
+            Duration::from_secs(42),
+            Duration::from_secs(3661),
+            Duration::from_secs(90061),
+        ];
+        for d in cases {
+            let formatted = humantime::format_duration(d).to_string();
+            let parsed = parse_duration(&formatted).unwrap();
+            assert_eq!(parsed, d, "roundtrip failed for {formatted}");
+        }
+    }
+
+    // -- Complex multi-unit combinations --
+
+    #[test]
+    fn parse_days_hours_minutes_combined() {
+        let d = parse_duration("1day 2h 30m").unwrap();
+        assert_eq!(d, Duration::from_secs(86400 + 2 * 3600 + 30 * 60));
+    }
 }
 
 #[cfg(test)]
@@ -413,5 +535,29 @@ mod snapshot_tests {
         }
         let h: H = serde_json::from_str(r#"{"v":"1h 1m 1s"}"#).unwrap();
         assert_debug_snapshot!(h);
+    }
+
+    #[test]
+    fn snapshot_formatted_common_durations() {
+        let formatted: Vec<(&str, String)> = vec![
+            ("zero", Duration::ZERO),
+            ("half_second", Duration::from_millis(500)),
+            ("one_minute", Duration::from_secs(60)),
+            ("one_hour_one_min_one_sec", Duration::from_secs(3661)),
+            ("one_day", Duration::from_secs(86400)),
+        ]
+        .into_iter()
+        .map(|(name, d)| (name, humantime::format_duration(d).to_string()))
+        .collect();
+        assert_debug_snapshot!(formatted);
+    }
+
+    #[test]
+    fn snapshot_parse_errors_various() {
+        let results: Vec<(&str, String)> = vec!["", "   ", "42", "-5s", "5xyz"]
+            .into_iter()
+            .map(|input| (input, parse_duration(input).unwrap_err().to_string()))
+            .collect();
+        assert_debug_snapshot!(results);
     }
 }

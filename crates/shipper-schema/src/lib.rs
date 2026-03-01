@@ -255,6 +255,139 @@ mod tests {
         assert!(err.to_string().contains("too old"));
     }
 
+    // --- Version compatibility: sequential upgrade chain ---
+
+    #[test]
+    fn validate_upgrade_chain_v1_through_v5() {
+        for version in 1u32..=5 {
+            let v = format!("shipper.state.v{version}");
+            let min = "shipper.state.v1";
+            validate_schema_version(&v, min, "state")
+                .unwrap_or_else(|_| panic!("v{version} should satisfy minimum v1"));
+        }
+    }
+
+    #[test]
+    fn validate_downgrade_always_rejected() {
+        for (newer, older) in [(5, 4), (4, 3), (3, 2), (2, 1)] {
+            let v = format!("shipper.state.v{older}");
+            let min = format!("shipper.state.v{newer}");
+            assert!(
+                validate_schema_version(&v, &min, "state").is_err(),
+                "v{older} should not satisfy minimum v{newer}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_error_message_includes_both_versions() {
+        let err = validate_schema_version("shipper.receipt.v1", "shipper.receipt.v5", "receipt")
+            .expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("v1"),
+            "error should mention actual version: {msg}"
+        );
+        assert!(
+            msg.contains("v5"),
+            "error should mention minimum version: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_at_u32_max_boundary() {
+        let max_ver = format!("shipper.receipt.v{}", u32::MAX);
+        let min_ver = format!("shipper.receipt.v{}", u32::MAX);
+        validate_schema_version(&max_ver, &min_ver, "receipt")
+            .expect("u32::MAX should satisfy itself");
+    }
+
+    #[test]
+    fn validate_both_arguments_invalid_returns_error() {
+        let result = validate_schema_version("garbage", "also_garbage", "test");
+        assert!(result.is_err());
+    }
+
+    // --- Edge cases: unusual/adversarial inputs ---
+
+    #[test]
+    fn parse_schema_version_accepts_shipper_prefix_superstring() {
+        // "shippers" starts with "shipper" so the current impl accepts it
+        assert_eq!(parse_schema_version("shippers.receipt.v3").unwrap(), 3);
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_uppercase_v_prefix() {
+        assert!(parse_schema_version("shipper.receipt.V2").is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_tab_separated() {
+        assert!(parse_schema_version("shipper\treceipt\tv1").is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_unicode_digit() {
+        // U+0661 is Arabic-Indic digit one — not valid for u32::parse
+        assert!(parse_schema_version("shipper.receipt.v\u{0661}").is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_version_with_trailing_text() {
+        assert!(parse_schema_version("shipper.receipt.v2beta").is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_accepts_version_with_plus_sign() {
+        // Rust's u32::parse treats "+1" as 1; document this accepted behavior
+        assert_eq!(parse_schema_version("shipper.receipt.v+1").unwrap(), 1);
+    }
+
+    #[test]
+    fn parse_schema_version_handles_very_long_middle_segment() {
+        let long_middle = "a".repeat(10_000);
+        let input = format!("shipper.{long_middle}.v7");
+        assert_eq!(parse_schema_version(&input).unwrap(), 7);
+    }
+
+    #[test]
+    fn parse_schema_version_deterministic_across_calls() {
+        let input = "shipper.receipt.v42";
+        let a = parse_schema_version(input).unwrap();
+        let b = parse_schema_version(input).unwrap();
+        assert_eq!(a, b);
+    }
+
+    // --- Snapshot tests ---
+
+    #[test]
+    fn snapshot_parse_multiple_document_types() {
+        let types = ["receipt", "state", "events", "lock"];
+        let results: Vec<_> = types
+            .iter()
+            .map(|t| {
+                let input = format!("shipper.{t}.v1");
+                (t.to_string(), parse_schema_version(&input).ok())
+            })
+            .collect();
+        assert_debug_snapshot!(results);
+    }
+
+    #[test]
+    fn snapshot_validate_upgrade_compatibility_matrix() {
+        let versions: Vec<u32> = vec![0, 1, 2, 3, 5];
+        let mut matrix: Vec<String> = Vec::new();
+        for &v in &versions {
+            for &min in &versions {
+                let ver = format!("shipper.state.v{v}");
+                let minimum = format!("shipper.state.v{min}");
+                let ok = validate_schema_version(&ver, &minimum, "state").is_ok();
+                matrix.push(format!("v{v} >= v{min}: {ok}"));
+            }
+        }
+        assert_debug_snapshot!(matrix);
+    }
+
     proptest! {
         #[test]
         fn parse_schema_version_roundtrips_number(version in 1u32..10_000) {
@@ -348,6 +481,34 @@ mod tests {
             } else {
                 prop_assert!(!a_ge_b && b_ge_a);
             }
+        }
+
+        #[test]
+        fn validate_is_transitive(
+            a in 0u32..3_000,
+            b in 0u32..3_000,
+            c in 0u32..3_000,
+        ) {
+            let va = format!("shipper.state.v{a}");
+            let vb = format!("shipper.state.v{b}");
+            let vc = format!("shipper.state.v{c}");
+            let a_ge_b = validate_schema_version(&va, &vb, "t").is_ok();
+            let b_ge_c = validate_schema_version(&vb, &vc, "t").is_ok();
+            let a_ge_c = validate_schema_version(&va, &vc, "t").is_ok();
+            // Transitivity: if a >= b and b >= c then a >= c
+            if a_ge_b && b_ge_c {
+                prop_assert!(a_ge_c, "transitivity violated: v{a} >= v{b} and v{b} >= v{c} but not v{a} >= v{c}");
+            }
+        }
+
+        #[test]
+        fn parse_version_ordering_matches_numeric_ordering(
+            a in 0u32..10_000,
+            b in 0u32..10_000,
+        ) {
+            let pa = parse_schema_version(&format!("shipper.receipt.v{a}")).unwrap();
+            let pb = parse_schema_version(&format!("shipper.receipt.v{b}")).unwrap();
+            prop_assert_eq!(a.cmp(&b), pa.cmp(&pb));
         }
     }
 }

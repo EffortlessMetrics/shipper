@@ -1117,6 +1117,353 @@ mod tests {
             .collect();
         insta::assert_snapshot!("permanent_pattern_exhaustive", results.join("\n"));
     }
+
+    // ── real-world cargo publish error messages ─────────────────────────
+
+    #[test]
+    fn realworld_connection_reset_with_os_error() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  error sending request: \
+             hyper::Error(SendRequest, ConnectError(\"tcp connect error\", \
+             Os { code: 104, kind: ConnectionReset, message: \"Connection reset by peer\" }))",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn realworld_dns_failure_getaddrinfo() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  error trying to connect: \
+             dns error: failed to lookup address information: \
+             Temporary failure in name resolution",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn realworld_dns_failure_windows() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  dns error: No such host is known. (os error 11001)",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn realworld_crate_version_already_uploaded_exact() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  the remote server responded with an error: \
+             crate version `0.3.7` is already uploaded",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn realworld_version_already_exists_with_crate_name() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  the remote server responded with an error (status 200 OK): \
+             crate version already exists: `my-crate@1.2.3`",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn realworld_feature_resolution_failure() {
+        let o = classify_publish_failure(
+            "error: failed to verify package tarball\n\
+             Caused by:\n  failed to select a version for the requirement `tokio = \"^2.0\"`\n\
+             candidate versions found which didn't match: 1.38.0, 1.37.0, 1.36.0\n\
+             location searched: crates.io index\n\
+             required by package `my-crate v0.1.0`",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn realworld_compilation_error_type_mismatch() {
+        let o = classify_publish_failure(
+            "error[E0308]: mismatched types\n\
+             --> src/lib.rs:42:5\n  |\n42 |     foo()\n  |     ^^^^^ \
+             expected `u32`, found `String`\n\n\
+             error: could not compile `my-crate` (lib) due to 1 previous error\n\
+             error: failed to verify package tarball",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn realworld_compilation_error_unresolved_import() {
+        let o = classify_publish_failure(
+            "error[E0432]: unresolved import `crate::foo`\n\
+             --> src/lib.rs:1:5\n  |\n1 | use crate::foo;\n  |     ^^^^^^^^^^ \
+             no `foo` in the root\n\n\
+             error: could not compile `my-crate` (lib) due to 1 previous error",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn realworld_ssl_certificate_not_trusted() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry custom-registry\n\
+             Caused by:\n  error sending request: \
+             tls error: the certificate was not trusted: self-signed certificate",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn realworld_cargo_http_500_with_body() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  the remote server responded with an error: \
+             500 Internal Server Error\n\
+             <html><body>Internal Server Error</body></html>",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn realworld_cargo_http_502_cloudflare() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  the remote server responded with: \
+             502 Bad Gateway\n\
+             <html><head><title>502 Bad Gateway</title></head>\
+             <body>cloudflare</body></html>",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn realworld_publish_disabled_in_manifest() {
+        let o = classify_publish_failure(
+            "error: `my-internal-crate` cannot be published.\n\
+             publish is disabled for this crate in Cargo.toml",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn realworld_yanked_dependency() {
+        let o = classify_publish_failure(
+            "error: failed to verify package tarball\n\
+             Caused by:\n  failed to download `old-dep v0.1.0`\n\
+             Caused by:\n  version `0.1.0` of crate `old-dep` has been yanked",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn realworld_broken_pipe_on_large_crate() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  failed to send request body: \
+             broken pipe (os error 32): the connection was closed by the server",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn realworld_connection_refused_localhost() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry custom-registry\n\
+             Caused by:\n  error trying to connect: tcp connect error: \
+             Connection refused (os error 111)",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn realworld_network_unreachable_no_internet() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  error trying to connect: tcp connect error: \
+             Network unreachable (os error 101)",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn realworld_invalid_credentials_from_credential_helper() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  invalid credentials: \
+             the credential-process for registry `crates-io` returned an error",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    // ── ambiguous failure edge cases ────────────────────────────────────
+
+    #[test]
+    fn ambiguous_http_408_request_timeout_no_pattern() {
+        // 408 doesn't match any defined numeric pattern
+        let o = classify_publish_failure(
+            "the remote server responded with status 408 Request Timeout",
+            "",
+        );
+        // "timeout" is in the message, so this is retryable
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn ambiguous_http_409_conflict() {
+        let o =
+            classify_publish_failure("the remote server responded with status 409 Conflict", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn ambiguous_segfault_in_cargo() {
+        let o = classify_publish_failure("", "Segmentation fault (core dumped)");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn ambiguous_oom_killed() {
+        let o = classify_publish_failure("", "Killed");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn ambiguous_registry_returns_html_instead_of_json() {
+        let o = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  expected JSON, got: \
+             <html><head><title>Maintenance</title></head></html>",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn ambiguous_aborting_without_details() {
+        let o = classify_publish_failure("error: aborting due to previous error", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn ambiguous_exit_code_only() {
+        let o = classify_publish_failure("", "process exited with code 1");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    // ── cross-stream classification ─────────────────────────────────────
+
+    #[test]
+    fn cross_stream_retryable_stderr_permanent_stdout() {
+        let o = classify_publish_failure("503 Service Unavailable", "is already uploaded");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn cross_stream_permanent_stderr_retryable_stdout() {
+        let o = classify_publish_failure("token is invalid", "connection reset");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn cross_stream_both_retryable_different_patterns() {
+        let o = classify_publish_failure("connection refused", "broken pipe");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn cross_stream_both_permanent_different_patterns() {
+        let o = classify_publish_failure("unauthorized", "checksum mismatch");
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn cross_stream_stderr_ambiguous_stdout_retryable() {
+        let o = classify_publish_failure("something went wrong", "dns resolution failed");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn cross_stream_stderr_ambiguous_stdout_permanent() {
+        let o = classify_publish_failure("something went wrong", "version already exists");
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn cross_stream_stderr_retryable_stdout_empty() {
+        let o = classify_publish_failure("too many requests", "");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn cross_stream_stderr_empty_stdout_permanent() {
+        let o = classify_publish_failure("", "could not compile `my-crate`");
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    // ── snapshot: real-world cargo errors ────────────────────────────────
+
+    #[test]
+    fn snapshot_realworld_feature_resolution_failure() {
+        let outcome = classify_publish_failure(
+            "error: failed to verify package tarball\n\
+             Caused by:\n  failed to select a version for the requirement `tokio = \"^2.0\"`\n\
+             candidate versions found which didn't match: 1.38.0, 1.37.0\n\
+             required by package `my-crate v0.1.0`",
+            "",
+        );
+        insta::assert_debug_snapshot!("realworld_feature_resolution_failure", outcome);
+    }
+
+    #[test]
+    fn snapshot_realworld_connection_reset_os_error() {
+        let outcome = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  error sending request: \
+             hyper::Error(SendRequest, ConnectError(\"tcp connect error\", \
+             Os { code: 104, kind: ConnectionReset, message: \"Connection reset by peer\" }))",
+            "",
+        );
+        insta::assert_debug_snapshot!("realworld_connection_reset_os_error", outcome);
+    }
+
+    #[test]
+    fn snapshot_realworld_http_409_conflict() {
+        let outcome =
+            classify_publish_failure("the remote server responded with status 409 Conflict", "");
+        insta::assert_debug_snapshot!("realworld_http_409_conflict", outcome);
+    }
+
+    #[test]
+    fn snapshot_cross_stream_mixed_signals() {
+        let outcome = classify_publish_failure("token is invalid", "connection reset by peer");
+        insta::assert_debug_snapshot!("cross_stream_mixed_signals", outcome);
+    }
+
+    #[test]
+    fn snapshot_realworld_oom_killed() {
+        let outcome = classify_publish_failure("", "Killed");
+        insta::assert_debug_snapshot!("realworld_oom_killed", outcome);
+    }
 }
 
 #[cfg(test)]
@@ -1220,6 +1567,46 @@ mod property_tests {
             // May be retryable if noise accidentally contains a retryable pattern,
             // but must never be ambiguous when a permanent pattern is explicitly present.
             prop_assert_ne!(outcome.class, CargoFailureClass::Ambiguous);
+        }
+
+        /// When both a retryable and permanent pattern are present in random
+        /// positions, retryable always wins regardless of ordering.
+        #[test]
+        fn retryable_always_dominates_permanent(
+            r_idx in 0..20usize,
+            p_idx in 0..22usize,
+            sep in "[a-z ]{1,20}",
+        ) {
+            let retryable = RETRYABLE_PATTERNS[r_idx];
+            let permanent = PERMANENT_PATTERNS[p_idx];
+            // permanent before retryable
+            let stderr_a = format!("{permanent}{sep}{retryable}");
+            let outcome_a = classify_publish_failure(&stderr_a, "");
+            prop_assert_eq!(outcome_a.class, CargoFailureClass::Retryable);
+            // retryable before permanent
+            let stderr_b = format!("{retryable}{sep}{permanent}");
+            let outcome_b = classify_publish_failure(&stderr_b, "");
+            prop_assert_eq!(outcome_b.class, CargoFailureClass::Retryable);
+        }
+
+        /// Classification output message always corresponds to the class.
+        #[test]
+        fn message_matches_class(stderr in arbitrary_string(), stdout in arbitrary_string()) {
+            let outcome = classify_publish_failure(&stderr, &stdout);
+            match outcome.class {
+                CargoFailureClass::Retryable => {
+                    prop_assert_eq!(outcome.message, "transient failure (retryable)");
+                }
+                CargoFailureClass::Permanent => {
+                    prop_assert_eq!(outcome.message, "permanent failure (fix required)");
+                }
+                CargoFailureClass::Ambiguous => {
+                    prop_assert_eq!(
+                        outcome.message,
+                        "publish outcome ambiguous; registry did not show version"
+                    );
+                }
+            }
         }
     }
 }
