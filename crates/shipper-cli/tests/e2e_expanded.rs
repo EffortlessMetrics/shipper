@@ -55,11 +55,37 @@ fn normalize_output(raw: &str) -> String {
             } else {
                 // Replace backslashes then normalize any embedded absolute
                 // paths ending in /.shipper with <STATE_DIR>.
-                normalize_embedded_paths(&line.replace('\\', "/"))
+                let normalized = normalize_embedded_paths(&line.replace('\\', "/"));
+                normalize_timing(&normalized)
             }
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Replace timing values like `(21.3µs)` or `(1.2ms)` with `(<DURATION>)`.
+fn normalize_timing(line: &str) -> String {
+    // Match patterns like "(123.4µs)" or "(1.2ms)" or "(0.5s)"
+    let mut result = line.to_string();
+    while let Some(start) = result.find("(") {
+        if let Some(end) = result[start..].find(')') {
+            let inner = &result[start + 1..start + end];
+            if inner.ends_with("µs")
+                || inner.ends_with("ms")
+                || inner.ends_with("ns")
+                || (inner.ends_with('s') && inner[..inner.len() - 1].parse::<f64>().is_ok())
+            {
+                result = format!(
+                    "{}(<DURATION>){}",
+                    &result[..start],
+                    &result[start + end + 1..]
+                );
+                continue;
+            }
+        }
+        break;
+    }
+    result
 }
 
 /// Replace absolute paths ending in `/.shipper` with `<STATE_DIR>`.
@@ -1959,4 +1985,553 @@ fn status_single_package_filter() {
     );
 
     registry.join();
+}
+
+// ===========================================================================
+// 33. Publish error paths (no registry needed)
+// ===========================================================================
+
+/// Snapshot: publish with a missing manifest fails and reports an error.
+#[test]
+fn publish_missing_manifest_snapshot() {
+    let td = tempdir().expect("tempdir");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("no-such/Cargo.toml"))
+        .arg("publish")
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!(
+        "publish_missing_manifest",
+        normalize_stderr(
+            &stderr
+                .replace(td.path().to_str().unwrap(), "<TMPDIR>")
+                .replace(&td.path().to_str().unwrap().replace('\\', "/"), "<TMPDIR>")
+        )
+    );
+}
+
+/// Exit code for publish with a missing manifest is non-zero.
+#[test]
+fn publish_missing_manifest_exit_code() {
+    let td = tempdir().expect("tempdir");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("no-such/Cargo.toml"))
+        .arg("publish")
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    assert_debug_snapshot!("publish_missing_manifest_exit_code", output.status.code());
+}
+
+// ===========================================================================
+// 34. Resume error paths
+// ===========================================================================
+
+/// Snapshot: resume when no state file exists.
+#[test]
+fn resume_no_state_file_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(td.path().join(".shipper"))
+        .arg("resume")
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!(
+        "resume_no_state_file",
+        normalize_output(&normalize_stderr(&stderr))
+    );
+}
+
+/// Exit code for resume when no state file exists.
+#[test]
+fn resume_no_state_file_exit_code() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(td.path().join(".shipper"))
+        .arg("resume")
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    assert_debug_snapshot!("resume_no_state_file_exit_code", output.status.code());
+}
+
+/// Snapshot: resume with a corrupted (non-JSON) state file.
+#[test]
+fn resume_corrupted_state_file_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+    fs::write(state_dir.join("state.json"), "NOT VALID JSON {{{{").expect("write");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("resume")
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!(
+        "resume_corrupted_state_file",
+        normalize_output(&normalize_stderr(&stderr))
+    );
+}
+
+/// Snapshot: resume with an empty state file.
+#[test]
+fn resume_empty_state_file_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+    fs::write(state_dir.join("state.json"), "").expect("write");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("resume")
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!(
+        "resume_empty_state_file",
+        normalize_output(&normalize_stderr(&stderr))
+    );
+}
+
+// ===========================================================================
+// 35. Preflight error snapshots
+// ===========================================================================
+
+/// Snapshot: preflight in a non-git directory (without --allow-dirty) fails.
+#[test]
+fn preflight_non_git_directory_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    // Use a bogus API base that won't be contacted (git check fails first)
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg("http://127.0.0.1:1")
+        .arg("--skip-ownership-check")
+        .arg("preflight")
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .output()
+        .expect("failed to run");
+
+    // Preflight in a non-git directory should fail
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!(
+        "preflight_non_git_directory",
+        normalize_output(&normalize_stderr(&stderr))
+    );
+}
+
+/// Snapshot: preflight with --allow-dirty and --skip-ownership-check where
+/// registry reports versions as missing.
+#[test]
+fn preflight_allow_dirty_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let registry = spawn_registry_not_found(1);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("--skip-ownership-check")
+        .arg("preflight")
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .output()
+        .expect("failed to run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("--- stdout ---\n{stdout}--- stderr ---\n{stderr}");
+    assert_snapshot!(
+        "preflight_allow_dirty",
+        normalize_output(&normalize_stderr(&combined))
+    );
+
+    registry.join();
+}
+
+// ===========================================================================
+// 36. Config validate edge case snapshots
+// ===========================================================================
+
+/// Snapshot: config validate with wrong value type for verify.mode (integer instead of string).
+#[test]
+fn config_validate_wrong_type_snapshot() {
+    let td = tempdir().expect("tempdir");
+    let config_path = td.path().join(".shipper.toml");
+    fs::write(
+        &config_path,
+        r#"
+[readiness]
+method = 99999
+"#,
+    )
+    .expect("write");
+
+    let output = shipper_cmd()
+        .args(["config", "validate", "-p", config_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!(
+        "config_validate_wrong_type",
+        normalize_stderr(
+            &stderr
+                .replace(config_path.to_str().unwrap(), "<CONFIG_PATH>")
+                .replace(
+                    &config_path.to_str().unwrap().replace('\\', "/"),
+                    "<CONFIG_PATH>",
+                ),
+        )
+    );
+}
+
+/// Snapshot: config validate with invalid TOML syntax (unclosed bracket).
+#[test]
+fn config_validate_malformed_toml_snapshot() {
+    let td = tempdir().expect("tempdir");
+    let config_path = td.path().join(".shipper.toml");
+    fs::write(&config_path, "[policy\nname = \"safe\"\n").expect("write");
+
+    let output = shipper_cmd()
+        .args(["config", "validate", "-p", config_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!(
+        "config_validate_malformed_toml",
+        normalize_stderr(
+            &stderr
+                .replace(config_path.to_str().unwrap(), "<CONFIG_PATH>")
+                .replace(
+                    &config_path.to_str().unwrap().replace('\\', "/"),
+                    "<CONFIG_PATH>",
+                ),
+        )
+    );
+}
+
+/// Snapshot: config validate with integer for verify.mode (expects string enum).
+#[test]
+fn config_validate_invalid_nested_section_snapshot() {
+    let td = tempdir().expect("tempdir");
+    let config_path = td.path().join(".shipper.toml");
+    fs::write(
+        &config_path,
+        r#"
+[verify]
+mode = 12345
+"#,
+    )
+    .expect("write");
+
+    let output = shipper_cmd()
+        .args(["config", "validate", "-p", config_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!(
+        "config_validate_invalid_nested_section",
+        normalize_stderr(
+            &stderr
+                .replace(config_path.to_str().unwrap(), "<CONFIG_PATH>")
+                .replace(
+                    &config_path.to_str().unwrap().replace('\\', "/"),
+                    "<CONFIG_PATH>",
+                ),
+        )
+    );
+}
+
+// ===========================================================================
+// 37. Verbose flag behavior
+// ===========================================================================
+
+/// Snapshot: verbose flag with single-crate plan shows extra analysis.
+#[test]
+fn verbose_single_crate_plan_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--verbose")
+        .arg("plan")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert_snapshot!("verbose_single_crate_plan", normalize_output(&stdout));
+}
+
+// ===========================================================================
+// 38. Plan edge cases
+// ===========================================================================
+
+/// Snapshot: plan for a workspace where all crates have publish = false.
+#[test]
+fn plan_all_publish_false_snapshot() {
+    let td = tempdir().expect("tempdir");
+    write_file(
+        &td.path().join("Cargo.toml"),
+        r#"
+[workspace]
+members = ["internal-a", "internal-b"]
+resolver = "2"
+"#,
+    );
+    write_file(
+        &td.path().join("internal-a/Cargo.toml"),
+        r#"
+[package]
+name = "internal-a"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+    );
+    write_file(&td.path().join("internal-a/src/lib.rs"), "");
+    write_file(
+        &td.path().join("internal-b/Cargo.toml"),
+        r#"
+[package]
+name = "internal-b"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+    );
+    write_file(&td.path().join("internal-b/src/lib.rs"), "");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("plan")
+        .output()
+        .expect("failed to run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("plan_all_publish_false", normalize_output(&stdout));
+}
+
+/// Snapshot: plan with --format json flag accepted and output stable.
+#[test]
+fn plan_format_json_flag_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--format")
+        .arg("json")
+        .arg("plan")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert_snapshot!("plan_format_json_flag", normalize_output(&stdout));
+}
+
+// ===========================================================================
+// 39. Help text snapshots for remaining subcommands
+// ===========================================================================
+
+/// Snapshot: `preflight --help` output.
+#[test]
+fn help_preflight_snapshot() {
+    let output = shipper_cmd()
+        .args(["preflight", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_preflight", normalize_stderr(&stdout));
+}
+
+/// Snapshot: `ci --help` output.
+#[test]
+fn help_ci_snapshot() {
+    let output = shipper_cmd()
+        .args(["ci", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_ci", normalize_stderr(&stdout));
+}
+
+// ===========================================================================
+// 40. Error snapshots — unknown subcommand and global errors
+// ===========================================================================
+
+/// Snapshot: error when an unknown subcommand is used.
+#[test]
+fn error_unknown_subcommand_snapshot() {
+    let output = shipper_cmd().arg("foobar").output().expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!("error_unknown_subcommand", normalize_stderr(&stderr));
+}
+
+/// Exit code for an unknown subcommand is non-zero (2 = clap usage error).
+#[test]
+fn error_unknown_subcommand_exit_code() {
+    let output = shipper_cmd().arg("foobar").output().expect("failed to run");
+
+    assert!(!output.status.success());
+    assert_debug_snapshot!("error_unknown_subcommand_exit_code", output.status.code());
+}
+
+// ===========================================================================
+// 41. Inspect-events with actual events file
+// ===========================================================================
+
+/// Snapshot: inspect-events with a populated events file.
+#[test]
+fn inspect_events_with_data_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+    fs::write(
+        state_dir.join("events.jsonl"),
+        concat!(
+            r#"{"timestamp":"2025-01-01T00:00:00Z","event_type":{"type":"plan_created","plan_id":"abc123","package_count":1},"package":"all"}"#,
+            "\n",
+            r#"{"timestamp":"2025-01-01T00:00:01Z","event_type":{"type":"execution_started"},"package":"all"}"#,
+            "\n",
+        ),
+    )
+    .expect("write");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("inspect-events")
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("inspect_events_with_data", normalize_output(&stdout));
+}
+
+// ===========================================================================
+// 42. Publish with invalid manifest content
+// ===========================================================================
+
+/// Snapshot: publish when manifest exists but has invalid TOML.
+#[test]
+fn publish_invalid_manifest_content_snapshot() {
+    let td = tempdir().expect("tempdir");
+    write_file(&td.path().join("Cargo.toml"), "this is not valid toml {{{{");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("publish")
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!(
+        "publish_invalid_manifest_content",
+        normalize_stderr(
+            &stderr
+                .replace(td.path().to_str().unwrap(), "<TMPDIR>")
+                .replace(&td.path().to_str().unwrap().replace('\\', "/"), "<TMPDIR>",),
+        )
+    );
+}
+
+// ===========================================================================
+// 43. Resume with missing manifest
+// ===========================================================================
+
+/// Snapshot: resume when manifest path doesn't exist.
+#[test]
+fn resume_missing_manifest_snapshot() {
+    let td = tempdir().expect("tempdir");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("nonexistent/Cargo.toml"))
+        .arg("resume")
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!(
+        "resume_missing_manifest",
+        normalize_stderr(
+            &stderr
+                .replace(td.path().to_str().unwrap(), "<TMPDIR>")
+                .replace(&td.path().to_str().unwrap().replace('\\', "/"), "<TMPDIR>")
+        )
+    );
 }

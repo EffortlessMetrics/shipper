@@ -1,0 +1,9 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&normalize_stderr(&stderr))
+---
+[1/1] Publishing demo@0.1.0... (<DURATION>)
+Error: failed to parse state JSON <STATE_DIR>/state.json
+
+Caused by:
+    EOF while parsing a value at line 1 column 0

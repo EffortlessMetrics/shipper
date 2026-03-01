@@ -1,0 +1,13 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&stdout)
+---
+plan_id: <PLAN_ID>
+registry: crates-io (https://crates.io)
+workspace_root: <WORKSPACE_ROOT>
+
+Total packages to publish: 0
+
+Skipped packages:
+  - internal-a@0.1.0 (publish = false)
+  - internal-b@0.1.0 (publish = false)

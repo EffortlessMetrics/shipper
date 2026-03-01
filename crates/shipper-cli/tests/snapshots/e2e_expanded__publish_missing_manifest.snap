@@ -1,0 +1,8 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: "normalize_stderr(&stderr.replace(td.path().to_str().unwrap(),\n\"<TMPDIR>\").replace(&td.path().to_str().unwrap().replace('\\\\', \"/\"),\n\"<TMPDIR>\"))"
+---
+Error: failed to execute cargo metadata
+
+Caused by:
+    `cargo metadata` exited with an error: error: manifest path `<TMPDIR>\no-such/Cargo.toml` does not exist
