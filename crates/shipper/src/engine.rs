@@ -4307,4 +4307,562 @@ mod tests {
         // (skip_ownership_check=true in default_opts)
         assert!(effects.run_dry_run);
     }
+
+    // ── Retry logic edge-case tests ────────────────────────────────────
+
+    #[test]
+    #[serial]
+    fn run_publish_zero_max_attempts_skips_publish_loop() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        with_test_env(
+            &bin,
+            vec![("SHIPPER_CARGO_EXIT", Some("0".to_string()))],
+            || {
+                // Registry says version doesn't exist, so engine enters the publish loop
+                // with max_attempts=0 → loop body never executes → package stays Pending
+                let server = spawn_registry_server(
+                    std::collections::BTreeMap::from([(
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    )]),
+                    1,
+                );
+                let ws = planned_workspace(td.path(), server.base_url.clone());
+                let mut opts = default_opts(PathBuf::from(".shipper"));
+                opts.max_attempts = 0;
+
+                let mut reporter = CollectingReporter::default();
+                let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
+
+                // With 0 max_attempts the loop never runs; package stays Pending
+                assert_eq!(receipt.packages.len(), 1);
+                assert!(
+                    matches!(receipt.packages[0].state, PackageState::Pending),
+                    "expected Pending with 0 max_attempts, got {:?}",
+                    receipt.packages[0].state
+                );
+
+                let st = state::load_state(&td.path().join(".shipper"))
+                    .expect("load")
+                    .expect("exists");
+                let pkg = st.packages.get("demo@0.1.0").expect("pkg");
+                assert_eq!(pkg.attempts, 0, "no attempts should have been made");
+                server.join();
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn run_publish_max_retries_exceeded_marks_failed() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        with_test_env(
+            &bin,
+            vec![
+                ("SHIPPER_CARGO_EXIT", Some("1".to_string())),
+                (
+                    "SHIPPER_CARGO_STDERR",
+                    Some("HTTP 503 service unavailable".to_string()),
+                ),
+            ],
+            || {
+                // 3 attempts * (version check + registry fallback) + final check = many 404s
+                let server = spawn_registry_server(
+                    std::collections::BTreeMap::from([(
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![
+                            (404, "{}".to_string()),
+                            (404, "{}".to_string()),
+                            (404, "{}".to_string()),
+                            (404, "{}".to_string()),
+                            (404, "{}".to_string()),
+                        ],
+                    )]),
+                    5,
+                );
+                let ws = planned_workspace(td.path(), server.base_url.clone());
+                let mut opts = default_opts(PathBuf::from(".shipper"));
+                opts.max_attempts = 3;
+                opts.base_delay = Duration::from_millis(0);
+                opts.max_delay = Duration::from_millis(0);
+
+                let mut reporter = CollectingReporter::default();
+                let err = run_publish(&ws, &opts, &mut reporter).expect_err("must fail");
+                assert!(format!("{err:#}").contains("failed"));
+
+                let st = state::load_state(&td.path().join(".shipper"))
+                    .expect("load")
+                    .expect("exists");
+                let pkg = st.packages.get("demo@0.1.0").expect("pkg");
+                assert_eq!(pkg.attempts, 3, "should have exhausted all 3 attempts");
+                assert!(
+                    matches!(pkg.state, PackageState::Failed { .. }),
+                    "expected Failed, got {:?}",
+                    pkg.state
+                );
+                server.join();
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn run_publish_single_attempt_succeeds_on_first_try() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        with_test_env(
+            &bin,
+            vec![("SHIPPER_CARGO_EXIT", Some("0".to_string()))],
+            || {
+                let server = spawn_registry_server(
+                    std::collections::BTreeMap::from([(
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string()), (200, "{}".to_string())],
+                    )]),
+                    2,
+                );
+                let ws = planned_workspace(td.path(), server.base_url.clone());
+                let mut opts = default_opts(PathBuf::from(".shipper"));
+                opts.max_attempts = 1;
+
+                let mut reporter = CollectingReporter::default();
+                let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
+                assert_eq!(receipt.packages[0].attempts, 1);
+                assert!(matches!(receipt.packages[0].state, PackageState::Published));
+                server.join();
+            },
+        );
+    }
+
+    // ── State persistence: Uploaded vs Published transitions ──────────
+
+    #[test]
+    fn state_transition_pending_to_uploaded_persists() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = td.path().join(".shipper");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+
+        let mut st = init_state(&ws, &state_dir).expect("init");
+        let key = "demo@0.1.0";
+
+        update_state(&mut st, &state_dir, key, PackageState::Uploaded).expect("update");
+
+        // Verify in-memory
+        assert!(matches!(
+            st.packages.get(key).unwrap().state,
+            PackageState::Uploaded
+        ));
+
+        // Verify on disk
+        let loaded = state::load_state(&state_dir)
+            .expect("load")
+            .expect("exists");
+        assert!(matches!(
+            loaded.packages.get(key).unwrap().state,
+            PackageState::Uploaded
+        ));
+    }
+
+    #[test]
+    fn state_transition_uploaded_to_published_persists() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = td.path().join(".shipper");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+
+        let mut st = init_state(&ws, &state_dir).expect("init");
+        let key = "demo@0.1.0";
+
+        // Pending -> Uploaded -> Published
+        update_state(&mut st, &state_dir, key, PackageState::Uploaded).expect("upload");
+        update_state(&mut st, &state_dir, key, PackageState::Published).expect("publish");
+
+        let loaded = state::load_state(&state_dir)
+            .expect("load")
+            .expect("exists");
+        assert!(matches!(
+            loaded.packages.get(key).unwrap().state,
+            PackageState::Published
+        ));
+    }
+
+    #[test]
+    fn state_transition_pending_to_failed_persists() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = td.path().join(".shipper");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+
+        let mut st = init_state(&ws, &state_dir).expect("init");
+        let key = "demo@0.1.0";
+
+        let failed = PackageState::Failed {
+            class: ErrorClass::Retryable,
+            message: "service unavailable".to_string(),
+        };
+        update_state(&mut st, &state_dir, key, failed).expect("update");
+
+        let loaded = state::load_state(&state_dir)
+            .expect("load")
+            .expect("exists");
+        match &loaded.packages.get(key).unwrap().state {
+            PackageState::Failed { class, message } => {
+                assert_eq!(*class, ErrorClass::Retryable);
+                assert_eq!(message, "service unavailable");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn state_updated_at_advances_on_transition() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = td.path().join(".shipper");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+
+        let mut st = init_state(&ws, &state_dir).expect("init");
+        let key = "demo@0.1.0";
+        let initial_updated = st.updated_at;
+
+        // Small sleep to ensure time difference
+        thread::sleep(Duration::from_millis(10));
+
+        update_state(&mut st, &state_dir, key, PackageState::Uploaded).expect("update");
+        assert!(st.updated_at > initial_updated);
+
+        let pkg = st.packages.get(key).unwrap();
+        assert!(pkg.last_updated_at >= initial_updated);
+    }
+
+    // ── Error classification tests ─────────────────────────────────────
+
+    #[test]
+    fn classify_cargo_failure_connection_refused_is_retryable() {
+        let (class, _) = classify_cargo_failure("connection refused", "");
+        assert_eq!(class, ErrorClass::Retryable);
+    }
+
+    #[test]
+    fn classify_cargo_failure_500_is_retryable() {
+        let (class, _) = classify_cargo_failure("HTTP 500 internal server error", "");
+        assert_eq!(class, ErrorClass::Retryable);
+    }
+
+    #[test]
+    fn classify_cargo_failure_version_exists_is_permanent() {
+        let (class, _) = classify_cargo_failure("crate version `0.1.0` is already uploaded", "");
+        assert_eq!(class, ErrorClass::Permanent);
+    }
+
+    #[test]
+    fn classify_cargo_failure_empty_output_is_ambiguous() {
+        let (class, _) = classify_cargo_failure("", "");
+        assert_eq!(class, ErrorClass::Ambiguous);
+    }
+
+    #[test]
+    fn classify_cargo_failure_message_is_nonempty() {
+        let (_, msg) = classify_cargo_failure("timeout talking to server", "");
+        assert!(!msg.is_empty(), "error message should be nonempty");
+    }
+
+    #[test]
+    fn classify_cargo_failure_stderr_vs_stdout() {
+        // Some errors appear in stdout, some in stderr
+        let (class_stderr, _) = classify_cargo_failure("HTTP 429 too many requests", "");
+        let (class_stdout, _) = classify_cargo_failure("", "HTTP 429 too many requests");
+        assert_eq!(class_stderr, ErrorClass::Retryable);
+        // stdout-only message should also be classified
+        assert!(
+            class_stdout == ErrorClass::Retryable || class_stdout == ErrorClass::Ambiguous,
+            "expected Retryable or Ambiguous from stdout, got {class_stdout:?}"
+        );
+    }
+
+    // ── Snapshot tests with insta for engine state ─────────────────────
+
+    #[test]
+    fn snapshot_init_state_single_package() {
+        let td = tempdir().expect("tempdir");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+        let state_dir = td.path().join(".shipper");
+
+        let st = init_state(&ws, &state_dir).expect("init");
+
+        // Redact timestamps for deterministic snapshots
+        let snapshot: Vec<String> = st
+            .packages
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "key={} name={} version={} attempts={} state={}",
+                    k,
+                    v.name,
+                    v.version,
+                    v.attempts,
+                    short_state(&v.state)
+                )
+            })
+            .collect();
+        insta::assert_debug_snapshot!("init_state_single_package", snapshot);
+    }
+
+    #[test]
+    fn snapshot_init_state_multi_package() {
+        let td = tempdir().expect("tempdir");
+        let mut ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+        ws.plan.packages = vec![
+            PlannedPackage {
+                name: "alpha".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: td.path().join("alpha/Cargo.toml"),
+            },
+            PlannedPackage {
+                name: "beta".to_string(),
+                version: "2.0.0".to_string(),
+                manifest_path: td.path().join("beta/Cargo.toml"),
+            },
+            PlannedPackage {
+                name: "gamma".to_string(),
+                version: "0.3.0".to_string(),
+                manifest_path: td.path().join("gamma/Cargo.toml"),
+            },
+        ];
+        let state_dir = td.path().join(".shipper");
+
+        let st = init_state(&ws, &state_dir).expect("init");
+
+        let snapshot: Vec<String> = st
+            .packages
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "key={} name={} version={} attempts={} state={}",
+                    k,
+                    v.name,
+                    v.version,
+                    v.attempts,
+                    short_state(&v.state)
+                )
+            })
+            .collect();
+        insta::assert_debug_snapshot!("init_state_multi_package", snapshot);
+    }
+
+    #[test]
+    fn snapshot_state_after_transitions() {
+        let td = tempdir().expect("tempdir");
+        let mut ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+        ws.plan.packages = vec![
+            PlannedPackage {
+                name: "alpha".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: td.path().join("alpha/Cargo.toml"),
+            },
+            PlannedPackage {
+                name: "beta".to_string(),
+                version: "2.0.0".to_string(),
+                manifest_path: td.path().join("beta/Cargo.toml"),
+            },
+        ];
+        let state_dir = td.path().join(".shipper");
+        let mut st = init_state(&ws, &state_dir).expect("init");
+
+        // Simulate: alpha published, beta failed
+        update_state(&mut st, &state_dir, "alpha@1.0.0", PackageState::Published).expect("update");
+        update_state(
+            &mut st,
+            &state_dir,
+            "beta@2.0.0",
+            PackageState::Failed {
+                class: ErrorClass::Permanent,
+                message: "auth failure".to_string(),
+            },
+        )
+        .expect("update");
+
+        let snapshot: Vec<String> = st
+            .packages
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "key={} attempts={} state={}",
+                    k,
+                    v.attempts,
+                    short_state(&v.state)
+                )
+            })
+            .collect();
+        insta::assert_debug_snapshot!("state_after_mixed_transitions", snapshot);
+    }
+
+    #[test]
+    fn snapshot_error_class_classification_matrix() {
+        let cases = vec![
+            ("HTTP 429 too many requests", ""),
+            ("timeout talking to server", ""),
+            ("HTTP 503 service unavailable", ""),
+            ("connection refused", ""),
+            ("HTTP 500 internal server error", ""),
+            ("permission denied", ""),
+            ("crate version `0.1.0` is already uploaded", ""),
+            ("something totally unexpected", ""),
+            ("", ""),
+        ];
+
+        let snapshot: Vec<String> = cases
+            .iter()
+            .map(|(stderr, stdout)| {
+                let (class, msg) = classify_cargo_failure(stderr, stdout);
+                format!(
+                    "stderr={:50} class={:10} msg={}",
+                    format!("{stderr:?}"),
+                    format!("{class:?}"),
+                    msg
+                )
+            })
+            .collect();
+        insta::assert_debug_snapshot!("error_classification_matrix", snapshot);
+    }
+
+    // ── Proptest: state transition invariants ──────────────────────────
+
+    mod engine_proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_error_class() -> impl Strategy<Value = ErrorClass> {
+            prop_oneof![
+                Just(ErrorClass::Retryable),
+                Just(ErrorClass::Permanent),
+                Just(ErrorClass::Ambiguous),
+            ]
+        }
+
+        fn arb_package_state() -> impl Strategy<Value = PackageState> {
+            prop_oneof![
+                Just(PackageState::Pending),
+                Just(PackageState::Uploaded),
+                Just(PackageState::Published),
+                ".*".prop_map(|r| PackageState::Skipped { reason: r }),
+                (arb_error_class(), ".*").prop_map(|(c, m)| PackageState::Failed {
+                    class: c,
+                    message: m
+                }),
+                ".*".prop_map(|m| PackageState::Ambiguous { message: m }),
+            ]
+        }
+
+        proptest! {
+            /// update_state always persists new_state to disk
+            #[test]
+            fn update_state_always_persists(new_state in arb_package_state()) {
+                let td = tempdir().expect("tempdir");
+                let state_dir = td.path().join(".shipper");
+                let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+                let mut st = init_state(&ws, &state_dir).expect("init");
+                let key = "demo@0.1.0";
+
+                update_state(&mut st, &state_dir, key, new_state.clone()).expect("update");
+
+                // In-memory matches
+                assert_eq!(st.packages.get(key).unwrap().state, new_state);
+
+                // On-disk matches
+                let loaded = state::load_state(&state_dir)
+                    .expect("load")
+                    .expect("exists");
+                assert_eq!(loaded.packages.get(key).unwrap().state, new_state);
+            }
+
+            /// short_state never panics on any PackageState variant
+            #[test]
+            fn short_state_never_panics(state in arb_package_state()) {
+                let label = short_state(&state);
+                assert!(!label.is_empty());
+            }
+
+            /// pkg_key is deterministic and reversible
+            #[test]
+            fn pkg_key_deterministic(
+                name in "[a-z][a-z0-9_-]{0,19}",
+                version in "[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}"
+            ) {
+                let key1 = pkg_key(&name, &version);
+                let key2 = pkg_key(&name, &version);
+                assert_eq!(key1, key2);
+                assert!(key1.contains('@'));
+                assert!(key1.starts_with(&name));
+                assert!(key1.ends_with(&version));
+            }
+
+            /// backoff_delay is always bounded by [0, max + jitter headroom]
+            #[test]
+            fn backoff_delay_bounded(
+                base_ms in 1u64..5000,
+                max_ms in 100u64..30000,
+                attempt in 1u32..50,
+                jitter in 0.0f64..1.0,
+            ) {
+                let base = Duration::from_millis(base_ms.min(max_ms));
+                let max = Duration::from_millis(max_ms);
+
+                let delay = backoff_delay(
+                    base,
+                    max,
+                    attempt,
+                    crate::retry::RetryStrategyType::Exponential,
+                    jitter,
+                );
+
+                // With jitter, delay can be at most max * (1 + jitter)
+                let upper_bound_ms = (max_ms as f64 * (1.0 + jitter)).ceil() as u64 + 1;
+                assert!(
+                    delay.as_millis() <= upper_bound_ms as u128,
+                    "delay {}ms exceeded upper bound {}ms (base={}ms, max={}ms, attempt={}, jitter={})",
+                    delay.as_millis(), upper_bound_ms, base_ms, max_ms, attempt, jitter
+                );
+            }
+
+            /// ExecutionState roundtrips through JSON for arbitrary states
+            #[test]
+            fn execution_state_roundtrip(
+                attempts in 0u32..100,
+                state in arb_package_state()
+            ) {
+                let mut packages = BTreeMap::new();
+                packages.insert(
+                    "test@1.0.0".to_string(),
+                    PackageProgress {
+                        name: "test".to_string(),
+                        version: "1.0.0".to_string(),
+                        attempts,
+                        state,
+                        last_updated_at: Utc::now(),
+                    },
+                );
+                let st = ExecutionState {
+                    state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+                    plan_id: "plan-proptest".to_string(),
+                    registry: Registry {
+                        name: "crates-io".to_string(),
+                        api_base: "https://crates.io".to_string(),
+                        index_base: None,
+                    },
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    packages,
+                };
+
+                let json = serde_json::to_string(&st).expect("serialize");
+                let parsed: ExecutionState = serde_json::from_str(&json).expect("deserialize");
+                assert_eq!(parsed.packages.len(), 1);
+                let pkg = parsed.packages.get("test@1.0.0").unwrap();
+                assert_eq!(pkg.attempts, attempts);
+            }
+        }
+    }
 }

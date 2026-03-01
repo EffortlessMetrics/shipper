@@ -1,0 +1,25 @@
+---
+source: crates/shipper-plan/src/lib.rs
+assertion_line: 3324
+expression: snapshot_of(&ws)
+---
+packages:
+  - name: dd-base
+    version: 0.1.0
+  - name: dd-m1
+    version: 0.1.0
+  - name: dd-m2
+    version: 0.1.0
+  - name: dd-mid
+    version: 0.1.0
+dependencies:
+  dd-base: []
+  dd-m1:
+    - dd-base
+  dd-m2:
+    - dd-base
+  dd-mid:
+    - dd-m1
+    - dd-m2
+skipped: []
+registry_name: crates-io

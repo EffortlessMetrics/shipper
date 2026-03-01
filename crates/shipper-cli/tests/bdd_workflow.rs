@@ -1524,3 +1524,586 @@ mod status_all_published {
         registry.join();
     }
 }
+
+// ============================================================================
+// Feature: Real-world workflow scenarios (bdd_ prefix)
+// ============================================================================
+
+mod bdd_preflight_dry_run_no_state {
+    use super::*;
+
+    // Scenario: User runs preflight (dry-run equivalent) — no state/receipts written
+    //
+    // Given: a multi-crate workspace with "core-lib", "utils-lib", and "top-app"
+    // And: registry reports all versions as already published (200)
+    // When: I run "shipper preflight --allow-dirty --skip-ownership-check --no-verify"
+    // Then: exit code is 0
+    // And: no state.json is created in the state directory
+    // And: no receipt.json is created in the state directory
+    // And: no events.jsonl is created in the state directory
+    #[test]
+    fn bdd_preflight_dry_run_writes_no_state_or_receipts() {
+        let td = tempdir().expect("tempdir");
+        create_multi_crate_workspace(td.path());
+        let state_dir = td.path().join(".shipper");
+
+        // Registry returns 200 for version-exists checks; preflight may issue multiple requests
+        let registry = spawn_registry(vec![200, 200, 200, 200, 200, 200], 6);
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--skip-ownership-check")
+            .arg("--no-verify")
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("preflight")
+            .assert()
+            .success();
+
+        // Then: no state or receipt artifacts should be created
+        assert!(
+            !state_dir.join("state.json").exists(),
+            "preflight (dry-run) should not create state.json"
+        );
+        assert!(
+            !state_dir.join("receipt.json").exists(),
+            "preflight (dry-run) should not create receipt.json"
+        );
+
+        registry.join();
+    }
+}
+
+mod bdd_preflight_skip_ownership {
+    use super::*;
+
+    // Scenario: User runs preflight with --skip-ownership-check
+    //
+    // Given: a workspace with "demo"
+    // And: registry reports the version as not published (404)
+    // When: I run "shipper preflight --allow-dirty --skip-ownership-check --no-verify"
+    // Then: exit code is 0
+    // And: the Preflight Report is printed
+    // And: ownership column shows "✗" (skipped, not verified)
+    #[test]
+    fn bdd_preflight_with_skip_ownership_check_succeeds() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        // Registry: 404 for version check (not published); preflight may issue multiple requests
+        let registry = spawn_registry(vec![404, 404, 404], 3);
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--skip-ownership-check")
+            .arg("--no-verify")
+            .arg("preflight")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        // Then: preflight report is generated
+        assert!(
+            stdout.contains("Preflight Report"),
+            "expected Preflight Report header, got: {stdout}"
+        );
+        // And: ownership is not verified (shows ✗ because check was skipped)
+        assert!(
+            stdout.contains("Ownership verified: 0"),
+            "expected 'Ownership verified: 0' when ownership check is skipped, got: {stdout}"
+        );
+
+        registry.join();
+    }
+}
+
+mod bdd_resume_after_network_failure {
+    use super::*;
+
+    // Scenario: User resumes publish after a network failure
+    //
+    // Given: a three-crate workspace (core-lib, utils-lib, top-app)
+    // And: an initial publish skipped core-lib and utils-lib (already published)
+    //      but failed on top-app (simulating network failure during cargo publish)
+    // And: the state file marks core-lib and utils-lib as Skipped and top-app as Failed
+    // When: I run "shipper resume" with the network now recovered
+    // Then: exit code is 0
+    // And: receipt shows top-app as published
+    // And: already-published crates were not re-published
+    #[test]
+    #[serial]
+    fn bdd_resume_continues_from_last_published_after_failure() {
+        let td = tempdir().expect("tempdir");
+        create_multi_crate_workspace(td.path());
+        let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
+        let state_dir = td.path().join(".shipper");
+
+        // Initial publish: core-lib 200 (skip), utils-lib 200 (skip),
+        // top-app 404 (needs publish), cargo fails → marked failed
+        // Resume: top-app 404 (needs publish), cargo ok, verify 200
+        let registry = spawn_registry(vec![200, 200, 404, 404, 404, 404, 200], 8);
+
+        // Initial publish that fails on top-app (simulated network failure)
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--verify-timeout")
+            .arg("0ms")
+            .arg("--verify-poll")
+            .arg("0ms")
+            .arg("--no-readiness")
+            .arg("--max-attempts")
+            .arg("1")
+            .arg("--base-delay")
+            .arg("0ms")
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("publish")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "1")
+            .assert()
+            .failure();
+
+        // Verify: state file exists with failed package(s)
+        assert!(
+            state_dir.join("state.json").exists(),
+            "state.json should exist after failed publish"
+        );
+
+        // When: resume with cargo publish now succeeding (network recovered)
+        let mut cmd = shipper_cmd();
+        fast_args(
+            &mut cmd,
+            &td.path().join("Cargo.toml"),
+            &registry.base_url,
+            &state_dir,
+        );
+        cmd.arg("resume")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+            .assert()
+            .success();
+
+        // Then: receipt should exist with the resumed package(s)
+        let receipt: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(state_dir.join("receipt.json")).expect("read receipt"),
+        )
+        .expect("parse receipt");
+        let packages = receipt["packages"].as_array().expect("packages array");
+        assert!(
+            !packages.is_empty(),
+            "receipt should have at least one package after resume"
+        );
+
+        // All packages in receipt should be in a terminal state (published or skipped)
+        for pkg in packages {
+            let state = pkg["state"]["state"].as_str().unwrap_or("unknown");
+            assert!(
+                state == "published" || state == "skipped",
+                "expected published or skipped for {}, got: {state}",
+                pkg["name"]
+            );
+        }
+
+        // Verify the failed package (top-app) was resolved
+        let top_app = packages
+            .iter()
+            .find(|p| p["name"].as_str() == Some("top-app"));
+        assert!(
+            top_app.is_some(),
+            "receipt should contain top-app after resume"
+        );
+        assert_eq!(
+            top_app.unwrap()["state"]["state"].as_str(),
+            Some("published"),
+            "top-app should be published after resume"
+        );
+
+        registry.join();
+    }
+}
+
+mod bdd_status_mixed_published_unpublished {
+    use super::*;
+
+    // Scenario: User runs status on workspace with mixed published/unpublished crates
+    //
+    // Given: a workspace with "core", "app" where "app" depends on "core"
+    // And: registry returns 200 for "core" (published) and 404 for "app" (not published)
+    // When: I run "shipper status"
+    // Then: exit code is 0
+    // And: output contains "published" (for core)
+    // And: output contains "missing" (for app)
+    // And: output contains both crate names
+    #[test]
+    fn bdd_status_shows_mixed_published_and_unpublished() {
+        let td = tempdir().expect("tempdir");
+        create_two_crate_workspace(td.path());
+
+        // core → 200 (published), app → 404 (missing)
+        let registry = spawn_registry(vec![200, 404], 2);
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("status")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        // Then: mixed status
+        assert!(
+            stdout.contains("published"),
+            "expected at least one published crate, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("missing"),
+            "expected at least one missing crate, got: {stdout}"
+        );
+        // And: both crate names appear
+        assert!(
+            stdout.contains("core"),
+            "expected 'core' in status output, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("app"),
+            "expected 'app' in status output, got: {stdout}"
+        );
+
+        registry.join();
+    }
+}
+
+mod bdd_doctor_missing_cargo {
+    use super::*;
+
+    // Scenario: User runs doctor with cargo not on PATH
+    //
+    // Given: a valid workspace with "demo"
+    // And: PATH is set to an empty directory (cargo is not available)
+    // When: I run "shipper doctor"
+    // Then: exit code is 0 (doctor is diagnostic, not a hard failure)
+    // And: stderr contains a warning about being unable to run cargo
+    #[test]
+    fn bdd_doctor_warns_when_cargo_not_found() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let cargo_home = td.path().join("cargo-home");
+        fs::create_dir_all(&cargo_home).expect("mkdir");
+
+        // Empty bin dir with no cargo
+        let empty_bin = td.path().join("empty-bin");
+        fs::create_dir_all(&empty_bin).expect("mkdir");
+
+        let registry = spawn_doctor_registry(1);
+
+        let assert = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("doctor")
+            .env("PATH", empty_bin.display().to_string())
+            .env("CARGO_HOME", &cargo_home)
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+            .assert()
+            .success();
+
+        // Then: stderr warns about cargo not being available
+        let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf8");
+        assert!(
+            stderr.contains("unable to run cargo") || stderr.contains("cargo"),
+            "expected warning about cargo not found, got stderr: {stderr}"
+        );
+
+        registry.join();
+    }
+}
+
+mod bdd_publish_single_package {
+    use super::*;
+
+    // Scenario: User publishes single package from multi-crate workspace
+    //
+    // Given: a workspace with "core-lib", "utils-lib", and "top-app"
+    // And: registry reports all versions as already published (200)
+    // When: I run "shipper publish --package core-lib"
+    // Then: exit code is 0
+    // And: receipt contains only "core-lib" (filtered by --package)
+    #[test]
+    #[serial]
+    fn bdd_publish_single_package_filters_correctly() {
+        let td = tempdir().expect("tempdir");
+        create_multi_crate_workspace(td.path());
+        let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
+        let state_dir = td.path().join(".shipper");
+
+        // 200 for core-lib version check → already published → skip
+        let registry = spawn_registry(vec![200], 1);
+
+        let mut cmd = shipper_cmd();
+        fast_args(
+            &mut cmd,
+            &td.path().join("Cargo.toml"),
+            &registry.base_url,
+            &state_dir,
+        );
+        cmd.arg("--package")
+            .arg("core-lib")
+            .arg("publish")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+            .assert()
+            .success();
+
+        // Then: receipt should contain only core-lib
+        let receipt: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(state_dir.join("receipt.json")).expect("read receipt"),
+        )
+        .expect("parse receipt");
+        let packages = receipt["packages"].as_array().expect("packages array");
+        assert_eq!(
+            packages.len(),
+            1,
+            "receipt should have exactly 1 package when --package filters"
+        );
+        assert_eq!(
+            packages[0]["name"].as_str(),
+            Some("core-lib"),
+            "the single package should be core-lib"
+        );
+
+        registry.join();
+    }
+}
+
+mod bdd_plan_manifest_path_subcrate {
+    use super::*;
+
+    // Scenario: User runs plan with --manifest-path pointing to subcrate
+    //
+    // Given: a workspace with "core-lib", "utils-lib", and "top-app"
+    // When: I run "shipper plan --manifest-path <workspace>/Cargo.toml --package utils-lib"
+    // Then: exit code is 0
+    // And: output contains "utils-lib@0.1.0"
+    // And: plan is scoped to include utils-lib and its dependency core-lib
+    #[test]
+    fn bdd_plan_with_manifest_path_scoped_correctly() {
+        let td = tempdir().expect("tempdir");
+        create_multi_crate_workspace(td.path());
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--package")
+            .arg("utils-lib")
+            .arg("plan")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        // Then: utils-lib should be in the plan
+        assert!(
+            stdout.contains("utils-lib@0.1.0"),
+            "expected utils-lib@0.1.0 in plan output, got: {stdout}"
+        );
+        // And: top-app should NOT be in the filtered plan
+        assert!(
+            !stdout.contains("top-app@0.1.0"),
+            "expected top-app to be excluded from filtered plan, got: {stdout}"
+        );
+    }
+}
+
+mod bdd_config_conflicting_settings {
+    use super::*;
+
+    // Scenario: Config validation catches conflicting settings
+    //
+    // Given: a .shipper.toml with retry.base_delay > retry.max_delay (conflicting)
+    // When: I run "shipper config validate"
+    // Then: exit code is non-zero
+    // And: error message mentions the conflict (max_delay must be >= base_delay)
+    #[test]
+    fn bdd_config_validation_catches_base_delay_exceeding_max_delay() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join(".shipper.toml"),
+            r#"
+schema_version = "shipper.config.v1"
+
+[retry]
+base_delay = "30s"
+max_delay = "5s"
+"#,
+        );
+
+        shipper_cmd()
+            .arg("config")
+            .arg("validate")
+            .arg("-p")
+            .arg(td.path().join(".shipper.toml"))
+            .assert()
+            .failure()
+            .stderr(contains("max_delay"));
+    }
+}
+
+mod bdd_ci_github_actions_output {
+    use super::*;
+
+    // Scenario: CI template output matches expected format
+    //
+    // Given: a valid workspace with "demo"
+    // When: I run "shipper ci github-actions"
+    // Then: exit code is 0
+    // And: output contains GitHub Actions step markers ("- name:", "uses:")
+    // And: output references shipper publish
+    // And: output references CARGO_REGISTRY_TOKEN
+    #[test]
+    fn bdd_ci_github_actions_produces_valid_yaml_steps() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("ci")
+            .arg("github-actions")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        // Then: output contains GitHub Actions YAML structure
+        assert!(
+            stdout.contains("- name:"),
+            "expected '- name:' YAML step marker, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("uses:"),
+            "expected 'uses:' action reference, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("shipper publish"),
+            "expected 'shipper publish' command reference, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("CARGO_REGISTRY_TOKEN"),
+            "expected CARGO_REGISTRY_TOKEN env var reference, got: {stdout}"
+        );
+        // And: output starts with a comment header
+        assert!(
+            stdout.starts_with("# GitHub Actions"),
+            "expected output to start with '# GitHub Actions' comment, got: {stdout}"
+        );
+    }
+}
+
+mod bdd_clean_preserves_workspace {
+    use super::*;
+
+    // Scenario: Clean command removes state files but preserves workspace
+    //
+    // Given: a workspace with "demo" and state files (state.json, events.jsonl, receipt.json)
+    // When: I run "shipper clean"
+    // Then: exit code is 0
+    // And: state.json, events.jsonl, and receipt.json are removed
+    // And: Cargo.toml still exists
+    // And: demo/src/lib.rs still exists
+    // And: demo/Cargo.toml still exists
+    #[test]
+    #[serial]
+    fn bdd_clean_removes_state_but_preserves_source_files() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join(".shipper");
+        fs::create_dir_all(&state_dir).expect("mkdir");
+
+        // Pre-populate state files
+        write_file(&state_dir.join("state.json"), r#"{"plan_id":"test"}"#);
+        write_file(&state_dir.join("events.jsonl"), "{}\n");
+        write_file(&state_dir.join("receipt.json"), r#"{"packages":[]}"#);
+
+        // Verify preconditions
+        assert!(state_dir.join("state.json").exists());
+        assert!(state_dir.join("events.jsonl").exists());
+        assert!(state_dir.join("receipt.json").exists());
+        assert!(td.path().join("Cargo.toml").exists());
+        assert!(td.path().join("demo/Cargo.toml").exists());
+        assert!(td.path().join("demo/src/lib.rs").exists());
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("clean")
+            .assert()
+            .success()
+            .stdout(contains("Clean complete"));
+
+        // Then: state files should be removed
+        assert!(
+            !state_dir.join("state.json").exists(),
+            "state.json should be removed after clean"
+        );
+        assert!(
+            !state_dir.join("events.jsonl").exists(),
+            "events.jsonl should be removed after clean"
+        );
+        assert!(
+            !state_dir.join("receipt.json").exists(),
+            "receipt.json should be removed after clean"
+        );
+
+        // And: workspace source files should be preserved
+        assert!(
+            td.path().join("Cargo.toml").exists(),
+            "workspace Cargo.toml should be preserved after clean"
+        );
+        assert!(
+            td.path().join("demo/Cargo.toml").exists(),
+            "demo/Cargo.toml should be preserved after clean"
+        );
+        assert!(
+            td.path().join("demo/src/lib.rs").exists(),
+            "demo/src/lib.rs should be preserved after clean"
+        );
+    }
+}

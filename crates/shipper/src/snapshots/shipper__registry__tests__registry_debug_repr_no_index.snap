@@ -1,0 +1,10 @@
+---
+source: crates/shipper/src/registry.rs
+assertion_line: 3994
+expression: registry
+---
+Registry {
+    name: "private",
+    api_base: "https://registry.example.com",
+    index_base: None,
+}

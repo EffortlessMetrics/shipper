@@ -1809,4 +1809,810 @@ mod tests {
             }
         }
     }
+
+    // ── Atomic write crash-safety ───────────────────────────────────
+
+    #[test]
+    fn atomic_write_orphaned_tmp_does_not_affect_load() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("crash");
+
+        // Save a valid state first.
+        let state = sample_state();
+        save_state(&dir, &state).expect("save");
+
+        // Simulate a crash by leaving an orphaned `.tmp` file.
+        let tmp = state_path(&dir).with_extension("tmp");
+        fs::write(&tmp, "garbage-from-interrupted-write").expect("write orphaned tmp");
+
+        // load_state reads the real state.json, not the tmp.
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.plan_id, state.plan_id);
+    }
+
+    #[test]
+    fn atomic_write_replaces_orphaned_tmp_on_next_save() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("crash");
+
+        // Save a valid state.
+        let state = sample_state();
+        save_state(&dir, &state).expect("initial save");
+
+        // Place an orphaned .tmp file.
+        let tmp = state_path(&dir).with_extension("tmp");
+        fs::write(&tmp, "leftover-garbage").expect("write orphaned tmp");
+        assert!(tmp.exists());
+
+        // A subsequent save should succeed and clean up the .tmp via overwrite+rename.
+        save_state(&dir, &state).expect("second save");
+        assert!(!tmp.exists(), ".tmp must be gone after successful save");
+        assert!(state_path(&dir).exists());
+    }
+
+    #[test]
+    fn atomic_write_no_partial_state_on_serialization_error_path() {
+        // If `state.json` already exists and we overwrite it, the old file
+        // should remain intact until the rename succeeds.
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("atomicity");
+
+        let st1 = ExecutionState {
+            state_version: CURRENT_STATE_VERSION.to_string(),
+            plan_id: "original".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::new(),
+        };
+        save_state(&dir, &st1).expect("save original");
+
+        // Read the original bytes.
+        let original_bytes = fs::read(state_path(&dir)).expect("read original");
+
+        // Overwrite with new state.
+        let st2 = ExecutionState {
+            plan_id: "updated".to_string(),
+            ..st1.clone()
+        };
+        save_state(&dir, &st2).expect("save updated");
+
+        // Verify the file is now different (the rename happened atomically).
+        let updated_bytes = fs::read(state_path(&dir)).expect("read updated");
+        assert_ne!(original_bytes, updated_bytes);
+
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.plan_id, "updated");
+    }
+
+    // ── Receipt generation completeness ─────────────────────────────
+
+    #[test]
+    fn receipt_all_fields_individually_verified_after_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("fields");
+
+        let fixed = Utc.with_ymd_and_hms(2025, 6, 15, 10, 30, 0).unwrap();
+        let finished = Utc.with_ymd_and_hms(2025, 6, 15, 10, 35, 0).unwrap();
+
+        let receipt = Receipt {
+            receipt_version: CURRENT_RECEIPT_VERSION.to_string(),
+            plan_id: "field-check-plan".to_string(),
+            registry: Registry {
+                name: "custom-registry".to_string(),
+                api_base: "https://custom.registry.io".to_string(),
+                index_base: Some("https://index.custom.registry.io".to_string()),
+            },
+            started_at: fixed,
+            finished_at: finished,
+            packages: vec![PackageReceipt {
+                name: "my-crate".to_string(),
+                version: "3.2.1".to_string(),
+                attempts: 2,
+                state: PackageState::Published,
+                started_at: fixed,
+                finished_at: finished,
+                duration_ms: 42_000,
+                evidence: shipper_types::PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            }],
+            event_log_path: PathBuf::from("custom/events.jsonl"),
+            git_context: Some(shipper_types::GitContext {
+                commit: Some("abc123def456".to_string()),
+                branch: Some("release/v3.2.1".to_string()),
+                tag: Some("v3.2.1".to_string()),
+                dirty: Some(false),
+            }),
+            environment: shipper_types::EnvironmentFingerprint {
+                shipper_version: "0.3.0-rc.1".to_string(),
+                cargo_version: Some("1.82.0".to_string()),
+                rust_version: Some("1.82.0".to_string()),
+                os: "windows".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        write_receipt(&dir, &receipt).expect("write");
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+
+        assert_eq!(loaded.receipt_version, CURRENT_RECEIPT_VERSION);
+        assert_eq!(loaded.plan_id, "field-check-plan");
+        assert_eq!(loaded.registry.name, "custom-registry");
+        assert_eq!(loaded.registry.api_base, "https://custom.registry.io");
+        assert_eq!(
+            loaded.registry.index_base,
+            Some("https://index.custom.registry.io".to_string())
+        );
+        assert_eq!(loaded.started_at, fixed);
+        assert_eq!(loaded.finished_at, finished);
+        assert_eq!(loaded.event_log_path, PathBuf::from("custom/events.jsonl"));
+
+        assert_eq!(loaded.packages.len(), 1);
+        let pkg = &loaded.packages[0];
+        assert_eq!(pkg.name, "my-crate");
+        assert_eq!(pkg.version, "3.2.1");
+        assert_eq!(pkg.attempts, 2);
+        assert!(matches!(pkg.state, PackageState::Published));
+        assert_eq!(pkg.started_at, fixed);
+        assert_eq!(pkg.finished_at, finished);
+        assert_eq!(pkg.duration_ms, 42_000);
+
+        let ctx = loaded.git_context.expect("git_context must be Some");
+        assert_eq!(ctx.commit, Some("abc123def456".to_string()));
+        assert_eq!(ctx.branch, Some("release/v3.2.1".to_string()));
+        assert_eq!(ctx.tag, Some("v3.2.1".to_string()));
+        assert_eq!(ctx.dirty, Some(false));
+
+        assert_eq!(loaded.environment.shipper_version, "0.3.0-rc.1");
+        assert_eq!(loaded.environment.cargo_version, Some("1.82.0".to_string()));
+        assert_eq!(loaded.environment.rust_version, Some("1.82.0".to_string()));
+        assert_eq!(loaded.environment.os, "windows");
+        assert_eq!(loaded.environment.arch, "x86_64");
+    }
+
+    #[test]
+    fn receipt_with_git_context_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("git");
+
+        let receipt = Receipt {
+            git_context: Some(shipper_types::GitContext {
+                commit: Some("deadbeef".to_string()),
+                branch: Some("main".to_string()),
+                tag: None,
+                dirty: Some(true),
+            }),
+            ..sample_receipt()
+        };
+
+        write_receipt(&dir, &receipt).expect("write");
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+
+        let ctx = loaded.git_context.expect("git_context must be Some");
+        assert_eq!(ctx.commit, Some("deadbeef".to_string()));
+        assert_eq!(ctx.branch, Some("main".to_string()));
+        assert!(ctx.tag.is_none());
+        assert_eq!(ctx.dirty, Some(true));
+    }
+
+    #[test]
+    fn receipt_with_evidence_data_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("evidence");
+        let fixed = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+
+        let receipt = Receipt {
+            packages: vec![PackageReceipt {
+                name: "evi-crate".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 2,
+                state: PackageState::Published,
+                started_at: fixed,
+                finished_at: fixed,
+                duration_ms: 5000,
+                evidence: shipper_types::PackageEvidence {
+                    attempts: vec![
+                        shipper_types::AttemptEvidence {
+                            attempt_number: 1,
+                            command: "cargo publish -p evi-crate".to_string(),
+                            exit_code: 1,
+                            stdout_tail: "".to_string(),
+                            stderr_tail: "error: network timeout".to_string(),
+                            timestamp: fixed,
+                            duration: std::time::Duration::from_secs(3),
+                        },
+                        shipper_types::AttemptEvidence {
+                            attempt_number: 2,
+                            command: "cargo publish -p evi-crate".to_string(),
+                            exit_code: 0,
+                            stdout_tail: "Uploading evi-crate v1.0.0".to_string(),
+                            stderr_tail: "".to_string(),
+                            timestamp: fixed,
+                            duration: std::time::Duration::from_secs(2),
+                        },
+                    ],
+                    readiness_checks: vec![shipper_types::ReadinessEvidence {
+                        attempt: 1,
+                        visible: true,
+                        timestamp: fixed,
+                        delay_before: std::time::Duration::from_millis(500),
+                    }],
+                },
+            }],
+            ..sample_receipt()
+        };
+
+        write_receipt(&dir, &receipt).expect("write");
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+
+        let pkg = &loaded.packages[0];
+        assert_eq!(pkg.evidence.attempts.len(), 2);
+        assert_eq!(pkg.evidence.attempts[0].attempt_number, 1);
+        assert_eq!(pkg.evidence.attempts[0].exit_code, 1);
+        assert_eq!(
+            pkg.evidence.attempts[0].stderr_tail,
+            "error: network timeout"
+        );
+        assert_eq!(pkg.evidence.attempts[1].attempt_number, 2);
+        assert_eq!(pkg.evidence.attempts[1].exit_code, 0);
+        assert_eq!(
+            pkg.evidence.attempts[1].stdout_tail,
+            "Uploading evi-crate v1.0.0"
+        );
+
+        assert_eq!(pkg.evidence.readiness_checks.len(), 1);
+        assert!(pkg.evidence.readiness_checks[0].visible);
+        assert_eq!(pkg.evidence.readiness_checks[0].attempt, 1);
+    }
+
+    // ── State migration / versioning ────────────────────────────────
+
+    #[test]
+    fn migrate_v1_receipt_with_packages_populated() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("receipt.json");
+
+        let v1_json = r#"{
+            "receipt_version": "shipper.receipt.v1",
+            "plan_id": "migrate-with-pkgs",
+            "registry": {
+                "name": "crates-io",
+                "api_base": "https://crates.io",
+                "index_base": "https://index.crates.io"
+            },
+            "started_at": "2024-01-01T00:00:00Z",
+            "finished_at": "2024-01-01T01:00:00Z",
+            "packages": [
+                {
+                    "name": "core",
+                    "version": "1.0.0",
+                    "attempts": 1,
+                    "state": {"state": "published"},
+                    "started_at": "2024-01-01T00:00:00Z",
+                    "finished_at": "2024-01-01T00:30:00Z",
+                    "duration_ms": 1800000,
+                    "evidence": {"attempts": [], "readiness_checks": []}
+                },
+                {
+                    "name": "utils",
+                    "version": "0.5.0",
+                    "attempts": 2,
+                    "state": {"state": "failed", "class": "retryable", "message": "timeout"},
+                    "started_at": "2024-01-01T00:30:00Z",
+                    "finished_at": "2024-01-01T01:00:00Z",
+                    "duration_ms": 1800000,
+                    "evidence": {"attempts": [], "readiness_checks": []}
+                }
+            ],
+            "event_log_path": ".shipper/events.jsonl"
+        }"#;
+
+        fs::write(&path, v1_json).expect("write v1");
+        let receipt = migrate_receipt(&path).expect("migrate");
+
+        assert_eq!(receipt.receipt_version, CURRENT_RECEIPT_VERSION);
+        assert_eq!(receipt.plan_id, "migrate-with-pkgs");
+        assert_eq!(receipt.packages.len(), 2);
+        assert_eq!(receipt.packages[0].name, "core");
+        assert!(matches!(receipt.packages[0].state, PackageState::Published));
+        assert_eq!(receipt.packages[1].name, "utils");
+        assert!(matches!(
+            receipt.packages[1].state,
+            PackageState::Failed { .. }
+        ));
+        assert!(receipt.git_context.is_none());
+        assert!(!receipt.environment.shipper_version.is_empty());
+    }
+
+    #[test]
+    fn state_version_field_present_in_serialized_json() {
+        let state = sample_state();
+        let json = serde_json::to_string(&state).expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+
+        assert_eq!(
+            value.get("state_version").and_then(|v| v.as_str()),
+            Some(CURRENT_STATE_VERSION)
+        );
+    }
+
+    #[test]
+    fn receipt_version_field_present_in_serialized_json() {
+        let receipt = sample_receipt();
+        let json = serde_json::to_string(&receipt).expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+
+        assert_eq!(
+            value.get("receipt_version").and_then(|v| v.as_str()),
+            Some(CURRENT_RECEIPT_VERSION)
+        );
+    }
+
+    #[test]
+    fn load_receipt_returns_none_for_nonexistent_directory() {
+        let td = tempdir().expect("tempdir");
+        let missing = td.path().join("does-not-exist");
+        let loaded = load_receipt(&missing).expect("load");
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn receipt_v0_rejected_by_validation() {
+        let result = validate_receipt_version("shipper.receipt.v0");
+        assert!(result.is_err());
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(msg.contains("too old"), "unexpected error: {msg}");
+    }
+
+    // ── Concurrent state access patterns ────────────────────────────
+
+    #[test]
+    fn concurrent_readers_all_see_consistent_state() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("conc-read");
+
+        let mut pkgs = BTreeMap::new();
+        for i in 0..5 {
+            pkgs.insert(
+                format!("pkg-{i}@1.0.0"),
+                PackageProgress {
+                    name: format!("pkg-{i}"),
+                    version: "1.0.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let state = ExecutionState {
+            state_version: CURRENT_STATE_VERSION.to_string(),
+            plan_id: "concurrent-plan".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: pkgs,
+        };
+        save_state(&dir, &state).expect("save");
+
+        let dir = std::sync::Arc::new(dir);
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let d = std::sync::Arc::clone(&dir);
+                std::thread::spawn(move || {
+                    let loaded = load_state(&d).unwrap().unwrap();
+                    assert_eq!(loaded.plan_id, "concurrent-plan");
+                    assert_eq!(loaded.packages.len(), 5);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread must not panic");
+        }
+    }
+
+    #[test]
+    fn sequential_writer_reader_pattern() {
+        // Simulates a writer-lock pattern: write → verify → write → verify.
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("seq-wr");
+
+        for i in 0..10 {
+            let mut pkgs = BTreeMap::new();
+            pkgs.insert(
+                "crate@1.0.0".to_string(),
+                PackageProgress {
+                    name: "crate".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempts: i,
+                    state: if i < 5 {
+                        PackageState::Pending
+                    } else {
+                        PackageState::Published
+                    },
+                    last_updated_at: Utc::now(),
+                },
+            );
+            let state = ExecutionState {
+                state_version: CURRENT_STATE_VERSION.to_string(),
+                plan_id: format!("plan-{i}"),
+                registry: Registry::crates_io(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                packages: pkgs,
+            };
+            save_state(&dir, &state).expect("save");
+
+            let loaded = load_state(&dir).expect("load").expect("exists");
+            assert_eq!(loaded.plan_id, format!("plan-{i}"));
+            assert_eq!(loaded.packages["crate@1.0.0"].attempts, i);
+        }
+    }
+
+    #[test]
+    fn concurrent_writer_then_readers() {
+        // Write in one thread, then spawn readers after.
+        let td = tempdir().expect("tempdir");
+        let dir = std::sync::Arc::new(td.path().join("conc-wr"));
+
+        // Writer thread.
+        let wd = std::sync::Arc::clone(&dir);
+        let writer = std::thread::spawn(move || {
+            for i in 0..5 {
+                let state = ExecutionState {
+                    state_version: CURRENT_STATE_VERSION.to_string(),
+                    plan_id: format!("w-plan-{i}"),
+                    registry: Registry::crates_io(),
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    packages: BTreeMap::new(),
+                };
+                save_state(&wd, &state).expect("save");
+            }
+        });
+        writer.join().expect("writer done");
+
+        // All readers should see the last written state.
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let d = std::sync::Arc::clone(&dir);
+                std::thread::spawn(move || {
+                    let loaded = load_state(&d).unwrap().unwrap();
+                    assert_eq!(loaded.plan_id, "w-plan-4");
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("reader must not panic");
+        }
+    }
+
+    // ── PackageState variant roundtrip through disk ─────────────────
+
+    #[test]
+    fn each_package_state_variant_disk_roundtrip() {
+        let td = tempdir().expect("tempdir");
+
+        let variants: Vec<(&str, PackageState)> = vec![
+            ("pending", PackageState::Pending),
+            ("uploaded", PackageState::Uploaded),
+            ("published", PackageState::Published),
+            (
+                "skipped",
+                PackageState::Skipped {
+                    reason: "already on registry".to_string(),
+                },
+            ),
+            (
+                "failed-retryable",
+                PackageState::Failed {
+                    class: shipper_types::ErrorClass::Retryable,
+                    message: "network error".to_string(),
+                },
+            ),
+            (
+                "failed-permanent",
+                PackageState::Failed {
+                    class: shipper_types::ErrorClass::Permanent,
+                    message: "unauthorized".to_string(),
+                },
+            ),
+            (
+                "failed-ambiguous",
+                PackageState::Failed {
+                    class: shipper_types::ErrorClass::Ambiguous,
+                    message: "502 bad gateway".to_string(),
+                },
+            ),
+            (
+                "ambiguous",
+                PackageState::Ambiguous {
+                    message: "registry did not respond".to_string(),
+                },
+            ),
+        ];
+
+        for (label, pkg_state) in &variants {
+            let dir = td.path().join(format!("variant-{label}"));
+            let mut pkgs = BTreeMap::new();
+            pkgs.insert(
+                format!("{label}@1.0.0"),
+                PackageProgress {
+                    name: label.to_string(),
+                    version: "1.0.0".to_string(),
+                    attempts: 1,
+                    state: pkg_state.clone(),
+                    last_updated_at: Utc::now(),
+                },
+            );
+            let state = ExecutionState {
+                state_version: CURRENT_STATE_VERSION.to_string(),
+                plan_id: format!("{label}-plan"),
+                registry: Registry::crates_io(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                packages: pkgs,
+            };
+            save_state(&dir, &state).expect("save");
+            let loaded = load_state(&dir).expect("load").expect("exists");
+            let key = format!("{label}@1.0.0");
+            assert_eq!(
+                &loaded.packages[&key].state, pkg_state,
+                "state mismatch for variant {label}"
+            );
+        }
+    }
+
+    // ── Snapshot tests: receipt with git_context ─────────────────────
+
+    #[test]
+    fn snapshot_receipt_with_git_context() {
+        let fixed = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let finished = Utc.with_ymd_and_hms(2025, 1, 15, 12, 5, 0).unwrap();
+
+        let receipt = Receipt {
+            receipt_version: CURRENT_RECEIPT_VERSION.to_string(),
+            plan_id: "git-ctx-plan".to_string(),
+            registry: Registry::crates_io(),
+            started_at: fixed,
+            finished_at: finished,
+            packages: vec![PackageReceipt {
+                name: "my-lib".to_string(),
+                version: "2.0.0".to_string(),
+                attempts: 1,
+                state: PackageState::Published,
+                started_at: fixed,
+                finished_at: finished,
+                duration_ms: 60_000,
+                evidence: shipper_types::PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            }],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: Some(shipper_types::GitContext {
+                commit: Some("a1b2c3d4e5f6".to_string()),
+                branch: Some("release/v2.0.0".to_string()),
+                tag: Some("v2.0.0".to_string()),
+                dirty: Some(false),
+            }),
+            environment: shipper_types::EnvironmentFingerprint {
+                shipper_version: "0.3.0".to_string(),
+                cargo_version: Some("1.82.0".to_string()),
+                rust_version: Some("1.82.0".to_string()),
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let json = serde_json::to_string_pretty(&receipt).expect("serialize");
+        insta::assert_snapshot!("receipt_with_git_context", json);
+    }
+
+    #[test]
+    fn snapshot_receipt_with_evidence() {
+        let fixed = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let finished = Utc.with_ymd_and_hms(2025, 1, 15, 12, 5, 0).unwrap();
+
+        let receipt = Receipt {
+            receipt_version: CURRENT_RECEIPT_VERSION.to_string(),
+            plan_id: "evidence-plan".to_string(),
+            registry: Registry::crates_io(),
+            started_at: fixed,
+            finished_at: finished,
+            packages: vec![PackageReceipt {
+                name: "retried-crate".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 2,
+                state: PackageState::Published,
+                started_at: fixed,
+                finished_at: finished,
+                duration_ms: 8_000,
+                evidence: shipper_types::PackageEvidence {
+                    attempts: vec![
+                        shipper_types::AttemptEvidence {
+                            attempt_number: 1,
+                            command: "cargo publish -p retried-crate".to_string(),
+                            exit_code: 1,
+                            stdout_tail: "".to_string(),
+                            stderr_tail: "error: network timeout".to_string(),
+                            timestamp: fixed,
+                            duration: std::time::Duration::from_secs(3),
+                        },
+                        shipper_types::AttemptEvidence {
+                            attempt_number: 2,
+                            command: "cargo publish -p retried-crate".to_string(),
+                            exit_code: 0,
+                            stdout_tail: "Uploading retried-crate v1.0.0".to_string(),
+                            stderr_tail: "".to_string(),
+                            timestamp: fixed,
+                            duration: std::time::Duration::from_secs(2),
+                        },
+                    ],
+                    readiness_checks: vec![shipper_types::ReadinessEvidence {
+                        attempt: 1,
+                        visible: true,
+                        timestamp: fixed,
+                        delay_before: std::time::Duration::from_millis(500),
+                    }],
+                },
+            }],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: None,
+            environment: shipper_types::EnvironmentFingerprint {
+                shipper_version: "0.3.0".to_string(),
+                cargo_version: Some("1.82.0".to_string()),
+                rust_version: Some("1.82.0".to_string()),
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let json = serde_json::to_string_pretty(&receipt).expect("serialize");
+        insta::assert_snapshot!("receipt_with_evidence", json);
+    }
+
+    #[test]
+    fn snapshot_state_empty_packages() {
+        let fixed = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let state = ExecutionState {
+            state_version: CURRENT_STATE_VERSION.to_string(),
+            plan_id: "empty-plan".to_string(),
+            registry: Registry::crates_io(),
+            created_at: fixed,
+            updated_at: fixed,
+            packages: BTreeMap::new(),
+        };
+        let json = serde_json::to_string_pretty(&state).expect("serialize");
+        insta::assert_snapshot!("state_empty_packages", json);
+    }
+
+    // ── Proptest additions ──────────────────────────────────────────
+
+    mod proptests_extended {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_error_class() -> impl Strategy<Value = shipper_types::ErrorClass> {
+            prop_oneof![
+                Just(shipper_types::ErrorClass::Retryable),
+                Just(shipper_types::ErrorClass::Permanent),
+                Just(shipper_types::ErrorClass::Ambiguous),
+            ]
+        }
+
+        fn arb_package_state() -> impl Strategy<Value = PackageState> {
+            prop_oneof![
+                Just(PackageState::Pending),
+                Just(PackageState::Uploaded),
+                Just(PackageState::Published),
+                "\\PC{1,50}".prop_map(|reason| PackageState::Skipped { reason }),
+                (arb_error_class(), "\\PC{1,50}")
+                    .prop_map(|(class, message)| PackageState::Failed { class, message }),
+                "\\PC{1,50}".prop_map(|message| PackageState::Ambiguous { message }),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(30))]
+
+            #[test]
+            fn error_class_json_roundtrip(class in arb_error_class()) {
+                let json = serde_json::to_string(&class).expect("serialize");
+                let deser: shipper_types::ErrorClass =
+                    serde_json::from_str(&json).expect("deserialize");
+                prop_assert_eq!(class, deser);
+            }
+
+            #[test]
+            fn package_state_disk_roundtrip(pkg_state in arb_package_state()) {
+                let td = tempfile::tempdir().expect("tempdir");
+                let dir = td.path().join("proptest-variant");
+
+                let mut pkgs = BTreeMap::new();
+                pkgs.insert(
+                    "test@1.0.0".to_string(),
+                    PackageProgress {
+                        name: "test".to_string(),
+                        version: "1.0.0".to_string(),
+                        attempts: 1,
+                        state: pkg_state.clone(),
+                        last_updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                            .unwrap_or_default(),
+                    },
+                );
+                let state = ExecutionState {
+                    state_version: CURRENT_STATE_VERSION.to_string(),
+                    plan_id: "pt".to_string(),
+                    registry: Registry::crates_io(),
+                    created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                        .unwrap_or_default(),
+                    updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                        .unwrap_or_default(),
+                    packages: pkgs,
+                };
+
+                save_state(&dir, &state).expect("save");
+                let loaded = load_state(&dir).expect("load").expect("exists");
+                prop_assert_eq!(&pkg_state, &loaded.packages["test@1.0.0"].state);
+            }
+
+            #[test]
+            fn receipt_with_arbitrary_packages_disk_roundtrip(
+                states in proptest::collection::vec(arb_package_state(), 1..8)
+            ) {
+                let td = tempfile::tempdir().expect("tempdir");
+                let dir = td.path().join("proptest-receipt");
+                let fixed = chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap_or_default();
+
+                let packages: Vec<PackageReceipt> = states
+                    .iter()
+                    .enumerate()
+                    .map(|(i, st)| PackageReceipt {
+                        name: format!("crate-{i}"),
+                        version: "1.0.0".to_string(),
+                        attempts: 1,
+                        state: st.clone(),
+                        started_at: fixed,
+                        finished_at: fixed,
+                        duration_ms: 100,
+                        evidence: shipper_types::PackageEvidence {
+                            attempts: vec![],
+                            readiness_checks: vec![],
+                        },
+                    })
+                    .collect();
+
+                let receipt = Receipt {
+                    receipt_version: CURRENT_RECEIPT_VERSION.to_string(),
+                    plan_id: "pt-receipt".to_string(),
+                    registry: Registry::crates_io(),
+                    started_at: fixed,
+                    finished_at: fixed,
+                    packages,
+                    event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                    git_context: None,
+                    environment: shipper_types::EnvironmentFingerprint {
+                        shipper_version: "0.1.0".to_string(),
+                        cargo_version: Some("1.80.0".to_string()),
+                        rust_version: Some("1.80.0".to_string()),
+                        os: "test".to_string(),
+                        arch: "x86_64".to_string(),
+                    },
+                };
+
+                write_receipt(&dir, &receipt).expect("write");
+                let loaded = load_receipt(&dir).expect("load").expect("exists");
+                prop_assert_eq!(receipt.packages.len(), loaded.packages.len());
+                for (orig, ld) in receipt.packages.iter().zip(loaded.packages.iter()) {
+                    prop_assert_eq!(&orig.name, &ld.name);
+                    prop_assert_eq!(&orig.state, &ld.state);
+                }
+            }
+        }
+    }
 }

@@ -1,0 +1,12 @@
+---
+source: crates/shipper/src/registry.rs
+assertion_line: 3984
+expression: registry
+---
+Registry {
+    name: "crates-io",
+    api_base: "https://crates.io",
+    index_base: Some(
+        "https://index.crates.io",
+    ),
+}

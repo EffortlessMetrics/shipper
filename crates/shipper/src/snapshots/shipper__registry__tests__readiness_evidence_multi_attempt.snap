@@ -1,0 +1,10 @@
+---
+source: crates/shipper/src/registry.rs
+assertion_line: 3922
+expression: "evidence.iter().map(|e|\n{\n    format!(\"attempt={} visible={} delay_before={}ms\", e.attempt, e.visible,\n    e.delay_before.as_millis())\n}).collect::<Vec<_>>()"
+---
+[
+    "attempt=1 visible=false delay_before=0ms",
+    "attempt=2 visible=false delay_before=10ms",
+    "attempt=3 visible=true delay_before=20ms",
+]

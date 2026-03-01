@@ -1,0 +1,28 @@
+---
+source: crates/shipper/src/registry.rs
+assertion_line: 3973
+expression: owners
+---
+OwnersResponse {
+    users: [
+        Owner {
+            id: 1,
+            login: "alice",
+            name: Some(
+                "Alice A.",
+            ),
+        },
+        Owner {
+            id: 2,
+            login: "bob",
+            name: None,
+        },
+        Owner {
+            id: 3,
+            login: "team:rust-lang",
+            name: Some(
+                "Rust Team",
+            ),
+        },
+    ],
+}

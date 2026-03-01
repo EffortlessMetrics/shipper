@@ -2355,5 +2355,1053 @@ core = { path = "../core", version = "2.5.0" }
             sorted.sort();
             prop_assert_eq!(plan_names, sorted, "independent packages must be alphabetical");
         }
+
+        /// Property: for any generated DAG (diamond-ish), topo sort guarantees
+        /// all deps appear before their dependents.
+        #[test]
+        fn prop_diamond_dag_deps_before_dependents(
+            extra_leaves in 0usize..4,
+        ) {
+            // Build: base -> [mid-0..mid-N] -> top, plus extra independent leaves
+            let mut members = vec!["base".to_string()];
+            let mid_count = 2 + extra_leaves; // at least 2 middle nodes
+            for i in 0..mid_count {
+                members.push(format!("mid-{i}"));
+            }
+            members.push("top".to_string());
+            for i in 0..extra_leaves {
+                members.push(format!("leaf-{i}"));
+            }
+
+            let td = tempdir().expect("tempdir");
+            let quoted: Vec<String> = members.iter().map(|m| format!("\"{m}\"")).collect();
+            write_file(
+                &td.path().join("Cargo.toml"),
+                &format!(
+                    "[workspace]\nmembers = [{ms}]\nresolver = \"2\"\n",
+                    ms = quoted.join(", ")
+                ),
+            );
+
+            // base: no deps
+            write_file(
+                &td.path().join("base/Cargo.toml"),
+                "[package]\nname = \"base\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            );
+            write_file(&td.path().join("base/src/lib.rs"), "");
+
+            // mid-N: depends on base
+            for i in 0..mid_count {
+                let name = format!("mid-{i}");
+                write_file(
+                    &td.path().join(format!("{name}/Cargo.toml")),
+                    &format!(
+                        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nbase = {{ path = \"../base\", version = \"0.1.0\" }}\n"
+                    ),
+                );
+                write_file(&td.path().join(format!("{name}/src/lib.rs")), "");
+            }
+
+            // top: depends on all mid-N
+            let mut top_deps = String::from("[dependencies]\n");
+            for i in 0..mid_count {
+                top_deps.push_str(&format!(
+                    "mid-{i} = {{ path = \"../mid-{i}\", version = \"0.1.0\" }}\n"
+                ));
+            }
+            write_file(
+                &td.path().join("top/Cargo.toml"),
+                &format!(
+                    "[package]\nname = \"top\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n{top_deps}"
+                ),
+            );
+            write_file(&td.path().join("top/src/lib.rs"), "");
+
+            // leaf-N: independent
+            for i in 0..extra_leaves {
+                let name = format!("leaf-{i}");
+                write_file(
+                    &td.path().join(format!("{name}/Cargo.toml")),
+                    &format!(
+                        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+                    ),
+                );
+                write_file(&td.path().join(format!("{name}/src/lib.rs")), "");
+            }
+
+            let ws = build_plan(&spec_for(td.path())).expect("plan");
+            let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+
+            // Verify: every dep appears before its dependent
+            for pkg in &ws.plan.packages {
+                let pkg_pos = names.iter().position(|n| *n == pkg.name).unwrap();
+                if let Some(deps) = ws.plan.dependencies.get(&pkg.name) {
+                    for dep in deps {
+                        let dep_pos = names.iter().position(|n| n == dep).unwrap();
+                        prop_assert!(
+                            dep_pos < pkg_pos,
+                            "dep {dep} (pos {dep_pos}) must come before {} (pos {pkg_pos})",
+                            pkg.name
+                        );
+                    }
+                }
+            }
+        }
+
+        /// Property: the plan always contains exactly as many dependency-map entries
+        /// as there are packages.
+        #[test]
+        fn prop_deps_map_size_equals_package_count(chain_len in 1usize..6) {
+            let td = tempdir().expect("tempdir");
+            let members: Vec<String> = (0..chain_len).map(|i| format!("\"q{i}\"")).collect();
+            write_file(
+                &td.path().join("Cargo.toml"),
+                &format!(
+                    "[workspace]\nmembers = [{ms}]\nresolver = \"2\"\n",
+                    ms = members.join(", ")
+                ),
+            );
+            for i in 0..chain_len {
+                let name = format!("q{i}");
+                let deps = if i > 0 {
+                    let prev = format!("q{}", i - 1);
+                    format!("\n[dependencies]\n{prev} = {{ path = \"../{prev}\", version = \"0.1.0\" }}\n")
+                } else {
+                    String::new()
+                };
+                write_file(
+                    &td.path().join(format!("{name}/Cargo.toml")),
+                    &format!(
+                        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n{deps}"
+                    ),
+                );
+                write_file(&td.path().join(format!("{name}/src/lib.rs")), "");
+            }
+
+            let ws = build_plan(&spec_for(td.path())).expect("plan");
+            prop_assert_eq!(ws.plan.packages.len(), ws.plan.dependencies.len());
+        }
+    }
+
+    // ── Double diamond: base → [m1, m2] → mid → [t1, t2] → top ────
+
+    fn create_double_diamond_workspace(root: &Path) {
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["dd-base", "dd-m1", "dd-m2", "dd-mid", "dd-t1", "dd-t2", "dd-top"]
+resolver = "2"
+"#,
+        );
+        // dd-base: no deps
+        write_file(
+            &root.join("dd-base/Cargo.toml"),
+            r#"
+[package]
+name = "dd-base"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("dd-base/src/lib.rs"), "");
+
+        // dd-m1, dd-m2: depend on dd-base
+        for m in &["dd-m1", "dd-m2"] {
+            write_file(
+                &root.join(format!("{m}/Cargo.toml")),
+                &format!(
+                    r#"
+[package]
+name = "{m}"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dd-base = {{ path = "../dd-base", version = "0.1.0" }}
+"#
+                ),
+            );
+            write_file(&root.join(format!("{m}/src/lib.rs")), "");
+        }
+
+        // dd-mid: depends on dd-m1 and dd-m2
+        write_file(
+            &root.join("dd-mid/Cargo.toml"),
+            r#"
+[package]
+name = "dd-mid"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dd-m1 = { path = "../dd-m1", version = "0.1.0" }
+dd-m2 = { path = "../dd-m2", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("dd-mid/src/lib.rs"), "");
+
+        // dd-t1, dd-t2: depend on dd-mid
+        for t in &["dd-t1", "dd-t2"] {
+            write_file(
+                &root.join(format!("{t}/Cargo.toml")),
+                &format!(
+                    r#"
+[package]
+name = "{t}"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dd-mid = {{ path = "../dd-mid", version = "0.1.0" }}
+"#
+                ),
+            );
+            write_file(&root.join(format!("{t}/src/lib.rs")), "");
+        }
+
+        // dd-top: depends on dd-t1 and dd-t2
+        write_file(
+            &root.join("dd-top/Cargo.toml"),
+            r#"
+[package]
+name = "dd-top"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dd-t1 = { path = "../dd-t1", version = "0.1.0" }
+dd-t2 = { path = "../dd-t2", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("dd-top/src/lib.rs"), "");
+    }
+
+    #[test]
+    fn build_plan_double_diamond_ordering() {
+        let td = tempdir().expect("tempdir");
+        create_double_diamond_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(ws.plan.packages.len(), 7);
+
+        let pos = |n: &str| names.iter().position(|x| *x == n).unwrap();
+
+        // Layer ordering: base < m1,m2 < mid < t1,t2 < top
+        assert!(pos("dd-base") < pos("dd-m1"));
+        assert!(pos("dd-base") < pos("dd-m2"));
+        assert!(pos("dd-m1") < pos("dd-mid"));
+        assert!(pos("dd-m2") < pos("dd-mid"));
+        assert!(pos("dd-mid") < pos("dd-t1"));
+        assert!(pos("dd-mid") < pos("dd-t2"));
+        assert!(pos("dd-t1") < pos("dd-top"));
+        assert!(pos("dd-t2") < pos("dd-top"));
+    }
+
+    #[test]
+    fn build_plan_double_diamond_deps_map() {
+        let td = tempdir().expect("tempdir");
+        create_double_diamond_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert!(ws.plan.dependencies["dd-base"].is_empty());
+        assert_eq!(ws.plan.dependencies["dd-m1"], vec!["dd-base".to_string()]);
+        assert_eq!(ws.plan.dependencies["dd-m2"], vec!["dd-base".to_string()]);
+        let mut mid_deps = ws.plan.dependencies["dd-mid"].clone();
+        mid_deps.sort();
+        assert_eq!(mid_deps, vec!["dd-m1".to_string(), "dd-m2".to_string()]);
+        assert_eq!(ws.plan.dependencies["dd-t1"], vec!["dd-mid".to_string()]);
+        assert_eq!(ws.plan.dependencies["dd-t2"], vec!["dd-mid".to_string()]);
+        let mut top_deps = ws.plan.dependencies["dd-top"].clone();
+        top_deps.sort();
+        assert_eq!(top_deps, vec!["dd-t1".to_string(), "dd-t2".to_string()]);
+    }
+
+    #[test]
+    fn snapshot_double_diamond_plan() {
+        let td = tempdir().expect("tempdir");
+        create_double_diamond_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("double_diamond_plan", snapshot_of(&ws));
+    }
+
+    // ── Fan-in: many crates depend on one root ──────────────────────
+
+    #[test]
+    fn build_plan_fan_in_many_dependents_on_one_root() {
+        let td = tempdir().expect("tempdir");
+        let fan_count = 8;
+        let mut members = vec!["\"root\"".to_string()];
+        for i in 0..fan_count {
+            members.push(format!("\"fan-{i:02}\""));
+        }
+        write_file(
+            &td.path().join("Cargo.toml"),
+            &format!(
+                "[workspace]\nmembers = [{ms}]\nresolver = \"2\"\n",
+                ms = members.join(", ")
+            ),
+        );
+        write_file(
+            &td.path().join("root/Cargo.toml"),
+            "[package]\nname = \"root\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write_file(&td.path().join("root/src/lib.rs"), "");
+        for i in 0..fan_count {
+            let name = format!("fan-{i:02}");
+            write_file(
+                &td.path().join(format!("{name}/Cargo.toml")),
+                &format!(
+                    "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nroot = {{ path = \"../root\", version = \"0.1.0\" }}\n"
+                ),
+            );
+            write_file(&td.path().join(format!("{name}/src/lib.rs")), "");
+        }
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names[0], "root", "root must be first");
+        // All fan-NN crates come after root and are sorted alphabetically
+        let fans: Vec<&str> = names[1..].to_vec();
+        let mut fans_sorted = fans.clone();
+        fans_sorted.sort();
+        assert_eq!(fans, fans_sorted);
+        assert_eq!(ws.plan.packages.len(), fan_count + 1);
+    }
+
+    // ── Fan-out: one crate depends on many roots ────────────────────
+
+    #[test]
+    fn build_plan_fan_out_one_dependent_on_many() {
+        let td = tempdir().expect("tempdir");
+        let root_count = 5;
+        let mut members = Vec::new();
+        for i in 0..root_count {
+            members.push(format!("\"base-{i:02}\""));
+        }
+        members.push("\"consumer\"".to_string());
+        write_file(
+            &td.path().join("Cargo.toml"),
+            &format!(
+                "[workspace]\nmembers = [{ms}]\nresolver = \"2\"\n",
+                ms = members.join(", ")
+            ),
+        );
+        for i in 0..root_count {
+            let name = format!("base-{i:02}");
+            write_file(
+                &td.path().join(format!("{name}/Cargo.toml")),
+                &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+            );
+            write_file(&td.path().join(format!("{name}/src/lib.rs")), "");
+        }
+        let mut consumer_deps = String::from("[dependencies]\n");
+        for i in 0..root_count {
+            consumer_deps.push_str(&format!(
+                "base-{i:02} = {{ path = \"../base-{i:02}\", version = \"0.1.0\" }}\n"
+            ));
+        }
+        write_file(
+            &td.path().join("consumer/Cargo.toml"),
+            &format!(
+                "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n{consumer_deps}"
+            ),
+        );
+        write_file(&td.path().join("consumer/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        // consumer must be last (it depends on all bases)
+        assert_eq!(*names.last().unwrap(), "consumer");
+        // All bases come before consumer, sorted alphabetically
+        let bases: Vec<&str> = names[..root_count].to_vec();
+        let mut bases_sorted = bases.clone();
+        bases_sorted.sort();
+        assert_eq!(bases, bases_sorted);
+    }
+
+    // ── Combined build-dep + runtime dep ────────────────────────────
+
+    fn create_mixed_dep_kinds_workspace(root: &Path) {
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["build-tool", "runtime-lib", "app-mixed"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("build-tool/Cargo.toml"),
+            r#"
+[package]
+name = "build-tool"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("build-tool/src/lib.rs"), "");
+        write_file(
+            &root.join("runtime-lib/Cargo.toml"),
+            r#"
+[package]
+name = "runtime-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("runtime-lib/src/lib.rs"), "");
+        write_file(
+            &root.join("app-mixed/Cargo.toml"),
+            r#"
+[package]
+name = "app-mixed"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+runtime-lib = { path = "../runtime-lib", version = "0.1.0" }
+
+[build-dependencies]
+build-tool = { path = "../build-tool", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("app-mixed/src/lib.rs"), "");
+        write_file(&root.join("app-mixed/build.rs"), "fn main() {}");
+    }
+
+    #[test]
+    fn build_plan_mixed_build_and_runtime_deps() {
+        let td = tempdir().expect("tempdir");
+        create_mixed_dep_kinds_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+
+        // Both build-tool and runtime-lib must come before app-mixed
+        let pos = |n: &str| names.iter().position(|x| *x == n).unwrap();
+        assert!(pos("build-tool") < pos("app-mixed"));
+        assert!(pos("runtime-lib") < pos("app-mixed"));
+        assert_eq!(ws.plan.packages.len(), 3);
+
+        // app-mixed's deps should include both
+        let mut app_deps = ws.plan.dependencies["app-mixed"].clone();
+        app_deps.sort();
+        assert_eq!(
+            app_deps,
+            vec!["build-tool".to_string(), "runtime-lib".to_string()]
+        );
+    }
+
+    #[test]
+    fn snapshot_mixed_dep_kinds_plan() {
+        let td = tempdir().expect("tempdir");
+        create_mixed_dep_kinds_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("mixed_dep_kinds_plan", snapshot_of(&ws));
+    }
+
+    // ── Dev-dep on non-publishable workspace member doesn't error ────
+
+    #[test]
+    fn build_plan_dev_dep_on_non_publishable_is_fine() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["pub-crate", "test-helper"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("test-helper/Cargo.toml"),
+            r#"
+[package]
+name = "test-helper"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+        );
+        write_file(&td.path().join("test-helper/src/lib.rs"), "");
+        write_file(
+            &td.path().join("pub-crate/Cargo.toml"),
+            r#"
+[package]
+name = "pub-crate"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+test-helper = { path = "../test-helper", version = "0.1.0" }
+"#,
+        );
+        write_file(&td.path().join("pub-crate/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan should succeed");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["pub-crate"]);
+        assert_eq!(ws.skipped.len(), 1);
+        assert_eq!(ws.skipped[0].name, "test-helper");
+        // pub-crate has no normal/build deps in the plan
+        assert!(ws.plan.dependencies["pub-crate"].is_empty());
+    }
+
+    // ── Dev-dep would-be cycle (not a real cycle since dev-deps excluded) ──
+
+    #[test]
+    fn build_plan_dev_dep_would_be_cycle_is_not_error() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crate-x", "crate-y"]
+resolver = "2"
+"#,
+        );
+        // crate-x depends on crate-y (normal)
+        write_file(
+            &td.path().join("crate-x/Cargo.toml"),
+            r#"
+[package]
+name = "crate-x"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crate-y = { path = "../crate-y", version = "0.1.0" }
+"#,
+        );
+        write_file(&td.path().join("crate-x/src/lib.rs"), "");
+        // crate-y dev-depends on crate-x (would be cycle if counted)
+        write_file(
+            &td.path().join("crate-y/Cargo.toml"),
+            r#"
+[package]
+name = "crate-y"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+crate-x = { path = "../crate-x", version = "0.1.0" }
+"#,
+        );
+        write_file(&td.path().join("crate-y/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan should succeed (dev-dep cycle ok)");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        // y must come before x (x depends on y normally)
+        assert_eq!(names, vec!["crate-y", "crate-x"]);
+        assert!(ws.plan.dependencies["crate-y"].is_empty());
+        assert_eq!(ws.plan.dependencies["crate-x"], vec!["crate-y".to_string()]);
+    }
+
+    // ── Explicit publish = ["crates-io"] behaves like publish = None ──
+
+    #[test]
+    fn build_plan_explicit_crates_io_publish_list() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["explicit-pub"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("explicit-pub/Cargo.toml"),
+            r#"
+[package]
+name = "explicit-pub"
+version = "1.0.0"
+edition = "2021"
+publish = ["crates-io"]
+"#,
+        );
+        write_file(&td.path().join("explicit-pub/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws.plan.packages.len(), 1);
+        assert_eq!(ws.plan.packages[0].name, "explicit-pub");
+        assert!(ws.skipped.is_empty());
+    }
+
+    // ── Multiple registries in publish list ──────────────────────────
+
+    #[test]
+    fn build_plan_multi_registry_publish_list() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["multi-reg"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("multi-reg/Cargo.toml"),
+            r#"
+[package]
+name = "multi-reg"
+version = "0.5.0"
+edition = "2021"
+publish = ["crates-io", "private-reg"]
+"#,
+        );
+        write_file(&td.path().join("multi-reg/src/lib.rs"), "");
+
+        // Included for crates-io
+        let ws_cio = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws_cio.plan.packages.len(), 1);
+        assert_eq!(ws_cio.plan.packages[0].name, "multi-reg");
+
+        // Included for private-reg
+        let spec_priv = ReleaseSpec {
+            manifest_path: td.path().join("Cargo.toml"),
+            registry: Registry {
+                name: "private-reg".to_string(),
+                api_base: "https://private.example.com".to_string(),
+                index_base: None,
+            },
+            selected_packages: None,
+        };
+        let ws_priv = build_plan(&spec_priv).expect("plan");
+        assert_eq!(ws_priv.plan.packages.len(), 1);
+
+        // Excluded for unknown registry
+        let spec_other = ReleaseSpec {
+            manifest_path: td.path().join("Cargo.toml"),
+            registry: Registry {
+                name: "other-reg".to_string(),
+                api_base: "https://other.example.com".to_string(),
+                index_base: None,
+            },
+            selected_packages: None,
+        };
+        let ws_other = build_plan(&spec_other).expect("plan");
+        assert!(ws_other.plan.packages.is_empty());
+        assert_eq!(ws_other.skipped.len(), 1);
+    }
+
+    // ── Pre-release and build-metadata versions ─────────────────────
+
+    #[test]
+    fn build_plan_prerelease_versions() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["pre-alpha", "pre-beta"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("pre-alpha/Cargo.toml"),
+            r#"
+[package]
+name = "pre-alpha"
+version = "0.1.0-alpha.1"
+edition = "2021"
+"#,
+        );
+        write_file(&td.path().join("pre-alpha/src/lib.rs"), "");
+        write_file(
+            &td.path().join("pre-beta/Cargo.toml"),
+            r#"
+[package]
+name = "pre-beta"
+version = "2.0.0-rc.3"
+edition = "2021"
+
+[dependencies]
+pre-alpha = { path = "../pre-alpha", version = "0.1.0-alpha.1" }
+"#,
+        );
+        write_file(&td.path().join("pre-beta/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws.plan.packages[0].name, "pre-alpha");
+        assert_eq!(ws.plan.packages[0].version, "0.1.0-alpha.1");
+        assert_eq!(ws.plan.packages[1].name, "pre-beta");
+        assert_eq!(ws.plan.packages[1].version, "2.0.0-rc.3");
+    }
+
+    // ── Plan ID changes when version bumps ──────────────────────────
+
+    #[test]
+    fn build_plan_id_changes_on_version_bump() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["bump-me"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("bump-me/Cargo.toml"),
+            r#"
+[package]
+name = "bump-me"
+version = "1.0.0"
+edition = "2021"
+"#,
+        );
+        write_file(&td.path().join("bump-me/src/lib.rs"), "");
+
+        let ws1 = build_plan(&spec_for(td.path())).expect("plan");
+
+        // Bump version
+        write_file(
+            &td.path().join("bump-me/Cargo.toml"),
+            r#"
+[package]
+name = "bump-me"
+version = "1.1.0"
+edition = "2021"
+"#,
+        );
+
+        let ws2 = build_plan(&spec_for(td.path())).expect("plan");
+        assert_ne!(ws1.plan.plan_id, ws2.plan.plan_id);
+        assert_eq!(ws2.plan.packages[0].version, "1.1.0");
+    }
+
+    // ── Selecting middle of diamond pulls both leaves ────────────────
+
+    #[test]
+    fn build_plan_selecting_diamond_middle_pulls_transitive() {
+        let td = tempdir().expect("tempdir");
+        create_double_diamond_workspace(td.path());
+
+        // Select dd-mid → should pull in dd-m1, dd-m2, dd-base
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["dd-mid".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"dd-base"));
+        assert!(names.contains(&"dd-m1"));
+        assert!(names.contains(&"dd-m2"));
+        assert!(names.contains(&"dd-mid"));
+        assert!(!names.contains(&"dd-t1"));
+        assert!(!names.contains(&"dd-t2"));
+        assert!(!names.contains(&"dd-top"));
+        assert_eq!(names.len(), 4);
+    }
+
+    // ── Selecting top of double diamond pulls everything ─────────────
+
+    #[test]
+    fn build_plan_selecting_double_diamond_top_pulls_all() {
+        let td = tempdir().expect("tempdir");
+        create_double_diamond_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["dd-top".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        assert_eq!(ws.plan.packages.len(), 7);
+    }
+
+    // ── W-shape graph: two independent diamonds sharing nothing ──────
+
+    #[test]
+    fn build_plan_w_shape_two_independent_diamonds() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["l-base", "l-mid", "l-top", "r-base", "r-mid", "r-top"]
+resolver = "2"
+"#,
+        );
+        // Left diamond: l-base → l-mid → l-top
+        write_file(
+            &td.path().join("l-base/Cargo.toml"),
+            "[package]\nname = \"l-base\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write_file(&td.path().join("l-base/src/lib.rs"), "");
+        write_file(
+            &td.path().join("l-mid/Cargo.toml"),
+            "[package]\nname = \"l-mid\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nl-base = { path = \"../l-base\", version = \"0.1.0\" }\n",
+        );
+        write_file(&td.path().join("l-mid/src/lib.rs"), "");
+        write_file(
+            &td.path().join("l-top/Cargo.toml"),
+            "[package]\nname = \"l-top\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nl-mid = { path = \"../l-mid\", version = \"0.1.0\" }\n",
+        );
+        write_file(&td.path().join("l-top/src/lib.rs"), "");
+        // Right chain: r-base → r-mid → r-top
+        write_file(
+            &td.path().join("r-base/Cargo.toml"),
+            "[package]\nname = \"r-base\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write_file(&td.path().join("r-base/src/lib.rs"), "");
+        write_file(
+            &td.path().join("r-mid/Cargo.toml"),
+            "[package]\nname = \"r-mid\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nr-base = { path = \"../r-base\", version = \"0.1.0\" }\n",
+        );
+        write_file(&td.path().join("r-mid/src/lib.rs"), "");
+        write_file(
+            &td.path().join("r-top/Cargo.toml"),
+            "[package]\nname = \"r-top\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nr-mid = { path = \"../r-mid\", version = \"0.1.0\" }\n",
+        );
+        write_file(&td.path().join("r-top/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(ws.plan.packages.len(), 6);
+
+        let pos = |n: &str| names.iter().position(|x| *x == n).unwrap();
+        // Left chain ordering
+        assert!(pos("l-base") < pos("l-mid"));
+        assert!(pos("l-mid") < pos("l-top"));
+        // Right chain ordering
+        assert!(pos("r-base") < pos("r-mid"));
+        assert!(pos("r-mid") < pos("r-top"));
+    }
+
+    // ── Selection from W-shape picks only one subgraph ───────────────
+
+    #[test]
+    fn build_plan_w_shape_selecting_one_chain_excludes_other() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["l-base", "l-top", "r-base", "r-top"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("l-base/Cargo.toml"),
+            "[package]\nname = \"l-base\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write_file(&td.path().join("l-base/src/lib.rs"), "");
+        write_file(
+            &td.path().join("l-top/Cargo.toml"),
+            "[package]\nname = \"l-top\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nl-base = { path = \"../l-base\", version = \"0.1.0\" }\n",
+        );
+        write_file(&td.path().join("l-top/src/lib.rs"), "");
+        write_file(
+            &td.path().join("r-base/Cargo.toml"),
+            "[package]\nname = \"r-base\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write_file(&td.path().join("r-base/src/lib.rs"), "");
+        write_file(
+            &td.path().join("r-top/Cargo.toml"),
+            "[package]\nname = \"r-top\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nr-base = { path = \"../r-base\", version = \"0.1.0\" }\n",
+        );
+        write_file(&td.path().join("r-top/src/lib.rs"), "");
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["l-top".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["l-base", "l-top"]);
+    }
+
+    // ── Plan with workspace-level version inheritance ────────────────
+
+    #[test]
+    fn build_plan_workspace_inherited_version() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["inherited"]
+resolver = "2"
+
+[workspace.package]
+version = "3.7.2"
+edition = "2021"
+"#,
+        );
+        write_file(
+            &td.path().join("inherited/Cargo.toml"),
+            r#"
+[package]
+name = "inherited"
+version.workspace = true
+edition.workspace = true
+"#,
+        );
+        write_file(&td.path().join("inherited/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws.plan.packages.len(), 1);
+        assert_eq!(ws.plan.packages[0].name, "inherited");
+        assert_eq!(ws.plan.packages[0].version, "3.7.2");
+    }
+
+    // ── Skipped package reason strings ──────────────────────────────
+
+    #[test]
+    fn build_plan_skipped_reasons_are_descriptive() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["pub-false", "pub-other-reg", "pub-ok"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("pub-false/Cargo.toml"),
+            "[package]\nname = \"pub-false\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n",
+        );
+        write_file(&td.path().join("pub-false/src/lib.rs"), "");
+        write_file(
+            &td.path().join("pub-other-reg/Cargo.toml"),
+            "[package]\nname = \"pub-other-reg\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = [\"other\"]\n",
+        );
+        write_file(&td.path().join("pub-other-reg/src/lib.rs"), "");
+        write_file(
+            &td.path().join("pub-ok/Cargo.toml"),
+            "[package]\nname = \"pub-ok\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write_file(&td.path().join("pub-ok/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws.plan.packages.len(), 1);
+        assert_eq!(ws.skipped.len(), 2);
+
+        let pub_false_skip = ws.skipped.iter().find(|s| s.name == "pub-false").unwrap();
+        assert!(
+            pub_false_skip.reason.contains("publish = false"),
+            "reason: {}",
+            pub_false_skip.reason
+        );
+
+        let pub_other_skip = ws
+            .skipped
+            .iter()
+            .find(|s| s.name == "pub-other-reg")
+            .unwrap();
+        assert!(
+            pub_other_skip.reason.contains("registry not in list"),
+            "reason: {}",
+            pub_other_skip.reason
+        );
+    }
+
+    // ── compute_plan_id: single pkg vs two identical pkgs ───────────
+
+    #[test]
+    fn compute_plan_id_differs_for_single_vs_duplicated_package() {
+        let pkg = PlannedPackage {
+            name: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: PathBuf::from("foo/Cargo.toml"),
+        };
+        let id_one = compute_plan_id("https://crates.io", std::slice::from_ref(&pkg));
+        let id_two = compute_plan_id("https://crates.io", &[pkg.clone(), pkg]);
+        assert_ne!(id_one, id_two);
+    }
+
+    // ── Snapshot for double diamond with selection ────────────────────
+
+    #[test]
+    fn snapshot_double_diamond_selected_mid() {
+        let td = tempdir().expect("tempdir");
+        create_double_diamond_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["dd-mid".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        insta::assert_yaml_snapshot!("double_diamond_selected_mid", snapshot_of(&ws));
+    }
+
+    #[test]
+    fn snapshot_prerelease_versions() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["pre-alpha", "pre-beta"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("pre-alpha/Cargo.toml"),
+            r#"
+[package]
+name = "pre-alpha"
+version = "0.1.0-alpha.1"
+edition = "2021"
+"#,
+        );
+        write_file(&td.path().join("pre-alpha/src/lib.rs"), "");
+        write_file(
+            &td.path().join("pre-beta/Cargo.toml"),
+            r#"
+[package]
+name = "pre-beta"
+version = "2.0.0-rc.3"
+edition = "2021"
+
+[dependencies]
+pre-alpha = { path = "../pre-alpha", version = "0.1.0-alpha.1" }
+"#,
+        );
+        write_file(&td.path().join("pre-beta/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("prerelease_versions_plan", snapshot_of(&ws));
+    }
+
+    #[test]
+    fn snapshot_dev_dep_cycle_plan() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crate-x", "crate-y"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("crate-x/Cargo.toml"),
+            r#"
+[package]
+name = "crate-x"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crate-y = { path = "../crate-y", version = "0.1.0" }
+"#,
+        );
+        write_file(&td.path().join("crate-x/src/lib.rs"), "");
+        write_file(
+            &td.path().join("crate-y/Cargo.toml"),
+            r#"
+[package]
+name = "crate-y"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+crate-x = { path = "../crate-x", version = "0.1.0" }
+"#,
+        );
+        write_file(&td.path().join("crate-y/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("dev_dep_cycle_plan", snapshot_of(&ws));
     }
 }

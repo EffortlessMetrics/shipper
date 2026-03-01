@@ -1,0 +1,8 @@
+---
+source: crates/shipper/src/registry.rs
+assertion_line: 3953
+expression: owners
+---
+OwnersResponse {
+    users: [],
+}

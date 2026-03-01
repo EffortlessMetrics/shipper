@@ -3318,4 +3318,746 @@ mod tests {
 
         assert_eq!(registry.get_index_base(), "https://index.example.com");
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  Additional comprehensive tests
+    // ══════════════════════════════════════════════════════════════════
+
+    // ── HTTP error handling: Retry-After header ──────────────────────
+
+    #[test]
+    fn version_exists_429_with_retry_after_header_still_errors() {
+        let (api_base, handle) = with_server(|req| {
+            let resp = Response::from_string("rate limited")
+                .with_status_code(StatusCode(429))
+                .with_header(tiny_http::Header::from_bytes("Retry-After", "30").expect("header"));
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let err = cli
+            .version_exists("demo", "1.0.0")
+            .expect_err("429 with Retry-After must fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unexpected status"));
+        assert!(msg.contains("429"));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn crate_exists_429_with_retry_after_header_still_errors() {
+        let (api_base, handle) = with_server(|req| {
+            let resp = Response::from_string("rate limited")
+                .with_status_code(StatusCode(429))
+                .with_header(tiny_http::Header::from_bytes("Retry-After", "60").expect("header"));
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let err = cli
+            .crate_exists("demo")
+            .expect_err("429 with Retry-After must fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unexpected status"));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn list_owners_429_with_retry_after_header_still_errors() {
+        let (api_base, handle) = with_server(|req| {
+            let resp = Response::from_string(r#"{"errors":[{"detail":"rate limited"}]}"#)
+                .with_status_code(StatusCode(429))
+                .with_header(tiny_http::Header::from_bytes("Retry-After", "120").expect("header"));
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let err = cli
+            .list_owners("demo", "token")
+            .expect_err("429 with Retry-After must fail");
+        assert!(format!("{err:#}").contains("unexpected status while querying owners"));
+        handle.join().expect("join");
+    }
+
+    // ── HTTP error handling: 5xx codes ───────────────────────────────
+
+    #[test]
+    fn version_exists_error_message_includes_status_code_text() {
+        for code in [500, 502, 503] {
+            let (api_base, handle) = with_server(move |req| {
+                req.respond(Response::empty(StatusCode(code)))
+                    .expect("respond");
+            });
+
+            let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+            let err = cli
+                .version_exists("demo", "1.0.0")
+                .expect_err("server error must fail");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("unexpected status"),
+                "error for {code} should mention unexpected status: {msg}"
+            );
+            handle.join().expect("join");
+        }
+    }
+
+    #[test]
+    fn crate_exists_error_message_includes_status_code_text() {
+        for code in [500, 502, 503] {
+            let (api_base, handle) = with_server(move |req| {
+                req.respond(Response::empty(StatusCode(code)))
+                    .expect("respond");
+            });
+
+            let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+            let err = cli
+                .crate_exists("demo")
+                .expect_err("server error must fail");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("unexpected status"),
+                "error for {code} should mention unexpected status: {msg}"
+            );
+            handle.join().expect("join");
+        }
+    }
+
+    #[test]
+    fn list_owners_errors_for_503_service_unavailable() {
+        let (api_base, handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(503)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let err = cli.list_owners("demo", "token").expect_err("503 must fail");
+        assert!(format!("{err:#}").contains("unexpected status while querying owners"));
+        handle.join().expect("join");
+    }
+
+    // ── Response parsing: unknown fields, edge shapes ────────────────
+
+    #[test]
+    fn list_owners_ignores_unknown_extra_fields_in_json() {
+        let body = r#"{"users":[{"id":1,"login":"alice","name":"Alice","avatar":"http://img.example.com/a.png","kind":"user","url":"https://crates.io/users/alice"}],"meta":{"total":1}}"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string(body)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let owners = cli
+            .list_owners("demo", "token")
+            .expect("should parse despite extra fields");
+        assert_eq!(owners.users.len(), 1);
+        assert_eq!(owners.users[0].login, "alice");
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn list_owners_parses_response_with_special_chars_in_name() {
+        let body = r#"{"users":[{"id":1,"login":"user-ñ","name":"José García 日本語"}]}"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string(body)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let owners = cli.list_owners("demo", "token").expect("owners");
+        assert_eq!(owners.users[0].login, "user-ñ");
+        assert_eq!(owners.users[0].name.as_deref(), Some("José García 日本語"));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn list_owners_errors_on_null_json_body() {
+        let (api_base, handle) = with_server(|req| {
+            let resp = Response::from_string("null")
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let err = cli
+            .list_owners("demo", "token")
+            .expect_err("null body must fail");
+        assert!(format!("{err:#}").contains("failed to parse owners JSON"));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn list_owners_errors_on_json_array_instead_of_object() {
+        let (api_base, handle) = with_server(|req| {
+            let resp = Response::from_string(r#"[{"id":1,"login":"alice","name":null}]"#)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let err = cli
+            .list_owners("demo", "token")
+            .expect_err("array body must fail");
+        assert!(format!("{err:#}").contains("failed to parse owners JSON"));
+        handle.join().expect("join");
+    }
+
+    // ── Version comparison: build metadata & edge cases ──────────────
+
+    #[test]
+    fn parse_version_from_index_build_metadata_versions() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        let content =
+            "{\"vers\":\"1.0.0+build.1\"}\n{\"vers\":\"1.0.0+build.2\"}\n{\"vers\":\"1.0.0\"}\n";
+
+        assert!(
+            cli.parse_version_from_index(content, "1.0.0+build.1")
+                .unwrap()
+        );
+        assert!(
+            cli.parse_version_from_index(content, "1.0.0+build.2")
+                .unwrap()
+        );
+        assert!(cli.parse_version_from_index(content, "1.0.0").unwrap());
+        // Build metadata is exact match
+        assert!(
+            !cli.parse_version_from_index(content, "1.0.0+build.3")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_version_from_index_leading_v_not_matched() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        let content = "{\"vers\":\"1.0.0\"}\n";
+        // "v1.0.0" should NOT match "1.0.0" — exact string match
+        assert!(!cli.parse_version_from_index(content, "v1.0.0").unwrap());
+    }
+
+    #[test]
+    fn parse_version_from_index_yanked_field_does_not_affect_match() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        let content =
+            "{\"vers\":\"1.0.0\",\"yanked\":true}\n{\"vers\":\"2.0.0\",\"yanked\":false}\n";
+        // Both yanked and unyanked versions should be found
+        assert!(cli.parse_version_from_index(content, "1.0.0").unwrap());
+        assert!(cli.parse_version_from_index(content, "2.0.0").unwrap());
+    }
+
+    #[test]
+    fn parse_version_from_index_many_prerelease_identifiers() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        let content = "{\"vers\":\"1.0.0-alpha.1.beta.2.rc.3\"}\n";
+        assert!(
+            cli.parse_version_from_index(content, "1.0.0-alpha.1.beta.2.rc.3")
+                .unwrap()
+        );
+        assert!(
+            !cli.parse_version_from_index(content, "1.0.0-alpha.1.beta.2.rc.4")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_version_from_index_null_vers_field_skipped() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        let content = "{\"vers\":null}\n{\"vers\":\"1.0.0\"}\n";
+        assert!(cli.parse_version_from_index(content, "1.0.0").unwrap());
+        assert!(!cli.parse_version_from_index(content, "null").unwrap());
+    }
+
+    #[test]
+    fn parse_version_from_index_numeric_vers_field_skipped() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+
+        // vers as a number instead of string; should not match "100"
+        let content = "{\"vers\":100}\n{\"vers\":\"2.0.0\"}\n";
+        assert!(cli.parse_version_from_index(content, "2.0.0").unwrap());
+        assert!(!cli.parse_version_from_index(content, "100").unwrap());
+    }
+
+    // ── Owner verification edge cases ────────────────────────────────
+
+    #[test]
+    fn verify_ownership_propagates_500_server_error() {
+        let (api_base, handle) = with_server(move |req| {
+            req.respond(Response::empty(StatusCode(500)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        // 500 is not in the graceful-degradation list, so it should propagate
+        let result = cli.verify_ownership("demo", "token");
+        assert!(result.is_err());
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn verify_ownership_propagates_429_rate_limit() {
+        let (api_base, handle) = with_server(move |req| {
+            req.respond(Response::empty(StatusCode(429)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        // 429 is not in the graceful-degradation patterns, should propagate
+        let result = cli.verify_ownership("demo", "token");
+        assert!(result.is_err());
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn verify_ownership_returns_true_with_single_owner() {
+        let body = r#"{"users":[{"id":42,"login":"sole-owner","name":"Only Me"}]}"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string(body)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        assert!(cli.verify_ownership("demo", "token").expect("verify"));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn verify_ownership_returns_true_with_many_owners() {
+        let mut users = Vec::new();
+        for i in 0..20 {
+            users.push(format!(
+                r#"{{"id":{},"login":"owner{}","name":null}}"#,
+                i, i
+            ));
+        }
+        let body = format!(r#"{{"users":[{}]}}"#, users.join(","));
+
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string(body.as_str())
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        assert!(cli.verify_ownership("demo", "token").expect("verify"));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn verify_ownership_returns_true_even_with_empty_owners_list() {
+        let body = r#"{"users":[]}"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string(body)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        // verify_ownership returns true if list_owners succeeds (even if empty)
+        assert!(cli.verify_ownership("demo", "token").expect("verify"));
+        handle.join().expect("join");
+    }
+
+    // ── Readiness: index caching behavior ────────────────────────────
+
+    #[test]
+    fn index_200_without_etag_header_still_caches_content() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let index_content = "{\"vers\":\"1.0.0\"}\n";
+
+        let (api_base, handle) = with_server(move |req| {
+            // 200 OK but no ETag header
+            let resp = Response::from_string(index_content).with_status_code(StatusCode(200));
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry_with_index(api_base))
+            .expect("client")
+            .with_cache_dir(cache_dir.path().to_path_buf());
+
+        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
+        assert!(visible);
+
+        // Cache file should exist even without ETag
+        let cache_path = cache_dir.path().join("de").join("mo").join("demo");
+        assert!(cache_path.exists());
+
+        // ETag file should NOT exist
+        let etag_path = cache_path.with_extension("etag");
+        assert!(!etag_path.exists());
+
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn index_cache_populated_on_first_200_used_on_subsequent_304() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                let n = counter_clone.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // First request: return full content with ETag
+                    let resp = Response::from_string("{\"vers\":\"1.0.0\"}\n")
+                        .with_status_code(StatusCode(200))
+                        .with_header(
+                            tiny_http::Header::from_bytes("ETag", "\"first\"").expect("header"),
+                        );
+                    req.respond(resp).expect("respond");
+                } else {
+                    // Subsequent: 304 Not Modified
+                    req.respond(Response::empty(StatusCode(304)))
+                        .expect("respond");
+                }
+            },
+            3,
+        );
+
+        let cli = RegistryClient::new(test_registry_with_index(api_base))
+            .expect("client")
+            .with_cache_dir(cache_dir.path().to_path_buf());
+
+        // First call populates cache
+        assert!(cli.check_index_visibility("demo", "1.0.0").expect("1st"));
+        // Second call uses cache via 304
+        assert!(cli.check_index_visibility("demo", "1.0.0").expect("2nd"));
+
+        handle.join().expect("join");
+    }
+
+    // ── Readiness: backoff with mixed errors ─────────────────────────
+
+    #[test]
+    fn backoff_429_then_500_then_success() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                let n = counter_clone.fetch_add(1, Ordering::SeqCst);
+                let status = match n {
+                    0 => 429, // rate limited
+                    1 => 500, // server error
+                    _ => 200, // success
+                };
+                req.respond(Response::empty(StatusCode(status)))
+                    .expect("respond");
+            },
+            5,
+        );
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_millis(20),
+            max_total_wait: Duration::from_secs(5),
+            poll_interval: Duration::from_millis(10),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(visible);
+        assert!(evidence.len() >= 3);
+        // First two attempts fail, third succeeds
+        assert!(!evidence[0].visible);
+        assert!(!evidence[1].visible);
+        assert!(evidence.last().unwrap().visible);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn backoff_index_mode_with_server_errors_gracefully_degrades() {
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                // All requests return 502
+                req.respond(Response::empty(StatusCode(502)))
+                    .expect("respond");
+            },
+            10,
+        );
+
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Index,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_millis(20),
+            max_total_wait: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("should not error");
+        assert!(!visible);
+        // Multiple attempts should have been made
+        assert!(evidence.len() >= 2);
+        handle.join().expect("join");
+    }
+
+    // ── Snapshot tests ───────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_readiness_evidence_multi_attempt() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                let n = counter_clone.fetch_add(1, Ordering::SeqCst);
+                let status = if n < 2 { 404 } else { 200 };
+                req.respond(Response::empty(StatusCode(status)))
+                    .expect("respond");
+            },
+            5,
+        );
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_millis(50),
+            max_total_wait: Duration::from_secs(5),
+            poll_interval: Duration::from_millis(10),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(visible);
+        assert_eq!(evidence.len(), 3);
+
+        insta::assert_debug_snapshot!(
+            "readiness_evidence_multi_attempt",
+            evidence
+                .iter()
+                .map(|e| {
+                    format!(
+                        "attempt={} visible={} delay_before={}ms",
+                        e.attempt,
+                        e.visible,
+                        e.delay_before.as_millis()
+                    )
+                })
+                .collect::<Vec<_>>()
+        );
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn snapshot_owners_empty_users() {
+        let (api_base, handle) = with_server(|req| {
+            let resp = Response::from_string(r#"{"users":[]}"#)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let owners = cli.list_owners("demo", "token").expect("owners");
+        insta::assert_debug_snapshot!("owners_empty_users", owners);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn snapshot_owners_multiple_with_mixed_names() {
+        let body = r#"{"users":[{"id":1,"login":"alice","name":"Alice A."},{"id":2,"login":"bob","name":null},{"id":3,"login":"team:rust-lang","name":"Rust Team"}]}"#;
+
+        let (api_base, handle) = with_server(move |req| {
+            let resp = Response::from_string(body)
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                        .expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let owners = cli.list_owners("demo", "token").expect("owners");
+        insta::assert_debug_snapshot!("owners_multiple_with_mixed_names", owners);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn snapshot_registry_debug_repr() {
+        let registry = Registry {
+            name: "crates-io".to_string(),
+            api_base: "https://crates.io".to_string(),
+            index_base: Some("https://index.crates.io".to_string()),
+        };
+        insta::assert_debug_snapshot!("registry_debug_repr", registry);
+    }
+
+    #[test]
+    fn snapshot_registry_debug_repr_no_index() {
+        let registry = Registry {
+            name: "private".to_string(),
+            api_base: "https://registry.example.com".to_string(),
+            index_base: None,
+        };
+        insta::assert_debug_snapshot!("registry_debug_repr_no_index", registry);
+    }
+
+    // ── Proptest: version string handling ─────────────────────────────
+
+    mod property_tests_version_strings {
+        use proptest::prelude::*;
+
+        /// Generates a valid semver version string.
+        fn semver_strategy() -> impl Strategy<Value = String> {
+            (0..100u32, 0..100u32, 0..100u32)
+                .prop_map(|(major, minor, patch)| format!("{major}.{minor}.{patch}"))
+        }
+
+        /// Generates a semver with optional pre-release.
+        fn semver_with_prerelease_strategy() -> impl Strategy<Value = String> {
+            (
+                0..50u32,
+                0..50u32,
+                0..50u32,
+                proptest::option::of("[a-z]{1,5}\\.[0-9]{1,2}"),
+            )
+                .prop_map(|(major, minor, patch, pre)| match pre {
+                    Some(p) => format!("{major}.{minor}.{patch}-{p}"),
+                    None => format!("{major}.{minor}.{patch}"),
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn version_found_when_present_in_index(version in semver_strategy()) {
+                let content = format!("{{\"vers\":\"{version}\"}}\n");
+                let found = shipper_sparse_index::contains_version(&content, &version);
+                prop_assert!(found, "version {version} should be found in index");
+            }
+
+            #[test]
+            fn version_not_found_when_absent_from_index(
+                needle in semver_strategy(),
+                haystack in semver_strategy(),
+            ) {
+                // Only check when needle != haystack
+                prop_assume!(needle != haystack);
+                let content = format!("{{\"vers\":\"{haystack}\"}}\n");
+                let found = shipper_sparse_index::contains_version(&content, &needle);
+                prop_assert!(!found, "version {needle} should NOT be found (only {haystack} in index)");
+            }
+
+            #[test]
+            fn prerelease_version_found_in_index(version in semver_with_prerelease_strategy()) {
+                let content = format!("{{\"vers\":\"{version}\"}}\n");
+                let found = shipper_sparse_index::contains_version(&content, &version);
+                prop_assert!(found, "pre-release version {version} should be found in index");
+            }
+
+            #[test]
+            fn version_string_in_multi_line_index(
+                target in semver_strategy(),
+                other1 in semver_strategy(),
+                other2 in semver_strategy(),
+            ) {
+                let content = format!(
+                    "{{\"vers\":\"{other1}\"}}\n{{\"vers\":\"{target}\"}}\n{{\"vers\":\"{other2}\"}}\n"
+                );
+                let found = shipper_sparse_index::contains_version(&content, &target);
+                prop_assert!(found, "version {target} should be found in multi-line index");
+            }
+        }
+    }
 }
