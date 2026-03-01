@@ -11,9 +11,11 @@ keywords = ["policy", "publish", "workflow"]
 categories = ["development-tools"]
 
 [dependencies]
+serde = { workspace = true }
 shipper-types = { path = "../shipper-types" }
 
 [dev-dependencies]
+insta = { workspace = true }
 proptest.workspace = true
 shipper-retry = { path = "../shipper-retry" }
 

@@ -2,10 +2,11 @@
 //!
 //! This crate isolates policy decision logic from the publish engine.
 
+use serde::Serialize;
 use shipper_types::{PublishPolicy, RuntimeOptions};
 
 /// Policy kind independent from any specific runtime options type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PolicyKind {
     Safe,
     Balanced,
@@ -23,7 +24,7 @@ impl From<PublishPolicy> for PolicyKind {
 }
 
 /// Derived policy behavior used by publish/preflight execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct PolicyEffects {
     /// Whether preflight dry-run verification should execute.
     pub run_dry_run: bool,

@@ -2525,7 +2525,9 @@ dependencies = [
 name = "shipper-policy"
 version = "0.3.0-rc.1"
 dependencies = [
+ "insta",
  "proptest",
+ "serde",
  "shipper-retry",
  "shipper-types",
 ]
@@ -2583,6 +2585,7 @@ name = "shipper-schema"
 version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
+ "insta",
  "proptest",
 ]
 
@@ -2590,6 +2593,7 @@ dependencies = [
 name = "shipper-sparse-index"
 version = "0.3.0-rc.1"
 dependencies = [
+ "insta",
  "proptest",
  "serde",
  "serde_json",

@@ -1,0 +1,5 @@
+---
+source: crates/shipper-schema/tests/snapshot_tests.rs
+expression: "format!(\"{err:?}\")"
+---
+"invalid receipt version format: bad-format\n\nCaused by:\n    invalid schema version format: bad-format"

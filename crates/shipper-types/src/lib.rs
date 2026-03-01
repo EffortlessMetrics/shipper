@@ -3497,6 +3497,442 @@ mod tests {
             }
         }
 
+        // ===== ReleasePlan roundtrip with varied registry =====
+
+        proptest! {
+            #[test]
+            fn release_plan_with_custom_registry_roundtrip(
+                plan_id in "[a-f0-9]{8,64}",
+                registry_name in "[a-z][a-z0-9-]{0,15}",
+                api_base in "https://[a-z]{3,10}\\.[a-z]{2,5}",
+                index_base in prop::option::of("https://index\\.[a-z]{3,10}\\.[a-z]{2,5}"),
+                pkg_count in 1usize..6,
+                dep_count in 0usize..3,
+            ) {
+                let packages: Vec<PlannedPackage> = (0..pkg_count)
+                    .map(|i| PlannedPackage {
+                        name: format!("crate-{i}"),
+                        version: format!("{}.0.0", i + 1),
+                        manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                    })
+                    .collect();
+                let mut deps = BTreeMap::new();
+                for d in 0..dep_count.min(pkg_count.saturating_sub(1)) {
+                    deps.insert(
+                        format!("crate-{}", d + 1),
+                        vec![format!("crate-{d}")],
+                    );
+                }
+                let plan = ReleasePlan {
+                    plan_version: "shipper.plan.v1".to_string(),
+                    plan_id: plan_id.clone(),
+                    created_at: Utc::now(),
+                    registry: Registry {
+                        name: registry_name.clone(),
+                        api_base: api_base.clone(),
+                        index_base: index_base.clone(),
+                    },
+                    packages,
+                    dependencies: deps.clone(),
+                };
+                let json = serde_json::to_string(&plan).unwrap();
+                let parsed: ReleasePlan = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.plan_id, plan_id);
+                assert_eq!(parsed.registry.name, registry_name);
+                assert_eq!(parsed.registry.api_base, api_base);
+                assert_eq!(parsed.registry.index_base, index_base);
+                assert_eq!(parsed.packages.len(), pkg_count);
+                assert_eq!(parsed.dependencies, deps);
+            }
+        }
+
+        // ===== RuntimeOptions duration validation =====
+
+        proptest! {
+            #[test]
+            fn runtime_options_durations_positive(
+                base_delay_ms in 1u64..60_000,
+                max_delay_ms in 1u64..600_000,
+                verify_timeout_ms in 1u64..3_600_000,
+                verify_poll_ms in 1u64..60_000,
+                lock_timeout_ms in 1u64..86_400_000,
+                pkg_timeout_ms in 1u64..7_200_000,
+                readiness_initial_ms in 1u64..10_000,
+                readiness_max_ms in 1u64..120_000,
+                readiness_total_ms in 1u64..600_000,
+                readiness_poll_ms in 1u64..10_000,
+            ) {
+                let opts = RuntimeOptions {
+                    allow_dirty: false,
+                    skip_ownership_check: false,
+                    strict_ownership: false,
+                    no_verify: false,
+                    max_attempts: 3,
+                    base_delay: Duration::from_millis(base_delay_ms),
+                    max_delay: Duration::from_millis(max_delay_ms),
+                    retry_strategy: shipper_retry::RetryStrategyType::Exponential,
+                    retry_jitter: 0.5,
+                    retry_per_error: shipper_retry::PerErrorConfig::default(),
+                    verify_timeout: Duration::from_millis(verify_timeout_ms),
+                    verify_poll_interval: Duration::from_millis(verify_poll_ms),
+                    state_dir: PathBuf::from(".shipper"),
+                    force_resume: false,
+                    policy: PublishPolicy::Safe,
+                    verify_mode: VerifyMode::Workspace,
+                    readiness: ReadinessConfig {
+                        enabled: true,
+                        method: ReadinessMethod::Api,
+                        initial_delay: Duration::from_millis(readiness_initial_ms),
+                        max_delay: Duration::from_millis(readiness_max_ms),
+                        max_total_wait: Duration::from_millis(readiness_total_ms),
+                        poll_interval: Duration::from_millis(readiness_poll_ms),
+                        jitter_factor: 0.5,
+                        index_path: None,
+                        prefer_index: false,
+                    },
+                    output_lines: 1000,
+                    force: false,
+                    lock_timeout: Duration::from_millis(lock_timeout_ms),
+                    parallel: ParallelConfig {
+                        enabled: false,
+                        max_concurrent: 4,
+                        per_package_timeout: Duration::from_millis(pkg_timeout_ms),
+                    },
+                    webhook: WebhookConfig::default(),
+                    encryption: EncryptionSettings::default(),
+                    registries: vec![],
+                    resume_from: None,
+                };
+
+                // All duration fields must be positive
+                assert!(opts.base_delay > Duration::ZERO);
+                assert!(opts.max_delay > Duration::ZERO);
+                assert!(opts.verify_timeout > Duration::ZERO);
+                assert!(opts.verify_poll_interval > Duration::ZERO);
+                assert!(opts.lock_timeout > Duration::ZERO);
+                assert!(opts.parallel.per_package_timeout > Duration::ZERO);
+                assert!(opts.readiness.initial_delay > Duration::ZERO);
+                assert!(opts.readiness.max_delay > Duration::ZERO);
+                assert!(opts.readiness.max_total_wait > Duration::ZERO);
+                assert!(opts.readiness.poll_interval > Duration::ZERO);
+            }
+        }
+
+        // ===== Receipt with mixed package states roundtrip =====
+
+        proptest! {
+            #[test]
+            fn receipt_with_mixed_states_roundtrip(
+                plan_id in "[a-f0-9]{8,32}",
+                pkg_count in 1usize..6,
+                git_commit in prop::option::of("[a-f0-9]{7,40}"),
+                git_branch in prop::option::of("[a-z0-9/-]{1,20}"),
+                shipper_ver in "[0-9]{1,2}\\.[0-9]{1,2}\\.[0-9]{1,2}",
+                os_name in "[a-z]{3,10}",
+            ) {
+                let now = Utc::now();
+                let packages: Vec<PackageReceipt> = (0..pkg_count)
+                    .map(|i| {
+                        let state = match i % 5 {
+                            0 => PackageState::Published,
+                            1 => PackageState::Skipped { reason: "already exists".to_string() },
+                            2 => PackageState::Failed {
+                                class: ErrorClass::Permanent,
+                                message: "auth error".to_string(),
+                            },
+                            3 => PackageState::Ambiguous { message: "timeout".to_string() },
+                            _ => PackageState::Uploaded,
+                        };
+                        PackageReceipt {
+                            name: format!("crate-{i}"),
+                            version: format!("{i}.1.0"),
+                            attempts: (i as u32) + 1,
+                            state,
+                            started_at: now,
+                            finished_at: now,
+                            duration_ms: (i as u128 + 1) * 500,
+                            evidence: PackageEvidence {
+                                attempts: vec![],
+                                readiness_checks: vec![],
+                            },
+                        }
+                    })
+                    .collect();
+                let receipt = Receipt {
+                    receipt_version: "shipper.receipt.v1".to_string(),
+                    plan_id: plan_id.clone(),
+                    registry: Registry::crates_io(),
+                    started_at: now,
+                    finished_at: now,
+                    packages: packages.clone(),
+                    event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                    git_context: Some(GitContext {
+                        commit: git_commit.clone(),
+                        branch: git_branch.clone(),
+                        tag: None,
+                        dirty: Some(false),
+                    }),
+                    environment: EnvironmentFingerprint {
+                        shipper_version: shipper_ver.clone(),
+                        cargo_version: None,
+                        rust_version: None,
+                        os: os_name.clone(),
+                        arch: "x86_64".to_string(),
+                    },
+                };
+                let json = serde_json::to_string(&receipt).unwrap();
+                let parsed: Receipt = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.plan_id, plan_id);
+                assert_eq!(parsed.packages.len(), pkg_count);
+                assert_eq!(parsed.environment.shipper_version, shipper_ver);
+                assert_eq!(parsed.environment.os, os_name);
+                let ctx = parsed.git_context.unwrap();
+                assert_eq!(ctx.commit, git_commit);
+                assert_eq!(ctx.branch, git_branch);
+                for (orig, p) in packages.iter().zip(parsed.packages.iter()) {
+                    assert_eq!(p.name, orig.name);
+                    assert_eq!(p.state, orig.state);
+                    assert_eq!(p.duration_ms, orig.duration_ms);
+                }
+            }
+        }
+
+        // ===== ExecutionState with varied package states roundtrip =====
+
+        proptest! {
+            #[test]
+            fn execution_state_with_varied_states_roundtrip(
+                plan_id in "[a-f0-9]{8,32}",
+                pkg_count in 1usize..6,
+            ) {
+                let mut packages = BTreeMap::new();
+                for i in 0..pkg_count {
+                    let state = match i % 5 {
+                        0 => PackageState::Pending,
+                        1 => PackageState::Uploaded,
+                        2 => PackageState::Published,
+                        3 => PackageState::Skipped { reason: "exists".to_string() },
+                        _ => PackageState::Failed {
+                            class: ErrorClass::Retryable,
+                            message: "timeout".to_string(),
+                        },
+                    };
+                    packages.insert(
+                        format!("crate-{i}@{i}.0.0"),
+                        PackageProgress {
+                            name: format!("crate-{i}"),
+                            version: format!("{i}.0.0"),
+                            attempts: (i as u32) + 1,
+                            state,
+                            last_updated_at: Utc::now(),
+                        },
+                    );
+                }
+                let exec_state = ExecutionState {
+                    state_version: "shipper.state.v1".to_string(),
+                    plan_id: plan_id.clone(),
+                    registry: Registry::crates_io(),
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    packages: packages.clone(),
+                };
+                let json = serde_json::to_string(&exec_state).unwrap();
+                let parsed: ExecutionState = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.plan_id, plan_id);
+                assert_eq!(parsed.packages.len(), pkg_count);
+                for (key, orig) in &packages {
+                    let p = parsed.packages.get(key).unwrap();
+                    assert_eq!(p.name, orig.name);
+                    assert_eq!(p.version, orig.version);
+                    assert_eq!(p.attempts, orig.attempts);
+                    assert_eq!(p.state, orig.state);
+                }
+            }
+        }
+
+        // ===== PackageState transition monotonicity =====
+
+        /// Ordinal value for PackageState in the forward progress direction.
+        /// Higher values represent more progress toward completion.
+        fn state_ordinal(state: &PackageState) -> u8 {
+            match state {
+                PackageState::Pending => 0,
+                PackageState::Uploaded => 1,
+                PackageState::Published => 2,
+                PackageState::Skipped { .. } => 2,   // terminal
+                PackageState::Failed { .. } => 1,    // same level as Uploaded
+                PackageState::Ambiguous { .. } => 2, // terminal
+            }
+        }
+
+        proptest! {
+            /// Forward transitions (non-retry) never decrease the ordinal
+            #[test]
+            fn package_state_forward_transitions_monotonic(
+                start_variant in 0u8..6,
+            ) {
+                let start = match start_variant {
+                    0 => PackageState::Pending,
+                    1 => PackageState::Uploaded,
+                    2 => PackageState::Published,
+                    3 => PackageState::Skipped { reason: "exists".to_string() },
+                    4 => PackageState::Failed {
+                        class: ErrorClass::Retryable,
+                        message: "err".to_string(),
+                    },
+                    _ => PackageState::Ambiguous { message: "unclear".to_string() },
+                };
+                let start_ord = state_ordinal(&start);
+                let nexts = valid_next_states(&start);
+                for next in &nexts {
+                    // The only allowed "backwards" transition is Failed -> Pending (retry)
+                    let is_retry = matches!(
+                        (&start, next),
+                        (PackageState::Failed { .. }, PackageState::Pending)
+                    );
+                    if !is_retry {
+                        assert!(
+                            state_ordinal(next) >= start_ord,
+                            "Non-retry transition {:?} -> {:?} must not decrease ordinal ({} -> {})",
+                            start, next, start_ord, state_ordinal(next)
+                        );
+                    }
+                }
+            }
+
+            /// The happy path Pending -> Uploaded -> Published is strictly increasing
+            #[test]
+            fn happy_path_is_strictly_monotonic(_dummy in 0u8..1) {
+                let path = [
+                    PackageState::Pending,
+                    PackageState::Uploaded,
+                    PackageState::Published,
+                ];
+                for w in path.windows(2) {
+                    assert!(
+                        state_ordinal(&w[1]) > state_ordinal(&w[0]),
+                        "Happy path must be strictly increasing: {:?} -> {:?}",
+                        w[0], w[1]
+                    );
+                }
+            }
+
+            /// Terminal states have no forward transitions (can't go backwards)
+            #[test]
+            fn terminal_states_have_no_transitions(variant in 0u8..3) {
+                let state = match variant {
+                    0 => PackageState::Published,
+                    1 => PackageState::Skipped { reason: "exists".to_string() },
+                    _ => PackageState::Ambiguous { message: "unclear".to_string() },
+                };
+                let nexts = valid_next_states(&state);
+                assert!(
+                    nexts.is_empty(),
+                    "Terminal state {:?} must have no transitions but has {:?}",
+                    state, nexts
+                );
+            }
+        }
+
+        // ===== Error/type Debug formatting never panics =====
+
+        proptest! {
+            #[test]
+            fn package_state_debug_never_panics(
+                variant in 0u8..6,
+                message in "\\PC{0,200}",
+            ) {
+                let state = match variant {
+                    0 => PackageState::Pending,
+                    1 => PackageState::Uploaded,
+                    2 => PackageState::Published,
+                    3 => PackageState::Skipped { reason: message.clone() },
+                    4 => PackageState::Failed {
+                        class: ErrorClass::Retryable,
+                        message: message.clone(),
+                    },
+                    _ => PackageState::Ambiguous { message },
+                };
+                let debug = format!("{:?}", state);
+                assert!(!debug.is_empty());
+            }
+
+            #[test]
+            fn error_class_debug_never_panics(variant in 0u8..3) {
+                let class = match variant {
+                    0 => ErrorClass::Retryable,
+                    1 => ErrorClass::Permanent,
+                    _ => ErrorClass::Ambiguous,
+                };
+                let debug = format!("{:?}", class);
+                assert!(!debug.is_empty());
+            }
+
+            #[test]
+            fn execution_result_debug_never_panics(variant in 0u8..3) {
+                let result = match variant {
+                    0 => ExecutionResult::Success,
+                    1 => ExecutionResult::PartialFailure,
+                    _ => ExecutionResult::CompleteFailure,
+                };
+                let debug = format!("{:?}", result);
+                assert!(!debug.is_empty());
+            }
+
+            #[test]
+            fn finishability_debug_never_panics(variant in 0u8..3) {
+                let fin = match variant {
+                    0 => Finishability::Proven,
+                    1 => Finishability::NotProven,
+                    _ => Finishability::Failed,
+                };
+                let debug = format!("{:?}", fin);
+                assert!(!debug.is_empty());
+            }
+
+            #[test]
+            fn event_type_debug_never_panics(
+                variant in 0u8..18,
+                msg in "\\PC{0,100}",
+            ) {
+                let event_type = match variant {
+                    0 => EventType::PlanCreated { plan_id: msg.clone(), package_count: 5 },
+                    1 => EventType::ExecutionStarted,
+                    2 => EventType::ExecutionFinished { result: ExecutionResult::Success },
+                    3 => EventType::PackageStarted { name: msg.clone(), version: "1.0.0".to_string() },
+                    4 => EventType::PackageAttempted { attempt: 1, command: msg.clone() },
+                    5 => EventType::PackageOutput { stdout_tail: msg.clone(), stderr_tail: String::new() },
+                    6 => EventType::PackagePublished { duration_ms: 100 },
+                    7 => EventType::PackageFailed { class: ErrorClass::Retryable, message: msg.clone() },
+                    8 => EventType::PackageSkipped { reason: msg.clone() },
+                    9 => EventType::ReadinessStarted { method: ReadinessMethod::Api },
+                    10 => EventType::ReadinessPoll { attempt: 1, visible: false },
+                    11 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
+                    12 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
+                    13 => EventType::IndexReadinessStarted { crate_name: msg.clone(), version: "1.0.0".to_string() },
+                    14 => EventType::IndexReadinessCheck { crate_name: msg.clone(), version: "1.0.0".to_string(), found: true },
+                    15 => EventType::IndexReadinessComplete { crate_name: msg.clone(), version: "1.0.0".to_string(), visible: true },
+                    16 => EventType::PreflightStarted,
+                    _ => EventType::PreflightComplete { finishability: Finishability::Proven },
+                };
+                let debug = format!("{:?}", event_type);
+                assert!(!debug.is_empty());
+            }
+
+            #[test]
+            fn publish_event_debug_never_panics(
+                pkg in "[a-z][a-z0-9-]{0,15}@[0-9]+\\.[0-9]+\\.[0-9]+",
+            ) {
+                let event = PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type: EventType::ExecutionStarted,
+                    package: pkg,
+                };
+                let debug = format!("{:?}", event);
+                assert!(!debug.is_empty());
+            }
+        }
+
         // Helper functions for property-based tests
 
         fn calculate_index_path_for_crate(crate_name: &str) -> String {

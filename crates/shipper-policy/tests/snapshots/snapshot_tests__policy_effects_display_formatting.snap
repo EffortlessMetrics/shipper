@@ -1,0 +1,5 @@
+---
+source: crates/shipper-policy/tests/snapshot_tests.rs
+expression: "format!(\"{effects:?}\")"
+---
+"PolicyEffects { run_dry_run: true, check_ownership: true, strict_ownership: false, readiness_enabled: true }"

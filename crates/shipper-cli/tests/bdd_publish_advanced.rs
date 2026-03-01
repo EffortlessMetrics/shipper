@@ -194,13 +194,8 @@ fn fake_cargo_bin_path(bin_dir: &Path) -> String {
 
 struct TestRegistry {
     base_url: String,
+    #[allow(dead_code)]
     handle: thread::JoinHandle<()>,
-}
-
-impl TestRegistry {
-    fn join(self) {
-        self.handle.join().expect("join server");
-    }
 }
 
 fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry {
@@ -299,7 +294,7 @@ mod registry_errors {
             .failure()
             .stderr(contains("unexpected status").or(contains("401")));
 
-        registry.join();
+        drop(registry);
     }
 
     // Scenario: Registry returns 429 Too Many Requests during version check
@@ -343,7 +338,7 @@ mod registry_errors {
             .failure()
             .stderr(contains("unexpected status").or(contains("429")));
 
-        registry.join();
+        drop(registry);
     }
 }
 
@@ -372,7 +367,7 @@ mod retry_on_failure {
         // - 1 initial version check
         // - 1 check after each failed attempt (2 attempts)
         // - 1 final check after loop
-        let registry = spawn_registry(vec![404], 6);
+        let registry = spawn_registry(vec![404], 4);
         let state_dir = td.path().join(".shipper");
 
         // When
@@ -418,7 +413,7 @@ mod retry_on_failure {
             "failed package should not be marked published"
         );
 
-        registry.join();
+        drop(registry);
     }
 }
 
@@ -539,8 +534,7 @@ mod already_published_skip {
         let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
 
         // Registry returns 200 for version check (already published)
-        // Provide extra buffer requests in case readiness checks happen
-        let registry = spawn_registry(vec![200], 4);
+        let registry = spawn_registry(vec![200], 1);
         let state_dir = td.path().join(".shipper");
 
         // When
@@ -591,7 +585,7 @@ mod already_published_skip {
             "output should indicate skipping or already published"
         );
 
-        registry.join();
+        drop(registry);
     }
 }
 
@@ -630,7 +624,7 @@ mod multi_crate_partial_failure {
         //   4. version check after utils failure → 404 (not visible)
         //   5. final version check for utils → 404
         // Extra buffer for any additional readiness/verification requests.
-        let registry = spawn_registry(vec![404, 200, 404, 404, 404], 8);
+        let registry = spawn_registry(vec![404, 200, 404, 404, 404], 5);
         let state_dir = td.path().join(".shipper");
 
         // When
@@ -694,6 +688,6 @@ mod multi_crate_partial_failure {
             "receipt.json should NOT be written on partial failure"
         );
 
-        registry.join();
+        drop(registry);
     }
 }

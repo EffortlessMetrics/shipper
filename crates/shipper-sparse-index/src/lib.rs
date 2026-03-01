@@ -91,6 +91,129 @@ not json
 }
 
 #[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use insta::assert_snapshot;
+
+    // ── sparse_index_path: all length categories ──
+
+    #[test]
+    fn snapshot_path_empty_name() {
+        assert_snapshot!(sparse_index_path(""), @"0/");
+    }
+
+    #[test]
+    fn snapshot_path_one_char() {
+        assert_snapshot!(sparse_index_path("a"), @"1/a");
+    }
+
+    #[test]
+    fn snapshot_path_two_chars() {
+        assert_snapshot!(sparse_index_path("ab"), @"2/ab");
+    }
+
+    #[test]
+    fn snapshot_path_three_chars() {
+        assert_snapshot!(sparse_index_path("abc"), @"3/a/abc");
+    }
+
+    #[test]
+    fn snapshot_path_four_chars() {
+        assert_snapshot!(sparse_index_path("demo"), @"de/mo/demo");
+    }
+
+    // ── sparse_index_path: real-world crates ──
+
+    #[test]
+    fn snapshot_path_real_world_crates() {
+        let crates = [
+            "serde",
+            "tokio",
+            "clap",
+            "anyhow",
+            "rand",
+            "syn",
+            "proc-macro2",
+            "quote",
+            "libc",
+            "regex",
+        ];
+        let paths: Vec<String> = crates
+            .iter()
+            .map(|c| format!("{c} -> {}", sparse_index_path(c)))
+            .collect();
+        assert_snapshot!(paths.join("\n"));
+    }
+
+    // ── sparse_index_path: case normalisation ──
+
+    #[test]
+    fn snapshot_path_mixed_case() {
+        assert_snapshot!(sparse_index_path("Serde"), @"se/rd/serde");
+    }
+
+    #[test]
+    fn snapshot_path_all_upper() {
+        assert_snapshot!(sparse_index_path("TOKIO"), @"to/ki/tokio");
+    }
+
+    // ── sparse_index_path: index URL construction ──
+
+    #[test]
+    fn snapshot_full_sparse_index_url() {
+        let base = "https://index.crates.io/";
+        let crates = ["serde", "a", "ab", "syn", "rand_core"];
+        let urls: Vec<String> = crates
+            .iter()
+            .map(|c| format!("{base}{}", sparse_index_path(c)))
+            .collect();
+        assert_snapshot!(urls.join("\n"));
+    }
+
+    // ── contains_version: parsed entry snapshots ──
+
+    #[test]
+    fn snapshot_version_found() {
+        let content = r#"{"vers":"0.1.0"}
+{"vers":"1.0.0"}
+{"vers":"2.0.0"}"#;
+        assert_snapshot!(contains_version(content, "1.0.0").to_string(), @"true");
+    }
+
+    #[test]
+    fn snapshot_version_not_found() {
+        let content = r#"{"vers":"0.1.0"}
+{"vers":"1.0.0"}"#;
+        assert_snapshot!(contains_version(content, "3.0.0").to_string(), @"false");
+    }
+
+    #[test]
+    fn snapshot_version_with_extra_fields() {
+        let content = r#"{"name":"serde","vers":"1.0.210","deps":[],"cksum":"abc","features":{},"yanked":false}
+{"name":"serde","vers":"1.0.211","deps":[],"cksum":"def","features":{},"yanked":false}"#;
+        assert_snapshot!(contains_version(content, "1.0.210").to_string(), @"true");
+    }
+
+    #[test]
+    fn snapshot_version_with_invalid_lines() {
+        let content = r#"not-json
+{"vers":"0.5.0"}
+{"oops":"missing"}
+{"vers":"1.2.3"}"#;
+        let results: Vec<String> = ["0.5.0", "1.2.3", "9.9.9"]
+            .iter()
+            .map(|v| format!("{v} -> {}", contains_version(content, v)))
+            .collect();
+        assert_snapshot!(results.join("\n"));
+    }
+
+    #[test]
+    fn snapshot_version_empty_content() {
+        assert_snapshot!(contains_version("", "1.0.0").to_string(), @"false");
+    }
+}
+
+#[cfg(test)]
 mod property_tests {
     use std::collections::BTreeSet;
 

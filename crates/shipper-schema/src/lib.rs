@@ -115,5 +115,84 @@ mod tests {
 
             prop_assert!(validate_schema_version(&version, &minimum, "receipt").is_ok());
         }
+
+        #[test]
+        fn parse_schema_version_never_panics_on_arbitrary_input(s in "\\PC*") {
+            // Must not panic regardless of input; Ok or Err are both fine.
+            let _ = parse_schema_version(&s);
+        }
+
+        #[test]
+        fn validate_schema_version_never_panics_on_arbitrary_inputs(
+            v in "\\PC*",
+            m in "\\PC*",
+            label in "[a-z]{1,10}",
+        ) {
+            let _ = validate_schema_version(&v, &m, &label);
+        }
+
+        #[test]
+        fn parse_rejects_wrong_segment_count(
+            a in "[a-z]{1,8}",
+            b in "[a-z]{0,8}",
+        ) {
+            // Two segments: "a.b" should always be rejected.
+            let two = format!("{a}.{b}");
+            prop_assert!(parse_schema_version(&two).is_err());
+
+            // Four segments: "a.b.c.d" should always be rejected.
+            let four = format!("{a}.{b}.v1.extra");
+            prop_assert!(parse_schema_version(&four).is_err());
+        }
+
+        #[test]
+        fn parse_rejects_non_shipper_prefix(
+            prefix in "[a-z]{1,8}".prop_filter("not shipper", |p| !p.starts_with("shipper")),
+            middle in "[a-z]{1,8}",
+            ver in 0u32..1_000,
+        ) {
+            let raw = format!("{prefix}.{middle}.v{ver}");
+            prop_assert!(parse_schema_version(&raw).is_err());
+        }
+
+        #[test]
+        fn parse_roundtrips_with_arbitrary_middle_segment(
+            middle in "[a-z]{1,12}",
+            ver in 0u32..100_000,
+        ) {
+            let raw = format!("shipper.{middle}.v{ver}");
+            prop_assert_eq!(parse_schema_version(&raw).expect("parse"), ver);
+        }
+
+        #[test]
+        fn validate_rejects_older_versions(
+            min in 1u32..5_000,
+            gap in 1u32..5_000,
+        ) {
+            let older = min.saturating_sub(gap);
+            // Only meaningful when older < min (skip when saturated to 0 and min is 0).
+            prop_assume!(older < min);
+            let version = format!("shipper.state.v{older}");
+            let minimum = format!("shipper.state.v{min}");
+            prop_assert!(validate_schema_version(&version, &minimum, "state").is_err());
+        }
+
+        #[test]
+        fn version_comparison_is_consistent(
+            a in 0u32..10_000,
+            b in 0u32..10_000,
+        ) {
+            let va = format!("shipper.receipt.v{a}");
+            let vb = format!("shipper.receipt.v{b}");
+            let a_ge_b = validate_schema_version(&va, &vb, "t").is_ok();
+            let b_ge_a = validate_schema_version(&vb, &va, "t").is_ok();
+            if a == b {
+                prop_assert!(a_ge_b && b_ge_a);
+            } else if a > b {
+                prop_assert!(a_ge_b && !b_ge_a);
+            } else {
+                prop_assert!(!a_ge_b && b_ge_a);
+            }
+        }
     }
 }
