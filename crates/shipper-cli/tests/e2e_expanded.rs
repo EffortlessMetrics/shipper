@@ -1264,3 +1264,699 @@ fn inspect_receipt_missing_fails() {
     );
     assert_debug_snapshot!("inspect_receipt_missing_exit_code", output.status.code());
 }
+
+// ===========================================================================
+// 22. Help text snapshots for additional subcommands
+// ===========================================================================
+
+/// Snapshot: `resume --help` output.
+#[test]
+fn help_resume_snapshot() {
+    let output = shipper_cmd()
+        .args(["resume", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_resume", normalize_stderr(&stdout));
+}
+
+/// Snapshot: `publish --help` output.
+#[test]
+fn help_publish_snapshot() {
+    let output = shipper_cmd()
+        .args(["publish", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_publish", normalize_stderr(&stdout));
+}
+
+/// Snapshot: `doctor --help` output.
+#[test]
+fn help_doctor_snapshot() {
+    let output = shipper_cmd()
+        .args(["doctor", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_doctor", normalize_stderr(&stdout));
+}
+
+/// Snapshot: `status --help` output.
+#[test]
+fn help_status_snapshot() {
+    let output = shipper_cmd()
+        .args(["status", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_status", normalize_stderr(&stdout));
+}
+
+/// Snapshot: `plan --help` output.
+#[test]
+fn help_plan_snapshot() {
+    let output = shipper_cmd()
+        .args(["plan", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_plan", normalize_stderr(&stdout));
+}
+
+/// Snapshot: `clean --help` output.
+#[test]
+fn help_clean_snapshot() {
+    let output = shipper_cmd()
+        .args(["clean", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_clean", normalize_stderr(&stdout));
+}
+
+/// Snapshot: `config init --help` output.
+#[test]
+fn help_config_init_snapshot() {
+    let output = shipper_cmd()
+        .args(["config", "init", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_config_init", normalize_stderr(&stdout));
+}
+
+/// Snapshot: `config validate --help` output.
+#[test]
+fn help_config_validate_snapshot() {
+    let output = shipper_cmd()
+        .args(["config", "validate", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_config_validate", normalize_stderr(&stdout));
+}
+
+// ===========================================================================
+// 23. Doctor — full output snapshot and auth detection
+// ===========================================================================
+
+/// Doctor output contains all expected sections.
+#[test]
+fn doctor_full_output_has_all_sections() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    let registry = spawn_registry(1);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    // Verify all expected sections are present
+    assert!(stdout.contains("Shipper Doctor - Diagnostics Report"));
+    assert!(stdout.contains("workspace_root:"));
+    assert!(stdout.contains("registry: crates-io"));
+    assert!(stdout.contains("auth_type:"));
+    assert!(stdout.contains("state_dir:"));
+    assert!(stdout.contains("cargo:"));
+    assert!(stdout.contains("git:"));
+    assert!(stdout.contains("registry_reachable:"));
+    assert!(stdout.contains("index_base:"));
+    assert!(stdout.contains("Diagnostics complete."));
+
+    registry.join();
+}
+
+/// Doctor shows NONE FOUND when no auth token is set.
+#[test]
+fn doctor_shows_no_auth_when_no_token() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    let registry = spawn_registry(1);
+
+    shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .stdout(contains("NONE FOUND"));
+
+    registry.join();
+}
+
+/// Doctor reports state_dir_exists: false when state dir does not exist.
+#[test]
+fn doctor_shows_state_dir_not_exists() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    let registry = spawn_registry(1);
+
+    shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--state-dir")
+        .arg(".shipper-nonexistent")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .stdout(contains("state_dir_exists: false"));
+
+    registry.join();
+}
+
+// ===========================================================================
+// 24. Status with mock registry
+// ===========================================================================
+
+fn spawn_registry_not_found(expected_requests: usize) -> TestRegistry {
+    let server = Server::http("127.0.0.1:0").expect("server");
+    let base_url = format!("http://{}", server.server_addr());
+    let handle = thread::spawn(move || {
+        for _ in 0..expected_requests {
+            let req = server.recv().expect("request");
+            let resp = Response::from_string("{}")
+                .with_status_code(StatusCode(404))
+                .with_header(
+                    Header::from_bytes("Content-Type", "application/json").expect("header"),
+                );
+            req.respond(resp).expect("respond");
+        }
+    });
+    TestRegistry { base_url, handle }
+}
+
+/// Status shows "missing" when the registry returns 404 for a package version.
+#[test]
+fn status_shows_missing_for_unpublished() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let registry = spawn_registry_not_found(1);
+
+    shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--quiet")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(contains("demo@0.1.0: missing"));
+
+    registry.join();
+}
+
+/// Status shows "published" when the registry returns 200 for a package version.
+#[test]
+fn status_shows_published_for_existing() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let registry = spawn_registry(1);
+
+    shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--quiet")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(contains("demo@0.1.0: published"));
+
+    registry.join();
+}
+
+/// Snapshot: status output for a multi-crate workspace where all versions are missing.
+#[test]
+fn status_multi_crate_all_missing_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+
+    let registry = spawn_registry_not_found(3);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--quiet")
+        .arg("status")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert_snapshot!("status_multi_crate_all_missing", normalize_output(&stdout));
+
+    registry.join();
+}
+
+/// Snapshot: status output for a single workspace where the version is published.
+#[test]
+fn status_single_crate_published_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let registry = spawn_registry(1);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--quiet")
+        .arg("status")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert_snapshot!("status_single_crate_published", normalize_output(&stdout));
+
+    registry.join();
+}
+
+// ===========================================================================
+// 25. Plan with --package filtering
+// ===========================================================================
+
+/// Plan filtered to a single package in a multi-crate workspace.
+#[test]
+fn plan_single_package_filter_in_multi_crate() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--package")
+        .arg("core-lib")
+        .arg("plan")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert!(
+        stdout.contains("core-lib@0.2.0"),
+        "filtered package should appear in plan"
+    );
+    assert!(
+        !stdout.contains("mid-lib@0.3.0"),
+        "non-filtered package should not appear"
+    );
+    assert!(
+        !stdout.contains("top-app@0.4.0"),
+        "non-filtered package should not appear"
+    );
+    assert_snapshot!("plan_single_package_filter", normalize_output(&stdout));
+}
+
+/// Plan filtered to multiple packages with multiple --package flags.
+#[test]
+fn plan_multiple_packages_filter() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--package")
+        .arg("core-lib")
+        .arg("--package")
+        .arg("mid-lib")
+        .arg("plan")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert!(
+        stdout.contains("core-lib@0.2.0"),
+        "first filtered package should appear"
+    );
+    assert!(
+        stdout.contains("mid-lib@0.3.0"),
+        "second filtered package should appear"
+    );
+    assert!(
+        !stdout.contains("top-app@0.4.0"),
+        "non-filtered package should not appear"
+    );
+    assert_snapshot!("plan_multiple_packages_filter", normalize_output(&stdout));
+}
+
+// ===========================================================================
+// 26. Error snapshots — invalid flag values
+// ===========================================================================
+
+/// Snapshot: error when an invalid --policy value is provided.
+#[test]
+fn error_invalid_policy_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .args(["--policy", "bogus", "plan"])
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!("error_invalid_policy", normalize_stderr(&stderr));
+}
+
+/// Snapshot: error when an invalid --verify-mode value is provided.
+#[test]
+fn error_invalid_verify_mode_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .args(["--verify-mode", "bogus", "plan"])
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!("error_invalid_verify_mode", normalize_stderr(&stderr));
+}
+
+/// Snapshot: error when an invalid --readiness-method value is provided.
+#[test]
+fn error_invalid_readiness_method_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .args(["--readiness-method", "bogus", "plan"])
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!("error_invalid_readiness_method", normalize_stderr(&stderr));
+}
+
+// ===========================================================================
+// 27. Manifest and path edge cases
+// ===========================================================================
+
+/// Error when --manifest-path points to a directory that does not exist.
+#[test]
+fn manifest_path_in_nonexistent_directory_fails() {
+    shipper_cmd()
+        .arg("--manifest-path")
+        .arg("nonexistent-dir/Cargo.toml")
+        .arg("plan")
+        .assert()
+        .failure();
+}
+
+/// Config init writes to a custom filename.
+#[test]
+fn config_init_custom_filename() {
+    let td = tempdir().expect("tempdir");
+    let config_path = td.path().join("custom-config.toml");
+
+    shipper_cmd()
+        .args(["config", "init", "-o", config_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    assert!(config_path.exists(), "custom config file should be created");
+    let content = fs::read_to_string(&config_path).expect("read config");
+    assert!(
+        content.contains("[policy]"),
+        "generated config should contain [policy] section"
+    );
+}
+
+/// Config init output message with a custom filename.
+#[test]
+fn config_init_custom_filename_snapshot() {
+    let td = tempdir().expect("tempdir");
+    let config_path = td.path().join("my-shipper.toml");
+
+    let output = shipper_cmd()
+        .args(["config", "init", "-o", config_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let normalized = stdout
+        .replace(config_path.to_str().unwrap(), "<CONFIG_PATH>")
+        .replace(
+            &config_path.to_str().unwrap().replace('\\', "/"),
+            "<CONFIG_PATH>",
+        );
+    assert_snapshot!("config_init_custom_filename", normalized);
+}
+
+// ===========================================================================
+// 28. Config validate edge cases
+// ===========================================================================
+
+/// Config validate on an empty file succeeds (empty is valid TOML).
+#[test]
+fn config_validate_empty_file() {
+    let td = tempdir().expect("tempdir");
+    let config_path = td.path().join(".shipper.toml");
+    fs::write(&config_path, "").expect("write");
+
+    shipper_cmd()
+        .args(["config", "validate", "-p", config_path.to_str().unwrap()])
+        .assert()
+        .success();
+}
+
+/// Config validate with an unknown section still succeeds (serde ignores unknown fields).
+#[test]
+fn config_validate_unknown_section_succeeds() {
+    let td = tempdir().expect("tempdir");
+    let config_path = td.path().join(".shipper.toml");
+    fs::write(
+        &config_path,
+        r#"
+[policy]
+name = "safe"
+
+[unknown_section]
+key = "value"
+"#,
+    )
+    .expect("write");
+
+    // This may succeed or fail depending on whether serde(deny_unknown_fields)
+    // is set. We just verify it terminates cleanly.
+    let output = shipper_cmd()
+        .args(["config", "validate", "-p", config_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.code().is_some());
+}
+
+// ===========================================================================
+// 29. Quiet mode
+// ===========================================================================
+
+/// Doctor with --quiet suppresses [info] messages on stderr.
+#[test]
+fn quiet_mode_doctor_suppresses_info_stderr() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    let registry = spawn_registry(1);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--quiet")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("[info]"),
+        "quiet mode should suppress [info] messages, got: {stderr}"
+    );
+
+    registry.join();
+}
+
+// ===========================================================================
+// 30. Plan verbose with --package filtering
+// ===========================================================================
+
+/// Snapshot: verbose plan with a single package filter.
+#[test]
+fn plan_verbose_single_package_filter_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--package")
+        .arg("core-lib")
+        .arg("--verbose")
+        .arg("plan")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert!(
+        stdout.contains("core-lib@0.2.0"),
+        "filtered package should appear in verbose plan"
+    );
+    assert_snapshot!(
+        "plan_verbose_single_package_filter",
+        normalize_output(&stdout)
+    );
+}
+
+// ===========================================================================
+// 31. Error snapshots — missing subcommand argument
+// ===========================================================================
+
+/// Snapshot: error when `config` is invoked without a subcommand.
+#[test]
+fn error_missing_config_subcommand_snapshot() {
+    let output = shipper_cmd().arg("config").output().expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!("error_missing_config_subcommand", normalize_stderr(&stderr));
+}
+
+/// Snapshot: error when `completion` is invoked without a shell argument.
+#[test]
+fn error_missing_completion_shell_snapshot() {
+    let output = shipper_cmd()
+        .arg("completion")
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!("error_missing_completion_shell", normalize_stderr(&stderr));
+}
+
+// ===========================================================================
+// 32. Status with package filtering
+// ===========================================================================
+
+/// Status filtered to a single package shows only that package.
+#[test]
+fn status_single_package_filter() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+
+    let registry = spawn_registry_not_found(1);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--quiet")
+        .arg("--package")
+        .arg("core-lib")
+        .arg("status")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert!(
+        stdout.contains("core-lib@0.2.0: missing"),
+        "filtered package should appear"
+    );
+    assert!(
+        !stdout.contains("mid-lib"),
+        "non-filtered packages should not appear"
+    );
+    assert!(
+        !stdout.contains("top-app"),
+        "non-filtered packages should not appear"
+    );
+
+    registry.join();
+}

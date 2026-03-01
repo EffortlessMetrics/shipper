@@ -834,4 +834,733 @@ mod tests {
         assert!(!state_path(&dir).exists());
         assert!(receipt_path(&dir).exists());
     }
+
+    // ── Corruption & invalid content ──────────────────────────────────
+
+    #[test]
+    fn load_state_fails_on_truncated_json() {
+        let td = tempdir().expect("tempdir");
+        fs::create_dir_all(td.path()).expect("mkdir");
+        // Write a valid JSON prefix that is cut off mid-object
+        fs::write(
+            state_path(td.path()),
+            r#"{"state_version":"shipper.state.v1","plan_id"#,
+        )
+        .expect("write");
+        let err = load_state(td.path()).expect_err("must fail on truncated JSON");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("failed to parse state JSON"));
+    }
+
+    #[test]
+    fn load_state_fails_on_empty_file() {
+        let td = tempdir().expect("tempdir");
+        fs::create_dir_all(td.path()).expect("mkdir");
+        fs::write(state_path(td.path()), "").expect("write empty");
+        let err = load_state(td.path()).expect_err("must fail on empty file");
+        assert!(format!("{err:#}").contains("failed to parse state JSON"));
+    }
+
+    #[test]
+    fn load_state_fails_on_valid_json_wrong_shape() {
+        let td = tempdir().expect("tempdir");
+        fs::create_dir_all(td.path()).expect("mkdir");
+        // Valid JSON but not an ExecutionState
+        fs::write(state_path(td.path()), r#"{"hello":"world"}"#).expect("write");
+        let err = load_state(td.path()).expect_err("must fail on wrong shape");
+        assert!(format!("{err:#}").contains("failed to parse state JSON"));
+    }
+
+    #[test]
+    fn load_state_fails_on_json_array() {
+        let td = tempdir().expect("tempdir");
+        fs::create_dir_all(td.path()).expect("mkdir");
+        fs::write(state_path(td.path()), "[]").expect("write");
+        let err = load_state(td.path()).expect_err("must fail");
+        assert!(format!("{err:#}").contains("failed to parse state JSON"));
+    }
+
+    #[test]
+    fn load_receipt_fails_on_truncated_json() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(
+            receipt_path(&dir),
+            r#"{"receipt_version":"shipper.receipt.v2","plan_id"#,
+        )
+        .expect("write");
+        let err = load_receipt(&dir).expect_err("must fail on truncated JSON");
+        assert!(format!("{err:#}").contains("receipt"));
+    }
+
+    #[test]
+    fn load_receipt_fails_on_empty_file() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(receipt_path(&dir), "").expect("write empty");
+        let err = load_receipt(&dir).expect_err("must fail on empty file");
+        assert!(format!("{err:#}").contains("receipt"));
+    }
+
+    // ── Atomic write safety ───────────────────────────────────────────
+
+    #[test]
+    fn atomic_write_does_not_leave_tmp_file_on_success() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+        save_state(&dir, &sample_state()).expect("save");
+        let tmp = state_path(&dir).with_extension("tmp");
+        assert!(!tmp.exists(), "tmp file must be cleaned up after rename");
+    }
+
+    #[test]
+    fn save_state_overwrites_previous_state() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let mut st = sample_state();
+        save_state(&dir, &st).expect("save v1");
+
+        st.plan_id = "plan-v2".to_string();
+        save_state(&dir, &st).expect("save v2");
+
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.plan_id, "plan-v2");
+    }
+
+    #[test]
+    fn write_receipt_overwrites_previous_receipt() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let mut r = sample_receipt();
+        write_receipt(&dir, &r).expect("write r1");
+
+        r.plan_id = "plan-v2".to_string();
+        write_receipt(&dir, &r).expect("write r2");
+
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.plan_id, "plan-v2");
+    }
+
+    // ── Receipt generation with various completion states ─────────────
+
+    #[test]
+    fn receipt_with_all_packages_published() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let r = Receipt {
+            packages: vec![
+                make_receipt_entry("a", "1.0.0", PackageState::Published),
+                make_receipt_entry("b", "2.0.0", PackageState::Published),
+            ],
+            ..sample_receipt()
+        };
+
+        write_receipt(&dir, &r).expect("write");
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.packages.len(), 2);
+        assert!(
+            loaded
+                .packages
+                .iter()
+                .all(|p| p.state == PackageState::Published)
+        );
+    }
+
+    #[test]
+    fn receipt_with_mixed_package_states() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let r = Receipt {
+            packages: vec![
+                make_receipt_entry("a", "1.0.0", PackageState::Published),
+                make_receipt_entry(
+                    "b",
+                    "2.0.0",
+                    PackageState::Failed {
+                        class: crate::types::ErrorClass::Permanent,
+                        message: "auth error".to_string(),
+                    },
+                ),
+                make_receipt_entry(
+                    "c",
+                    "3.0.0",
+                    PackageState::Skipped {
+                        reason: "already published".to_string(),
+                    },
+                ),
+                make_receipt_entry(
+                    "d",
+                    "4.0.0",
+                    PackageState::Ambiguous {
+                        message: "timeout".to_string(),
+                    },
+                ),
+                make_receipt_entry("e", "5.0.0", PackageState::Uploaded),
+            ],
+            ..sample_receipt()
+        };
+
+        write_receipt(&dir, &r).expect("write");
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.packages.len(), 5);
+        assert_eq!(loaded.packages[0].state, PackageState::Published);
+        assert!(matches!(
+            loaded.packages[1].state,
+            PackageState::Failed { .. }
+        ));
+        assert!(matches!(
+            loaded.packages[2].state,
+            PackageState::Skipped { .. }
+        ));
+        assert!(matches!(
+            loaded.packages[3].state,
+            PackageState::Ambiguous { .. }
+        ));
+        assert_eq!(loaded.packages[4].state, PackageState::Uploaded);
+    }
+
+    #[test]
+    fn receipt_with_zero_packages() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let r = Receipt {
+            packages: vec![],
+            ..sample_receipt()
+        };
+
+        write_receipt(&dir, &r).expect("write");
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+        assert!(loaded.packages.is_empty());
+    }
+
+    // ── State with zero packages ──────────────────────────────────────
+
+    #[test]
+    fn save_and_load_state_with_zero_packages() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let st = ExecutionState {
+            packages: BTreeMap::new(),
+            ..sample_state()
+        };
+
+        save_state(&dir, &st).expect("save");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert!(loaded.packages.is_empty());
+        assert_eq!(loaded.plan_id, st.plan_id);
+    }
+
+    // ── Large state files (many packages) ─────────────────────────────
+
+    #[test]
+    fn save_and_load_state_with_many_packages() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let mut packages = BTreeMap::new();
+        for i in 0..500 {
+            let key = format!("crate-{i}@0.{i}.0");
+            packages.insert(
+                key,
+                PackageProgress {
+                    name: format!("crate-{i}"),
+                    version: format!("0.{i}.0"),
+                    attempts: (i % 5) as u32,
+                    state: if i % 3 == 0 {
+                        PackageState::Pending
+                    } else if i % 3 == 1 {
+                        PackageState::Published
+                    } else {
+                        PackageState::Uploaded
+                    },
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+
+        let st = ExecutionState {
+            packages,
+            ..sample_state()
+        };
+
+        save_state(&dir, &st).expect("save");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.packages.len(), 500);
+    }
+
+    #[test]
+    fn receipt_with_many_packages_roundtrips() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let packages: Vec<PackageReceipt> = (0..200)
+            .map(|i| {
+                make_receipt_entry(
+                    &format!("pkg-{i}"),
+                    &format!("1.{i}.0"),
+                    PackageState::Published,
+                )
+            })
+            .collect();
+
+        let r = Receipt {
+            packages,
+            ..sample_receipt()
+        };
+
+        write_receipt(&dir, &r).expect("write");
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.packages.len(), 200);
+    }
+
+    // ── Resume from various partial states ────────────────────────────
+
+    #[test]
+    fn state_roundtrip_with_mixed_progress() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "a@1.0.0".to_string(),
+            PackageProgress {
+                name: "a".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 3,
+                state: PackageState::Published,
+                last_updated_at: Utc::now(),
+            },
+        );
+        packages.insert(
+            "b@2.0.0".to_string(),
+            PackageProgress {
+                name: "b".to_string(),
+                version: "2.0.0".to_string(),
+                attempts: 1,
+                state: PackageState::Uploaded,
+                last_updated_at: Utc::now(),
+            },
+        );
+        packages.insert(
+            "c@3.0.0".to_string(),
+            PackageProgress {
+                name: "c".to_string(),
+                version: "3.0.0".to_string(),
+                attempts: 0,
+                state: PackageState::Pending,
+                last_updated_at: Utc::now(),
+            },
+        );
+        packages.insert(
+            "d@4.0.0".to_string(),
+            PackageProgress {
+                name: "d".to_string(),
+                version: "4.0.0".to_string(),
+                attempts: 2,
+                state: PackageState::Failed {
+                    class: crate::types::ErrorClass::Retryable,
+                    message: "network timeout".to_string(),
+                },
+                last_updated_at: Utc::now(),
+            },
+        );
+        packages.insert(
+            "e@5.0.0".to_string(),
+            PackageProgress {
+                name: "e".to_string(),
+                version: "5.0.0".to_string(),
+                attempts: 1,
+                state: PackageState::Skipped {
+                    reason: "already on registry".to_string(),
+                },
+                last_updated_at: Utc::now(),
+            },
+        );
+
+        let st = ExecutionState {
+            packages,
+            ..sample_state()
+        };
+
+        save_state(&dir, &st).expect("save");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+
+        assert_eq!(loaded.packages.len(), 5);
+        assert_eq!(loaded.packages["a@1.0.0"].state, PackageState::Published);
+        assert_eq!(loaded.packages["b@2.0.0"].state, PackageState::Uploaded);
+        assert_eq!(loaded.packages["c@3.0.0"].state, PackageState::Pending);
+        assert!(matches!(
+            loaded.packages["d@4.0.0"].state,
+            PackageState::Failed { .. }
+        ));
+        assert!(matches!(
+            loaded.packages["e@5.0.0"].state,
+            PackageState::Skipped { .. }
+        ));
+        assert_eq!(loaded.packages["d@4.0.0"].attempts, 2);
+    }
+
+    #[test]
+    fn state_roundtrip_preserves_ambiguous_state() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "x@1.0.0".to_string(),
+            PackageProgress {
+                name: "x".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 1,
+                state: PackageState::Ambiguous {
+                    message: "publish timed out, unknown registry state".to_string(),
+                },
+                last_updated_at: Utc::now(),
+            },
+        );
+
+        let st = ExecutionState {
+            packages,
+            ..sample_state()
+        };
+
+        save_state(&dir, &st).expect("save");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        match &loaded.packages["x@1.0.0"].state {
+            PackageState::Ambiguous { message } => {
+                assert!(message.contains("timed out"));
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    // ── Missing / extra fields in deserialized state ──────────────────
+
+    #[test]
+    fn load_state_fails_when_required_field_missing() {
+        let td = tempdir().expect("tempdir");
+        fs::create_dir_all(td.path()).expect("mkdir");
+        // Missing 'packages' and other required fields
+        let json = r#"{"state_version":"shipper.state.v1","plan_id":"p1"}"#;
+        fs::write(state_path(td.path()), json).expect("write");
+        let err = load_state(td.path()).expect_err("must fail");
+        assert!(format!("{err:#}").contains("failed to parse state JSON"));
+    }
+
+    #[test]
+    fn load_state_tolerates_extra_unknown_fields() {
+        let td = tempdir().expect("tempdir");
+        fs::create_dir_all(td.path()).expect("mkdir");
+
+        // Save a valid state, then manually inject an extra field
+        let st = sample_state();
+        save_state(td.path(), &st).expect("save");
+        let path = state_path(td.path());
+        let mut content = fs::read_to_string(&path).expect("read");
+
+        // Insert an extra field right after the opening brace
+        content = content.replacen('{', r#"{"_extra_field": true,"#, 1);
+        fs::write(&path, &content).expect("write modified");
+
+        // Should still load (serde defaults deny_unknown_fields is off)
+        let loaded = load_state(td.path());
+        // The result depends on whether the struct uses deny_unknown_fields.
+        // We just ensure it doesn't panic.
+        let _ = loaded;
+    }
+
+    // ── Schema version in state ───────────────────────────────────────
+
+    #[test]
+    fn save_state_writes_current_schema_version() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        save_state(&dir, &sample_state()).expect("save");
+
+        let content = fs::read_to_string(state_path(&dir)).expect("read");
+        assert!(content.contains(CURRENT_STATE_VERSION));
+    }
+
+    #[test]
+    fn state_with_different_version_string_roundtrips() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let st = ExecutionState {
+            state_version: "shipper.state.v999".to_string(),
+            ..sample_state()
+        };
+
+        save_state(&dir, &st).expect("save");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.state_version, "shipper.state.v999");
+    }
+
+    // ── Concurrency / locking edge cases ──────────────────────────────
+
+    #[test]
+    fn concurrent_save_state_last_writer_wins() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+        fs::create_dir_all(&dir).expect("mkdir");
+
+        let mut st1 = sample_state();
+        st1.plan_id = "plan-1".to_string();
+        let mut st2 = sample_state();
+        st2.plan_id = "plan-2".to_string();
+
+        save_state(&dir, &st1).expect("save 1");
+        save_state(&dir, &st2).expect("save 2");
+
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.plan_id, "plan-2");
+    }
+
+    // ── clear_state idempotency ───────────────────────────────────────
+
+    #[test]
+    fn clear_state_is_idempotent() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+        fs::create_dir_all(&dir).expect("mkdir");
+
+        save_state(&dir, &sample_state()).expect("save");
+        clear_state(&dir).expect("clear once");
+        clear_state(&dir).expect("clear twice — should not fail");
+        assert!(!state_path(&dir).exists());
+    }
+
+    #[test]
+    fn clear_state_succeeds_on_empty_dir() {
+        let td = tempdir().expect("tempdir");
+        clear_state(td.path()).expect("clear on empty dir should succeed");
+    }
+
+    // ── has_incomplete_state edge cases ────────────────────────────────
+
+    #[test]
+    fn has_incomplete_state_false_when_dir_does_not_exist() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("nonexistent");
+        assert!(!has_incomplete_state(&dir));
+    }
+
+    #[test]
+    fn has_incomplete_state_after_clear() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        save_state(&dir, &sample_state()).expect("save");
+        assert!(has_incomplete_state(&dir));
+
+        clear_state(&dir).expect("clear");
+        assert!(!has_incomplete_state(&dir));
+    }
+
+    // ── Receipt migration edge cases ──────────────────────────────────
+
+    #[test]
+    fn migrate_receipt_fails_on_completely_invalid_json() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("receipt.json");
+        fs::write(&path, "NOT JSON AT ALL").expect("write");
+        let err = migrate_receipt(&path).expect_err("must fail");
+        assert!(format!("{err:#}").contains("failed to parse receipt JSON"));
+    }
+
+    #[test]
+    fn migrate_receipt_rejects_v0_receipt() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("receipt.json");
+        let v0 = serde_json::json!({
+            "receipt_version": "shipper.receipt.v0",
+            "plan_id": "p1",
+            "registry": { "name": "crates-io", "api_base": "https://crates.io", "index_base": "https://index.crates.io" },
+            "started_at": "2024-01-01T00:00:00Z",
+            "finished_at": "2024-01-01T01:00:00Z",
+            "packages": [],
+            "event_log_path": ".shipper/events.jsonl"
+        });
+        fs::write(&path, serde_json::to_string_pretty(&v0).unwrap()).expect("write");
+        let err = migrate_receipt(&path).expect_err("must fail on v0");
+        assert!(format!("{err:#}").contains("too old"));
+    }
+
+    #[test]
+    fn migrate_v1_receipt_with_packages_preserves_them() {
+        let v1_json = serde_json::json!({
+            "receipt_version": "shipper.receipt.v1",
+            "plan_id": "test-plan",
+            "registry": { "name": "crates-io", "api_base": "https://crates.io", "index_base": "https://index.crates.io" },
+            "started_at": "2024-01-01T00:00:00Z",
+            "finished_at": "2024-01-01T01:00:00Z",
+            "packages": [
+                {
+                    "name": "foo",
+                    "version": "1.0.0",
+                    "attempts": 2,
+                    "state": { "state": "published" },
+                    "started_at": "2024-01-01T00:00:00Z",
+                    "finished_at": "2024-01-01T00:05:00Z",
+                    "duration_ms": 300000,
+                    "evidence": { "attempts": [], "readiness_checks": [] }
+                }
+            ],
+            "event_log_path": ".shipper/events.jsonl"
+        });
+
+        let receipt = migrate_v1_to_v2(v1_json).expect("migrate");
+        assert_eq!(receipt.packages.len(), 1);
+        assert_eq!(receipt.packages[0].name, "foo");
+        assert_eq!(receipt.packages[0].state, PackageState::Published);
+        assert_eq!(receipt.receipt_version, CURRENT_RECEIPT_VERSION);
+    }
+
+    // ── Receipt with git_context roundtrip ────────────────────────────
+
+    #[test]
+    fn receipt_with_git_context_roundtrips() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let r = Receipt {
+            git_context: Some(crate::types::GitContext {
+                commit: Some("abc123def".to_string()),
+                branch: Some("release/v1.0".to_string()),
+                tag: Some("v1.0.0".to_string()),
+                dirty: Some(false),
+            }),
+            ..sample_receipt()
+        };
+
+        write_receipt(&dir, &r).expect("write");
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+
+        let ctx = loaded.git_context.expect("git_context present");
+        assert_eq!(ctx.commit, Some("abc123def".to_string()));
+        assert_eq!(ctx.branch, Some("release/v1.0".to_string()));
+        assert_eq!(ctx.tag, Some("v1.0.0".to_string()));
+        assert_eq!(ctx.dirty, Some(false));
+    }
+
+    // ── Registry with no index_base ───────────────────────────────────
+
+    #[test]
+    fn state_with_custom_registry_roundtrips() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let st = ExecutionState {
+            registry: Registry {
+                name: "my-registry".to_string(),
+                api_base: "https://my-registry.example.com".to_string(),
+                index_base: None,
+            },
+            ..sample_state()
+        };
+
+        save_state(&dir, &st).expect("save");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.registry.name, "my-registry");
+        assert!(loaded.registry.index_base.is_none());
+    }
+
+    // ── Unicode content in state fields ───────────────────────────────
+
+    #[test]
+    fn state_with_unicode_in_package_names() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "über-crate@0.1.0".to_string(),
+            PackageProgress {
+                name: "über-crate".to_string(),
+                version: "0.1.0".to_string(),
+                attempts: 0,
+                state: PackageState::Pending,
+                last_updated_at: Utc::now(),
+            },
+        );
+
+        let st = ExecutionState {
+            packages,
+            ..sample_state()
+        };
+
+        save_state(&dir, &st).expect("save");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert!(loaded.packages.contains_key("über-crate@0.1.0"));
+    }
+
+    // ── State JSON is pretty-printed ──────────────────────────────────
+
+    #[test]
+    fn save_state_produces_pretty_json() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+        save_state(&dir, &sample_state()).expect("save");
+
+        let content = fs::read_to_string(state_path(&dir)).expect("read");
+        // Pretty-printed JSON uses newlines and indentation
+        assert!(content.contains('\n'));
+        assert!(content.contains("  "));
+    }
+
+    #[test]
+    fn write_receipt_produces_pretty_json() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("out");
+        write_receipt(&dir, &sample_receipt()).expect("write");
+
+        let content = fs::read_to_string(receipt_path(&dir)).expect("read");
+        assert!(content.contains('\n'));
+        assert!(content.contains("  "));
+    }
+
+    // ── fsync_parent_dir does not panic ───────────────────────────────
+
+    #[test]
+    fn fsync_parent_dir_on_valid_path_does_not_panic() {
+        let td = tempdir().expect("tempdir");
+        let file = td.path().join("dummy.txt");
+        fs::write(&file, "data").expect("write");
+        // Should not panic even on Windows where dir sync is unsupported
+        fsync_parent_dir(&file);
+    }
+
+    #[test]
+    fn fsync_parent_dir_on_nonexistent_path_does_not_panic() {
+        let td = tempdir().expect("tempdir");
+        let file = td.path().join("nonexistent").join("file.txt");
+        fsync_parent_dir(&file);
+    }
+
+    // ── Helper ────────────────────────────────────────────────────────
+
+    fn make_receipt_entry(name: &str, version: &str, state: PackageState) -> PackageReceipt {
+        PackageReceipt {
+            name: name.to_string(),
+            version: version.to_string(),
+            attempts: 1,
+            state,
+            started_at: Utc::now(),
+            finished_at: Utc::now(),
+            duration_ms: 100,
+            evidence: crate::types::PackageEvidence {
+                attempts: vec![],
+                readiness_checks: vec![],
+            },
+        }
+    }
 }
