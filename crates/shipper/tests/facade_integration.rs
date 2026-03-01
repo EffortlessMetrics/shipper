@@ -1719,3 +1719,848 @@ fn state_resume_preserves_skipped_packages() {
         PackageState::Published
     ));
 }
+
+// ===========================================================================
+// 28. Error recovery: publish fails, state persisted, resume succeeds
+// ===========================================================================
+
+#[test]
+fn error_recovery_fail_persist_resume_succeed() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+
+    let plan_id = "error-recovery-plan";
+
+    // Phase 1: base publishes, mid fails with retryable error
+    let failing_state = sample_state(
+        plan_id,
+        &[
+            ("base", "0.2.0", PackageState::Published, 1),
+            (
+                "mid",
+                "0.2.0",
+                PackageState::Failed {
+                    class: ErrorClass::Retryable,
+                    message: "connection reset".to_string(),
+                },
+                2,
+            ),
+            ("top", "0.2.0", PackageState::Pending, 0),
+        ],
+    );
+    state::save_state(&state_dir, &failing_state).expect("save failed state");
+
+    // Verify incomplete state exists
+    assert!(state::has_incomplete_state(&state_dir));
+
+    // Phase 2: Resume — load state, reset failed package to pending, then publish
+    let mut resumed = state::load_state(&state_dir)
+        .expect("load")
+        .expect("exists");
+    assert_eq!(resumed.plan_id, plan_id);
+
+    // Reset the failed package for retry
+    if let Some(mid) = resumed.packages.get_mut("mid@0.2.0") {
+        assert!(matches!(mid.state, PackageState::Failed { .. }));
+        mid.state = PackageState::Published;
+        mid.attempts = 3;
+        mid.last_updated_at = Utc::now();
+    }
+    if let Some(top) = resumed.packages.get_mut("top@0.2.0") {
+        top.state = PackageState::Published;
+        top.attempts = 1;
+        top.last_updated_at = Utc::now();
+    }
+    resumed.updated_at = Utc::now();
+    state::save_state(&state_dir, &resumed).expect("save resumed state");
+
+    // Phase 3: Write receipt to complete
+    let receipt = sample_receipt(plan_id, &["base", "mid", "top"]);
+    state::write_receipt(&state_dir, &receipt).expect("write receipt");
+
+    // Verify no longer incomplete
+    assert!(!state::has_incomplete_state(&state_dir));
+
+    // Verify all packages published in final state
+    let final_state = state::load_state(&state_dir)
+        .expect("load")
+        .expect("exists");
+    assert!(
+        final_state
+            .packages
+            .values()
+            .all(|p| matches!(p.state, PackageState::Published))
+    );
+
+    // Mid should show 3 attempts from the retry
+    assert_eq!(final_state.packages["mid@0.2.0"].attempts, 3);
+}
+
+// ===========================================================================
+// 29. Partial publish: first N crates succeed, then failure, verify state
+// ===========================================================================
+
+#[test]
+fn partial_publish_first_n_succeed_then_failure() {
+    let td = tempdir().expect("tempdir");
+    let store = FileStore::new(td.path().to_path_buf());
+
+    let plan_id = "partial-publish-plan";
+
+    // Simulate: base and mid published, top fails, then verify the persisted state
+    let partial_state = sample_state(
+        plan_id,
+        &[
+            ("base", "0.2.0", PackageState::Published, 1),
+            ("mid", "0.2.0", PackageState::Published, 1),
+            (
+                "top",
+                "0.2.0",
+                PackageState::Failed {
+                    class: ErrorClass::Permanent,
+                    message: "version conflict".to_string(),
+                },
+                1,
+            ),
+        ],
+    );
+    store.save_state(&partial_state).expect("save state");
+
+    // Also persist an event log capturing the partial publish
+    let mut events = EventLog::new();
+    events.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PlanCreated {
+            plan_id: plan_id.to_string(),
+            package_count: 3,
+        },
+        package: "all".to_string(),
+    });
+    events.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackagePublished { duration_ms: 500 },
+        package: "base@0.2.0".to_string(),
+    });
+    events.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackagePublished { duration_ms: 600 },
+        package: "mid@0.2.0".to_string(),
+    });
+    events.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageFailed {
+            class: ErrorClass::Permanent,
+            message: "version conflict".to_string(),
+        },
+        package: "top@0.2.0".to_string(),
+    });
+    events.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ExecutionFinished {
+            result: ExecutionResult::PartialFailure,
+        },
+        package: "all".to_string(),
+    });
+    store.save_events(&events).expect("save events");
+
+    // Verify loaded state matches expectations
+    let loaded = store.load_state().expect("load").expect("exists");
+    let published: Vec<&str> = loaded
+        .packages
+        .values()
+        .filter(|p| matches!(p.state, PackageState::Published))
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(published.len(), 2);
+
+    let failed: Vec<&str> = loaded
+        .packages
+        .values()
+        .filter(|p| matches!(p.state, PackageState::Failed { .. }))
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(failed, vec!["top"]);
+
+    // Verify event log captured the partial failure
+    let loaded_events = store.load_events().expect("load").expect("exists");
+    assert_eq!(loaded_events.all_events().len(), 5);
+
+    let fail_events: Vec<_> = loaded_events
+        .all_events()
+        .iter()
+        .filter(|e| matches!(e.event_type, EventType::PackageFailed { .. }))
+        .collect();
+    assert_eq!(fail_events.len(), 1);
+}
+
+// ===========================================================================
+// 30. Plan filtering: --package flag produces correct subset plan
+// ===========================================================================
+
+#[test]
+fn plan_filtering_single_package_no_deps() {
+    let td = tempdir().expect("tempdir");
+    let root = td.path();
+    create_three_crate_workspace(root);
+
+    // Select only "base" — no transitive deps needed since base has none
+    let spec = ReleaseSpec {
+        manifest_path: root.join("Cargo.toml"),
+        registry: Registry::crates_io(),
+        selected_packages: Some(vec!["base".to_string()]),
+    };
+    let ws = plan::build_plan(&spec).expect("build plan");
+
+    assert_eq!(ws.plan.packages.len(), 1);
+    assert_eq!(ws.plan.packages[0].name, "base");
+}
+
+#[test]
+fn plan_filtering_mid_package_pulls_base_dep() {
+    let td = tempdir().expect("tempdir");
+    let root = td.path();
+    create_three_crate_workspace(root);
+
+    // Select "mid" — should pull in base as transitive dep
+    let spec = ReleaseSpec {
+        manifest_path: root.join("Cargo.toml"),
+        registry: Registry::crates_io(),
+        selected_packages: Some(vec!["mid".to_string()]),
+    };
+    let ws = plan::build_plan(&spec).expect("build plan");
+
+    let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+    assert!(names.contains(&"base"), "base should be included as dep");
+    assert!(names.contains(&"mid"), "mid should be included");
+    assert!(!names.contains(&"top"), "top should NOT be included");
+    assert_eq!(names.len(), 2);
+
+    // Verify ordering: base before mid
+    let base_pos = names.iter().position(|&n| n == "base").unwrap();
+    let mid_pos = names.iter().position(|&n| n == "mid").unwrap();
+    assert!(base_pos < mid_pos, "base must precede mid");
+}
+
+// ===========================================================================
+// 31. Readiness verification: mock registry responds to version check
+// ===========================================================================
+
+#[test]
+fn readiness_version_visible_after_publish_mock() {
+    // Mock server that returns 404 on first request, 200 on second (simulating propagation)
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("start server");
+    let addr = server.server_addr().to_ip().expect("addr");
+    let api_base = format!("http://{}:{}", addr.ip(), addr.port());
+
+    let handler = std::thread::spawn(move || {
+        // First request: version not yet visible
+        if let Ok(req) = server.recv() {
+            let _ =
+                req.respond(tiny_http::Response::from_string("not found").with_status_code(404));
+        }
+        // Second request: version now visible
+        if let Ok(req) = server.recv() {
+            let body = r#"{"version":{"num":"0.2.0"}}"#;
+            let resp = tiny_http::Response::from_string(body).with_status_code(200);
+            let _ = req.respond(resp);
+        }
+    });
+
+    let reg = Registry {
+        name: "test-registry".to_string(),
+        api_base,
+        index_base: None,
+    };
+    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+
+    // First check: not visible
+    let visible1 = client.version_exists("my-crate", "0.2.0").expect("check 1");
+    assert!(!visible1, "should not be visible on first check");
+
+    // Second check: now visible
+    let visible2 = client.version_exists("my-crate", "0.2.0").expect("check 2");
+    assert!(visible2, "should be visible on second check");
+
+    handler.join().expect("handler thread");
+}
+
+// ===========================================================================
+// 32. Event log: verify events.jsonl has correct entries after publish sim
+// ===========================================================================
+
+#[test]
+fn event_log_jsonl_file_has_correct_structure() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+
+    let events_path = shipper::events::events_path(&state_dir);
+    let plan_id = "jsonl-structure-test";
+
+    let mut log = EventLog::new();
+
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PlanCreated {
+            plan_id: plan_id.to_string(),
+            package_count: 2,
+        },
+        package: "all".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ExecutionStarted,
+        package: "all".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageStarted {
+            name: "alpha".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        package: "alpha@1.0.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageAttempted {
+            attempt: 1,
+            command: "cargo publish -p alpha".to_string(),
+        },
+        package: "alpha@1.0.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackagePublished { duration_ms: 750 },
+        package: "alpha@1.0.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ExecutionFinished {
+            result: ExecutionResult::Success,
+        },
+        package: "all".to_string(),
+    });
+
+    log.write_to_file(&events_path).expect("write events");
+
+    // Read raw file and verify it's valid JSONL (one JSON object per line)
+    let raw = fs::read_to_string(&events_path).expect("read raw");
+    let lines: Vec<&str> = raw.lines().collect();
+    assert_eq!(lines.len(), 6, "should have 6 JSONL lines");
+
+    // Each line should be parseable as JSON
+    for (i, line) in lines.iter().enumerate() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("line {i} invalid JSON: {e}"));
+        // Each event should have timestamp, event_type, and package fields
+        assert!(
+            parsed.get("timestamp").is_some(),
+            "line {i} missing timestamp"
+        );
+        assert!(
+            parsed.get("event_type").is_some(),
+            "line {i} missing event_type"
+        );
+        assert!(parsed.get("package").is_some(), "line {i} missing package");
+    }
+
+    // Reload via EventLog and verify roundtrip
+    let loaded = EventLog::read_from_file(&events_path).expect("read events");
+    assert_eq!(loaded.all_events().len(), 6);
+}
+
+// ===========================================================================
+// 33. Receipt generation: verify receipt.json has all expected fields
+// ===========================================================================
+
+#[test]
+fn receipt_all_fields_persisted_and_roundtrip() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+
+    let receipt = shipper::types::Receipt {
+        receipt_version: state::CURRENT_RECEIPT_VERSION.to_string(),
+        plan_id: "receipt-fields-test".to_string(),
+        registry: Registry::crates_io(),
+        started_at: Utc::now(),
+        finished_at: Utc::now(),
+        packages: vec![
+            PackageReceipt {
+                name: "alpha".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 1,
+                state: PackageState::Published,
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 1200,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+            PackageReceipt {
+                name: "beta".to_string(),
+                version: "2.0.0".to_string(),
+                attempts: 2,
+                state: PackageState::Published,
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 3400,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+        ],
+        event_log_path: std::path::PathBuf::from(".shipper/events.jsonl"),
+        git_context: Some(shipper::types::GitContext {
+            commit: Some("abc123def456".to_string()),
+            branch: Some("main".to_string()),
+            tag: Some("v1.0.0".to_string()),
+            dirty: Some(false),
+        }),
+        environment: EnvironmentFingerprint {
+            shipper_version: "0.5.0".to_string(),
+            cargo_version: Some("1.85.0".to_string()),
+            rust_version: Some("1.85.0".to_string()),
+            os: "linux".to_string(),
+            arch: "aarch64".to_string(),
+        },
+    };
+
+    state::write_receipt(&state_dir, &receipt).expect("write receipt");
+
+    // Load receipt and verify all fields
+    let loaded = state::load_receipt(&state_dir)
+        .expect("load receipt")
+        .expect("receipt exists");
+
+    assert_eq!(loaded.receipt_version, state::CURRENT_RECEIPT_VERSION);
+    assert_eq!(loaded.plan_id, "receipt-fields-test");
+    assert_eq!(loaded.registry.name, "crates-io");
+    assert_eq!(loaded.packages.len(), 2);
+
+    // Verify package details
+    assert_eq!(loaded.packages[0].name, "alpha");
+    assert_eq!(loaded.packages[0].version, "1.0.0");
+    assert_eq!(loaded.packages[0].attempts, 1);
+    assert_eq!(loaded.packages[0].duration_ms, 1200);
+    assert!(matches!(loaded.packages[0].state, PackageState::Published));
+
+    assert_eq!(loaded.packages[1].name, "beta");
+    assert_eq!(loaded.packages[1].version, "2.0.0");
+    assert_eq!(loaded.packages[1].attempts, 2);
+    assert_eq!(loaded.packages[1].duration_ms, 3400);
+
+    // Verify git context
+    let git = loaded.git_context.expect("git context present");
+    assert_eq!(git.commit.as_deref(), Some("abc123def456"));
+    assert_eq!(git.branch.as_deref(), Some("main"));
+    assert_eq!(git.tag.as_deref(), Some("v1.0.0"));
+    assert_eq!(git.dirty, Some(false));
+
+    // Verify environment
+    assert_eq!(loaded.environment.shipper_version, "0.5.0");
+    assert_eq!(loaded.environment.cargo_version.as_deref(), Some("1.85.0"));
+    assert_eq!(loaded.environment.rust_version.as_deref(), Some("1.85.0"));
+    assert_eq!(loaded.environment.os, "linux");
+    assert_eq!(loaded.environment.arch, "aarch64");
+
+    // Verify event log path
+    assert_eq!(
+        loaded.event_log_path,
+        std::path::PathBuf::from(".shipper/events.jsonl")
+    );
+}
+
+// ===========================================================================
+// 34. Receipt raw JSON has all expected top-level keys
+// ===========================================================================
+
+#[test]
+fn receipt_json_file_has_expected_keys() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+
+    let receipt = sample_receipt("json-keys-test", &["base", "mid"]);
+    state::write_receipt(&state_dir, &receipt).expect("write");
+
+    let receipt_file = state::receipt_path(&state_dir);
+    let raw = fs::read_to_string(&receipt_file).expect("read raw");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse JSON");
+
+    // Verify all expected top-level keys
+    let expected_keys = [
+        "receipt_version",
+        "plan_id",
+        "registry",
+        "started_at",
+        "finished_at",
+        "packages",
+        "event_log_path",
+        "environment",
+    ];
+    for key in &expected_keys {
+        assert!(
+            parsed.get(key).is_some(),
+            "receipt JSON missing expected key: {key}"
+        );
+    }
+
+    // Verify package sub-structure
+    let pkgs = parsed["packages"].as_array().expect("packages is array");
+    assert_eq!(pkgs.len(), 2);
+
+    let pkg_keys = [
+        "name",
+        "version",
+        "attempts",
+        "state",
+        "started_at",
+        "finished_at",
+        "duration_ms",
+        "evidence",
+    ];
+    for pkg in pkgs {
+        for key in &pkg_keys {
+            assert!(pkg.get(key).is_some(), "package JSON missing key: {key}");
+        }
+    }
+}
+
+// ===========================================================================
+// 35. State persistence with ambiguous package state
+// ===========================================================================
+
+#[test]
+fn state_persists_ambiguous_package_state() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+
+    let exec_state = sample_state(
+        "ambiguous-test",
+        &[
+            ("lib-a", "1.0.0", PackageState::Published, 1),
+            (
+                "lib-b",
+                "1.0.0",
+                PackageState::Ambiguous {
+                    message: "timeout waiting for visibility".to_string(),
+                },
+                2,
+            ),
+        ],
+    );
+    state::save_state(&state_dir, &exec_state).expect("save");
+
+    let loaded = state::load_state(&state_dir)
+        .expect("load")
+        .expect("exists");
+
+    let lib_b = loaded.packages.get("lib-b@1.0.0").expect("lib-b exists");
+    match &lib_b.state {
+        PackageState::Ambiguous { message } => {
+            assert_eq!(message, "timeout waiting for visibility");
+        }
+        other => panic!("expected Ambiguous, got {other:?}"),
+    }
+    assert_eq!(lib_b.attempts, 2);
+}
+
+// ===========================================================================
+// 36. Event log per-package filtering returns correct events
+// ===========================================================================
+
+#[test]
+fn event_log_per_package_filtering_correct() {
+    let mut log = EventLog::new();
+
+    // Record events for multiple packages
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PlanCreated {
+            plan_id: "filter-test".to_string(),
+            package_count: 3,
+        },
+        package: "all".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageStarted {
+            name: "alpha".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        package: "alpha@1.0.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackagePublished { duration_ms: 100 },
+        package: "alpha@1.0.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageStarted {
+            name: "beta".to_string(),
+            version: "2.0.0".to_string(),
+        },
+        package: "beta@2.0.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageFailed {
+            class: ErrorClass::Retryable,
+            message: "timeout".to_string(),
+        },
+        package: "beta@2.0.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageAttempted {
+            attempt: 2,
+            command: "cargo publish -p beta".to_string(),
+        },
+        package: "beta@2.0.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackagePublished { duration_ms: 200 },
+        package: "beta@2.0.0".to_string(),
+    });
+
+    // Filter by package
+    let alpha_events = log.events_for_package("alpha@1.0.0");
+    assert_eq!(alpha_events.len(), 2);
+    assert!(matches!(
+        alpha_events[0].event_type,
+        EventType::PackageStarted { .. }
+    ));
+    assert!(matches!(
+        alpha_events[1].event_type,
+        EventType::PackagePublished { .. }
+    ));
+
+    let beta_events = log.events_for_package("beta@2.0.0");
+    assert_eq!(beta_events.len(), 4); // started + failed + attempted + published
+
+    let global_events = log.events_for_package("all");
+    assert_eq!(global_events.len(), 1);
+
+    // Non-existent package returns empty
+    let ghost = log.events_for_package("ghost@0.0.0");
+    assert!(ghost.is_empty());
+}
+
+// ===========================================================================
+// 37. Lock prevents double acquire
+// ===========================================================================
+
+#[test]
+#[allow(unused_mut)]
+fn lock_double_acquire_fails() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+
+    let mut lock = shipper::lock::LockFile::acquire(&state_dir, None).expect("first acquire");
+    assert!(shipper::lock::LockFile::is_locked(&state_dir, None).expect("locked"));
+
+    // Second acquire should fail
+    let result = shipper::lock::LockFile::acquire(&state_dir, None);
+    assert!(result.is_err(), "double acquire should fail");
+
+    // Release first lock
+    lock.release().expect("release");
+    assert!(!shipper::lock::LockFile::is_locked(&state_dir, None).expect("unlocked"));
+
+    // Now a new acquire should succeed
+    let mut lock2 = shipper::lock::LockFile::acquire(&state_dir, None).expect("re-acquire");
+    assert!(shipper::lock::LockFile::is_locked(&state_dir, None).expect("locked again"));
+    lock2.release().expect("release2");
+}
+
+// ===========================================================================
+// 38. Full lifecycle: plan → state → events → receipt through FileStore
+// ===========================================================================
+
+#[test]
+fn full_lifecycle_plan_events_receipt_through_store() {
+    let td = tempdir().expect("tempdir");
+    let root = td.path();
+    create_three_crate_workspace(root);
+
+    // Build plan
+    let spec = ReleaseSpec {
+        manifest_path: root.join("Cargo.toml"),
+        registry: Registry::crates_io(),
+        selected_packages: None,
+    };
+    let ws = plan::build_plan(&spec).expect("build plan");
+
+    let store_dir = td.path().join("store");
+    let store = FileStore::new(store_dir);
+
+    // Initialize state from plan with all pending
+    let mut packages = BTreeMap::new();
+    for pkg in &ws.plan.packages {
+        packages.insert(
+            format!("{}@{}", pkg.name, pkg.version),
+            PackageProgress {
+                name: pkg.name.clone(),
+                version: pkg.version.clone(),
+                attempts: 0,
+                state: PackageState::Pending,
+                last_updated_at: Utc::now(),
+            },
+        );
+    }
+    let exec_state = ExecutionState {
+        state_version: state::CURRENT_STATE_VERSION.to_string(),
+        plan_id: ws.plan.plan_id.clone(),
+        registry: ws.plan.registry.clone(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        packages: packages.clone(),
+    };
+    store.save_state(&exec_state).expect("save initial state");
+
+    // Build event log for the full publish
+    let mut events = EventLog::new();
+    events.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PlanCreated {
+            plan_id: ws.plan.plan_id.clone(),
+            package_count: ws.plan.packages.len(),
+        },
+        package: "all".to_string(),
+    });
+    events.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ExecutionStarted,
+        package: "all".to_string(),
+    });
+    for pkg in &ws.plan.packages {
+        events.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::PackageStarted {
+                name: pkg.name.clone(),
+                version: pkg.version.clone(),
+            },
+            package: format!("{}@{}", pkg.name, pkg.version),
+        });
+        events.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::PackagePublished { duration_ms: 500 },
+            package: format!("{}@{}", pkg.name, pkg.version),
+        });
+    }
+    events.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ExecutionFinished {
+            result: ExecutionResult::Success,
+        },
+        package: "all".to_string(),
+    });
+    store.save_events(&events).expect("save events");
+
+    // Update state to all published
+    let mut final_packages = BTreeMap::new();
+    for pkg in &ws.plan.packages {
+        final_packages.insert(
+            format!("{}@{}", pkg.name, pkg.version),
+            PackageProgress {
+                name: pkg.name.clone(),
+                version: pkg.version.clone(),
+                attempts: 1,
+                state: PackageState::Published,
+                last_updated_at: Utc::now(),
+            },
+        );
+    }
+    let final_exec_state = ExecutionState {
+        state_version: state::CURRENT_STATE_VERSION.to_string(),
+        plan_id: ws.plan.plan_id.clone(),
+        registry: ws.plan.registry.clone(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        packages: final_packages,
+    };
+    store
+        .save_state(&final_exec_state)
+        .expect("save final state");
+
+    // Write receipt
+    let receipt = sample_receipt(
+        &ws.plan.plan_id,
+        &ws.plan
+            .packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+    );
+    store.save_receipt(&receipt).expect("save receipt");
+
+    // Verify everything roundtrips correctly
+    let loaded_state = store.load_state().expect("load").expect("exists");
+    assert_eq!(loaded_state.plan_id, ws.plan.plan_id);
+    assert!(
+        loaded_state
+            .packages
+            .values()
+            .all(|p| matches!(p.state, PackageState::Published))
+    );
+
+    let loaded_events = store.load_events().expect("load").expect("exists");
+    // plan_created + exec_started + 3*(started + published) + exec_finished = 9
+    assert_eq!(loaded_events.all_events().len(), 9);
+
+    let loaded_receipt = store.load_receipt().expect("load").expect("exists");
+    assert_eq!(loaded_receipt.plan_id, ws.plan.plan_id);
+    assert_eq!(loaded_receipt.packages.len(), 3);
+}
+
+// ===========================================================================
+// 39. Registry: multi-crate ownership check with mock
+// ===========================================================================
+
+#[test]
+fn registry_multi_crate_ownership_check_mock() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("start server");
+    let addr = server.server_addr().to_ip().expect("addr");
+    let api_base = format!("http://{}:{}", addr.ip(), addr.port());
+
+    // Handler responds: first crate owned, second crate forbidden (not owned)
+    let handler = std::thread::spawn(move || {
+        // First request: owned crate
+        if let Ok(req) = server.recv() {
+            let body = r#"{"users":[{"id":1,"login":"dev","name":"Dev"}]}"#;
+            let resp = tiny_http::Response::from_string(body).with_status_code(200);
+            let _ = req.respond(resp);
+        }
+        // Second request: forbidden
+        if let Ok(req) = server.recv() {
+            let _ =
+                req.respond(tiny_http::Response::from_string("forbidden").with_status_code(403));
+        }
+    });
+
+    let reg = Registry {
+        name: "test-registry".to_string(),
+        api_base,
+        index_base: None,
+    };
+    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+
+    // First crate: ownership verified
+    let owned = client
+        .verify_ownership("my-crate", "valid-token")
+        .expect("verify first");
+    assert!(owned, "first crate should be owned");
+
+    // Second crate: ownership denied
+    let not_owned = client
+        .verify_ownership("other-crate", "valid-token")
+        .expect("verify second");
+    assert!(!not_owned, "second crate should not be owned");
+
+    handler.join().expect("handler thread");
+}

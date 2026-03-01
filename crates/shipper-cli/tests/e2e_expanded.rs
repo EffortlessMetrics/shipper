@@ -6,7 +6,7 @@ use std::path::Path;
 use std::thread;
 
 use assert_cmd::Command;
-use insta::assert_snapshot;
+use insta::{assert_debug_snapshot, assert_snapshot};
 use predicates::str::contains;
 use tempfile::tempdir;
 use tiny_http::{Header, Response, Server, StatusCode};
@@ -77,6 +77,13 @@ fn normalize_embedded_paths(line: &str) -> String {
     } else {
         line.to_string()
     }
+}
+
+/// Normalize stderr/stdout that may contain the binary name (which differs
+/// across platforms) and the embedded version string.
+fn normalize_stderr(raw: &str) -> String {
+    raw.replace("shipper.exe", "shipper")
+        .replace(env!("CARGO_PKG_VERSION"), "[VERSION]")
 }
 
 /// Create a simple workspace with a single publishable crate.
@@ -797,4 +804,463 @@ fn config_init_content_snapshot() {
 
     let content = fs::read_to_string(&config_path).expect("read config");
     assert_snapshot!("config_init_content", content);
+}
+
+// ===========================================================================
+// 11. Error output snapshots
+// ===========================================================================
+
+/// Snapshot: error when an invalid --format value is provided.
+#[test]
+fn error_invalid_format_value_snapshot() {
+    let output = shipper_cmd()
+        .args(["--format", "invalid", "plan"])
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let normalized = normalize_stderr(&stderr);
+    assert_snapshot!("error_invalid_format_value", normalized);
+}
+
+/// Snapshot: error when `ci` is invoked without a provider subcommand.
+#[test]
+fn error_missing_ci_subcommand_snapshot() {
+    let output = shipper_cmd().arg("ci").output().expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let normalized = normalize_stderr(&stderr);
+    assert_snapshot!("error_missing_ci_subcommand", normalized);
+}
+
+/// Snapshot: error when --package selects a crate that does not exist.
+#[test]
+fn error_nonexistent_package_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .args(["--package", "nonexistent", "plan"])
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!("error_nonexistent_package", normalize_stderr(&stderr));
+}
+
+/// Snapshot: error when an invalid --retry-strategy value is provided.
+#[test]
+fn error_invalid_retry_strategy_snapshot() {
+    let output = shipper_cmd()
+        .args(["--retry-strategy", "bogus", "plan"])
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_snapshot!("error_invalid_retry_strategy", normalize_stderr(&stderr));
+}
+
+// ===========================================================================
+// 12. Help text snapshots (via e2e_expanded)
+// ===========================================================================
+
+/// Snapshot: `completion --help` output.
+#[test]
+fn help_completion_snapshot() {
+    let output = shipper_cmd()
+        .args(["completion", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_completion", normalize_stderr(&stdout));
+}
+
+/// Snapshot: `inspect-events --help` output.
+#[test]
+fn help_inspect_events_snapshot() {
+    let output = shipper_cmd()
+        .args(["inspect-events", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_inspect_events", normalize_stderr(&stdout));
+}
+
+/// Snapshot: `inspect-receipt --help` output.
+#[test]
+fn help_inspect_receipt_snapshot() {
+    let output = shipper_cmd()
+        .args(["inspect-receipt", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_inspect_receipt", normalize_stderr(&stdout));
+}
+
+// ===========================================================================
+// 13. Version output
+// ===========================================================================
+
+/// Snapshot: `--version` output with version redacted.
+#[test]
+fn version_output_snapshot() {
+    let output = shipper_cmd()
+        .arg("--version")
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let normalized = normalize_stderr(&stdout);
+    assert_snapshot!("version_output", normalized);
+}
+
+// ===========================================================================
+// 14. Config validate
+// ===========================================================================
+
+/// Snapshot: `config validate` on a freshly generated config file.
+#[test]
+fn config_validate_valid_snapshot() {
+    let td = tempdir().expect("tempdir");
+    let config_path = td.path().join(".shipper.toml");
+
+    shipper_cmd()
+        .args(["config", "init", "-o", config_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let output = shipper_cmd()
+        .args(["config", "validate", "-p", config_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let normalized = stdout
+        .replace(config_path.to_str().unwrap(), "<CONFIG_PATH>")
+        .replace(
+            &config_path.to_str().unwrap().replace('\\', "/"),
+            "<CONFIG_PATH>",
+        );
+    assert_snapshot!("config_validate_valid", normalized);
+}
+
+/// Snapshot: `config validate` on an invalid TOML file.
+#[test]
+fn config_validate_invalid_toml_snapshot() {
+    let td = tempdir().expect("tempdir");
+    let config_path = td.path().join(".shipper.toml");
+    fs::write(&config_path, "this is {{ not valid toml").expect("write");
+
+    let output = shipper_cmd()
+        .args(["config", "validate", "-p", config_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let normalized = stderr
+        .replace(config_path.to_str().unwrap(), "<CONFIG_PATH>")
+        .replace(
+            &config_path.to_str().unwrap().replace('\\', "/"),
+            "<CONFIG_PATH>",
+        );
+    assert_snapshot!("config_validate_invalid_toml", normalized);
+}
+
+/// Config validate on a nonexistent file fails with an error.
+#[test]
+fn config_validate_nonexistent_fails() {
+    let td = tempdir().expect("tempdir");
+    let missing = td.path().join("does-not-exist.toml");
+
+    shipper_cmd()
+        .args(["config", "validate", "-p", missing.to_str().unwrap()])
+        .assert()
+        .failure();
+}
+
+// ===========================================================================
+// 15. CI snippet snapshots (github-actions, gitlab)
+// ===========================================================================
+
+/// Snapshot: CI GitHub Actions output.
+#[test]
+fn ci_github_actions_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(".shipper")
+        .args(["ci", "github-actions"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert_snapshot!("ci_github_actions", normalize_output(&stdout));
+}
+
+/// Snapshot: CI GitLab output.
+#[test]
+fn ci_gitlab_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(".shipper")
+        .args(["ci", "gitlab"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert_snapshot!("ci_gitlab", normalize_output(&stdout));
+}
+
+// ===========================================================================
+// 16. Clean snapshots
+// ===========================================================================
+
+/// Snapshot: clean output when --keep-receipt is used.
+#[test]
+fn clean_keep_receipt_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+    fs::write(state_dir.join("state.json"), "{}").expect("write state");
+    fs::write(state_dir.join("events.jsonl"), "").expect("write events");
+    fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(".shipper")
+        .arg("clean")
+        .arg("--keep-receipt")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert_snapshot!("clean_keep_receipt", normalize_output(&stdout));
+}
+
+/// Snapshot: clean output when all state files are removed (no --keep-receipt).
+#[test]
+fn clean_all_files_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+    fs::write(state_dir.join("state.json"), "{}").expect("write state");
+    fs::write(state_dir.join("events.jsonl"), "").expect("write events");
+    fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(".shipper")
+        .arg("clean")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert_snapshot!("clean_all_files", normalize_output(&stdout));
+}
+
+// ===========================================================================
+// 17. Plan — single crate snapshot
+// ===========================================================================
+
+/// Snapshot: plan output for a single-crate workspace.
+#[test]
+fn plan_single_crate_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("plan")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert_snapshot!("plan_single_crate", normalize_output(&stdout));
+}
+
+/// Snapshot: plan output for a multi-crate workspace (non-verbose).
+#[test]
+fn plan_multi_crate_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("plan")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert_snapshot!("plan_multi_crate", normalize_output(&stdout));
+}
+
+// ===========================================================================
+// 18. Inspect-events — empty state
+// ===========================================================================
+
+/// Snapshot: inspect-events output when no events file exists.
+#[test]
+fn inspect_events_empty_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(".shipper")
+        .arg("inspect-events")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert_snapshot!("inspect_events_empty", normalize_output(&stdout));
+}
+
+// ===========================================================================
+// 19. Completion — fish and elvish shells
+// ===========================================================================
+
+#[test]
+fn completion_fish_generates_output() {
+    let output = shipper_cmd()
+        .args(["completion", "fish"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.is_empty(),
+        "fish completion should produce non-empty output"
+    );
+    assert!(
+        stdout.contains("shipper"),
+        "fish completion should reference 'shipper'"
+    );
+}
+
+#[test]
+fn completion_elvish_generates_output() {
+    let output = shipper_cmd()
+        .args(["completion", "elvish"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.is_empty(),
+        "elvish completion should produce non-empty output"
+    );
+}
+
+// ===========================================================================
+// 20. Config init — output message snapshot
+// ===========================================================================
+
+/// Snapshot: stdout message printed by `config init`.
+#[test]
+fn config_init_output_message_snapshot() {
+    let td = tempdir().expect("tempdir");
+    let config_path = td.path().join(".shipper.toml");
+
+    let output = shipper_cmd()
+        .args(["config", "init", "-o", config_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let normalized = stdout
+        .replace(config_path.to_str().unwrap(), "<CONFIG_PATH>")
+        .replace(
+            &config_path.to_str().unwrap().replace('\\', "/"),
+            "<CONFIG_PATH>",
+        );
+    assert_snapshot!("config_init_output_message", normalized);
+}
+
+// ===========================================================================
+// 21. Debug snapshot for inspect-receipt missing state
+// ===========================================================================
+
+/// Debug-snapshot: the exit status when inspect-receipt has no receipt file.
+#[test]
+fn inspect_receipt_missing_fails() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(".shipper")
+        .arg("inspect-receipt")
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The error message references the receipt path; just assert it's non-empty.
+    assert!(
+        !stderr.trim().is_empty(),
+        "stderr should contain an error about missing receipt"
+    );
+    assert_debug_snapshot!("inspect_receipt_missing_exit_code", output.status.code());
 }

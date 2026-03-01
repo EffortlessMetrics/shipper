@@ -36,6 +36,7 @@ temp-env = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.0"
+humantime = "2"
 
 [[bin]]
 name = "load_state"
@@ -178,6 +179,41 @@ bench = false
 [[bin]]
 name = "plan_levels"
 path = "fuzz_targets/plan_levels.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_deserialize"
+path = "fuzz_targets/config_deserialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webhook_payload_construct"
+path = "fuzz_targets/webhook_payload_construct.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "auth_token_resolve"
+path = "fuzz_targets/auth_token_resolve.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "output_sanitizer"
+path = "fuzz_targets/output_sanitizer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "duration_parse"
+path = "fuzz_targets/duration_parse.rs"
 test = false
 doc = false
 bench = false

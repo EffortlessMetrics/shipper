@@ -924,3 +924,291 @@ mod doctor_reports_registry_reachability {
         registry.join();
     }
 }
+
+// ============================================================================
+// Feature: Config validation workflow
+// ============================================================================
+
+mod config_validate_rejects_zero_max_attempts {
+    use super::*;
+
+    // Scenario: Config validate rejects zero retry max_attempts
+    //
+    // Given: a .shipper.toml with retry.max_attempts = 0
+    // When: I run "shipper config validate"
+    // Then: exit code is non-zero, error mentions "max_attempts"
+    #[test]
+    fn given_zero_max_attempts_when_config_validate_then_error() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join(".shipper.toml"),
+            r#"
+schema_version = "shipper.config.v1"
+
+[retry]
+max_attempts = 0
+"#,
+        );
+
+        shipper_cmd()
+            .arg("config")
+            .arg("validate")
+            .arg("-p")
+            .arg(td.path().join(".shipper.toml"))
+            .assert()
+            .failure()
+            .stderr(contains("max_attempts"));
+    }
+}
+
+mod config_validate_rejects_invalid_jitter {
+    use super::*;
+
+    // Scenario: Config validate rejects jitter outside valid range
+    //
+    // Given: a .shipper.toml with retry.jitter = 1.5
+    // When: I run "shipper config validate"
+    // Then: exit code is non-zero, error mentions "jitter"
+    #[test]
+    fn given_invalid_jitter_when_config_validate_then_error() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join(".shipper.toml"),
+            r#"
+schema_version = "shipper.config.v1"
+
+[retry]
+jitter = 1.5
+"#,
+        );
+
+        shipper_cmd()
+            .arg("config")
+            .arg("validate")
+            .arg("-p")
+            .arg(td.path().join(".shipper.toml"))
+            .assert()
+            .failure()
+            .stderr(contains("jitter"));
+    }
+}
+
+// ============================================================================
+// Feature: Doctor token warning
+// ============================================================================
+
+mod doctor_reports_token_source_when_missing {
+    use super::*;
+
+    // Scenario: Doctor reports token source when no token is configured
+    //
+    // Given: a valid workspace, no CARGO_REGISTRY_TOKEN, no credentials file
+    // When: I run "shipper doctor"
+    // Then: exit code is 0, output contains "auth_type:" and "NONE FOUND"
+    #[test]
+    fn given_no_token_no_credentials_when_doctor_then_reports_none_found() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let cargo_home = td.path().join("cargo-home");
+        fs::create_dir_all(&cargo_home).expect("mkdir");
+
+        let registry = spawn_doctor_registry(1);
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("doctor")
+            .env("CARGO_HOME", &cargo_home)
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+            .assert()
+            .success()
+            .stdout(contains("auth_type:"))
+            .stdout(contains("NONE FOUND"));
+
+        registry.join();
+    }
+}
+
+// ============================================================================
+// Feature: Clean command
+// ============================================================================
+
+mod clean_removes_state_files {
+    use super::*;
+
+    // Scenario: Clean removes state files from .shipper directory
+    //
+    // Given: a workspace with "demo" and a state directory containing state.json and events.jsonl
+    // When: I run "shipper clean"
+    // Then: exit code is 0, output contains "Clean complete", state.json is removed
+    #[test]
+    #[serial]
+    fn given_state_files_when_clean_then_removes_them() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join(".shipper");
+        fs::create_dir_all(&state_dir).expect("mkdir");
+
+        // Pre-populate state files
+        write_file(&state_dir.join("state.json"), r#"{"plan_id":"test"}"#);
+        write_file(&state_dir.join("events.jsonl"), "{}\n");
+        assert!(state_dir.join("state.json").exists());
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("clean")
+            .assert()
+            .success()
+            .stdout(contains("Clean complete"));
+
+        // Then: state.json should be removed
+        assert!(
+            !state_dir.join("state.json").exists(),
+            "state.json should be removed after clean"
+        );
+        assert!(
+            !state_dir.join("events.jsonl").exists(),
+            "events.jsonl should be removed after clean"
+        );
+    }
+}
+
+mod clean_keep_receipt {
+    use super::*;
+
+    // Scenario: Clean with --keep-receipt preserves receipt.json
+    //
+    // Given: a workspace with state.json, events.jsonl, and receipt.json in state dir
+    // When: I run "shipper clean --keep-receipt"
+    // Then: exit code is 0, receipt.json still exists, state.json is removed
+    #[test]
+    #[serial]
+    fn given_receipt_when_clean_keep_receipt_then_preserves_it() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join(".shipper");
+        fs::create_dir_all(&state_dir).expect("mkdir");
+
+        // Pre-populate state files including receipt
+        write_file(&state_dir.join("state.json"), r#"{"plan_id":"test"}"#);
+        write_file(&state_dir.join("events.jsonl"), "{}\n");
+        write_file(&state_dir.join("receipt.json"), r#"{"packages":[]}"#);
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("clean")
+            .arg("--keep-receipt")
+            .assert()
+            .success()
+            .stdout(contains("Clean complete"));
+
+        // Then: receipt.json should be preserved
+        assert!(
+            state_dir.join("receipt.json").exists(),
+            "receipt.json should be preserved with --keep-receipt"
+        );
+        // And: state.json should be removed
+        assert!(
+            !state_dir.join("state.json").exists(),
+            "state.json should be removed"
+        );
+    }
+}
+
+// ============================================================================
+// Feature: Plan with package filter
+// ============================================================================
+
+mod plan_with_package_filter {
+    use super::*;
+
+    // Scenario: Plan with --package filter shows only selected package and its deps
+    //
+    // Given: a workspace with "core", "utils", and "app" where "app" depends on both
+    // When: I run "shipper plan --package app"
+    // Then: exit code is 0, output contains "app@0.1.0"
+    #[test]
+    fn given_multi_crate_when_plan_with_package_then_shows_filtered() {
+        let td = tempdir().expect("tempdir");
+        create_multi_crate_workspace(td.path());
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--package")
+            .arg("top-app")
+            .arg("plan")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        // Then: output should contain the filtered package
+        assert!(
+            stdout.contains("top-app@0.1.0"),
+            "expected top-app@0.1.0 in plan output, got: {stdout}"
+        );
+        // And: total packages should reflect filtered set (app + its deps)
+        assert!(
+            stdout.contains("Total packages to publish:"),
+            "expected total packages line in output, got: {stdout}"
+        );
+    }
+}
+
+// ============================================================================
+// Feature: Dry run publish (preflight)
+// ============================================================================
+
+mod preflight_checks_without_publishing {
+    use super::*;
+
+    // Scenario: Preflight checks workspace without publishing
+    //
+    // Given: a workspace with "demo" and registry reports version as already published
+    // When: I run "shipper preflight --allow-dirty"
+    // Then: exit code is 0, no state.json created
+    #[test]
+    fn given_workspace_when_preflight_then_no_state_file() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join(".shipper");
+
+        // Registry returns 200 for version-exists checks; preflight may issue multiple requests
+        let registry = spawn_registry(vec![200, 200, 200], 3);
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("--skip-ownership-check")
+            .arg("--no-verify")
+            .arg("preflight")
+            .assert()
+            .success();
+
+        // Then: no state.json should be created (preflight doesn't persist state)
+        assert!(
+            !state_dir.join("state.json").exists(),
+            "preflight should not create state.json"
+        );
+
+        registry.join();
+    }
+}

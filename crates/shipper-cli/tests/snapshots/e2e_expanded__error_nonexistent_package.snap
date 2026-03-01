@@ -1,0 +1,5 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_stderr(&stderr)
+---
+Error: selected package not found or not publishable: nonexistent

@@ -1,0 +1,27 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&stdout)
+---
+# GitLab CI snippet for Shipper
+# Add this to your .gitlab-ci.yml
+
+publish:
+  image: rust:latest
+  stage: publish
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - <STATE_DIR>/
+      - target/
+  script:
+    - cargo install shipper-cli --locked
+    - shipper publish --quiet
+  variables:
+    CARGO_TERM_COLOR: "always"
+    # Configure this in GitLab CI/CD settings (masked, protected)
+    # CARGO_REGISTRY_TOKEN: "..."
+  artifacts:
+    paths:
+      - <STATE_DIR>/
+    expire_in: 1 day
+    when: always

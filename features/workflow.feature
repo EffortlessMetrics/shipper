@@ -90,3 +90,65 @@ Feature: Cross-cutting workflow scenarios
     When I run "shipper doctor"
     Then the exit code is 0
     And the output contains "registry_reachable: true"
+
+  # ── Config validation workflow ──────────────────────────────────
+
+  Scenario: Config validate rejects zero retry max_attempts
+    Given a file ".shipper.toml" with retry max_attempts set to 0
+    When I run "shipper config validate"
+    Then the exit code is non-zero
+    And the error output mentions "max_attempts"
+
+  Scenario: Config validate rejects jitter outside valid range
+    Given a file ".shipper.toml" with retry jitter set to 1.5
+    When I run "shipper config validate"
+    Then the exit code is non-zero
+    And the error output mentions "jitter"
+
+  # ── Doctor token warning ────────────────────────────────────────
+
+  Scenario: Doctor reports token source when no token is configured
+    Given a valid workspace with crate "demo"
+    And a reachable mock registry
+    And no CARGO_REGISTRY_TOKEN is set and no credentials file exists
+    When I run "shipper doctor"
+    Then the exit code is 0
+    And the output contains "auth_type:"
+    And the output contains "NONE FOUND"
+
+  # ── Clean command ───────────────────────────────────────────────
+
+  Scenario: Clean removes state files from .shipper directory
+    Given a workspace with crate "demo"
+    And the state directory contains "state.json" and "events.jsonl"
+    When I run "shipper clean"
+    Then the exit code is 0
+    And the output contains "Clean complete"
+    And "state.json" no longer exists in the state directory
+
+  Scenario: Clean with --keep-receipt preserves receipt.json
+    Given a workspace with crate "demo"
+    And the state directory contains "state.json", "events.jsonl", and "receipt.json"
+    When I run "shipper clean --keep-receipt"
+    Then the exit code is 0
+    And "receipt.json" still exists in the state directory
+    And "state.json" no longer exists in the state directory
+
+  # ── Plan with package filter ────────────────────────────────────
+
+  Scenario: Plan with --package filter shows only selected package and its deps
+    Given a workspace with "core", "utils", and "app" where "app" depends on both
+    When I run "shipper plan --package app"
+    Then the exit code is 0
+    And the output contains "app@0.1.0"
+    And the total packages to publish includes "app" and its dependencies
+
+  # ── Dry run publish (preflight) ─────────────────────────────────
+
+  Scenario: Preflight checks workspace without publishing
+    Given a workspace with crate "demo"
+    And the registry reports version as already published
+    When I run "shipper preflight --allow-dirty"
+    Then the exit code is 0
+    And no state.json is created in the state directory
+    And no cargo publish invocation occurs

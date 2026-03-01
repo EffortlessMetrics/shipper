@@ -1,0 +1,5 @@
+---
+source: crates/shipper-encrypt/src/lib.rs
+expression: results
+---
+empty=false, json=false, short_b64=false, garbage=false
