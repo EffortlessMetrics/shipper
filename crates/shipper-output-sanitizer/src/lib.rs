@@ -437,9 +437,7 @@ mod snapshot_tests {
 
     #[test]
     fn snapshot_redact_multiple_sensitive_same_line() {
-        assert_snapshot!(redact_sensitive(
-            "CARGO_REGISTRY_TOKEN=abc token = xyz"
-        ));
+        assert_snapshot!(redact_sensitive("CARGO_REGISTRY_TOKEN=abc token = xyz"));
     }
 
     #[test]

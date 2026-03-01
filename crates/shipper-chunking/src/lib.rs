@@ -182,8 +182,8 @@ mod property_tests {
 #[cfg(test)]
 mod snapshot_tests {
     use super::chunk_by_max_concurrent;
-    use insta::assert_yaml_snapshot;
     use insta::assert_debug_snapshot;
+    use insta::assert_yaml_snapshot;
 
     #[test]
     fn snapshot_chunk_5_by_2() {

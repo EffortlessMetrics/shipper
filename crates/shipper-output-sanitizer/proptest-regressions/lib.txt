@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 379a84eb6d2070e491f73bc2bc13f4df48ae112e27886670f348f7aec106db37 # shrinks to lines = ["", "", "", "A"], n = 0, tail_newline = true
 cc 57ce02c605375b202a45894de2deef141b5205758bcef4d05eaf1bf8216d871e # shrinks to prefix = "", token = "t"
+cc 26ad80fec99744ff6c36a082d677a6bc73d069699daba0e19e831738f42547b3 # shrinks to lines = ["", "", ""], n = 2, tail_newline = true

@@ -187,14 +187,18 @@ mod tests {
 
     #[test]
     fn snapshot_parse_err_non_numeric() {
-        assert_debug_snapshot!(parse_schema_version("shipper.receipt.vx").map_err(|e| e.to_string()));
+        assert_debug_snapshot!(
+            parse_schema_version("shipper.receipt.vx").map_err(|e| e.to_string())
+        );
     }
 
     #[test]
     fn snapshot_validate_ok() {
-        assert_debug_snapshot!(
-            validate_schema_version("shipper.state.v3", "shipper.state.v1", "state")
-        );
+        assert_debug_snapshot!(validate_schema_version(
+            "shipper.state.v3",
+            "shipper.state.v1",
+            "state"
+        ));
     }
 
     #[test]

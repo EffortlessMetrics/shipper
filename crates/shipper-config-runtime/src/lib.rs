@@ -414,8 +414,14 @@ mod tests {
         opts.readiness.initial_delay = Duration::from_micros(500);
         opts.readiness.poll_interval = Duration::from_micros(100);
         let converted = into_runtime_options(opts);
-        assert_eq!(converted.readiness.initial_delay, Duration::from_micros(500));
-        assert_eq!(converted.readiness.poll_interval, Duration::from_micros(100));
+        assert_eq!(
+            converted.readiness.initial_delay,
+            Duration::from_micros(500)
+        );
+        assert_eq!(
+            converted.readiness.poll_interval,
+            Duration::from_micros(100)
+        );
     }
 
     #[test]
@@ -474,14 +480,20 @@ mod tests {
     fn maps_base_delay() {
         let mut opts = sample_runtime_options();
         opts.base_delay = Duration::from_millis(999);
-        assert_eq!(into_runtime_options(opts).base_delay, Duration::from_millis(999));
+        assert_eq!(
+            into_runtime_options(opts).base_delay,
+            Duration::from_millis(999)
+        );
     }
 
     #[test]
     fn maps_max_delay() {
         let mut opts = sample_runtime_options();
         opts.max_delay = Duration::from_secs(9999);
-        assert_eq!(into_runtime_options(opts).max_delay, Duration::from_secs(9999));
+        assert_eq!(
+            into_runtime_options(opts).max_delay,
+            Duration::from_secs(9999)
+        );
     }
 
     #[test]
@@ -510,7 +522,10 @@ mod tests {
     fn maps_verify_timeout() {
         let mut opts = sample_runtime_options();
         opts.verify_timeout = Duration::from_secs(555);
-        assert_eq!(into_runtime_options(opts).verify_timeout, Duration::from_secs(555));
+        assert_eq!(
+            into_runtime_options(opts).verify_timeout,
+            Duration::from_secs(555)
+        );
     }
 
     #[test]
@@ -544,7 +559,11 @@ mod tests {
 
     #[test]
     fn maps_policy_variants() {
-        for policy in [PublishPolicy::Safe, PublishPolicy::Balanced, PublishPolicy::Fast] {
+        for policy in [
+            PublishPolicy::Safe,
+            PublishPolicy::Balanced,
+            PublishPolicy::Fast,
+        ] {
             let mut opts = sample_runtime_options();
             opts.policy = policy;
             assert_eq!(into_runtime_options(opts).policy, policy);
@@ -580,7 +599,10 @@ mod tests {
     fn maps_lock_timeout() {
         let mut opts = sample_runtime_options();
         opts.lock_timeout = Duration::from_secs(12345);
-        assert_eq!(into_runtime_options(opts).lock_timeout, Duration::from_secs(12345));
+        assert_eq!(
+            into_runtime_options(opts).lock_timeout,
+            Duration::from_secs(12345)
+        );
     }
 
     #[test]
@@ -595,7 +617,11 @@ mod tests {
 
     #[test]
     fn maps_readiness_method_variants() {
-        for method in [ReadinessMethod::Api, ReadinessMethod::Index, ReadinessMethod::Both] {
+        for method in [
+            ReadinessMethod::Api,
+            ReadinessMethod::Index,
+            ReadinessMethod::Both,
+        ] {
             let mut opts = sample_runtime_options();
             opts.readiness.method = method;
             assert_eq!(into_runtime_options(opts).readiness.method, method);
