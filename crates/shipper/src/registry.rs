@@ -1261,4 +1261,526 @@ mod tests {
         assert!(!is_new);
         handle.join().expect("join");
     }
+
+    // ── Readiness edge-case tests ────────────────────────────────────
+
+    #[test]
+    fn api_mode_visible_on_first_check() {
+        let (api_base, handle) = with_server(move |req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_secs(1),
+            max_total_wait: Duration::from_secs(5),
+            poll_interval: Duration::from_millis(50),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(visible);
+        assert_eq!(evidence.len(), 1);
+        assert!(evidence[0].visible);
+        assert_eq!(evidence[0].attempt, 1);
+        assert_eq!(evidence[0].delay_before, Duration::ZERO);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn api_mode_never_visible_times_out() {
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                req.respond(Response::empty(StatusCode(404)))
+                    .expect("respond");
+            },
+            20,
+        );
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_millis(20),
+            max_total_wait: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(!visible);
+        assert!(
+            evidence.len() >= 2,
+            "should poll multiple times before timeout"
+        );
+        assert!(evidence.iter().all(|e| !e.visible));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn api_mode_intermittent_failures_then_success() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                let n = counter_clone.fetch_add(1, Ordering::SeqCst);
+                // First 2 requests return 500 (error), third returns 200
+                let status = if n < 2 { 500 } else { 200 };
+                req.respond(Response::empty(StatusCode(status)))
+                    .expect("respond");
+            },
+            5,
+        );
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_millis(20),
+            max_total_wait: Duration::from_secs(5),
+            poll_interval: Duration::from_millis(10),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(visible);
+        // First two attempts fail (500 → unwrap_or(false)), third succeeds
+        assert!(evidence.len() >= 3);
+        assert!(!evidence[0].visible);
+        assert!(!evidence[1].visible);
+        assert!(evidence.last().unwrap().visible);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn index_mode_sparse_index_shows_version() {
+        let index_content = "{\"vers\":\"0.9.0\"}\n{\"vers\":\"1.0.0\"}\n";
+
+        let (api_base, handle) = with_server(move |req| {
+            assert_eq!(req.url(), "/de/mo/demo");
+            req.respond(Response::from_string(index_content).with_status_code(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Index,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_secs(1),
+            max_total_wait: Duration::from_secs(5),
+            poll_interval: Duration::from_millis(50),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(visible);
+        assert_eq!(evidence.len(), 1);
+        assert!(evidence[0].visible);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn index_mode_stale_empty_index() {
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                // Return empty body (stale/empty index)
+                req.respond(Response::from_string("").with_status_code(StatusCode(200)))
+                    .expect("respond");
+            },
+            10,
+        );
+
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Index,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_millis(20),
+            max_total_wait: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(!visible);
+        assert!(evidence.len() >= 2);
+        assert!(evidence.iter().all(|e| !e.visible));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn index_mode_parse_errors_treated_as_not_visible() {
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                req.respond(
+                    Response::from_string("<<<not json>>>").with_status_code(StatusCode(200)),
+                )
+                .expect("respond");
+            },
+            10,
+        );
+
+        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Index,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_millis(20),
+            max_total_wait: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(!visible);
+        assert!(evidence.iter().all(|e| !e.visible));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn both_mode_api_succeeds_index_fails() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        // Both mode with prefer_index: index is checked first (fails), then API (succeeds)
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                let n = counter_clone.fetch_add(1, Ordering::SeqCst);
+                let url = req.url().to_string();
+                if url.contains("/api/v1/crates/") {
+                    // API succeeds
+                    req.respond(Response::empty(StatusCode(200)))
+                        .expect("respond");
+                } else {
+                    // Index returns 404 (not found)
+                    req.respond(Response::empty(StatusCode(404)))
+                        .expect("respond");
+                }
+                let _ = n;
+            },
+            5,
+        );
+
+        let cli = RegistryClient::new(test_registry_with_index(api_base.clone())).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Both,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_secs(1),
+            max_total_wait: Duration::from_secs(5),
+            poll_interval: Duration::from_millis(50),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: true, // index checked first, falls back to API
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(visible);
+        assert_eq!(evidence.len(), 1);
+        assert!(evidence[0].visible);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn both_mode_index_succeeds_api_fails() {
+        let index_content = "{\"vers\":\"1.0.0\"}\n";
+
+        // Both mode with prefer_index=false: API is checked first (fails), then index (succeeds)
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                let url = req.url().to_string();
+                if url.contains("/api/v1/crates/") {
+                    // API returns 404
+                    req.respond(Response::empty(StatusCode(404)))
+                        .expect("respond");
+                } else {
+                    // Index returns the version
+                    req.respond(
+                        Response::from_string(index_content).with_status_code(StatusCode(200)),
+                    )
+                    .expect("respond");
+                }
+            },
+            5,
+        );
+
+        let cli = RegistryClient::new(test_registry_with_index(api_base.clone())).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Both,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_secs(1),
+            max_total_wait: Duration::from_secs(5),
+            poll_interval: Duration::from_millis(50),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false, // API checked first, falls back to index
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(visible);
+        assert_eq!(evidence.len(), 1);
+        assert!(evidence[0].visible);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn zero_timeout_returns_immediately() {
+        let (api_base, handle) = with_server(move |req| {
+            req.respond(Response::empty(StatusCode(404)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_secs(1),
+            max_total_wait: Duration::ZERO,
+            poll_interval: Duration::from_millis(50),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let start = Instant::now();
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        let elapsed = start.elapsed();
+
+        assert!(!visible);
+        // With zero timeout, should do exactly 1 poll then exit
+        assert_eq!(evidence.len(), 1);
+        assert!(!evidence[0].visible);
+        // Should complete very quickly (well under 1 second)
+        assert!(elapsed < Duration::from_secs(1));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn evidence_records_populated_correctly() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                let n = counter_clone.fetch_add(1, Ordering::SeqCst);
+                // Not visible on first two attempts, visible on third
+                let status = if n < 2 { 404 } else { 200 };
+                req.respond(Response::empty(StatusCode(status)))
+                    .expect("respond");
+            },
+            5,
+        );
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_millis(50),
+            max_total_wait: Duration::from_secs(5),
+            poll_interval: Duration::from_millis(10),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(visible);
+        assert_eq!(evidence.len(), 3);
+
+        // Check attempt numbers are sequential
+        assert_eq!(evidence[0].attempt, 1);
+        assert_eq!(evidence[1].attempt, 2);
+        assert_eq!(evidence[2].attempt, 3);
+
+        // Check visibility flags
+        assert!(!evidence[0].visible);
+        assert!(!evidence[1].visible);
+        assert!(evidence[2].visible);
+
+        // First attempt should have zero delay
+        assert_eq!(evidence[0].delay_before, Duration::ZERO);
+
+        // Subsequent attempts should have non-zero delay
+        assert!(evidence[1].delay_before > Duration::ZERO);
+        assert!(evidence[2].delay_before > Duration::ZERO);
+
+        // Timestamps should be chronologically ordered
+        assert!(evidence[0].timestamp <= evidence[1].timestamp);
+        assert!(evidence[1].timestamp <= evidence[2].timestamp);
+
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn backoff_delays_increase_exponentially() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let base = Duration::from_millis(100);
+        let max = Duration::from_secs(10);
+
+        // With zero jitter, delays should follow exact powers of 2
+        let d1 = cli.calculate_backoff_delay(base, max, 1, 0.0);
+        let d2 = cli.calculate_backoff_delay(base, max, 2, 0.0);
+        let d3 = cli.calculate_backoff_delay(base, max, 3, 0.0);
+        let d4 = cli.calculate_backoff_delay(base, max, 4, 0.0);
+
+        // attempt 1 → base * 2^0 = 100ms
+        assert_eq!(d1, Duration::from_millis(100));
+        // attempt 2 → base * 2^1 = 200ms
+        assert_eq!(d2, Duration::from_millis(200));
+        // attempt 3 → base * 2^2 = 400ms
+        assert_eq!(d3, Duration::from_millis(400));
+        // attempt 4 → base * 2^3 = 800ms
+        assert_eq!(d4, Duration::from_millis(800));
+
+        // Verify exponential growth (each delay is 2× the previous)
+        assert_eq!(d2, d1 * 2);
+        assert_eq!(d3, d2 * 2);
+        assert_eq!(d4, d3 * 2);
+    }
+
+    #[test]
+    fn backoff_delays_capped_at_max() {
+        let (api_base, _handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let base = Duration::from_millis(100);
+        let max = Duration::from_millis(500);
+
+        // With zero jitter, attempt 4 would be 800ms but should be capped at 500ms
+        let d4 = cli.calculate_backoff_delay(base, max, 4, 0.0);
+        assert_eq!(d4, Duration::from_millis(500));
+
+        // Very high attempt should also be capped
+        let d20 = cli.calculate_backoff_delay(base, max, 20, 0.0);
+        assert_eq!(d20, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn disabled_readiness_with_not_found_returns_false() {
+        let (api_base, handle) = with_server(|req| {
+            req.respond(Response::empty(StatusCode(404)))
+                .expect("respond");
+        });
+
+        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let config = ReadinessConfig {
+            enabled: false,
+            method: ReadinessMethod::Api,
+            initial_delay: Duration::from_secs(999), // should be ignored
+            max_delay: Duration::from_secs(999),
+            max_total_wait: Duration::from_secs(999),
+            poll_interval: Duration::from_secs(999),
+            jitter_factor: 0.5,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(!visible);
+        assert_eq!(evidence.len(), 1);
+        assert!(!evidence[0].visible);
+        assert_eq!(evidence[0].attempt, 1);
+        assert_eq!(evidence[0].delay_before, Duration::ZERO);
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn both_mode_both_fail_times_out() {
+        let (api_base, handle) = with_multi_server(
+            move |req| {
+                let url = req.url().to_string();
+                if url.contains("/api/v1/crates/") {
+                    req.respond(Response::empty(StatusCode(404)))
+                        .expect("respond");
+                } else {
+                    req.respond(Response::empty(StatusCode(404)))
+                        .expect("respond");
+                }
+            },
+            20,
+        );
+
+        let cli = RegistryClient::new(test_registry_with_index(api_base.clone())).expect("client");
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Both,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_millis(20),
+            max_total_wait: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &config)
+            .expect("backoff");
+        assert!(!visible);
+        assert!(evidence.len() >= 2);
+        assert!(evidence.iter().all(|e| !e.visible));
+        handle.join().expect("join");
+    }
 }

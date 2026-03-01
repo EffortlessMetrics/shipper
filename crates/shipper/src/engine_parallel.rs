@@ -1050,6 +1050,7 @@ mod tests {
             encryption: crate::encryption::EncryptionConfig::default(),
             webhook: crate::webhook::WebhookConfig::default(),
             registries: vec![],
+            resume_from: None,
         }
     }
 

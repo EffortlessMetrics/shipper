@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use tempfile::tempdir;
 
 use shipper_state::{
@@ -634,4 +634,461 @@ fn save_state_creates_deep_nested_directories() {
 
     let loaded = load_state(&dir).unwrap().unwrap();
     assert_eq!(loaded.plan_id, "deep");
+}
+
+// ---------------------------------------------------------------------------
+// Corrupt state recovery: partial/truncated write
+// ---------------------------------------------------------------------------
+
+#[test]
+fn load_state_errors_on_truncated_json() {
+    let td = tempdir().unwrap();
+    let truncated = r#"{"state_version":"shipper.state.v1","plan_id":"tr"#;
+    fs::write(state_path(td.path()), truncated).unwrap();
+
+    let err = load_state(td.path()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("failed to parse state JSON"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn load_receipt_errors_on_truncated_json() {
+    let td = tempdir().unwrap();
+    let dir = td.path().join("r");
+    fs::create_dir_all(&dir).unwrap();
+    let truncated = r#"{"receipt_version":"shipper.receipt.v2","plan_id":"#;
+    fs::write(receipt_path(&dir), truncated).unwrap();
+
+    let err = load_receipt(&dir).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("failed to parse receipt JSON"),
+        "unexpected error: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// State transitions: Pending → Failed → Pending (retry cycle)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn state_transition_pending_failed_pending_retry_cycle() {
+    let td = tempdir().unwrap();
+    let dir = td.path().join("retry");
+
+    let mut pkgs = BTreeMap::new();
+    pkgs.insert(
+        "retry-crate@1.0.0".to_string(),
+        make_progress("retry-crate", "1.0.0", PackageState::Pending),
+    );
+    let mut state = make_state("retry-plan", pkgs);
+    save_state(&dir, &state).unwrap();
+
+    // Transition to Failed
+    let pkg = state.packages.get_mut("retry-crate@1.0.0").unwrap();
+    pkg.state = PackageState::Failed {
+        class: ErrorClass::Retryable,
+        message: "network timeout".to_string(),
+    };
+    pkg.attempts = 1;
+    save_state(&dir, &state).unwrap();
+
+    let loaded = load_state(&dir).unwrap().unwrap();
+    assert!(matches!(
+        loaded.packages["retry-crate@1.0.0"].state,
+        PackageState::Failed { .. }
+    ));
+
+    // Transition back to Pending (retry)
+    state.packages.get_mut("retry-crate@1.0.0").unwrap().state = PackageState::Pending;
+    save_state(&dir, &state).unwrap();
+
+    let loaded = load_state(&dir).unwrap().unwrap();
+    assert!(matches!(
+        loaded.packages["retry-crate@1.0.0"].state,
+        PackageState::Pending
+    ));
+    assert_eq!(loaded.packages["retry-crate@1.0.0"].attempts, 1);
+}
+
+// ---------------------------------------------------------------------------
+// State transitions: Published is idempotent
+// ---------------------------------------------------------------------------
+
+#[test]
+fn state_transition_published_idempotent() {
+    let td = tempdir().unwrap();
+    let dir = td.path().join("idempotent");
+
+    let mut pkgs = BTreeMap::new();
+    pkgs.insert(
+        "stable@1.0.0".to_string(),
+        make_progress("stable", "1.0.0", PackageState::Published),
+    );
+    let state = make_state("idem-plan", pkgs);
+
+    save_state(&dir, &state).unwrap();
+    save_state(&dir, &state).unwrap();
+
+    let loaded = load_state(&dir).unwrap().unwrap();
+    assert!(matches!(
+        loaded.packages["stable@1.0.0"].state,
+        PackageState::Published
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Receipt generation: all packages published
+// ---------------------------------------------------------------------------
+
+#[test]
+fn receipt_all_packages_published() {
+    let td = tempdir().unwrap();
+    let dir = td.path().join("r");
+
+    let packages = vec![
+        make_package_receipt("core", "1.0.0", PackageState::Published),
+        make_package_receipt("utils", "0.5.0", PackageState::Published),
+        make_package_receipt("cli", "2.0.0", PackageState::Published),
+    ];
+
+    let receipt = make_receipt("all-published", packages);
+    write_receipt(&dir, &receipt).unwrap();
+
+    let loaded = load_receipt(&dir).unwrap().unwrap();
+    assert_eq!(loaded.packages.len(), 3);
+    assert!(
+        loaded
+            .packages
+            .iter()
+            .all(|p| matches!(p.state, PackageState::Published))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Receipt generation: some packages failed
+// ---------------------------------------------------------------------------
+
+#[test]
+fn receipt_some_packages_failed() {
+    let td = tempdir().unwrap();
+    let dir = td.path().join("r");
+
+    let packages = vec![
+        make_package_receipt("core", "1.0.0", PackageState::Published),
+        make_package_receipt(
+            "utils",
+            "0.5.0",
+            PackageState::Failed {
+                class: ErrorClass::Retryable,
+                message: "registry timeout".to_string(),
+            },
+        ),
+        make_package_receipt(
+            "cli",
+            "2.0.0",
+            PackageState::Failed {
+                class: ErrorClass::Permanent,
+                message: "crate name reserved".to_string(),
+            },
+        ),
+    ];
+
+    let receipt = make_receipt("some-failed", packages);
+    write_receipt(&dir, &receipt).unwrap();
+
+    let loaded = load_receipt(&dir).unwrap().unwrap();
+    assert_eq!(loaded.packages.len(), 3);
+    assert!(matches!(loaded.packages[0].state, PackageState::Published));
+    assert!(matches!(
+        loaded.packages[1].state,
+        PackageState::Failed { .. }
+    ));
+    assert!(matches!(
+        loaded.packages[2].state,
+        PackageState::Failed { .. }
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Receipt generation: mixed states (published, failed, skipped, ambiguous)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn receipt_mixed_states_all_outcomes() {
+    let td = tempdir().unwrap();
+    let dir = td.path().join("r");
+
+    let packages = vec![
+        make_package_receipt("core", "1.0.0", PackageState::Published),
+        make_package_receipt(
+            "utils",
+            "0.5.0",
+            PackageState::Skipped {
+                reason: "already published".to_string(),
+            },
+        ),
+        make_package_receipt(
+            "cli",
+            "2.0.0",
+            PackageState::Failed {
+                class: ErrorClass::Retryable,
+                message: "network error".to_string(),
+            },
+        ),
+        make_package_receipt(
+            "extras",
+            "0.1.0",
+            PackageState::Ambiguous {
+                message: "upload timeout".to_string(),
+            },
+        ),
+    ];
+
+    let receipt = make_receipt("mixed-states", packages);
+    write_receipt(&dir, &receipt).unwrap();
+
+    let loaded = load_receipt(&dir).unwrap().unwrap();
+    assert_eq!(loaded.packages.len(), 4);
+    assert!(matches!(loaded.packages[0].state, PackageState::Published));
+    assert!(matches!(
+        loaded.packages[1].state,
+        PackageState::Skipped { .. }
+    ));
+    assert!(matches!(
+        loaded.packages[2].state,
+        PackageState::Failed { .. }
+    ));
+    assert!(matches!(
+        loaded.packages[3].state,
+        PackageState::Ambiguous { .. }
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: very long package names
+// ---------------------------------------------------------------------------
+
+#[test]
+fn state_with_very_long_package_name() {
+    let td = tempdir().unwrap();
+    let dir = td.path().join("long");
+
+    let long_name = "a".repeat(500);
+    let key = format!("{long_name}@1.0.0");
+    let mut pkgs = BTreeMap::new();
+    pkgs.insert(
+        key.clone(),
+        make_progress(&long_name, "1.0.0", PackageState::Pending),
+    );
+
+    let state = make_state("long-plan", pkgs);
+    save_state(&dir, &state).unwrap();
+
+    let loaded = load_state(&dir).unwrap().unwrap();
+    assert!(loaded.packages.contains_key(&key));
+    assert_eq!(loaded.packages[&key].name, long_name);
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: empty plan_id
+// ---------------------------------------------------------------------------
+
+#[test]
+fn state_with_empty_plan_id() {
+    let td = tempdir().unwrap();
+    let dir = td.path().join("empty-plan");
+
+    let state = make_state("", BTreeMap::new());
+    save_state(&dir, &state).unwrap();
+
+    let loaded = load_state(&dir).unwrap().unwrap();
+    assert_eq!(loaded.plan_id, "");
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: unicode in directory paths
+// ---------------------------------------------------------------------------
+
+#[test]
+fn state_save_load_unicode_directory() {
+    let td = tempdir().unwrap();
+    let dir = td.path().join("données").join("日本語");
+
+    let state = make_state("unicode-plan", BTreeMap::new());
+    save_state(&dir, &state).unwrap();
+
+    let loaded = load_state(&dir).unwrap().unwrap();
+    assert_eq!(loaded.plan_id, "unicode-plan");
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent access: multiple threads loading the same state file
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concurrent_readers_see_consistent_state() {
+    let td = tempdir().unwrap();
+    let dir = td.path().join("concurrent");
+
+    let mut pkgs = BTreeMap::new();
+    pkgs.insert(
+        "pkg@1.0.0".to_string(),
+        make_progress("pkg", "1.0.0", PackageState::Published),
+    );
+    let state = make_state("concurrent-plan", pkgs);
+    save_state(&dir, &state).unwrap();
+
+    let dir = std::sync::Arc::new(dir);
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let dir = std::sync::Arc::clone(&dir);
+            std::thread::spawn(move || {
+                let loaded = load_state(&dir).unwrap().unwrap();
+                assert_eq!(loaded.plan_id, "concurrent-plan");
+                assert!(loaded.packages.contains_key("pkg@1.0.0"));
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().expect("thread must not panic");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot tests for edge cases (deterministic timestamps)
+// ---------------------------------------------------------------------------
+
+fn fixed_time() -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap()
+}
+
+fn make_deterministic_progress(
+    name: &str,
+    version: &str,
+    state: PackageState,
+    attempts: u32,
+) -> PackageProgress {
+    PackageProgress {
+        name: name.to_string(),
+        version: version.to_string(),
+        attempts,
+        state,
+        last_updated_at: fixed_time(),
+    }
+}
+
+fn make_deterministic_state(
+    plan_id: &str,
+    packages: BTreeMap<String, PackageProgress>,
+) -> ExecutionState {
+    ExecutionState {
+        state_version: CURRENT_STATE_VERSION.to_string(),
+        plan_id: plan_id.to_string(),
+        registry: sample_registry(),
+        created_at: fixed_time(),
+        updated_at: fixed_time(),
+        packages,
+    }
+}
+
+fn make_deterministic_package_receipt(
+    name: &str,
+    version: &str,
+    state: PackageState,
+) -> PackageReceipt {
+    let t = fixed_time();
+    PackageReceipt {
+        name: name.to_string(),
+        version: version.to_string(),
+        attempts: 1,
+        state,
+        started_at: t,
+        finished_at: t,
+        duration_ms: 1500,
+        evidence: PackageEvidence {
+            attempts: vec![],
+            readiness_checks: vec![],
+        },
+    }
+}
+
+fn make_deterministic_receipt(plan_id: &str, packages: Vec<PackageReceipt>) -> Receipt {
+    let t = fixed_time();
+    Receipt {
+        receipt_version: CURRENT_RECEIPT_VERSION.to_string(),
+        plan_id: plan_id.to_string(),
+        registry: sample_registry(),
+        started_at: t,
+        finished_at: t,
+        packages,
+        event_log_path: PathBuf::from(".shipper/events.jsonl"),
+        git_context: None,
+        environment: EnvironmentFingerprint {
+            shipper_version: "0.3.0".to_string(),
+            cargo_version: Some("1.82.0".to_string()),
+            rust_version: Some("1.82.0".to_string()),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        },
+    }
+}
+
+#[test]
+fn snapshot_state_retry_cycle() {
+    let mut pkgs = BTreeMap::new();
+    pkgs.insert(
+        "retried@1.0.0".to_string(),
+        make_deterministic_progress("retried", "1.0.0", PackageState::Pending, 2),
+    );
+
+    let state = make_deterministic_state("retry-plan", pkgs);
+    let json = serde_json::to_string_pretty(&state).unwrap();
+    insta::assert_snapshot!("state_retry_cycle", json);
+}
+
+#[test]
+fn snapshot_receipt_all_published() {
+    let receipt = make_deterministic_receipt(
+        "all-pub",
+        vec![
+            make_deterministic_package_receipt("core", "1.0.0", PackageState::Published),
+            make_deterministic_package_receipt("utils", "0.5.0", PackageState::Published),
+        ],
+    );
+
+    let json = serde_json::to_string_pretty(&receipt).unwrap();
+    insta::assert_snapshot!("receipt_all_published", json);
+}
+
+#[test]
+fn snapshot_receipt_mixed_outcomes() {
+    let receipt = make_deterministic_receipt(
+        "mixed",
+        vec![
+            make_deterministic_package_receipt("core", "1.0.0", PackageState::Published),
+            make_deterministic_package_receipt(
+                "utils",
+                "0.5.0",
+                PackageState::Skipped {
+                    reason: "already published".to_string(),
+                },
+            ),
+            make_deterministic_package_receipt(
+                "cli",
+                "2.0.0",
+                PackageState::Failed {
+                    class: ErrorClass::Retryable,
+                    message: "registry timeout".to_string(),
+                },
+            ),
+        ],
+    );
+
+    let json = serde_json::to_string_pretty(&receipt).unwrap();
+    insta::assert_snapshot!("receipt_mixed_outcomes", json);
 }

@@ -1106,6 +1106,320 @@ mod tests {
             }
         }
     }
+
+    // --- Partial/truncated JSON recovery ---
+
+    #[test]
+    fn file_store_load_state_truncated_json_returns_error() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let state_file = shipper_state::state_path(td.path());
+        std::fs::create_dir_all(state_file.parent().unwrap_or(td.path())).ok();
+        let truncated = r#"{"state_version":"shipper.state.v1","plan_id":"tr"#;
+        std::fs::write(&state_file, truncated).expect("write truncated");
+
+        let result = store.load_state();
+        assert!(result.is_err(), "truncated state.json should produce error");
+    }
+
+    #[test]
+    fn file_store_load_receipt_truncated_json_returns_error() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let receipt_file = shipper_state::receipt_path(td.path());
+        std::fs::create_dir_all(receipt_file.parent().unwrap_or(td.path())).ok();
+        let truncated = r#"{"receipt_version":"shipper.receipt.v2","plan_id":"#;
+        std::fs::write(&receipt_file, truncated).expect("write truncated");
+
+        let result = store.load_receipt();
+        assert!(
+            result.is_err(),
+            "truncated receipt.json should produce error"
+        );
+    }
+
+    // --- State transition: retry cycle (Pending → Failed → Pending) ---
+
+    #[test]
+    fn file_store_state_retry_cycle_pending_failed_pending() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let mut state = sample_state();
+        store.save_state(&state).expect("save pending");
+
+        let pkg = state.packages.get_mut("demo@0.1.0").unwrap();
+        pkg.state = PackageState::Failed {
+            class: shipper_types::ErrorClass::Retryable,
+            message: "network timeout".to_string(),
+        };
+        pkg.attempts = 2;
+        store.save_state(&state).expect("save failed");
+
+        let loaded = store.load_state().expect("load").unwrap();
+        assert!(matches!(
+            loaded.packages["demo@0.1.0"].state,
+            PackageState::Failed { .. }
+        ));
+
+        state.packages.get_mut("demo@0.1.0").unwrap().state = PackageState::Pending;
+        store.save_state(&state).expect("save pending retry");
+
+        let loaded = store.load_state().expect("load").unwrap();
+        assert!(matches!(
+            loaded.packages["demo@0.1.0"].state,
+            PackageState::Pending
+        ));
+        assert_eq!(loaded.packages["demo@0.1.0"].attempts, 2);
+    }
+
+    // --- Published idempotent ---
+
+    #[test]
+    fn file_store_state_published_idempotent() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let mut state = sample_state();
+        state.packages.get_mut("demo@0.1.0").unwrap().state = PackageState::Published;
+
+        store.save_state(&state).expect("save published 1");
+        store.save_state(&state).expect("save published 2");
+
+        let loaded = store.load_state().expect("load").unwrap();
+        assert!(matches!(
+            loaded.packages["demo@0.1.0"].state,
+            PackageState::Published
+        ));
+    }
+
+    // --- Very long package names ---
+
+    #[test]
+    fn file_store_state_very_long_package_name() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let long_name = "a".repeat(500);
+        let key = format!("{long_name}@1.0.0");
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            key.clone(),
+            PackageProgress {
+                name: long_name.clone(),
+                version: "1.0.0".to_string(),
+                attempts: 0,
+                state: PackageState::Pending,
+                last_updated_at: Utc::now(),
+            },
+        );
+
+        let state = ExecutionState {
+            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: "long".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
+        };
+
+        store.save_state(&state).expect("save");
+        let loaded = store.load_state().expect("load").unwrap();
+        assert!(loaded.packages.contains_key(&key));
+        assert_eq!(loaded.packages[&key].name, long_name);
+    }
+
+    // --- Empty plan_id ---
+
+    #[test]
+    fn file_store_state_empty_plan_id() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let state = ExecutionState {
+            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: String::new(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::new(),
+        };
+
+        store.save_state(&state).expect("save");
+        let loaded = store.load_state().expect("load").unwrap();
+        assert_eq!(loaded.plan_id, "");
+    }
+
+    // --- Unicode directory paths ---
+
+    #[test]
+    fn file_store_unicode_directory_path() {
+        let td = tempdir().expect("tempdir");
+        let unicode_dir = td.path().join("données").join("日本語");
+        let store = FileStore::new(unicode_dir);
+
+        store.save_state(&sample_state()).expect("save");
+        let loaded = store.load_state().expect("load").unwrap();
+        assert_eq!(loaded.plan_id, "p1");
+    }
+
+    // --- Concurrent readers ---
+
+    #[test]
+    fn file_store_concurrent_readers_consistent() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        store.save_state(&sample_state()).expect("save");
+
+        let dir = std::sync::Arc::new(td.path().to_path_buf());
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let dir = std::sync::Arc::clone(&dir);
+                std::thread::spawn(move || {
+                    let store = FileStore::new((*dir).clone());
+                    let loaded = store.load_state().expect("load").unwrap();
+                    assert_eq!(loaded.plan_id, "p1");
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread must not panic");
+        }
+    }
+
+    // --- Receipt: all published ---
+
+    #[test]
+    fn file_store_receipt_all_published() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let now = Utc::now();
+        let receipt = Receipt {
+            receipt_version: "shipper.receipt.v2".to_string(),
+            plan_id: "all-pub".to_string(),
+            registry: Registry::crates_io(),
+            started_at: now,
+            finished_at: now,
+            packages: vec![
+                PackageReceipt {
+                    name: "a".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    started_at: now,
+                    finished_at: now,
+                    duration_ms: 100,
+                    evidence: shipper_types::PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+                PackageReceipt {
+                    name: "b".to_string(),
+                    version: "2.0.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    started_at: now,
+                    finished_at: now,
+                    duration_ms: 200,
+                    evidence: shipper_types::PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+            ],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: None,
+            environment: shipper_types::EnvironmentFingerprint {
+                shipper_version: "0.1.0".to_string(),
+                cargo_version: Some("1.75.0".to_string()),
+                rust_version: Some("1.75.0".to_string()),
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        store.save_receipt(&receipt).expect("save");
+        let loaded = store.load_receipt().expect("load").unwrap();
+        assert_eq!(loaded.packages.len(), 2);
+        assert!(
+            loaded
+                .packages
+                .iter()
+                .all(|p| matches!(p.state, PackageState::Published))
+        );
+    }
+
+    // --- Receipt: some failed ---
+
+    #[test]
+    fn file_store_receipt_some_failed() {
+        let td = tempdir().expect("tempdir");
+        let store = FileStore::new(td.path().to_path_buf());
+
+        let now = Utc::now();
+        let receipt = Receipt {
+            receipt_version: "shipper.receipt.v2".to_string(),
+            plan_id: "some-failed".to_string(),
+            registry: Registry::crates_io(),
+            started_at: now,
+            finished_at: now,
+            packages: vec![
+                PackageReceipt {
+                    name: "a".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    started_at: now,
+                    finished_at: now,
+                    duration_ms: 100,
+                    evidence: shipper_types::PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+                PackageReceipt {
+                    name: "b".to_string(),
+                    version: "2.0.0".to_string(),
+                    attempts: 3,
+                    state: PackageState::Failed {
+                        class: shipper_types::ErrorClass::Retryable,
+                        message: "timeout".to_string(),
+                    },
+                    started_at: now,
+                    finished_at: now,
+                    duration_ms: 5000,
+                    evidence: shipper_types::PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+            ],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: None,
+            environment: shipper_types::EnvironmentFingerprint {
+                shipper_version: "0.1.0".to_string(),
+                cargo_version: Some("1.75.0".to_string()),
+                rust_version: Some("1.75.0".to_string()),
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        store.save_receipt(&receipt).expect("save");
+        let loaded = store.load_receipt().expect("load").unwrap();
+        assert_eq!(loaded.packages.len(), 2);
+        assert!(matches!(loaded.packages[0].state, PackageState::Published));
+        assert!(matches!(
+            loaded.packages[1].state,
+            PackageState::Failed { .. }
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -1706,5 +2020,146 @@ mod snapshot_tests {
         };
         let json = serde_json::to_string_pretty(&registry).expect("serialize");
         insta::assert_snapshot!("registry_custom", json);
+    }
+
+    // ── Edge case snapshot: retry cycle state ───────────────────────
+
+    #[test]
+    fn snapshot_state_retry_cycle() {
+        let t = fixed_time();
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "retried@1.0.0".to_string(),
+            PackageProgress {
+                name: "retried".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 2,
+                state: PackageState::Pending,
+                last_updated_at: t,
+            },
+        );
+
+        let state = ExecutionState {
+            state_version: "shipper.state.v1".to_string(),
+            plan_id: "plan-retry".to_string(),
+            registry: Registry::crates_io(),
+            created_at: t,
+            updated_at: t,
+            packages,
+        };
+
+        let json = serde_json::to_string_pretty(&state).expect("serialize");
+        insta::assert_snapshot!("state_retry_cycle", json);
+    }
+
+    // ── Edge case snapshot: receipt all published ────────────────────
+
+    #[test]
+    fn snapshot_receipt_all_published() {
+        let t = fixed_time();
+        let receipt = Receipt {
+            receipt_version: "shipper.receipt.v2".to_string(),
+            plan_id: "plan-all-pub".to_string(),
+            registry: Registry::crates_io(),
+            started_at: t,
+            finished_at: t,
+            packages: vec![
+                PackageReceipt {
+                    name: "core".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    started_at: t,
+                    finished_at: t,
+                    duration_ms: 2000,
+                    evidence: PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+                PackageReceipt {
+                    name: "utils".to_string(),
+                    version: "0.5.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    started_at: t,
+                    finished_at: t,
+                    duration_ms: 1500,
+                    evidence: PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+            ],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: None,
+            environment: EnvironmentFingerprint {
+                shipper_version: "0.3.0".to_string(),
+                cargo_version: Some("1.82.0".to_string()),
+                rust_version: Some("1.82.0".to_string()),
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let json = serde_json::to_string_pretty(&receipt).expect("serialize");
+        insta::assert_snapshot!("receipt_all_published", json);
+    }
+
+    // ── Edge case snapshot: receipt some failed ──────────────────────
+
+    #[test]
+    fn snapshot_receipt_some_failed() {
+        let t = fixed_time();
+        let receipt = Receipt {
+            receipt_version: "shipper.receipt.v2".to_string(),
+            plan_id: "plan-some-fail".to_string(),
+            registry: Registry::crates_io(),
+            started_at: t,
+            finished_at: t,
+            packages: vec![
+                PackageReceipt {
+                    name: "core".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    started_at: t,
+                    finished_at: t,
+                    duration_ms: 2000,
+                    evidence: PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+                PackageReceipt {
+                    name: "cli".to_string(),
+                    version: "2.0.0".to_string(),
+                    attempts: 3,
+                    state: PackageState::Failed {
+                        class: ErrorClass::Permanent,
+                        message: "authorization denied".to_string(),
+                    },
+                    started_at: t,
+                    finished_at: t,
+                    duration_ms: 30000,
+                    evidence: PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+            ],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: None,
+            environment: EnvironmentFingerprint {
+                shipper_version: "0.3.0".to_string(),
+                cargo_version: None,
+                rust_version: None,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let json = serde_json::to_string_pretty(&receipt).expect("serialize");
+        insta::assert_snapshot!("receipt_some_failed", json);
     }
 }

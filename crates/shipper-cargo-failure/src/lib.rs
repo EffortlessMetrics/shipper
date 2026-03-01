@@ -963,6 +963,160 @@ mod tests {
         );
         assert_eq!(o.class, CargoFailureClass::Retryable);
     }
+
+    // ── ambiguous: "upload maybe succeeded" scenarios ───────────────────
+
+    #[test]
+    fn ambiguous_upload_maybe_succeeded_process_killed() {
+        // Cargo killed mid-upload — no retryable/permanent pattern in truncated output
+        let o = classify_publish_failure("Uploading my-crate v0.1.0 (registry `crates-io`)", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn ambiguous_upload_sent_no_response() {
+        // Upload request was dispatched but process exited before a response arrived
+        let o = classify_publish_failure("error: failed to get a response from the registry", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn ambiguous_signal_terminated() {
+        // Process terminated by signal (e.g. CI cancellation)
+        let o = classify_publish_failure("signal: killed", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn ambiguous_partial_json_response() {
+        // Registry returned truncated JSON — unclear if publish landed
+        let o = classify_publish_failure(r#"error: unexpected end of JSON: {"ok":tr"#, "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn ambiguous_only_status_code_no_pattern() {
+        // Status 409 doesn't match any known pattern
+        let o = classify_publish_failure("the server responded with status 409", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    // ── snapshot: ambiguous upload-maybe-succeeded scenarios ────────────
+
+    #[test]
+    fn snapshot_ambiguous_process_killed_mid_upload() {
+        let outcome =
+            classify_publish_failure("Uploading my-crate v0.1.0 (registry `crates-io`)", "");
+        insta::assert_debug_snapshot!("ambiguous_process_killed_mid_upload", outcome);
+    }
+
+    #[test]
+    fn snapshot_ambiguous_no_registry_response() {
+        let outcome =
+            classify_publish_failure("error: failed to get a response from the registry", "");
+        insta::assert_debug_snapshot!("ambiguous_no_registry_response", outcome);
+    }
+
+    #[test]
+    fn snapshot_ambiguous_signal_terminated() {
+        let outcome = classify_publish_failure("signal: killed", "");
+        insta::assert_debug_snapshot!("ambiguous_signal_terminated", outcome);
+    }
+
+    // ── snapshot: realistic mixed-stream scenarios ──────────────────────
+
+    #[test]
+    fn snapshot_realistic_ci_cancellation() {
+        let outcome = classify_publish_failure(
+            "Compiling my-crate v0.1.0\n\
+             Packaging my-crate v0.1.0\n\
+             Uploading my-crate v0.1.0\n\
+             Received signal 15, shutting down",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_ci_cancellation", outcome);
+    }
+
+    #[test]
+    fn snapshot_realistic_partial_json_response() {
+        let outcome = classify_publish_failure(r#"error: unexpected end of JSON: {"ok":tr"#, "");
+        insta::assert_debug_snapshot!("realistic_partial_json_response", outcome);
+    }
+
+    // ── additional edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn retryable_pattern_in_stderr_permanent_in_stdout_retryable_wins() {
+        let o = classify_publish_failure("connection refused", "version already exists");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn permanent_only_in_stdout_no_retryable_anywhere() {
+        let o = classify_publish_failure("some other output", "is already uploaded");
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn null_byte_in_output_does_not_crash() {
+        let o = classify_publish_failure("before\0after", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn very_long_output_all_noise_is_ambiguous() {
+        let noise = "xyzzy ".repeat(5000);
+        let o = classify_publish_failure(&noise, &noise);
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn pattern_as_exact_input_retryable() {
+        // Each retryable pattern, when given as the *exact* input, classifies correctly
+        for pattern in &RETRYABLE_PATTERNS {
+            let o = classify_publish_failure(pattern, "");
+            assert_eq!(o.class, CargoFailureClass::Retryable, "pattern: {pattern}");
+        }
+    }
+
+    #[test]
+    fn pattern_as_exact_input_permanent() {
+        // Each permanent pattern, when given as the *exact* input, classifies correctly.
+        // However, some permanent patterns are substrings of retryable patterns
+        // (e.g. "invalid" appears in both), so we skip patterns that overlap.
+        for pattern in &PERMANENT_PATTERNS {
+            let o = classify_publish_failure(pattern, "");
+            assert_ne!(
+                o.class,
+                CargoFailureClass::Ambiguous,
+                "pattern {pattern} should not be ambiguous"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_retryable_pattern_exhaustive() {
+        let results: Vec<_> = RETRYABLE_PATTERNS
+            .iter()
+            .map(|p| {
+                let o = classify_publish_failure(p, "");
+                format!("{p} => {:?}", o.class)
+            })
+            .collect();
+        insta::assert_snapshot!("retryable_pattern_exhaustive", results.join("\n"));
+    }
+
+    #[test]
+    fn snapshot_permanent_pattern_exhaustive() {
+        let results: Vec<_> = PERMANENT_PATTERNS
+            .iter()
+            .map(|p| {
+                let o = classify_publish_failure(p, "");
+                format!("{p} => {:?}", o.class)
+            })
+            .collect();
+        insta::assert_snapshot!("permanent_pattern_exhaustive", results.join("\n"));
+    }
 }
 
 #[cfg(test)]

@@ -165,12 +165,12 @@ mod tests {
 
         // Shipper version should always be set from CARGO_PKG_VERSION
         assert!(!fingerprint.shipper_version.is_empty());
-        // Should be a valid semver format (major.minor.patch)
+        // Should be a valid semver format (major.minor.patch[-prerelease])
         assert!(
             fingerprint
                 .shipper_version
                 .chars()
-                .all(|c| c.is_numeric() || c == '.')
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
         );
     }
 

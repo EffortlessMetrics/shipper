@@ -1,0 +1,25 @@
+---
+source: crates/shipper-cargo-failure/src/lib.rs
+assertion_line: 1122
+expression: "results.join(\"\\n\")"
+---
+too many requests => Retryable
+429 => Retryable
+timeout => Retryable
+timed out => Retryable
+connection reset => Retryable
+connection refused => Retryable
+connection closed => Retryable
+dns => Retryable
+tls => Retryable
+temporarily unavailable => Retryable
+failed to download => Retryable
+failed to send => Retryable
+server error => Retryable
+500 => Retryable
+502 => Retryable
+503 => Retryable
+504 => Retryable
+broken pipe => Retryable
+reset by peer => Retryable
+network unreachable => Retryable

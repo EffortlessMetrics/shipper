@@ -1,0 +1,27 @@
+---
+source: crates/shipper-cargo-failure/src/lib.rs
+assertion_line: 1134
+expression: "results.join(\"\\n\")"
+---
+failed to parse manifest => Permanent
+invalid => Permanent
+missing => Permanent
+license => Permanent
+description => Permanent
+readme => Permanent
+repository => Permanent
+could not compile => Permanent
+compilation failed => Permanent
+failed to verify => Permanent
+package is not allowed to be published => Permanent
+publish is disabled => Permanent
+yanked => Permanent
+forbidden => Permanent
+permission denied => Permanent
+not authorized => Permanent
+unauthorized => Permanent
+version already exists => Permanent
+is already uploaded => Permanent
+token is invalid => Permanent
+invalid credentials => Permanent
+checksum mismatch => Permanent
