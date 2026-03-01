@@ -6,3 +6,8 @@ fuzz/artifacts/
 fuzz/corpus/
 fuzz/target/
 fuzz/Cargo.lock
+
+# Temporary output files
+*.snap.new
+test-output.txt
+clippy-output.txt

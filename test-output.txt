@@ -1,9 +1,0 @@
-   Compiling shipper-cargo-failure v0.3.0-rc.1 (H:\Code\Rust\shipper\crates\shipper-cargo-failure)
-   Compiling shipper-execution-core v0.3.0-rc.1 (H:\Code\Rust\shipper\crates\shipper-execution-core)
-   Compiling shipper-engine-parallel v0.3.0-rc.1 (H:\Code\Rust\shipper\crates\shipper-engine-parallel)
-   Compiling shipper v0.3.0-rc.1 (H:\Code\Rust\shipper\crates\shipper)
-   Compiling shipper-cli v0.3.0-rc.1 (H:\Code\Rust\shipper\crates\shipper-cli)
-error: failed to remove file `H:\Code\Rust\shipper\target\debug\shipper.exe`
-
-Caused by:
-  Access is denied. (os error 5)
