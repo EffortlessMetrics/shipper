@@ -732,3 +732,309 @@ mod property_tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Policy ordering invariant tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod policy_ordering_tests {
+    use super::*;
+
+    fn enabled_count(e: &PolicyEffects) -> u8 {
+        u8::from(e.run_dry_run)
+            + u8::from(e.check_ownership)
+            + u8::from(e.strict_ownership)
+            + u8::from(e.readiness_enabled)
+    }
+
+    #[test]
+    fn safe_at_least_as_conservative_as_balanced() {
+        let safe = evaluate(PolicyKind::Safe, false, false, true, true);
+        let balanced = evaluate(PolicyKind::Balanced, false, false, true, true);
+        assert!(safe.run_dry_run >= balanced.run_dry_run);
+        assert!(safe.check_ownership >= balanced.check_ownership);
+        assert!(safe.strict_ownership >= balanced.strict_ownership);
+        assert!(safe.readiness_enabled >= balanced.readiness_enabled);
+    }
+
+    #[test]
+    fn balanced_at_least_as_conservative_as_fast() {
+        let balanced = evaluate(PolicyKind::Balanced, false, false, true, true);
+        let fast = evaluate(PolicyKind::Fast, false, false, true, true);
+        assert!(balanced.run_dry_run >= fast.run_dry_run);
+        assert!(balanced.check_ownership >= fast.check_ownership);
+        assert!(balanced.strict_ownership >= fast.strict_ownership);
+        assert!(balanced.readiness_enabled >= fast.readiness_enabled);
+    }
+
+    #[test]
+    fn fast_output_is_constant_regardless_of_flags() {
+        let expected = PolicyEffects {
+            run_dry_run: false,
+            check_ownership: false,
+            strict_ownership: false,
+            readiness_enabled: false,
+        };
+        for nv in [false, true] {
+            for so in [false, true] {
+                for stro in [false, true] {
+                    for re in [false, true] {
+                        assert_eq!(
+                            evaluate(PolicyKind::Fast, nv, so, stro, re),
+                            expected,
+                            "Fast must ignore flags: no_verify={nv}, skip_own={so}, strict={stro}, ready={re}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn conservativeness_count_ordering_default_flags() {
+        let safe = evaluate(PolicyKind::Safe, false, false, true, true);
+        let balanced = evaluate(PolicyKind::Balanced, false, false, true, true);
+        let fast = evaluate(PolicyKind::Fast, false, false, true, true);
+        assert!(enabled_count(&safe) >= enabled_count(&balanced));
+        assert!(enabled_count(&balanced) >= enabled_count(&fast));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-field coverage across all three variants
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod field_coverage_tests {
+    use super::*;
+
+    #[test]
+    fn run_dry_run_field_all_variants() {
+        // no_verify=false ⇒ Safe and Balanced enable, Fast does not
+        assert!(evaluate(PolicyKind::Safe, false, false, false, false).run_dry_run);
+        assert!(evaluate(PolicyKind::Balanced, false, false, false, false).run_dry_run);
+        assert!(!evaluate(PolicyKind::Fast, false, false, false, false).run_dry_run);
+
+        // no_verify=true ⇒ all disable
+        assert!(!evaluate(PolicyKind::Safe, true, false, false, false).run_dry_run);
+        assert!(!evaluate(PolicyKind::Balanced, true, false, false, false).run_dry_run);
+        assert!(!evaluate(PolicyKind::Fast, true, false, false, false).run_dry_run);
+    }
+
+    #[test]
+    fn check_ownership_field_all_variants() {
+        // Only Safe respects the flag
+        assert!(evaluate(PolicyKind::Safe, false, false, false, false).check_ownership);
+        assert!(!evaluate(PolicyKind::Balanced, false, false, false, false).check_ownership);
+        assert!(!evaluate(PolicyKind::Fast, false, false, false, false).check_ownership);
+
+        // Safe with skip_ownership disables it
+        assert!(!evaluate(PolicyKind::Safe, false, true, false, false).check_ownership);
+    }
+
+    #[test]
+    fn strict_ownership_field_all_variants() {
+        // Only Safe forwards the flag
+        assert!(evaluate(PolicyKind::Safe, false, false, true, false).strict_ownership);
+        assert!(!evaluate(PolicyKind::Balanced, false, false, true, false).strict_ownership);
+        assert!(!evaluate(PolicyKind::Fast, false, false, true, false).strict_ownership);
+    }
+
+    #[test]
+    fn readiness_enabled_field_all_variants() {
+        // Safe and Balanced forward, Fast ignores
+        assert!(evaluate(PolicyKind::Safe, false, false, false, true).readiness_enabled);
+        assert!(evaluate(PolicyKind::Balanced, false, false, false, true).readiness_enabled);
+        assert!(!evaluate(PolicyKind::Fast, false, false, false, true).readiness_enabled);
+
+        // When disabled at input, Safe and Balanced also report false
+        assert!(!evaluate(PolicyKind::Safe, false, false, false, false).readiness_enabled);
+        assert!(!evaluate(PolicyKind::Balanced, false, false, false, false).readiness_enabled);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Serialization snapshot tests (YAML)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod serialization_snapshot_tests {
+    use super::*;
+    use insta::assert_yaml_snapshot;
+
+    #[test]
+    fn snapshot_yaml_safe_policy_effects_default() {
+        let effects = evaluate(PolicyKind::Safe, false, false, true, true);
+        assert_yaml_snapshot!("safe_policy_effects_default", effects);
+    }
+
+    #[test]
+    fn snapshot_yaml_balanced_policy_effects_default() {
+        let effects = evaluate(PolicyKind::Balanced, false, false, true, true);
+        assert_yaml_snapshot!("balanced_policy_effects_default", effects);
+    }
+
+    #[test]
+    fn snapshot_yaml_fast_policy_effects_default() {
+        let effects = evaluate(PolicyKind::Fast, false, false, true, true);
+        assert_yaml_snapshot!("fast_policy_effects_default", effects);
+    }
+
+    #[test]
+    fn snapshot_yaml_all_policy_kinds() {
+        assert_yaml_snapshot!(
+            "all_policy_kinds",
+            vec![PolicyKind::Safe, PolicyKind::Balanced, PolicyKind::Fast,]
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trait behavior tests (Clone, Copy, Eq)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod trait_behavior_tests {
+    use super::*;
+
+    #[test]
+    fn policy_kind_clone_equals_original() {
+        for kind in [PolicyKind::Safe, PolicyKind::Balanced, PolicyKind::Fast] {
+            let copied = kind; // Copy
+            assert_eq!(kind, copied);
+            #[allow(clippy::clone_on_copy)]
+            let cloned = kind.clone(); // Clone
+            assert_eq!(kind, cloned);
+        }
+    }
+
+    #[test]
+    fn policy_effects_clone_equals_original() {
+        let effects = evaluate(PolicyKind::Safe, false, false, true, true);
+        let copied = effects; // Copy
+        assert_eq!(effects, copied);
+        #[allow(clippy::clone_on_copy)]
+        let cloned = effects.clone(); // Clone
+        assert_eq!(effects, cloned);
+    }
+
+    #[test]
+    fn policy_kind_eq_is_reflexive() {
+        assert_eq!(PolicyKind::Safe, PolicyKind::Safe);
+        assert_eq!(PolicyKind::Balanced, PolicyKind::Balanced);
+        assert_eq!(PolicyKind::Fast, PolicyKind::Fast);
+    }
+
+    #[test]
+    fn policy_kind_ne_across_variants() {
+        assert_ne!(PolicyKind::Safe, PolicyKind::Balanced);
+        assert_ne!(PolicyKind::Safe, PolicyKind::Fast);
+        assert_ne!(PolicyKind::Balanced, PolicyKind::Fast);
+    }
+
+    #[test]
+    fn policy_effects_ne_when_different() {
+        let safe = evaluate(PolicyKind::Safe, false, false, true, true);
+        let fast = evaluate(PolicyKind::Fast, false, false, true, true);
+        assert_ne!(safe, fast);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Debug format stability tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod debug_format_tests {
+    use super::*;
+
+    #[test]
+    fn debug_format_policy_kind_variants() {
+        assert_eq!(format!("{:?}", PolicyKind::Safe), "Safe");
+        assert_eq!(format!("{:?}", PolicyKind::Balanced), "Balanced");
+        assert_eq!(format!("{:?}", PolicyKind::Fast), "Fast");
+    }
+
+    #[test]
+    fn debug_format_policy_effects_contains_field_names() {
+        let effects = evaluate(PolicyKind::Safe, false, false, true, true);
+        let debug_str = format!("{effects:?}");
+        assert!(debug_str.contains("run_dry_run"));
+        assert!(debug_str.contains("check_ownership"));
+        assert!(debug_str.contains("strict_ownership"));
+        assert!(debug_str.contains("readiness_enabled"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Additional property-based tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod additional_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn fast_always_produces_constant_effects(
+            no_verify in any::<bool>(),
+            skip_ownership in any::<bool>(),
+            strict_ownership in any::<bool>(),
+            readiness in any::<bool>(),
+        ) {
+            let effects = evaluate(PolicyKind::Fast, no_verify, skip_ownership, strict_ownership, readiness);
+            prop_assert!(!effects.run_dry_run);
+            prop_assert!(!effects.check_ownership);
+            prop_assert!(!effects.strict_ownership);
+            prop_assert!(!effects.readiness_enabled);
+        }
+
+        #[test]
+        fn safe_at_least_as_conservative_as_balanced_all_inputs(
+            no_verify in any::<bool>(),
+            skip_ownership in any::<bool>(),
+            strict_ownership in any::<bool>(),
+            readiness in any::<bool>(),
+        ) {
+            let safe = evaluate(PolicyKind::Safe, no_verify, skip_ownership, strict_ownership, readiness);
+            let balanced = evaluate(PolicyKind::Balanced, no_verify, skip_ownership, strict_ownership, readiness);
+            prop_assert!(safe.run_dry_run >= balanced.run_dry_run);
+            prop_assert!(safe.check_ownership >= balanced.check_ownership);
+            prop_assert!(safe.strict_ownership >= balanced.strict_ownership);
+            prop_assert!(safe.readiness_enabled >= balanced.readiness_enabled);
+        }
+
+        #[test]
+        fn balanced_at_least_as_conservative_as_fast_all_inputs(
+            no_verify in any::<bool>(),
+            skip_ownership in any::<bool>(),
+            strict_ownership in any::<bool>(),
+            readiness in any::<bool>(),
+        ) {
+            let balanced = evaluate(PolicyKind::Balanced, no_verify, skip_ownership, strict_ownership, readiness);
+            let fast = evaluate(PolicyKind::Fast, no_verify, skip_ownership, strict_ownership, readiness);
+            prop_assert!(balanced.run_dry_run >= fast.run_dry_run);
+            prop_assert!(balanced.check_ownership >= fast.check_ownership);
+            prop_assert!(balanced.strict_ownership >= fast.strict_ownership);
+            prop_assert!(balanced.readiness_enabled >= fast.readiness_enabled);
+        }
+
+        #[test]
+        fn publish_policy_to_policy_kind_roundtrip_preserves_variant(
+            pp in prop_oneof![
+                Just(PublishPolicy::Safe),
+                Just(PublishPolicy::Balanced),
+                Just(PublishPolicy::Fast),
+            ]
+        ) {
+            let kind = PolicyKind::from(pp);
+            match pp {
+                PublishPolicy::Safe => prop_assert_eq!(kind, PolicyKind::Safe),
+                PublishPolicy::Balanced => prop_assert_eq!(kind, PolicyKind::Balanced),
+                PublishPolicy::Fast => prop_assert_eq!(kind, PolicyKind::Fast),
+            }
+        }
+    }
+}

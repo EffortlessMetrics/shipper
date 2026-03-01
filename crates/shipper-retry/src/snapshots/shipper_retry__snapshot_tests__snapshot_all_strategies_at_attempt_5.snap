@@ -1,0 +1,8 @@
+---
+source: crates/shipper-retry/src/lib.rs
+expression: result
+---
+- "Immediate: 0ns"
+- "Exponential: 16s"
+- "Linear: 5s"
+- "Constant: 1s"

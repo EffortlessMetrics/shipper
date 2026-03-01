@@ -1,0 +1,7 @@
+---
+source: crates/shipper-policy/src/lib.rs
+expression: "vec![PolicyKind::Safe, PolicyKind::Balanced, PolicyKind::Fast,]"
+---
+- Safe
+- Balanced
+- Fast

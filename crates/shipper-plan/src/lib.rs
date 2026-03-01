@@ -1846,6 +1846,366 @@ publish = false
         }
     }
 
+    // ── Build-dependency ordering ─────────────────────────────────────
+
+    fn create_build_dep_workspace(root: &Path) {
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["codegen", "app"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("codegen/Cargo.toml"),
+            r#"
+[package]
+name = "codegen"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("codegen/src/lib.rs"), "");
+        write_file(
+            &root.join("app/Cargo.toml"),
+            r#"
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+codegen = { path = "../codegen", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("app/src/lib.rs"), "");
+        write_file(&root.join("app/build.rs"), "fn main() {}");
+    }
+
+    #[test]
+    fn build_plan_build_dependency_ordering() {
+        let td = tempdir().expect("tempdir");
+        create_build_dep_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        // Build-dep codegen must appear before app
+        assert_eq!(names, vec!["codegen", "app"]);
+        assert_eq!(ws.plan.dependencies["app"], vec!["codegen".to_string()]);
+    }
+
+    #[test]
+    fn snapshot_build_dep_plan() {
+        let td = tempdir().expect("tempdir");
+        create_build_dep_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("build_dep_plan", snapshot_of(&ws));
+    }
+
+    // ── Multiple package selection ────────────────────────────────────
+
+    #[test]
+    fn build_plan_multiple_selected_packages() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        // Select both "b" (depends on "a") and "zeta" (independent)
+        spec.selected_packages = Some(vec!["b".to_string(), "zeta".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        // "a" is pulled in transitively by "b"
+        assert_eq!(names, vec!["a", "b", "zeta"]);
+    }
+
+    #[test]
+    fn snapshot_multi_select_plan() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["b".to_string(), "zeta".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        insta::assert_yaml_snapshot!("multi_select_plan", snapshot_of(&ws));
+    }
+
+    // ── Selecting leaf is standalone ──────────────────────────────────
+
+    #[test]
+    fn build_plan_selecting_leaf_is_standalone() {
+        let td = tempdir().expect("tempdir");
+        create_diamond_workspace(td.path());
+
+        // diamond-d is the leaf (no deps); selecting it gives just that one
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["diamond-d".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["diamond-d"]);
+    }
+
+    // ── Selecting all packages equals no selection ────────────────────
+
+    #[test]
+    fn build_plan_selecting_all_equals_no_selection() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let ws_all = build_plan(&spec_for(td.path())).expect("plan");
+        let all_names: Vec<&str> = ws_all
+            .plan
+            .packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(all_names.iter().map(|n| n.to_string()).collect());
+        let ws_explicit = build_plan(&spec).expect("plan");
+        let explicit_names: Vec<&str> = ws_explicit
+            .plan
+            .packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+
+        assert_eq!(all_names, explicit_names);
+        assert_eq!(ws_all.plan.plan_id, ws_explicit.plan.plan_id);
+    }
+
+    // ── Three-node cycle detection ───────────────────────────────────
+
+    #[test]
+    fn topo_sort_three_node_cycle() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let metadata = MetadataCommand::new()
+            .manifest_path(td.path().join("Cargo.toml"))
+            .exec()
+            .expect("metadata");
+
+        let pkg_map = metadata
+            .packages
+            .iter()
+            .map(|p| (p.id.clone(), p))
+            .collect::<BTreeMap<PackageId, &cargo_metadata::Package>>();
+        let mut by_name = BTreeMap::<String, PackageId>::new();
+        for pkg in &metadata.packages {
+            by_name.insert(pkg.name.to_string(), pkg.id.clone());
+        }
+
+        let a = by_name.get("a").expect("a").clone();
+        let b = by_name.get("b").expect("b").clone();
+        let alpha = by_name.get("alpha").expect("alpha").clone();
+
+        // Synthetic cycle: a -> b -> alpha -> a
+        let included = [a.clone(), b.clone(), alpha.clone()]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let deps_of = BTreeMap::from([
+            (a.clone(), [b.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (
+                b.clone(),
+                [alpha.clone()].into_iter().collect::<BTreeSet<_>>(),
+            ),
+            (
+                alpha.clone(),
+                [a.clone()].into_iter().collect::<BTreeSet<_>>(),
+            ),
+        ]);
+        let dependents_of = BTreeMap::from([
+            (b.clone(), [a.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (
+                alpha.clone(),
+                [b.clone()].into_iter().collect::<BTreeSet<_>>(),
+            ),
+            (
+                a.clone(),
+                [alpha.clone()].into_iter().collect::<BTreeSet<_>>(),
+            ),
+        ]);
+
+        let err = topo_sort(&included, &deps_of, &dependents_of, &pkg_map).expect_err("cycle");
+        assert!(format!("{err:#}").contains("dependency cycle detected"));
+    }
+
+    // ── Mixed versions ───────────────────────────────────────────────
+
+    #[test]
+    fn build_plan_mixed_versions() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["core", "util"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("core/Cargo.toml"),
+            r#"
+[package]
+name = "core"
+version = "2.5.0"
+edition = "2021"
+"#,
+        );
+        write_file(&td.path().join("core/src/lib.rs"), "");
+        write_file(
+            &td.path().join("util/Cargo.toml"),
+            r#"
+[package]
+name = "util"
+version = "0.3.1"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core", version = "2.5.0" }
+"#,
+        );
+        write_file(&td.path().join("util/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws.plan.packages[0].name, "core");
+        assert_eq!(ws.plan.packages[0].version, "2.5.0");
+        assert_eq!(ws.plan.packages[1].name, "util");
+        assert_eq!(ws.plan.packages[1].version, "0.3.1");
+    }
+
+    // ── Plan ID differs for different selections ─────────────────────
+
+    #[test]
+    fn build_plan_plan_id_differs_for_different_selections() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let ws_all = build_plan(&spec_for(td.path())).expect("plan");
+
+        let mut spec_a = spec_for(td.path());
+        spec_a.selected_packages = Some(vec!["a".to_string()]);
+        let ws_a = build_plan(&spec_a).expect("plan");
+
+        assert_ne!(ws_all.plan.plan_id, ws_a.plan.plan_id);
+    }
+
+    // ── Dev-deps excluded from transitive closure ────────────────────
+
+    #[test]
+    fn build_plan_dev_deps_excluded_from_transitive() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        // "alpha" has a dev-dep on "a"; selecting "alpha" should NOT pull in "a"
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["alpha".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha"]);
+    }
+
+    // ── compute_plan_id boundary: name@version separator ─────────────
+
+    #[test]
+    fn compute_plan_id_no_collision_on_name_version_boundary() {
+        // Ensure "foo@1.0.0" and "fo@o1.0.0" produce different IDs
+        let pkgs_a = vec![PlannedPackage {
+            name: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: PathBuf::from("a/Cargo.toml"),
+        }];
+        let pkgs_b = vec![PlannedPackage {
+            name: "fo".to_string(),
+            version: "o1.0.0".to_string(),
+            manifest_path: PathBuf::from("b/Cargo.toml"),
+        }];
+        let id_a = compute_plan_id("https://crates.io", &pkgs_a);
+        let id_b = compute_plan_id("https://crates.io", &pkgs_b);
+        assert_ne!(id_a, id_b);
+    }
+
+    // ── compute_plan_id is order-sensitive ────────────────────────────
+
+    #[test]
+    fn compute_plan_id_is_order_sensitive() {
+        let pkg_a = PlannedPackage {
+            name: "aaa".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: PathBuf::from("a/Cargo.toml"),
+        };
+        let pkg_b = PlannedPackage {
+            name: "bbb".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: PathBuf::from("b/Cargo.toml"),
+        };
+        let id_ab = compute_plan_id("https://crates.io", &[pkg_a.clone(), pkg_b.clone()]);
+        let id_ba = compute_plan_id("https://crates.io", &[pkg_b, pkg_a]);
+        assert_ne!(id_ab, id_ba);
+    }
+
+    // ── compute_plan_id is valid SHA256 hex ──────────────────────────
+
+    #[test]
+    fn compute_plan_id_is_sha256_hex() {
+        let pkgs = vec![
+            PlannedPackage {
+                name: "x".to_string(),
+                version: "0.0.1".to_string(),
+                manifest_path: PathBuf::from("x/Cargo.toml"),
+            },
+            PlannedPackage {
+                name: "y".to_string(),
+                version: "0.0.2".to_string(),
+                manifest_path: PathBuf::from("y/Cargo.toml"),
+            },
+        ];
+        let id = compute_plan_id("https://example.com", &pkgs);
+        assert_eq!(id.len(), 64, "SHA256 hex digest must be 64 chars");
+        assert!(
+            id.chars().all(|c| c.is_ascii_hexdigit()),
+            "all chars must be hex digits"
+        );
+    }
+
+    // ── Dependencies map keys match planned packages exactly ─────────
+
+    #[test]
+    fn build_plan_deps_map_keys_match_packages() {
+        let td = tempdir().expect("tempdir");
+        create_diamond_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let pkg_names: BTreeSet<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        let dep_keys: BTreeSet<&str> = ws.plan.dependencies.keys().map(|k| k.as_str()).collect();
+        assert_eq!(pkg_names, dep_keys);
+    }
+
+    // ── Plan stability for build-dep workspace ───────────────────────
+
+    #[test]
+    fn plan_stability_build_dep_10_runs() {
+        let td = tempdir().expect("tempdir");
+        create_build_dep_workspace(td.path());
+        let spec = spec_for(td.path());
+
+        let baseline = build_plan(&spec).expect("plan");
+        let baseline_names: Vec<&str> = baseline
+            .plan
+            .packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+
+        for _ in 0..10 {
+            let ws = build_plan(&spec).expect("plan");
+            let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(names, baseline_names);
+            assert_eq!(ws.plan.plan_id, baseline.plan.plan_id);
+        }
+    }
+
     proptest! {
         #[test]
         fn compute_plan_id_is_stable_and_hex(
@@ -1938,6 +2298,62 @@ publish = false
                     }
                 }
             }
+        }
+
+        /// Property: different package lists produce different plan IDs (high probability).
+        #[test]
+        fn prop_plan_id_differs_for_distinct_packages(
+            name_a in "[a-z]{1,6}",
+            name_b in "[a-z]{1,6}",
+            ver_a in 0u8..20u8,
+            ver_b in 0u8..20u8,
+        ) {
+            // Only test when inputs actually differ
+            prop_assume!(name_a != name_b || ver_a != ver_b);
+            let pkgs_a = vec![PlannedPackage {
+                name: name_a,
+                version: format!("{ver_a}.0.0"),
+                manifest_path: Path::new("a").join("Cargo.toml"),
+            }];
+            let pkgs_b = vec![PlannedPackage {
+                name: name_b,
+                version: format!("{ver_b}.0.0"),
+                manifest_path: Path::new("b").join("Cargo.toml"),
+            }];
+            let id_a = compute_plan_id("https://crates.io", &pkgs_a);
+            let id_b = compute_plan_id("https://crates.io", &pkgs_b);
+            prop_assert_ne!(id_a, id_b);
+        }
+
+        /// Property: independent packages are always sorted alphabetically.
+        #[test]
+        fn prop_independent_packages_sorted_alphabetically(count in 2usize..8) {
+            let td = tempdir().expect("tempdir");
+            // Generate sorted unique names so we can predict the order
+            let names: Vec<String> = (0..count).map(|i| format!("ind-{i:02}")).collect();
+            let members: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+            write_file(
+                &td.path().join("Cargo.toml"),
+                &format!(
+                    "[workspace]\nmembers = [{members}]\nresolver = \"2\"\n",
+                    members = members.join(", ")
+                ),
+            );
+            for name in &names {
+                write_file(
+                    &td.path().join(format!("{name}/Cargo.toml")),
+                    &format!(
+                        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+                    ),
+                );
+                write_file(&td.path().join(format!("{name}/src/lib.rs")), "");
+            }
+
+            let ws = build_plan(&spec_for(td.path())).expect("plan");
+            let plan_names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+            let mut sorted = plan_names.clone();
+            sorted.sort();
+            prop_assert_eq!(plan_names, sorted, "independent packages must be alphabetical");
         }
     }
 }

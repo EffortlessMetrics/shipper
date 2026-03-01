@@ -835,6 +835,346 @@ mod tests {
         assert!(receipt_path(&dir).exists());
     }
 
+    // ── Persistence double-roundtrip ────────────────────────────────
+
+    #[test]
+    fn state_double_save_produces_identical_json() {
+        let td = tempdir().expect("tempdir");
+        let dir1 = td.path().join("first");
+        let dir2 = td.path().join("second");
+        let st = sample_state();
+
+        save_state(&dir1, &st).expect("first save");
+        let loaded = load_state(&dir1).expect("load").expect("exists");
+        save_state(&dir2, &loaded).expect("second save");
+
+        let json1 = fs::read_to_string(state_path(&dir1)).expect("read first");
+        let json2 = fs::read_to_string(state_path(&dir2)).expect("read second");
+        assert_eq!(json1, json2, "save→load→save must produce identical JSON");
+    }
+
+    #[test]
+    fn receipt_double_save_produces_identical_json() {
+        let td = tempdir().expect("tempdir");
+        let dir1 = td.path().join("first");
+        let dir2 = td.path().join("second");
+        let receipt = sample_receipt();
+
+        write_receipt(&dir1, &receipt).expect("first write");
+        let loaded = load_receipt(&dir1).expect("load").expect("exists");
+        write_receipt(&dir2, &loaded).expect("second write");
+
+        let json1 = fs::read_to_string(receipt_path(&dir1)).expect("read first");
+        let json2 = fs::read_to_string(receipt_path(&dir2)).expect("read second");
+        assert_eq!(json1, json2, "write→load→write must produce identical JSON");
+    }
+
+    // ── State lifecycle transitions ─────────────────────────────────
+
+    #[test]
+    fn state_lifecycle_pending_uploaded_published() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("lifecycle");
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "crate-a@1.0.0".to_string(),
+            PackageProgress {
+                name: "crate-a".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 0,
+                state: PackageState::Pending,
+                last_updated_at: Utc::now(),
+            },
+        );
+
+        let mut state = ExecutionState {
+            state_version: CURRENT_STATE_VERSION.to_string(),
+            plan_id: "lifecycle-plan".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
+        };
+
+        // Pending
+        save_state(&dir, &state).expect("save pending");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert!(matches!(
+            loaded.packages["crate-a@1.0.0"].state,
+            PackageState::Pending
+        ));
+
+        // Pending → Uploaded
+        state.packages.get_mut("crate-a@1.0.0").unwrap().state = PackageState::Uploaded;
+        state.packages.get_mut("crate-a@1.0.0").unwrap().attempts = 1;
+        save_state(&dir, &state).expect("save uploaded");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert!(matches!(
+            loaded.packages["crate-a@1.0.0"].state,
+            PackageState::Uploaded
+        ));
+
+        // Uploaded → Published
+        state.packages.get_mut("crate-a@1.0.0").unwrap().state = PackageState::Published;
+        save_state(&dir, &state).expect("save published");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert!(matches!(
+            loaded.packages["crate-a@1.0.0"].state,
+            PackageState::Published
+        ));
+        assert_eq!(loaded.packages["crate-a@1.0.0"].attempts, 1);
+    }
+
+    #[test]
+    fn state_all_error_classes_persist() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("errors");
+
+        let mut packages = BTreeMap::new();
+        for (key, class, msg) in [
+            ("a@1.0.0", shipper_types::ErrorClass::Retryable, "timeout"),
+            ("b@1.0.0", shipper_types::ErrorClass::Permanent, "denied"),
+            ("c@1.0.0", shipper_types::ErrorClass::Ambiguous, "unclear"),
+        ] {
+            let name = key.split('@').next().unwrap();
+            packages.insert(
+                key.to_string(),
+                PackageProgress {
+                    name: name.to_string(),
+                    version: "1.0.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Failed {
+                        class,
+                        message: msg.to_string(),
+                    },
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+
+        let state = ExecutionState {
+            state_version: CURRENT_STATE_VERSION.to_string(),
+            plan_id: "error-plan".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
+        };
+
+        save_state(&dir, &state).expect("save");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.packages.len(), 3);
+
+        match &loaded.packages["a@1.0.0"].state {
+            PackageState::Failed { class, .. } => {
+                assert!(matches!(class, shipper_types::ErrorClass::Retryable));
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        match &loaded.packages["b@1.0.0"].state {
+            PackageState::Failed { class, .. } => {
+                assert!(matches!(class, shipper_types::ErrorClass::Permanent));
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        match &loaded.packages["c@1.0.0"].state {
+            PackageState::Failed { class, .. } => {
+                assert!(matches!(class, shipper_types::ErrorClass::Ambiguous));
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    // ── Edge cases ──────────────────────────────────────────────────
+
+    #[test]
+    fn state_empty_packages_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("empty");
+
+        let state = ExecutionState {
+            state_version: CURRENT_STATE_VERSION.to_string(),
+            plan_id: "empty-plan".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::new(),
+        };
+
+        save_state(&dir, &state).expect("save");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert!(loaded.packages.is_empty());
+        assert_eq!(loaded.plan_id, "empty-plan");
+    }
+
+    #[test]
+    fn receipt_empty_packages_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("empty");
+
+        let empty_receipt = Receipt {
+            packages: vec![],
+            ..sample_receipt()
+        };
+
+        write_receipt(&dir, &empty_receipt).expect("write");
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+        assert!(loaded.packages.is_empty());
+    }
+
+    #[test]
+    fn clear_state_noop_when_no_state_exists() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("noop");
+        fs::create_dir_all(&dir).expect("mkdir");
+        clear_state(&dir).expect("clear on empty dir");
+        assert!(!state_path(&dir).exists());
+    }
+
+    #[test]
+    fn load_receipt_returns_none_when_missing() {
+        let td = tempdir().expect("tempdir");
+        let loaded = load_receipt(td.path()).expect("load");
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn state_overwrite_replaces_all_data() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("overwrite");
+
+        let st1 = ExecutionState {
+            state_version: CURRENT_STATE_VERSION.to_string(),
+            plan_id: "plan-v1".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::new(),
+        };
+        save_state(&dir, &st1).expect("save v1");
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "new@2.0.0".to_string(),
+            PackageProgress {
+                name: "new".to_string(),
+                version: "2.0.0".to_string(),
+                attempts: 3,
+                state: PackageState::Published,
+                last_updated_at: Utc::now(),
+            },
+        );
+        let st2 = ExecutionState {
+            state_version: CURRENT_STATE_VERSION.to_string(),
+            plan_id: "plan-v2".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
+        };
+        save_state(&dir, &st2).expect("save v2");
+
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.plan_id, "plan-v2");
+        assert_eq!(loaded.packages.len(), 1);
+        assert!(loaded.packages.contains_key("new@2.0.0"));
+    }
+
+    #[test]
+    fn state_version_constant_preserved_on_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("version");
+        save_state(&dir, &sample_state()).expect("save");
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.state_version, CURRENT_STATE_VERSION);
+    }
+
+    #[test]
+    fn receipt_version_constant_preserved_on_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("version");
+        write_receipt(&dir, &sample_receipt()).expect("write");
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.receipt_version, CURRENT_RECEIPT_VERSION);
+    }
+
+    #[test]
+    fn state_with_special_chars_in_plan_id() {
+        let td = tempdir().expect("tempdir");
+        let special_ids = [
+            "plan with spaces",
+            "plan/with/slashes",
+            "plan\"with\"quotes",
+            "план-юникод",
+            "\u{1f680}release-v1",
+        ];
+
+        for (i, plan_id) in special_ids.iter().enumerate() {
+            let dir = td.path().join(format!("special-{i}"));
+            let state = ExecutionState {
+                state_version: CURRENT_STATE_VERSION.to_string(),
+                plan_id: plan_id.to_string(),
+                registry: Registry::crates_io(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                packages: BTreeMap::new(),
+            };
+
+            save_state(&dir, &state).expect("save");
+            let loaded = load_state(&dir).expect("load").expect("exists");
+            assert_eq!(loaded.plan_id, *plan_id);
+        }
+    }
+
+    #[test]
+    fn state_plan_id_mismatch_detection() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("mismatch");
+
+        let state = ExecutionState {
+            state_version: CURRENT_STATE_VERSION.to_string(),
+            plan_id: "original-plan-abc".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::new(),
+        };
+        save_state(&dir, &state).expect("save");
+
+        let loaded = load_state(&dir).expect("load").expect("exists");
+        assert_ne!(loaded.plan_id, "different-plan-xyz");
+        assert_eq!(loaded.plan_id, "original-plan-abc");
+    }
+
+    #[test]
+    fn receipt_with_high_attempt_count() {
+        let td = tempdir().expect("tempdir");
+        let dir = td.path().join("high-attempts");
+
+        let receipt = Receipt {
+            packages: vec![PackageReceipt {
+                name: "flaky".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 99,
+                state: PackageState::Published,
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 999_999,
+                evidence: shipper_types::PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            }],
+            ..sample_receipt()
+        };
+
+        write_receipt(&dir, &receipt).expect("write");
+        let loaded = load_receipt(&dir).expect("load").expect("exists");
+        assert_eq!(loaded.packages[0].attempts, 99);
+        assert_eq!(loaded.packages[0].duration_ms, 999_999);
+    }
+
     // ── Insta snapshot helpers ──────────────────────────────────────
 
     use chrono::TimeZone;
@@ -1003,6 +1343,155 @@ mod tests {
 
         let json = serde_json::to_string_pretty(&state).expect("serialize");
         insta::assert_snapshot!("state_transition_pending_to_skipped", json);
+    }
+
+    // ── Snapshot: state with all PackageState variants ─────────────
+
+    #[test]
+    fn snapshot_state_all_lifecycle_variants() {
+        let fixed = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "crate-a@1.0.0".to_string(),
+            PackageProgress {
+                name: "crate-a".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 0,
+                state: PackageState::Pending,
+                last_updated_at: fixed,
+            },
+        );
+        packages.insert(
+            "crate-b@1.0.0".to_string(),
+            PackageProgress {
+                name: "crate-b".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 1,
+                state: PackageState::Uploaded,
+                last_updated_at: fixed,
+            },
+        );
+        packages.insert(
+            "crate-c@1.0.0".to_string(),
+            PackageProgress {
+                name: "crate-c".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 1,
+                state: PackageState::Published,
+                last_updated_at: fixed,
+            },
+        );
+        packages.insert(
+            "crate-d@1.0.0".to_string(),
+            PackageProgress {
+                name: "crate-d".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 0,
+                state: PackageState::Skipped {
+                    reason: "already published".to_string(),
+                },
+                last_updated_at: fixed,
+            },
+        );
+        packages.insert(
+            "crate-e@1.0.0".to_string(),
+            PackageProgress {
+                name: "crate-e".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 3,
+                state: PackageState::Failed {
+                    class: shipper_types::ErrorClass::Retryable,
+                    message: "network timeout".to_string(),
+                },
+                last_updated_at: fixed,
+            },
+        );
+        packages.insert(
+            "crate-f@1.0.0".to_string(),
+            PackageProgress {
+                name: "crate-f".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 1,
+                state: PackageState::Ambiguous {
+                    message: "upload status unknown".to_string(),
+                },
+                last_updated_at: fixed,
+            },
+        );
+
+        let state = ExecutionState {
+            state_version: CURRENT_STATE_VERSION.to_string(),
+            plan_id: "all-variants-plan".to_string(),
+            registry: Registry::crates_io(),
+            created_at: fixed,
+            updated_at: fixed,
+            packages,
+        };
+
+        let json = serde_json::to_string_pretty(&state).expect("serialize");
+        insta::assert_snapshot!("state_all_lifecycle_variants", json);
+    }
+
+    // ── Snapshot: receipt with all packages failed ───────────────────
+
+    #[test]
+    fn snapshot_receipt_all_failed() {
+        let fixed = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let finished = Utc.with_ymd_and_hms(2025, 1, 15, 12, 10, 0).unwrap();
+
+        let receipt = Receipt {
+            receipt_version: CURRENT_RECEIPT_VERSION.to_string(),
+            plan_id: "all-failed-plan".to_string(),
+            registry: Registry::crates_io(),
+            started_at: fixed,
+            finished_at: finished,
+            packages: vec![
+                PackageReceipt {
+                    name: "core".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempts: 3,
+                    state: PackageState::Failed {
+                        class: shipper_types::ErrorClass::Retryable,
+                        message: "registry timeout after 3 attempts".to_string(),
+                    },
+                    started_at: fixed,
+                    finished_at: finished,
+                    duration_ms: 180_000,
+                    evidence: shipper_types::PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+                PackageReceipt {
+                    name: "utils".to_string(),
+                    version: "0.5.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Failed {
+                        class: shipper_types::ErrorClass::Permanent,
+                        message: "crate name is reserved".to_string(),
+                    },
+                    started_at: fixed,
+                    finished_at: finished,
+                    duration_ms: 5_000,
+                    evidence: shipper_types::PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+            ],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: None,
+            environment: shipper_types::EnvironmentFingerprint {
+                shipper_version: "0.3.0".to_string(),
+                cargo_version: Some("1.82.0".to_string()),
+                rust_version: Some("1.82.0".to_string()),
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let json = serde_json::to_string_pretty(&receipt).expect("serialize");
+        insta::assert_snapshot!("receipt_all_failed", json);
     }
 
     // ── Property-based tests (proptest) ─────────────────────────────
@@ -1281,6 +1770,42 @@ mod tests {
                     prop_assert_eq!(&orig.version, &ld.version);
                     prop_assert_eq!(orig.attempts, ld.attempts);
                 }
+            }
+        }
+
+        // ── Double-roundtrip idempotency ────────────────────────────
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(20))]
+
+            #[test]
+            fn state_save_load_save_byte_identical(state in arb_execution_state()) {
+                let td = tempfile::tempdir().expect("tempdir");
+                let dir1 = td.path().join("first");
+                let dir2 = td.path().join("second");
+
+                save_state(&dir1, &state).expect("first save");
+                let loaded = load_state(&dir1).expect("load").expect("exists");
+                save_state(&dir2, &loaded).expect("second save");
+
+                let json1 = fs::read_to_string(state_path(&dir1)).expect("read first");
+                let json2 = fs::read_to_string(state_path(&dir2)).expect("read second");
+                prop_assert_eq!(json1, json2);
+            }
+
+            #[test]
+            fn receipt_save_load_save_byte_identical(receipt in arb_receipt()) {
+                let td = tempfile::tempdir().expect("tempdir");
+                let dir1 = td.path().join("first");
+                let dir2 = td.path().join("second");
+
+                write_receipt(&dir1, &receipt).expect("first write");
+                let loaded = load_receipt(&dir1).expect("load").expect("exists");
+                write_receipt(&dir2, &loaded).expect("second write");
+
+                let json1 = fs::read_to_string(receipt_path(&dir1)).expect("read first");
+                let json2 = fs::read_to_string(receipt_path(&dir2)).expect("read second");
+                prop_assert_eq!(json1, json2);
             }
         }
     }

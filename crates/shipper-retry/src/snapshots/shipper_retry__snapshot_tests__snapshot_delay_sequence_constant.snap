@@ -1,0 +1,12 @@
+---
+source: crates/shipper-retry/src/lib.rs
+expression: delays
+---
+- "attempt 1: 500ms"
+- "attempt 2: 500ms"
+- "attempt 3: 500ms"
+- "attempt 4: 500ms"
+- "attempt 5: 500ms"
+- "attempt 6: 500ms"
+- "attempt 7: 500ms"
+- "attempt 8: 500ms"
