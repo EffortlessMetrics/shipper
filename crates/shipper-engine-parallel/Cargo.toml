@@ -34,6 +34,7 @@ shipper-webhook = { path = "../shipper-webhook" }
 [dev-dependencies]
 shipper-encrypt = { path = "../shipper-encrypt" }
 proptest.workspace = true
+insta = { workspace = true }
 serial_test = "3.3.1"
 temp-env = "0.3"
 tempfile = "3.25.0"

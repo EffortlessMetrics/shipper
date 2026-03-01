@@ -1,0 +1,14 @@
+---
+source: crates/shipper-levels/src/lib.rs
+expression: level_summary(&levels)
+---
+- - 0
+  - - pkg-0
+- - 1
+  - - pkg-1
+- - 2
+  - - pkg-2
+- - 3
+  - - pkg-3
+- - 4
+  - - pkg-4

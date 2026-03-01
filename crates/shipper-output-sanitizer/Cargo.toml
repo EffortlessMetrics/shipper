@@ -14,6 +14,7 @@ categories = ["development-tools", "authentication", "web-programming"]
 
 [dev-dependencies]
 proptest.workspace = true
+insta = { workspace = true }
 
 [lints]
 workspace = true

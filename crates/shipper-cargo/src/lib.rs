@@ -1063,4 +1063,97 @@ mod tests {
             }
         }
     }
+
+    mod snapshot_tests {
+        use super::*;
+        use insta::{assert_debug_snapshot, assert_yaml_snapshot};
+
+        #[test]
+        fn snapshot_cargo_output_success() {
+            let output = CargoOutput {
+                exit_code: 0,
+                stdout_tail: "published shipper v0.3.0".to_string(),
+                stderr_tail: String::new(),
+                duration: Duration::from_secs(12),
+                timed_out: false,
+            };
+            assert_debug_snapshot!(output);
+        }
+
+        #[test]
+        fn snapshot_cargo_output_failure() {
+            let output = CargoOutput {
+                exit_code: 101,
+                stdout_tail: String::new(),
+                stderr_tail: "error: failed to verify package tarball".to_string(),
+                duration: Duration::from_millis(3200),
+                timed_out: false,
+            };
+            assert_debug_snapshot!(output);
+        }
+
+        #[test]
+        fn snapshot_cargo_output_timeout() {
+            let output = CargoOutput {
+                exit_code: -1,
+                stdout_tail: String::new(),
+                stderr_tail: "cargo publish timed out after 300s".to_string(),
+                duration: Duration::from_secs(300),
+                timed_out: true,
+            };
+            assert_debug_snapshot!(output);
+        }
+
+        #[test]
+        fn snapshot_package_info_simple() {
+            let info = PackageInfo {
+                name: "shipper-cargo".to_string(),
+                version: "0.3.0".to_string(),
+                manifest_path: "crates/shipper-cargo/Cargo.toml".to_string(),
+                is_workspace_member: true,
+                publish: vec![],
+            };
+            assert_yaml_snapshot!(info);
+        }
+
+        #[test]
+        fn snapshot_package_info_with_registries() {
+            let info = PackageInfo {
+                name: "my-private-crate".to_string(),
+                version: "1.2.3-beta.1".to_string(),
+                manifest_path: "crates/my-private-crate/Cargo.toml".to_string(),
+                is_workspace_member: false,
+                publish: vec!["crates-io".to_string(), "my-private-registry".to_string()],
+            };
+            assert_yaml_snapshot!(info);
+        }
+
+        #[test]
+        fn snapshot_valid_package_names() {
+            let names = vec!["my-crate", "my_crate", "a", "_private", "crate-with-123"];
+            let results: Vec<(&str, bool)> = names
+                .into_iter()
+                .map(|n| (n, is_valid_package_name(n)))
+                .collect();
+            assert_debug_snapshot!(results);
+        }
+
+        #[test]
+        fn snapshot_invalid_package_names() {
+            let names = vec![
+                "",
+                "123-start",
+                "-hyphen-start",
+                "MyCrate",
+                "my.crate",
+                "my crate",
+                "my@crate",
+            ];
+            let results: Vec<(&str, bool)> = names
+                .into_iter()
+                .map(|n| (n, is_valid_package_name(n)))
+                .collect();
+            assert_debug_snapshot!(results);
+        }
+    }
 }

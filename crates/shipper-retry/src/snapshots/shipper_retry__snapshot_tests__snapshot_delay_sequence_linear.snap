@@ -1,0 +1,15 @@
+---
+source: crates/shipper-retry/src/lib.rs
+assertion_line: 788
+expression: delays
+---
+- "attempt 1: 2s"
+- "attempt 2: 4s"
+- "attempt 3: 6s"
+- "attempt 4: 8s"
+- "attempt 5: 10s"
+- "attempt 6: 12s"
+- "attempt 7: 14s"
+- "attempt 8: 16s"
+- "attempt 9: 18s"
+- "attempt 10: 20s"

@@ -3120,4 +3120,70 @@ mod tests {
             "Safe policy should preserve readiness"
         );
     }
+
+    mod snapshot_tests {
+        use super::*;
+        use insta::assert_debug_snapshot;
+        use std::path::PathBuf;
+
+        #[test]
+        fn snapshot_chunk_by_max_concurrent_basic() {
+            let items = vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+                "e".to_string(),
+            ];
+            let chunks = chunk_by_max_concurrent(&items, 2);
+            assert_debug_snapshot!(chunks);
+        }
+
+        #[test]
+        fn snapshot_chunk_by_max_concurrent_one() {
+            let items = vec!["x".to_string(), "y".to_string(), "z".to_string()];
+            let chunks = chunk_by_max_concurrent(&items, 1);
+            assert_debug_snapshot!(chunks);
+        }
+
+        #[test]
+        fn snapshot_chunk_by_max_concurrent_larger_than_items() {
+            let items = vec!["a".to_string(), "b".to_string()];
+            let chunks = chunk_by_max_concurrent(&items, 10);
+            assert_debug_snapshot!(chunks);
+        }
+
+        #[test]
+        fn snapshot_chunk_by_max_concurrent_empty() {
+            let items: Vec<String> = vec![];
+            let chunks = chunk_by_max_concurrent(&items, 4);
+            assert_debug_snapshot!(chunks);
+        }
+
+        #[test]
+        fn snapshot_policy_effects_safe() {
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.policy = shipper_types::PublishPolicy::Safe;
+            opts.readiness.enabled = true;
+            let effects = policy_effects(&opts);
+            assert_debug_snapshot!(effects);
+        }
+
+        #[test]
+        fn snapshot_policy_effects_fast() {
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.policy = shipper_types::PublishPolicy::Fast;
+            opts.readiness.enabled = true;
+            let effects = policy_effects(&opts);
+            assert_debug_snapshot!(effects);
+        }
+
+        #[test]
+        fn snapshot_policy_effects_balanced() {
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.policy = shipper_types::PublishPolicy::Balanced;
+            let effects = policy_effects(&opts);
+            assert_debug_snapshot!(effects);
+        }
+    }
 }

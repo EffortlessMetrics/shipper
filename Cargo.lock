@@ -2287,6 +2287,7 @@ dependencies = [
  "anyhow",
  "cargo_metadata",
  "humantime",
+ "insta",
  "proptest",
  "serde",
  "serde_json",
@@ -2306,6 +2307,7 @@ dependencies = [
 name = "shipper-chunking"
 version = "0.3.0-rc.1"
 dependencies = [
+ "insta",
  "proptest",
 ]
 
@@ -2354,6 +2356,7 @@ dependencies = [
 name = "shipper-config-runtime"
 version = "0.3.0-rc.1"
 dependencies = [
+ "insta",
  "proptest",
  "shipper-config",
  "shipper-retry",
@@ -2396,6 +2399,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "humantime",
+ "insta",
  "proptest",
  "rand 0.10.0",
  "serde",
@@ -2481,6 +2485,7 @@ dependencies = [
 name = "shipper-levels"
 version = "0.3.0-rc.1"
 dependencies = [
+ "insta",
  "proptest",
 ]
 
@@ -2502,6 +2507,7 @@ dependencies = [
 name = "shipper-output-sanitizer"
 version = "0.3.0-rc.1"
 dependencies = [
+ "insta",
  "proptest",
 ]
 
@@ -2578,6 +2584,7 @@ name = "shipper-retry"
 version = "0.3.0-rc.1"
 dependencies = [
  "humantime-serde",
+ "insta",
  "proptest",
  "rand 0.10.0",
  "serde",

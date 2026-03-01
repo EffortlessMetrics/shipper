@@ -291,4 +291,103 @@ mod tests {
             prop_assert_eq!(converted.registries.len(), registry_count);
         }
     }
+
+    mod snapshot_tests {
+        use super::*;
+        use insta::assert_debug_snapshot;
+
+        fn default_config_runtime() -> RuntimeOptions {
+            RuntimeOptions {
+                allow_dirty: false,
+                skip_ownership_check: false,
+                strict_ownership: false,
+                no_verify: false,
+                max_attempts: 3,
+                base_delay: Duration::from_secs(5),
+                max_delay: Duration::from_secs(300),
+                retry_strategy: shipper_retry::RetryStrategyType::Exponential,
+                retry_jitter: 0.25,
+                retry_per_error: shipper_retry::PerErrorConfig::default(),
+                verify_timeout: Duration::from_secs(60),
+                verify_poll_interval: Duration::from_secs(5),
+                state_dir: PathBuf::from(".shipper"),
+                force_resume: false,
+                policy: PublishPolicy::Safe,
+                verify_mode: VerifyMode::Workspace,
+                readiness: ReadinessConfig {
+                    enabled: false,
+                    method: ReadinessMethod::Api,
+                    initial_delay: Duration::from_millis(100),
+                    max_delay: Duration::from_secs(60),
+                    max_total_wait: Duration::from_secs(300),
+                    poll_interval: Duration::from_secs(5),
+                    jitter_factor: 0.25,
+                    prefer_index: false,
+                    index_path: None,
+                },
+                output_lines: 20,
+                force: false,
+                lock_timeout: Duration::from_secs(30),
+                parallel: ParallelConfig {
+                    enabled: false,
+                    max_concurrent: 4,
+                    per_package_timeout: Duration::from_secs(120),
+                },
+                webhook: WebhookConfig {
+                    url: String::new(),
+                    secret: None,
+                    ..WebhookConfig::default()
+                },
+                encryption: EncryptionConfig {
+                    enabled: false,
+                    passphrase: None,
+                    ..EncryptionConfig::default()
+                },
+                registries: vec![],
+                resume_from: None,
+            }
+        }
+
+        #[test]
+        fn snapshot_default_conversion() {
+            let cfg = default_config_runtime();
+            let converted = into_runtime_options(cfg);
+            assert_debug_snapshot!(converted);
+        }
+
+        #[test]
+        fn snapshot_all_flags_enabled() {
+            let mut cfg = default_config_runtime();
+            cfg.allow_dirty = true;
+            cfg.skip_ownership_check = true;
+            cfg.strict_ownership = true;
+            cfg.no_verify = true;
+            cfg.force_resume = true;
+            cfg.force = true;
+            cfg.parallel.enabled = true;
+            cfg.readiness.enabled = true;
+            cfg.encryption.enabled = true;
+            let converted = into_runtime_options(cfg);
+            assert_debug_snapshot!(converted);
+        }
+
+        #[test]
+        fn snapshot_with_registries() {
+            let mut cfg = default_config_runtime();
+            cfg.registries = vec![
+                Registry {
+                    name: "crates-io".to_string(),
+                    api_base: "https://crates.io".to_string(),
+                    index_base: Some("https://index.crates.io".to_string()),
+                },
+                Registry {
+                    name: "private".to_string(),
+                    api_base: "https://my-registry.example.com".to_string(),
+                    index_base: None,
+                },
+            ];
+            let converted = into_runtime_options(cfg);
+            assert_debug_snapshot!(converted);
+        }
+    }
 }

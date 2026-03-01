@@ -1,0 +1,10 @@
+---
+source: crates/shipper-retry/src/lib.rs
+assertion_line: 730
+expression: "RetryPolicy::Custom.to_config()"
+---
+strategy: exponential
+max_attempts: 6
+base_delay: 2s
+max_delay: 2m
+jitter: 0.5

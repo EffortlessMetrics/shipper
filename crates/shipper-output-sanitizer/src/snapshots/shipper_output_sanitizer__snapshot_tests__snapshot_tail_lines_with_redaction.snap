@@ -1,0 +1,7 @@
+---
+source: crates/shipper-output-sanitizer/src/lib.rs
+assertion_line: 261
+expression: "tail_lines(\"normal line\\nCARGO_REGISTRY_TOKEN=secret\\nfinal line\", 2)"
+---
+CARGO_REGISTRY_TOKEN=[REDACTED]
+final line

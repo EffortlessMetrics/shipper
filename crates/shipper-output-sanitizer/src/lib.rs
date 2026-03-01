@@ -216,3 +216,58 @@ mod property_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use insta::assert_snapshot;
+
+    #[test]
+    fn snapshot_redact_bearer_token() {
+        assert_snapshot!(redact_sensitive("Authorization: Bearer cio_abc123secret"));
+    }
+
+    #[test]
+    fn snapshot_redact_cargo_registry_token() {
+        assert_snapshot!(redact_sensitive("CARGO_REGISTRY_TOKEN=mysecrettoken"));
+    }
+
+    #[test]
+    fn snapshot_redact_named_registry_token() {
+        assert_snapshot!(redact_sensitive(
+            "CARGO_REGISTRIES_PRIVATE_REG_TOKEN=secret456"
+        ));
+    }
+
+    #[test]
+    fn snapshot_redact_token_assignment() {
+        assert_snapshot!(redact_sensitive(r#"token = "cio_mysecrettoken""#));
+    }
+
+    #[test]
+    fn snapshot_passthrough_normal_output() {
+        assert_snapshot!(redact_sensitive(
+            "Compiling demo v0.1.0\nFinished release target\nUploading to crates.io"
+        ));
+    }
+
+    #[test]
+    fn snapshot_tail_lines_3() {
+        assert_snapshot!(tail_lines("line1\nline2\nline3\nline4\nline5", 3));
+    }
+
+    #[test]
+    fn snapshot_tail_lines_with_redaction() {
+        assert_snapshot!(tail_lines(
+            "normal line\nCARGO_REGISTRY_TOKEN=secret\nfinal line",
+            2
+        ));
+    }
+
+    #[test]
+    fn snapshot_mixed_sensitive_output() {
+        let input =
+            "Compiling foo\nAuthorization: Bearer secret123\nCARGO_REGISTRY_TOKEN=tok\nDone";
+        assert_snapshot!(redact_sensitive(input));
+    }
+}

@@ -560,7 +560,10 @@ fn preflight_allow_dirty_skips_git_check() {
     git_init_and_commit(td.path());
 
     // Dirty the working tree after the initial commit
-    write_file(&td.path().join("alpha/src/lib.rs"), "pub fn alpha() { /* dirty */ }\n");
+    write_file(
+        &td.path().join("alpha/src/lib.rs"),
+        "pub fn alpha() { /* dirty */ }\n",
+    );
 
     fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
     let registry = spawn_registry(vec![404], 2);

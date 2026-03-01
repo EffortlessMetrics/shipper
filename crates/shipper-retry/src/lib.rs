@@ -704,3 +704,95 @@ mod property_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use insta::assert_yaml_snapshot;
+
+    #[test]
+    fn snapshot_default_policy_config() {
+        assert_yaml_snapshot!(RetryPolicy::Default.to_config());
+    }
+
+    #[test]
+    fn snapshot_aggressive_policy_config() {
+        assert_yaml_snapshot!(RetryPolicy::Aggressive.to_config());
+    }
+
+    #[test]
+    fn snapshot_conservative_policy_config() {
+        assert_yaml_snapshot!(RetryPolicy::Conservative.to_config());
+    }
+
+    #[test]
+    fn snapshot_custom_policy_config() {
+        assert_yaml_snapshot!(RetryPolicy::Custom.to_config());
+    }
+
+    #[test]
+    fn snapshot_error_classes() {
+        assert_yaml_snapshot!("retryable", ErrorClass::Retryable);
+        assert_yaml_snapshot!("ambiguous", ErrorClass::Ambiguous);
+        assert_yaml_snapshot!("permanent", ErrorClass::Permanent);
+    }
+
+    #[test]
+    fn snapshot_per_error_config_empty() {
+        assert_yaml_snapshot!(PerErrorConfig::default());
+    }
+
+    #[test]
+    fn snapshot_per_error_config_with_retryable_override() {
+        let config = PerErrorConfig {
+            retryable: Some(RetryStrategyConfig {
+                strategy: RetryStrategyType::Immediate,
+                max_attempts: 10,
+                base_delay: Duration::ZERO,
+                max_delay: Duration::from_secs(5),
+                jitter: 0.0,
+            }),
+            ambiguous: None,
+            permanent: None,
+        };
+        assert_yaml_snapshot!(config);
+    }
+
+    #[test]
+    fn snapshot_delay_sequence_exponential() {
+        let config = RetryStrategyConfig {
+            strategy: RetryStrategyType::Exponential,
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(60),
+            jitter: 0.0,
+            max_attempts: 10,
+        };
+        let delays: Vec<String> = (1..=7)
+            .map(|a| format!("attempt {}: {:?}", a, calculate_delay(&config, a)))
+            .collect();
+        assert_yaml_snapshot!(delays);
+    }
+
+    #[test]
+    fn snapshot_delay_sequence_linear() {
+        let config = RetryStrategyConfig {
+            strategy: RetryStrategyType::Linear,
+            base_delay: Duration::from_secs(2),
+            max_delay: Duration::from_secs(20),
+            jitter: 0.0,
+            max_attempts: 10,
+        };
+        let delays: Vec<String> = (1..=10)
+            .map(|a| format!("attempt {}: {:?}", a, calculate_delay(&config, a)))
+            .collect();
+        assert_yaml_snapshot!(delays);
+    }
+
+    #[test]
+    fn snapshot_strategy_types() {
+        assert_yaml_snapshot!("immediate", RetryStrategyType::Immediate);
+        assert_yaml_snapshot!("exponential", RetryStrategyType::Exponential);
+        assert_yaml_snapshot!("linear", RetryStrategyType::Linear);
+        assert_yaml_snapshot!("constant", RetryStrategyType::Constant);
+    }
+}

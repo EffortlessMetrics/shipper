@@ -18,6 +18,7 @@ shipper-retry = { path = "../shipper-retry" }
 [dev-dependencies]
 proptest.workspace = true
 toml = "1.0"
+insta = { workspace = true }
 
 [lints]
 workspace = true

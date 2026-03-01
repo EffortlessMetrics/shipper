@@ -100,7 +100,11 @@ impl fmt::Display for EncryptionConfig {
             return write!(f, "encryption: disabled");
         }
         match (&self.passphrase, &self.env_var) {
-            (Some(p), _) => write!(f, "encryption: enabled (passphrase: {})", mask_passphrase(p)),
+            (Some(p), _) => write!(
+                f,
+                "encryption: enabled (passphrase: {})",
+                mask_passphrase(p)
+            ),
             (None, Some(var)) => write!(f, "encryption: enabled (env: {var})"),
             (None, None) => write!(f, "encryption: enabled (no passphrase configured)"),
         }

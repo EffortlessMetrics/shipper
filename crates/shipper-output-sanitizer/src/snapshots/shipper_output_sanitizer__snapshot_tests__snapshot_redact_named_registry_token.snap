@@ -1,0 +1,6 @@
+---
+source: crates/shipper-output-sanitizer/src/lib.rs
+assertion_line: 237
+expression: "redact_sensitive(\"CARGO_REGISTRIES_PRIVATE_REG_TOKEN=secret456\")"
+---
+CARGO_REGISTRIES_PRIVATE_REG_TOKEN=[REDACTED]

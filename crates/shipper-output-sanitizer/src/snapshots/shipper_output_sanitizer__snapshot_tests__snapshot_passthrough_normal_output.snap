@@ -1,0 +1,8 @@
+---
+source: crates/shipper-output-sanitizer/src/lib.rs
+assertion_line: 249
+expression: "redact_sensitive(\"Compiling demo v0.1.0\\nFinished release target\\nUploading to crates.io\")"
+---
+Compiling demo v0.1.0
+Finished release target
+Uploading to crates.io

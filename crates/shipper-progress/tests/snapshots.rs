@@ -39,7 +39,10 @@ fn display_multi_package_sequence() {
     let lines: Vec<String> = packages
         .iter()
         .flat_map(|&(idx, name, ver)| {
-            vec![publish_msg(idx, 4, name, ver), finish_msg(idx, 4, name, ver)]
+            vec![
+                publish_msg(idx, 4, name, ver),
+                finish_msg(idx, 4, name, ver),
+            ]
         })
         .collect();
     let output = format!("{}\n{}", lines.join("\n"), completion_msg(4));
@@ -149,9 +152,15 @@ fn state_full_lifecycle() {
 
     for &(idx, name, ver) in &packages {
         reporter.set_package(idx, name, ver);
-        lines.push(format!("after set_package({idx}): {}", state_snapshot(&reporter)));
+        lines.push(format!(
+            "after set_package({idx}): {}",
+            state_snapshot(&reporter)
+        ));
         reporter.finish_package();
-        lines.push(format!("after finish_package({idx}): {}", state_snapshot(&reporter)));
+        lines.push(format!(
+            "after finish_package({idx}): {}",
+            state_snapshot(&reporter)
+        ));
     }
 
     insta::assert_snapshot!("state_full_lifecycle", lines.join("\n"));
@@ -164,7 +173,10 @@ fn state_overwrite_same_index() {
     let before = state_snapshot(&reporter);
     reporter.set_package(1, "new-name", "0.0.2");
     let after = state_snapshot(&reporter);
-    insta::assert_snapshot!("state_overwrite_same_index", format!("before: {before}\nafter:  {after}"));
+    insta::assert_snapshot!(
+        "state_overwrite_same_index",
+        format!("before: {before}\nafter:  {after}")
+    );
 }
 
 #[test]

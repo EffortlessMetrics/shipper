@@ -17,6 +17,7 @@ rand = { version = "0.10.0", features = ["std"] }
 
 [dev-dependencies]
 proptest.workspace = true
+insta = { workspace = true }
 
 [lints]
 workspace = true

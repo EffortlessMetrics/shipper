@@ -851,3 +851,94 @@ mod proptests {
         }
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use insta::assert_yaml_snapshot;
+
+    fn deps(entries: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
+        entries
+            .iter()
+            .map(|(name, dep_list)| {
+                (
+                    (*name).to_string(),
+                    dep_list.iter().map(|d| (*d).to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn level_summary(levels: &[PublishLevel<String>]) -> Vec<(usize, Vec<String>)> {
+        levels
+            .iter()
+            .map(|l| (l.level, l.packages.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn snapshot_diamond_dependency() {
+        let packages = vec![
+            "root".to_string(),
+            "left".to_string(),
+            "right".to_string(),
+            "leaf".to_string(),
+        ];
+        let dependencies = deps(&[
+            ("root", &[]),
+            ("left", &["root"]),
+            ("right", &["root"]),
+            ("leaf", &["left", "right"]),
+        ]);
+        let levels = group_packages_by_levels(&packages, |n| n.as_str(), &dependencies);
+        assert_yaml_snapshot!(level_summary(&levels));
+    }
+
+    #[test]
+    fn snapshot_linear_chain() {
+        let packages: Vec<String> = (0..5).map(|i| format!("pkg-{i}")).collect();
+        let mut dep_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        dep_map.insert(packages[0].clone(), vec![]);
+        for i in 1..packages.len() {
+            dep_map.insert(packages[i].clone(), vec![packages[i - 1].clone()]);
+        }
+        let levels = group_packages_by_levels(&packages, |n| n.as_str(), &dep_map);
+        assert_yaml_snapshot!(level_summary(&levels));
+    }
+
+    #[test]
+    fn snapshot_all_independent() {
+        let packages = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
+        let dependencies = deps(&[("alpha", &[]), ("beta", &[]), ("gamma", &[])]);
+        let levels = group_packages_by_levels(&packages, |n| n.as_str(), &dependencies);
+        assert_yaml_snapshot!(level_summary(&levels));
+    }
+
+    #[test]
+    fn snapshot_wide_fan_out() {
+        let packages = vec![
+            "root".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
+        let dependencies = deps(&[
+            ("root", &[]),
+            ("a", &["root"]),
+            ("b", &["root"]),
+            ("c", &["root"]),
+            ("d", &["root"]),
+        ]);
+        let levels = group_packages_by_levels(&packages, |n| n.as_str(), &dependencies);
+        assert_yaml_snapshot!(level_summary(&levels));
+    }
+
+    #[test]
+    fn snapshot_empty_plan() {
+        let levels = group_packages_by_levels::<String, _>(&[], |n| n.as_str(), &BTreeMap::new());
+        assert_yaml_snapshot!(level_summary(&levels));
+    }
+}

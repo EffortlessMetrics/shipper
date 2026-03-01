@@ -785,8 +785,7 @@ mod state_updated_atomically {
             .success();
 
         // Then: state file is valid JSON
-        let state_raw =
-            fs::read_to_string(state_dir.join("state.json")).expect("read state.json");
+        let state_raw = fs::read_to_string(state_dir.join("state.json")).expect("read state.json");
         let state: serde_json::Value =
             serde_json::from_str(&state_raw).expect("state.json should be valid JSON");
 

@@ -1,0 +1,10 @@
+---
+source: crates/shipper-cargo/src/lib.rs
+assertion_line: 1116
+expression: info
+---
+name: shipper-cargo
+version: 0.3.0
+manifest_path: crates/shipper-cargo/Cargo.toml
+is_workspace_member: true
+publish: []

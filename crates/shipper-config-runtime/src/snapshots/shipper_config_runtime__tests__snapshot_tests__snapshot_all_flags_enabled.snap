@@ -1,0 +1,59 @@
+---
+source: crates/shipper-config-runtime/src/lib.rs
+assertion_line: 371
+expression: converted
+---
+RuntimeOptions {
+    allow_dirty: true,
+    skip_ownership_check: true,
+    strict_ownership: true,
+    no_verify: true,
+    max_attempts: 3,
+    base_delay: 5s,
+    max_delay: 300s,
+    retry_strategy: Exponential,
+    retry_jitter: 0.25,
+    retry_per_error: PerErrorConfig {
+        retryable: None,
+        ambiguous: None,
+        permanent: None,
+    },
+    verify_timeout: 60s,
+    verify_poll_interval: 5s,
+    state_dir: ".shipper",
+    force_resume: true,
+    policy: Safe,
+    verify_mode: Workspace,
+    readiness: ReadinessConfig {
+        enabled: true,
+        method: Api,
+        initial_delay: 100ms,
+        max_delay: 60s,
+        max_total_wait: 300s,
+        poll_interval: 5s,
+        jitter_factor: 0.25,
+        index_path: None,
+        prefer_index: false,
+    },
+    output_lines: 20,
+    force: true,
+    lock_timeout: 30s,
+    parallel: ParallelConfig {
+        enabled: true,
+        max_concurrent: 4,
+        per_package_timeout: 120s,
+    },
+    webhook: WebhookConfig {
+        url: "",
+        webhook_type: Generic,
+        secret: None,
+        timeout_secs: 30,
+    },
+    encryption: EncryptionConfig {
+        enabled: true,
+        passphrase: None,
+        env_var: None,
+    },
+    registries: [],
+    resume_from: None,
+}

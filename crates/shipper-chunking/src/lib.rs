@@ -104,3 +104,45 @@ mod property_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::chunk_by_max_concurrent;
+    use insta::assert_yaml_snapshot;
+
+    #[test]
+    fn snapshot_chunk_5_by_2() {
+        let items = vec!["a", "b", "c", "d", "e"];
+        assert_yaml_snapshot!(chunk_by_max_concurrent(&items, 2));
+    }
+
+    #[test]
+    fn snapshot_chunk_6_by_3() {
+        let items = vec!["core", "utils", "api", "cli", "web", "docs"];
+        assert_yaml_snapshot!(chunk_by_max_concurrent(&items, 3));
+    }
+
+    #[test]
+    fn snapshot_chunk_single_item() {
+        let items = vec!["only"];
+        assert_yaml_snapshot!(chunk_by_max_concurrent(&items, 5));
+    }
+
+    #[test]
+    fn snapshot_chunk_max_concurrent_1() {
+        let items = vec!["a", "b", "c"];
+        assert_yaml_snapshot!(chunk_by_max_concurrent(&items, 1));
+    }
+
+    #[test]
+    fn snapshot_chunk_exact_fit() {
+        let items = vec!["x", "y", "z"];
+        assert_yaml_snapshot!(chunk_by_max_concurrent(&items, 3));
+    }
+
+    #[test]
+    fn snapshot_chunk_empty() {
+        let items: Vec<&str> = vec![];
+        assert_yaml_snapshot!(chunk_by_max_concurrent(&items, 4));
+    }
+}

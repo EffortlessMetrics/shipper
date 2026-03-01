@@ -1,0 +1,8 @@
+---
+source: crates/shipper-retry/src/lib.rs
+assertion_line: 742
+expression: "PerErrorConfig::default()"
+---
+retryable: ~
+ambiguous: ~
+permanent: ~
