@@ -1,0 +1,11 @@
+---
+source: crates/shipper-retry/src/lib.rs
+expression: "RetryPolicy::Conservative.to_config()"
+---
+RetryStrategyConfig {
+    strategy: Linear,
+    max_attempts: 3,
+    base_delay: 5s,
+    max_delay: 60s,
+    jitter: 0.1,
+}

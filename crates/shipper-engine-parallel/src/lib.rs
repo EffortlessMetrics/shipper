@@ -3185,5 +3185,555 @@ mod tests {
             let effects = policy_effects(&opts);
             assert_debug_snapshot!(effects);
         }
+
+        #[test]
+        fn snapshot_parallel_config_default() {
+            let config = shipper_types::ParallelConfig::default();
+            assert_debug_snapshot!(config);
+        }
+
+        #[test]
+        fn snapshot_execution_plan_linear_chain() {
+            // A→B→C linear chain should produce 3 levels, one package each
+            let plan = ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-snap-chain".to_string(),
+                created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: "https://crates.io".to_string(),
+                    index_base: None,
+                },
+                packages: vec![
+                    PlannedPackage {
+                        name: "a".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/a/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "b".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/b/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "c".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/c/Cargo.toml"),
+                    },
+                ],
+                dependencies: BTreeMap::from([
+                    ("b".to_string(), vec!["a".to_string()]),
+                    ("c".to_string(), vec!["b".to_string()]),
+                ]),
+            };
+            let levels = plan.group_by_levels();
+            // Snapshot only levels + package names (stable across runs)
+            let layout: Vec<(usize, Vec<&str>)> = levels
+                .iter()
+                .map(|l| {
+                    (
+                        l.level,
+                        l.packages.iter().map(|p| p.name.as_str()).collect(),
+                    )
+                })
+                .collect();
+            assert_debug_snapshot!(layout);
+        }
+
+        #[test]
+        fn snapshot_execution_plan_diamond() {
+            // Diamond: A→B, A→C, B→D, C→D
+            let plan = ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-snap-diamond".to_string(),
+                created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: "https://crates.io".to_string(),
+                    index_base: None,
+                },
+                packages: vec![
+                    PlannedPackage {
+                        name: "a".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/a/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "b".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/b/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "c".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/c/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "d".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/d/Cargo.toml"),
+                    },
+                ],
+                dependencies: BTreeMap::from([
+                    ("b".to_string(), vec!["a".to_string()]),
+                    ("c".to_string(), vec!["a".to_string()]),
+                    ("d".to_string(), vec!["b".to_string(), "c".to_string()]),
+                ]),
+            };
+            let levels = plan.group_by_levels();
+            let layout: Vec<(usize, Vec<&str>)> = levels
+                .iter()
+                .map(|l| {
+                    (
+                        l.level,
+                        l.packages.iter().map(|p| p.name.as_str()).collect(),
+                    )
+                })
+                .collect();
+            assert_debug_snapshot!(layout);
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // ParallelConfig edge cases
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_parallel_config_max_concurrent_zero_treated_as_one() {
+        // chunk_by_max_concurrent clamps 0 to 1, so max_concurrent=0
+        // should behave like max_concurrent=1 (serial).
+        let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let chunks = chunk_by_max_concurrent(&items, 0);
+        // Each chunk should have at most 1 item
+        for chunk in &chunks {
+            assert!(
+                chunk.len() <= 1,
+                "max_concurrent=0 should clamp to 1, got chunk of size {}",
+                chunk.len()
+            );
+        }
+        // All items preserved
+        let flat: Vec<String> = chunks.into_iter().flatten().collect();
+        assert_eq!(flat, items);
+    }
+
+    #[test]
+    fn test_parallel_config_max_concurrent_one_produces_singleton_chunks() {
+        let items = vec![
+            "x".to_string(),
+            "y".to_string(),
+            "z".to_string(),
+            "w".to_string(),
+        ];
+        let chunks = chunk_by_max_concurrent(&items, 1);
+        assert_eq!(chunks.len(), 4, "should produce one chunk per item");
+        for chunk in &chunks {
+            assert_eq!(chunk.len(), 1);
+        }
+    }
+
+    #[test]
+    fn test_parallel_config_very_large_max_concurrent() {
+        let items = vec!["a".to_string(), "b".to_string()];
+        let chunks = chunk_by_max_concurrent(&items, usize::MAX);
+        // All items should be in a single chunk
+        assert_eq!(chunks.len(), 1, "very large limit should produce 1 chunk");
+        assert_eq!(chunks[0].len(), 2);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Level ordering validation
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_levels_are_sequentially_numbered() {
+        // Diamond: A→B, A→C, B→D, C→D  →  3 levels
+        let plan = ReleasePlan {
+            plan_version: "1".to_string(),
+            plan_id: "plan-level-order".to_string(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages: vec![
+                PlannedPackage {
+                    name: "a".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("a/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "b".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("b/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "c".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("c/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "d".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("d/Cargo.toml"),
+                },
+            ],
+            dependencies: BTreeMap::from([
+                ("b".to_string(), vec!["a".to_string()]),
+                ("c".to_string(), vec!["a".to_string()]),
+                ("d".to_string(), vec!["b".to_string(), "c".to_string()]),
+            ]),
+        };
+
+        let levels = plan.group_by_levels();
+        assert!(levels.len() >= 2, "diamond should have multiple levels");
+        for (i, level) in levels.iter().enumerate() {
+            assert_eq!(
+                level.level, i,
+                "level {} should have sequential number, got {}",
+                i, level.level
+            );
+        }
+    }
+
+    #[test]
+    fn test_level_ordering_dependencies_precede_dependents() {
+        // Verify that for every package, all its dependencies appear in earlier levels.
+        let plan = ReleasePlan {
+            plan_version: "1".to_string(),
+            plan_id: "plan-dep-order".to_string(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages: vec![
+                PlannedPackage {
+                    name: "core".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("core/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "utils".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("utils/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "app".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("app/Cargo.toml"),
+                },
+            ],
+            dependencies: BTreeMap::from([
+                ("utils".to_string(), vec!["core".to_string()]),
+                (
+                    "app".to_string(),
+                    vec!["core".to_string(), "utils".to_string()],
+                ),
+            ]),
+        };
+
+        let levels = plan.group_by_levels();
+
+        // Build a map from package name → level number
+        let mut pkg_level: BTreeMap<&str, usize> = BTreeMap::new();
+        for level in &levels {
+            for pkg in &level.packages {
+                pkg_level.insert(&pkg.name, level.level);
+            }
+        }
+
+        // Every dependency must be at a strictly earlier level
+        for (dependent, deps) in &plan.dependencies {
+            let dep_level = pkg_level[dependent.as_str()];
+            for req in deps {
+                let req_level = pkg_level[req.as_str()];
+                assert!(
+                    req_level < dep_level,
+                    "{} (level {}) should come before {} (level {})",
+                    req,
+                    req_level,
+                    dependent,
+                    dep_level
+                );
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Edge case: all packages at same dependency level (single level)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_all_packages_same_level_no_deps() {
+        let plan = ReleasePlan {
+            plan_version: "1".to_string(),
+            plan_id: "plan-flat".to_string(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages: vec![
+                PlannedPackage {
+                    name: "foo".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("foo/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "bar".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("bar/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "baz".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("baz/Cargo.toml"),
+                },
+            ],
+            dependencies: BTreeMap::new(),
+        };
+
+        let levels = plan.group_by_levels();
+        assert_eq!(levels.len(), 1, "no deps means single level");
+        assert_eq!(levels[0].level, 0);
+        assert_eq!(levels[0].packages.len(), 3);
+        let names: Vec<&str> = levels[0].packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["foo", "bar", "baz"]);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Edge case: linear dependency chain (each package depends on the previous)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_linear_chain_produces_n_levels() {
+        let plan = ReleasePlan {
+            plan_version: "1".to_string(),
+            plan_id: "plan-chain".to_string(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages: vec![
+                PlannedPackage {
+                    name: "l1".to_string(),
+                    version: "0.1.0".to_string(),
+                    manifest_path: PathBuf::from("l1/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "l2".to_string(),
+                    version: "0.1.0".to_string(),
+                    manifest_path: PathBuf::from("l2/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "l3".to_string(),
+                    version: "0.1.0".to_string(),
+                    manifest_path: PathBuf::from("l3/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "l4".to_string(),
+                    version: "0.1.0".to_string(),
+                    manifest_path: PathBuf::from("l4/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "l5".to_string(),
+                    version: "0.1.0".to_string(),
+                    manifest_path: PathBuf::from("l5/Cargo.toml"),
+                },
+            ],
+            dependencies: BTreeMap::from([
+                ("l2".to_string(), vec!["l1".to_string()]),
+                ("l3".to_string(), vec!["l2".to_string()]),
+                ("l4".to_string(), vec!["l3".to_string()]),
+                ("l5".to_string(), vec!["l4".to_string()]),
+            ]),
+        };
+
+        let levels = plan.group_by_levels();
+        assert_eq!(levels.len(), 5, "linear chain of 5 should produce 5 levels");
+        for (i, level) in levels.iter().enumerate() {
+            assert_eq!(level.packages.len(), 1, "each level has exactly 1 package");
+            assert_eq!(level.packages[0].name, format!("l{}", i + 1));
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Error propagation: failure in level 0 prevents level 1 from executing
+    // (additional scenario: multiple packages in the failing level)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn test_error_in_first_level_prevents_all_subsequent() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // 3-level chain: a → b → c.  "a" fails permanently.
+        // Only "a" should be checked (404 twice: initial + after-failure)
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/a/1.0.0".to_string(),
+                vec![(404, "{}".to_string()), (404, "{}".to_string())],
+            )]),
+            2,
+        );
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-halt-chain".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: vec![
+                    PlannedPackage {
+                        name: "a".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: td.path().join("a").join("Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "b".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: td.path().join("b").join("Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "c".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: td.path().join("c").join("Cargo.toml"),
+                    },
+                ],
+                dependencies: BTreeMap::from([
+                    ("b".to_string(), vec!["a".to_string()]),
+                    ("c".to_string(), vec!["b".to_string()]),
+                ]),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        opts.max_attempts = 1;
+
+        let mut packages = BTreeMap::new();
+        for p in &ws.plan.packages {
+            packages.insert(
+                pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let mut st = ExecutionState {
+            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
+        };
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+                ),
+                ("SHIPPER_CARGO_EXIT", Some("1")),
+                ("SHIPPER_CARGO_STDERR", Some("permission denied")),
+            ],
+            || {
+                let result =
+                    run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter);
+
+                assert!(result.is_err(), "publish should fail");
+
+                // Both "b" and "c" should remain Pending
+                for name in ["b", "c"] {
+                    let key = pkg_key(name, "1.0.0");
+                    let progress = st.packages.get(&key).expect(name);
+                    assert!(
+                        matches!(progress.state, PackageState::Pending),
+                        "{} should remain Pending, got {:?}",
+                        name,
+                        progress.state
+                    );
+                }
+            },
+        );
+        server.join();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Property tests: level count >= 1 for non-empty input
+    // ---------------------------------------------------------------------------
+
+    mod property_tests_extra {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn pkg_name() -> impl Strategy<Value = String> {
+            "[a-z]{1,6}".prop_map(|s| s)
+        }
+
+        proptest! {
+            #[test]
+            fn level_count_ge_one_for_nonempty(
+                names in prop::collection::hash_set(pkg_name(), 1..16)
+            ) {
+                let packages: Vec<PlannedPackage> = names
+                    .iter()
+                    .map(|n| PlannedPackage {
+                        name: n.clone(),
+                        version: "0.1.0".to_string(),
+                        manifest_path: PathBuf::from(format!("{}/Cargo.toml", n)),
+                    })
+                    .collect();
+
+                let plan = ReleasePlan {
+                    plan_version: "1".to_string(),
+                    plan_id: "prop-test".to_string(),
+                    created_at: Utc::now(),
+                    registry: Registry::crates_io(),
+                    packages,
+                    dependencies: BTreeMap::new(),
+                };
+
+                let levels = plan.group_by_levels();
+                prop_assert!(!levels.is_empty(), "non-empty plan must produce >= 1 level");
+            }
+
+            #[test]
+            fn all_packages_appear_exactly_once_in_levels(
+                names in prop::collection::hash_set(pkg_name(), 1..16)
+            ) {
+                let packages: Vec<PlannedPackage> = names
+                    .iter()
+                    .map(|n| PlannedPackage {
+                        name: n.clone(),
+                        version: "0.1.0".to_string(),
+                        manifest_path: PathBuf::from(format!("{}/Cargo.toml", n)),
+                    })
+                    .collect();
+
+                let expected_count = packages.len();
+                let plan = ReleasePlan {
+                    plan_version: "1".to_string(),
+                    plan_id: "prop-test-2".to_string(),
+                    created_at: Utc::now(),
+                    registry: Registry::crates_io(),
+                    packages,
+                    dependencies: BTreeMap::new(),
+                };
+
+                let levels = plan.group_by_levels();
+                let total: usize = levels.iter().map(|l| l.packages.len()).sum();
+                prop_assert_eq!(total, expected_count, "every package must appear exactly once");
+            }
+        }
     }
 }

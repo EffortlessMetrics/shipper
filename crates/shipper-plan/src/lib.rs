@@ -1323,6 +1323,529 @@ y = { path = "../y", version = "0.1.0" }
         insta::assert_yaml_snapshot!("skipped_packages_detail", &ws.skipped);
     }
 
+    // ── Empty workspace (all packages unpublishable) ──────────────────
+
+    #[test]
+    fn build_plan_empty_workspace_all_unpublishable() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["internal-a", "internal-b"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("internal-a/Cargo.toml"),
+            r#"
+[package]
+name = "internal-a"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+        );
+        write_file(&td.path().join("internal-a/src/lib.rs"), "");
+        write_file(
+            &td.path().join("internal-b/Cargo.toml"),
+            r#"
+[package]
+name = "internal-b"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+        );
+        write_file(&td.path().join("internal-b/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert!(ws.plan.packages.is_empty());
+        assert_eq!(ws.skipped.len(), 2);
+        assert!(ws.plan.dependencies.is_empty());
+    }
+
+    // ── Linear dependency chain: A → B → C → D ────────────────────
+
+    fn create_linear_chain_workspace(root: &Path) {
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["chain-a", "chain-b", "chain-c", "chain-d"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("chain-d/Cargo.toml"),
+            r#"
+[package]
+name = "chain-d"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("chain-d/src/lib.rs"), "");
+        write_file(
+            &root.join("chain-c/Cargo.toml"),
+            r#"
+[package]
+name = "chain-c"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chain-d = { path = "../chain-d", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("chain-c/src/lib.rs"), "");
+        write_file(
+            &root.join("chain-b/Cargo.toml"),
+            r#"
+[package]
+name = "chain-b"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chain-c = { path = "../chain-c", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("chain-b/src/lib.rs"), "");
+        write_file(
+            &root.join("chain-a/Cargo.toml"),
+            r#"
+[package]
+name = "chain-a"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chain-b = { path = "../chain-b", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("chain-a/src/lib.rs"), "");
+    }
+
+    #[test]
+    fn build_plan_linear_chain_a_b_c_d() {
+        let td = tempdir().expect("tempdir");
+        create_linear_chain_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["chain-d", "chain-c", "chain-b", "chain-a"]);
+
+        // Verify dependency map
+        assert!(ws.plan.dependencies["chain-d"].is_empty());
+        assert_eq!(ws.plan.dependencies["chain-c"], vec!["chain-d".to_string()]);
+        assert_eq!(ws.plan.dependencies["chain-b"], vec!["chain-c".to_string()]);
+        assert_eq!(ws.plan.dependencies["chain-a"], vec!["chain-b".to_string()]);
+    }
+
+    #[test]
+    fn build_plan_linear_chain_selecting_middle_pulls_transitive_deps() {
+        let td = tempdir().expect("tempdir");
+        create_linear_chain_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["chain-b".to_string()]);
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        // chain-b depends on chain-c which depends on chain-d
+        assert_eq!(names, vec!["chain-d", "chain-c", "chain-b"]);
+    }
+
+    // ── Diamond dependency: A → B, A → C, B → D, C → D ────────────
+
+    fn create_diamond_workspace(root: &Path) {
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["diamond-a", "diamond-b", "diamond-c", "diamond-d"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("diamond-d/Cargo.toml"),
+            r#"
+[package]
+name = "diamond-d"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("diamond-d/src/lib.rs"), "");
+        write_file(
+            &root.join("diamond-b/Cargo.toml"),
+            r#"
+[package]
+name = "diamond-b"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+diamond-d = { path = "../diamond-d", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("diamond-b/src/lib.rs"), "");
+        write_file(
+            &root.join("diamond-c/Cargo.toml"),
+            r#"
+[package]
+name = "diamond-c"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+diamond-d = { path = "../diamond-d", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("diamond-c/src/lib.rs"), "");
+        write_file(
+            &root.join("diamond-a/Cargo.toml"),
+            r#"
+[package]
+name = "diamond-a"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+diamond-b = { path = "../diamond-b", version = "0.1.0" }
+diamond-c = { path = "../diamond-c", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("diamond-a/src/lib.rs"), "");
+    }
+
+    #[test]
+    fn build_plan_diamond_dependency() {
+        let td = tempdir().expect("tempdir");
+        create_diamond_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+
+        // D must come first (no deps), then B and C (alphabetical, both depend on D), then A
+        assert_eq!(
+            names,
+            vec!["diamond-d", "diamond-b", "diamond-c", "diamond-a"]
+        );
+
+        // Verify dependency edges
+        assert!(ws.plan.dependencies["diamond-d"].is_empty());
+        assert_eq!(
+            ws.plan.dependencies["diamond-b"],
+            vec!["diamond-d".to_string()]
+        );
+        assert_eq!(
+            ws.plan.dependencies["diamond-c"],
+            vec!["diamond-d".to_string()]
+        );
+        let mut a_deps = ws.plan.dependencies["diamond-a"].clone();
+        a_deps.sort();
+        assert_eq!(
+            a_deps,
+            vec!["diamond-b".to_string(), "diamond-c".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_plan_diamond_all_deps_before_dependents() {
+        let td = tempdir().expect("tempdir");
+        create_diamond_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        let pos = |n: &str| names.iter().position(|x| *x == n).unwrap();
+
+        // D before B, D before C, B before A, C before A
+        assert!(pos("diamond-d") < pos("diamond-b"));
+        assert!(pos("diamond-d") < pos("diamond-c"));
+        assert!(pos("diamond-b") < pos("diamond-a"));
+        assert!(pos("diamond-c") < pos("diamond-a"));
+    }
+
+    // ── Wide flat workspace: 20 packages with no dependencies ──────
+
+    fn create_wide_flat_workspace(root: &Path, count: usize) {
+        let members: Vec<String> = (0..count).map(|i| format!("\"pkg-{i:02}\"")).collect();
+        write_file(
+            &root.join("Cargo.toml"),
+            &format!(
+                r#"
+[workspace]
+members = [{members}]
+resolver = "2"
+"#,
+                members = members.join(", ")
+            ),
+        );
+        for i in 0..count {
+            let name = format!("pkg-{i:02}");
+            write_file(
+                &root.join(format!("{name}/Cargo.toml")),
+                &format!(
+                    r#"
+[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2021"
+"#
+                ),
+            );
+            write_file(&root.join(format!("{name}/src/lib.rs")), "");
+        }
+    }
+
+    #[test]
+    fn build_plan_wide_flat_workspace_20_packages() {
+        let td = tempdir().expect("tempdir");
+        create_wide_flat_workspace(td.path(), 20);
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws.plan.packages.len(), 20);
+        assert!(ws.skipped.is_empty());
+
+        // All packages should have empty dependency lists
+        for pkg in &ws.plan.packages {
+            let deps = ws.plan.dependencies.get(&pkg.name).expect("in deps map");
+            assert!(deps.is_empty(), "{} should have no deps", pkg.name);
+        }
+
+        // Independent packages are sorted alphabetically
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        let mut sorted_names = names.clone();
+        sorted_names.sort();
+        assert_eq!(names, sorted_names, "independent packages sorted by name");
+    }
+
+    // ── Package names with special characters (hyphens, underscores) ──
+
+    fn create_special_names_workspace(root: &Path) {
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["my-hyphen-pkg", "my_underscore_pkg", "a-b_c-d_e"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("my-hyphen-pkg/Cargo.toml"),
+            r#"
+[package]
+name = "my-hyphen-pkg"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("my-hyphen-pkg/src/lib.rs"), "");
+        write_file(
+            &root.join("my_underscore_pkg/Cargo.toml"),
+            r#"
+[package]
+name = "my_underscore_pkg"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+my-hyphen-pkg = { path = "../my-hyphen-pkg", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("my_underscore_pkg/src/lib.rs"), "");
+        write_file(
+            &root.join("a-b_c-d_e/Cargo.toml"),
+            r#"
+[package]
+name = "a-b_c-d_e"
+version = "0.2.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("a-b_c-d_e/src/lib.rs"), "");
+    }
+
+    #[test]
+    fn build_plan_special_character_names() {
+        let td = tempdir().expect("tempdir");
+        create_special_names_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+
+        assert!(names.contains(&"my-hyphen-pkg"));
+        assert!(names.contains(&"my_underscore_pkg"));
+        assert!(names.contains(&"a-b_c-d_e"));
+        assert_eq!(ws.plan.packages.len(), 3);
+
+        // my_underscore_pkg depends on my-hyphen-pkg, so hyphen comes first
+        let hyphen_idx = names.iter().position(|n| *n == "my-hyphen-pkg").unwrap();
+        let underscore_idx = names
+            .iter()
+            .position(|n| *n == "my_underscore_pkg")
+            .unwrap();
+        assert!(hyphen_idx < underscore_idx);
+    }
+
+    #[test]
+    fn build_plan_special_names_dependency_map() {
+        let td = tempdir().expect("tempdir");
+        create_special_names_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert!(ws.plan.dependencies["my-hyphen-pkg"].is_empty());
+        assert_eq!(
+            ws.plan.dependencies["my_underscore_pkg"],
+            vec!["my-hyphen-pkg".to_string()]
+        );
+        assert!(ws.plan.dependencies["a-b_c-d_e"].is_empty());
+    }
+
+    // ── Snapshot tests for various plan topologies ──────────────────
+
+    #[test]
+    fn snapshot_linear_chain_plan() {
+        let td = tempdir().expect("tempdir");
+        create_linear_chain_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("linear_chain_plan", snapshot_of(&ws));
+    }
+
+    #[test]
+    fn snapshot_diamond_plan() {
+        let td = tempdir().expect("tempdir");
+        create_diamond_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("diamond_plan", snapshot_of(&ws));
+    }
+
+    #[test]
+    fn snapshot_wide_flat_plan() {
+        let td = tempdir().expect("tempdir");
+        create_wide_flat_workspace(td.path(), 5);
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("wide_flat_plan_5", snapshot_of(&ws));
+    }
+
+    #[test]
+    fn snapshot_special_names_plan() {
+        let td = tempdir().expect("tempdir");
+        create_special_names_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("special_names_plan", snapshot_of(&ws));
+    }
+
+    #[test]
+    fn snapshot_empty_workspace_plan() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["priv-a", "priv-b"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("priv-a/Cargo.toml"),
+            r#"
+[package]
+name = "priv-a"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+        );
+        write_file(&td.path().join("priv-a/src/lib.rs"), "");
+        write_file(
+            &td.path().join("priv-b/Cargo.toml"),
+            r#"
+[package]
+name = "priv-b"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+        );
+        write_file(&td.path().join("priv-b/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("empty_workspace_plan", snapshot_of(&ws));
+    }
+
+    // ── Plan stability: same input always produces same order ───────
+
+    #[test]
+    fn plan_stability_diamond_10_runs() {
+        let td = tempdir().expect("tempdir");
+        create_diamond_workspace(td.path());
+        let spec = spec_for(td.path());
+
+        let baseline = build_plan(&spec).expect("plan");
+        let baseline_names: Vec<&str> = baseline
+            .plan
+            .packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        let baseline_id = &baseline.plan.plan_id;
+
+        for _ in 0..10 {
+            let ws = build_plan(&spec).expect("plan");
+            let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(names, baseline_names, "order must be stable across runs");
+            assert_eq!(&ws.plan.plan_id, baseline_id, "plan_id must be stable");
+        }
+    }
+
+    #[test]
+    fn plan_stability_linear_chain_10_runs() {
+        let td = tempdir().expect("tempdir");
+        create_linear_chain_workspace(td.path());
+        let spec = spec_for(td.path());
+
+        let baseline = build_plan(&spec).expect("plan");
+        let baseline_names: Vec<&str> = baseline
+            .plan
+            .packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+
+        for _ in 0..10 {
+            let ws = build_plan(&spec).expect("plan");
+            let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(names, baseline_names);
+        }
+    }
+
+    #[test]
+    fn plan_stability_wide_flat_10_runs() {
+        let td = tempdir().expect("tempdir");
+        create_wide_flat_workspace(td.path(), 10);
+        let spec = spec_for(td.path());
+
+        let baseline = build_plan(&spec).expect("plan");
+        let baseline_names: Vec<&str> = baseline
+            .plan
+            .packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+
+        for _ in 0..10 {
+            let ws = build_plan(&spec).expect("plan");
+            let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(names, baseline_names);
+        }
+    }
+
     proptest! {
         #[test]
         fn compute_plan_id_is_stable_and_hex(
@@ -1343,6 +1866,78 @@ y = { path = "../y", version = "0.1.0" }
             prop_assert_eq!(&id1, &id2);
             prop_assert_eq!(id1.len(), 64);
             prop_assert!(id1.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+
+        /// Property: plan_id is deterministic — same registry + packages = same id.
+        #[test]
+        fn prop_plan_id_deterministic_for_same_input(
+            registry in "[a-z]{1,10}",
+            pkg_count in 0usize..10,
+        ) {
+            let pkgs: Vec<PlannedPackage> = (0..pkg_count)
+                .map(|i| PlannedPackage {
+                    name: format!("crate-{i}"),
+                    version: format!("{i}.0.0"),
+                    manifest_path: Path::new("x").join(format!("crate-{i}.toml")),
+                })
+                .collect();
+
+            let id1 = compute_plan_id(&registry, &pkgs);
+            let id2 = compute_plan_id(&registry, &pkgs);
+            prop_assert_eq!(id1, id2);
+        }
+
+        /// Property: plan ordering respects all dependencies (for linear chains).
+        /// Generates chains of length 1..6 and verifies topo order.
+        #[test]
+        fn prop_plan_ordering_respects_dependencies(chain_len in 1usize..7) {
+            // Build a linear chain workspace on disk and verify ordering
+            let td = tempdir().expect("tempdir");
+            let members: Vec<String> = (0..chain_len).map(|i| format!("\"p{i}\"")).collect();
+            write_file(
+                &td.path().join("Cargo.toml"),
+                &format!(
+                    "[workspace]\nmembers = [{members}]\nresolver = \"2\"\n",
+                    members = members.join(", ")
+                ),
+            );
+
+            for i in 0..chain_len {
+                let name = format!("p{i}");
+                let deps = if i > 0 {
+                    let prev = format!("p{}", i - 1);
+                    format!(
+                        "\n[dependencies]\n{prev} = {{ path = \"../{prev}\", version = \"0.1.0\" }}\n"
+                    )
+                } else {
+                    String::new()
+                };
+                write_file(
+                    &td.path().join(format!("{name}/Cargo.toml")),
+                    &format!(
+                        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n{deps}"
+                    ),
+                );
+                write_file(&td.path().join(format!("{name}/src/lib.rs")), "");
+            }
+
+            let ws = build_plan(&spec_for(td.path())).expect("plan");
+            let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+
+            // Verify: for every package, all its deps appear earlier in the plan
+            for pkg in &ws.plan.packages {
+                let pkg_pos = names.iter().position(|n| *n == pkg.name).unwrap();
+                if let Some(deps) = ws.plan.dependencies.get(&pkg.name) {
+                    for dep in deps {
+                        let dep_pos = names.iter().position(|n| n == dep).unwrap();
+                        prop_assert!(
+                            dep_pos < pkg_pos,
+                            "dependency {dep} (pos {dep_pos}) must come before {name} (pos {pkg_pos})",
+                            name = pkg.name
+                        );
+                    }
+                }
+            }
         }
     }
 }

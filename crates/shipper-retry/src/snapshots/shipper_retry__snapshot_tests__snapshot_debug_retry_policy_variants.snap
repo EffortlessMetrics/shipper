@@ -1,0 +1,10 @@
+---
+source: crates/shipper-retry/src/lib.rs
+expression: "vec![RetryPolicy::Default, RetryPolicy::Aggressive, RetryPolicy::Conservative,\nRetryPolicy::Custom,]"
+---
+[
+    Default,
+    Aggressive,
+    Conservative,
+    Custom,
+]

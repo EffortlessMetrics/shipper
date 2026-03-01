@@ -609,6 +609,214 @@ mod tests {
             assert!(delay <= Duration::from_millis(15000));
         }
     }
+
+    // --- Edge-case tests ---
+
+    #[test]
+    fn test_zero_max_retries_does_not_retry() {
+        let executor = RetryExecutor::new(RetryStrategyConfig {
+            strategy: RetryStrategyType::Immediate,
+            max_attempts: 0,
+            base_delay: Duration::ZERO,
+            max_delay: Duration::ZERO,
+            jitter: 0.0,
+        });
+
+        let mut call_count = 0u32;
+        let result = executor.run(|_attempt| {
+            call_count += 1;
+            Err::<(), _>("fail")
+        });
+
+        assert_eq!(result, Err("fail"));
+        // With max_attempts=0 the operation is called once but never retried
+        assert_eq!(call_count, 1);
+    }
+
+    #[test]
+    fn test_zero_max_retries_succeeds_on_first_try() {
+        let executor = RetryExecutor::new(RetryStrategyConfig {
+            strategy: RetryStrategyType::Exponential,
+            max_attempts: 0,
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(60),
+            jitter: 0.0,
+        });
+
+        let result = executor.run(|_| Ok::<_, &str>("ok"));
+        assert_eq!(result, Ok("ok"));
+    }
+
+    #[test]
+    fn test_very_large_max_retries_immediate_success() {
+        let executor = RetryExecutor::new(RetryStrategyConfig {
+            strategy: RetryStrategyType::Exponential,
+            max_attempts: 100,
+            base_delay: Duration::from_secs(60),
+            max_delay: Duration::from_secs(3600),
+            jitter: 0.5,
+        });
+
+        let mut call_count = 0u32;
+        let result = executor.run(|_attempt| {
+            call_count += 1;
+            Ok::<_, &str>("first try")
+        });
+
+        assert_eq!(result, Ok("first try"));
+        assert_eq!(call_count, 1);
+    }
+
+    #[test]
+    fn test_backoff_overflow_exponential_saturates() {
+        // Use a large base delay so exponential computation would overflow
+        let config = RetryStrategyConfig {
+            strategy: RetryStrategyType::Exponential,
+            base_delay: Duration::from_secs(u64::MAX / 2),
+            max_delay: Duration::from_secs(u64::MAX / 2),
+            jitter: 0.0,
+            max_attempts: 100,
+        };
+
+        // High attempt number: 2^16 * huge base would overflow without saturating_mul
+        let delay = calculate_delay(&config, 17);
+        // Must not panic; should be capped at max_delay
+        assert!(delay <= config.max_delay);
+    }
+
+    #[test]
+    fn test_backoff_overflow_linear_saturates() {
+        let config = RetryStrategyConfig {
+            strategy: RetryStrategyType::Linear,
+            base_delay: Duration::from_secs(u64::MAX / 2),
+            max_delay: Duration::from_secs(100),
+            jitter: 0.0,
+            max_attempts: 100,
+        };
+
+        let delay = calculate_delay(&config, u32::MAX);
+        assert!(delay <= config.max_delay);
+    }
+
+    #[test]
+    fn test_jitter_zero_produces_exact_delays() {
+        let config = RetryStrategyConfig {
+            strategy: RetryStrategyType::Exponential,
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(60),
+            jitter: 0.0,
+            max_attempts: 10,
+        };
+
+        // With jitter=0.0, repeated calls must return the exact same value
+        for attempt in 1..=5 {
+            let first = calculate_delay(&config, attempt);
+            for _ in 0..50 {
+                assert_eq!(calculate_delay(&config, attempt), first);
+            }
+        }
+    }
+
+    #[test]
+    fn test_jitter_one_full_range() {
+        let config = RetryStrategyConfig {
+            strategy: RetryStrategyType::Constant,
+            base_delay: Duration::from_secs(10),
+            max_delay: Duration::from_secs(60),
+            jitter: 1.0,
+            max_attempts: 10,
+        };
+
+        // With jitter=1.0, delay = base * random_factor where random_factor in [0.0, 2.0]
+        // So delay should be in [0ms, 20_000ms]
+        for _ in 0..200 {
+            let delay = calculate_delay(&config, 1);
+            assert!(delay <= Duration::from_millis(20_000));
+        }
+    }
+
+    #[test]
+    fn test_initial_delay_zero() {
+        // base_delay=ZERO means all computed delays are zero for every strategy
+        for strategy in [
+            RetryStrategyType::Exponential,
+            RetryStrategyType::Linear,
+            RetryStrategyType::Constant,
+            RetryStrategyType::Immediate,
+        ] {
+            let config = RetryStrategyConfig {
+                strategy,
+                base_delay: Duration::ZERO,
+                max_delay: Duration::from_secs(60),
+                jitter: 0.0,
+                max_attempts: 10,
+            };
+
+            for attempt in 1..=5 {
+                assert_eq!(
+                    calculate_delay(&config, attempt),
+                    Duration::ZERO,
+                    "strategy {:?} attempt {} should be zero with base_delay=ZERO",
+                    strategy,
+                    attempt
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_max_delay_zero_caps_everything() {
+        let config = RetryStrategyConfig {
+            strategy: RetryStrategyType::Exponential,
+            base_delay: Duration::from_secs(10),
+            max_delay: Duration::ZERO,
+            jitter: 0.0,
+            max_attempts: 10,
+        };
+
+        for attempt in 1..=10 {
+            assert_eq!(
+                calculate_delay(&config, attempt),
+                Duration::ZERO,
+                "attempt {} should be capped to zero by max_delay=ZERO",
+                attempt
+            );
+        }
+    }
+
+    #[test]
+    fn test_max_delay_less_than_initial_delay() {
+        let config = RetryStrategyConfig {
+            strategy: RetryStrategyType::Exponential,
+            base_delay: Duration::from_secs(10),
+            max_delay: Duration::from_secs(5),
+            jitter: 0.0,
+            max_attempts: 10,
+        };
+
+        // Every attempt should be capped at max_delay
+        for attempt in 1..=5 {
+            assert_eq!(
+                calculate_delay(&config, attempt),
+                Duration::from_secs(5),
+                "attempt {} should be capped at max_delay when max_delay < base_delay",
+                attempt
+            );
+        }
+
+        // Also test with linear and constant strategies
+        let linear = RetryStrategyConfig {
+            strategy: RetryStrategyType::Linear,
+            ..config.clone()
+        };
+        assert_eq!(calculate_delay(&linear, 1), Duration::from_secs(5));
+
+        let constant = RetryStrategyConfig {
+            strategy: RetryStrategyType::Constant,
+            ..config
+        };
+        assert_eq!(calculate_delay(&constant, 1), Duration::from_secs(5));
+    }
 }
 
 #[cfg(test)]
@@ -702,6 +910,38 @@ mod property_tests {
             };
             prop_assert_eq!(calculate_delay(&immediate, 9), Duration::ZERO);
         }
+
+        #[test]
+        fn backoff_never_exceeds_max_delay(
+            strategy_idx in 0u8..4,
+            base_ms in 0u64..100_000,
+            max_ms in 0u64..300_000,
+            attempt in 1u32..100,
+        ) {
+            let strategy = match strategy_idx {
+                0 => RetryStrategyType::Immediate,
+                1 => RetryStrategyType::Exponential,
+                2 => RetryStrategyType::Linear,
+                _ => RetryStrategyType::Constant,
+            };
+
+            let max_delay = Duration::from_millis(max_ms);
+
+            let config = RetryStrategyConfig {
+                strategy,
+                max_attempts: 100,
+                base_delay: Duration::from_millis(base_ms),
+                max_delay,
+                jitter: 0.0,
+            };
+
+            let delay = calculate_delay(&config, attempt);
+            prop_assert!(
+                delay <= max_delay,
+                "strategy={:?} base={}ms max={}ms attempt={} => delay={:?} exceeded max_delay={:?}",
+                strategy, base_ms, max_ms, attempt, delay, max_delay
+            );
+        }
     }
 }
 
@@ -794,5 +1034,27 @@ mod snapshot_tests {
         assert_yaml_snapshot!("exponential", RetryStrategyType::Exponential);
         assert_yaml_snapshot!("linear", RetryStrategyType::Linear);
         assert_yaml_snapshot!("constant", RetryStrategyType::Constant);
+    }
+
+    #[test]
+    fn snapshot_debug_default_config() {
+        insta::assert_debug_snapshot!(RetryStrategyConfig::default());
+    }
+
+    #[test]
+    fn snapshot_debug_all_policies() {
+        insta::assert_debug_snapshot!("debug_default", RetryPolicy::Default.to_config());
+        insta::assert_debug_snapshot!("debug_aggressive", RetryPolicy::Aggressive.to_config());
+        insta::assert_debug_snapshot!("debug_conservative", RetryPolicy::Conservative.to_config());
+    }
+
+    #[test]
+    fn snapshot_debug_retry_policy_variants() {
+        insta::assert_debug_snapshot!(vec![
+            RetryPolicy::Default,
+            RetryPolicy::Aggressive,
+            RetryPolicy::Conservative,
+            RetryPolicy::Custom,
+        ]);
     }
 }

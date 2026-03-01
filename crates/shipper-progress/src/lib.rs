@@ -458,6 +458,335 @@ mod tests {
         reporter.set_status("All done");
         reporter.finish();
     }
+
+    // --- 1. Zero total packages: additional edge cases ---
+
+    #[test]
+    fn test_zero_packages_set_package_still_works() {
+        let mut reporter = ProgressReporter::silent(0);
+        reporter.set_package(1, "ghost", "0.0.0");
+        assert_eq!(reporter.current_package(), 1);
+        assert_eq!(reporter.current_name(), "ghost@0.0.0");
+        reporter.finish_package();
+        reporter.finish();
+    }
+
+    // --- 2. Very large total (u32::MAX) ---
+
+    #[test]
+    fn test_u32_max_total_packages() {
+        let large = u32::MAX as usize;
+        let reporter = ProgressReporter::silent(large);
+        assert_eq!(reporter.total_packages(), large);
+        assert_eq!(reporter.current_package(), 0);
+        reporter.finish();
+    }
+
+    #[test]
+    fn test_u32_max_set_package_at_boundary() {
+        let large = u32::MAX as usize;
+        let mut reporter = ProgressReporter::silent(large);
+        reporter.set_package(large, "last", "1.0.0");
+        assert_eq!(reporter.current_package(), large);
+        assert_eq!(reporter.current_name(), "last@1.0.0");
+        reporter.finish_package();
+        reporter.finish();
+    }
+
+    // --- 3. Incrementing beyond total count ---
+
+    #[test]
+    fn test_set_package_beyond_total() {
+        let mut reporter = ProgressReporter::silent(2);
+        reporter.set_package(1, "a", "0.1.0");
+        reporter.finish_package();
+        reporter.set_package(2, "b", "0.2.0");
+        reporter.finish_package();
+        // Go beyond total — should not panic.
+        reporter.set_package(3, "c", "0.3.0");
+        assert_eq!(reporter.current_package(), 3);
+        assert_eq!(reporter.current_name(), "c@0.3.0");
+        reporter.finish_package();
+        reporter.finish();
+    }
+
+    #[test]
+    fn test_set_package_far_beyond_total() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_package(100, "overflow", "9.9.9");
+        assert_eq!(reporter.current_package(), 100);
+        reporter.finish_package();
+        reporter.finish();
+    }
+
+    // --- 4. Concurrent independent reporters from multiple threads ---
+
+    #[test]
+    fn test_concurrent_independent_reporters() {
+        use std::thread;
+
+        let handles: Vec<_> = (0..4)
+            .map(|i| {
+                thread::spawn(move || {
+                    let mut reporter = ProgressReporter::silent(10);
+                    for j in 1..=10 {
+                        reporter.set_package(j, &format!("crate-{i}"), "0.1.0");
+                        reporter.finish_package();
+                    }
+                    assert_eq!(reporter.current_package(), 10);
+                    reporter.finish();
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("thread panicked");
+        }
+    }
+
+    // --- 5. Reset after completion ---
+
+    #[test]
+    fn test_reset_after_full_cycle() {
+        let mut reporter = ProgressReporter::silent(3);
+        for i in 1..=3 {
+            reporter.set_package(i, &format!("pkg-{i}"), "1.0.0");
+            reporter.finish_package();
+        }
+        assert_eq!(reporter.current_package(), 3);
+
+        // Simulate reset by setting package back to 1.
+        reporter.set_package(1, "pkg-1", "1.0.1");
+        assert_eq!(reporter.current_package(), 1);
+        assert_eq!(reporter.current_name(), "pkg-1@1.0.1");
+        reporter.finish_package();
+    }
+
+    // --- 6. Snapshot tests for progress display at various percentages ---
+
+    #[test]
+    fn snapshot_progress_at_0_percent() {
+        let reporter = ProgressReporter::silent(4);
+        let state = (
+            reporter.total_packages(),
+            reporter.current_package(),
+            reporter.current_name().to_string(),
+            0.0_f64,
+        );
+        insta::assert_debug_snapshot!(state);
+    }
+
+    #[test]
+    fn snapshot_progress_at_25_percent() {
+        let mut reporter = ProgressReporter::silent(4);
+        reporter.set_package(1, "alpha", "0.1.0");
+        reporter.finish_package();
+        let pct = (reporter.current_package() as f64 / reporter.total_packages() as f64) * 100.0;
+        let state = (
+            reporter.total_packages(),
+            reporter.current_package(),
+            reporter.current_name().to_string(),
+            pct,
+        );
+        insta::assert_debug_snapshot!(state);
+    }
+
+    #[test]
+    fn snapshot_progress_at_50_percent() {
+        let mut reporter = ProgressReporter::silent(4);
+        for (i, name) in [(1, "alpha"), (2, "beta")] {
+            reporter.set_package(i, name, "0.1.0");
+            reporter.finish_package();
+        }
+        let pct = (reporter.current_package() as f64 / reporter.total_packages() as f64) * 100.0;
+        let state = (
+            reporter.total_packages(),
+            reporter.current_package(),
+            reporter.current_name().to_string(),
+            pct,
+        );
+        insta::assert_debug_snapshot!(state);
+    }
+
+    #[test]
+    fn snapshot_progress_at_75_percent() {
+        let mut reporter = ProgressReporter::silent(4);
+        for (i, name) in [(1, "alpha"), (2, "beta"), (3, "gamma")] {
+            reporter.set_package(i, name, "0.1.0");
+            reporter.finish_package();
+        }
+        let pct = (reporter.current_package() as f64 / reporter.total_packages() as f64) * 100.0;
+        let state = (
+            reporter.total_packages(),
+            reporter.current_package(),
+            reporter.current_name().to_string(),
+            pct,
+        );
+        insta::assert_debug_snapshot!(state);
+    }
+
+    #[test]
+    fn snapshot_progress_at_100_percent() {
+        let mut reporter = ProgressReporter::silent(4);
+        for (i, name) in [(1, "alpha"), (2, "beta"), (3, "gamma"), (4, "delta")] {
+            reporter.set_package(i, name, "0.1.0");
+            reporter.finish_package();
+        }
+        let pct = (reporter.current_package() as f64 / reporter.total_packages() as f64) * 100.0;
+        let state = (
+            reporter.total_packages(),
+            reporter.current_package(),
+            reporter.current_name().to_string(),
+            pct,
+        );
+        insta::assert_debug_snapshot!(state);
+    }
+
+    // --- 7. Property: percentage always 0..=100 (exhaustive for small values) ---
+
+    #[test]
+    fn test_percentage_always_in_range_exhaustive_small() {
+        for total in 1..=20_usize {
+            for current in 0..=total {
+                let pct = (current as f64 / total as f64) * 100.0;
+                assert!(
+                    (0.0..=100.0).contains(&pct),
+                    "percentage {pct} out of range for {current}/{total}"
+                );
+            }
+        }
+    }
+
+    // --- 8. Edge case: decrement below zero ---
+
+    #[test]
+    fn test_set_package_index_zero() {
+        let mut reporter = ProgressReporter::silent(5);
+        reporter.set_package(0, "zero-indexed", "0.0.0");
+        assert_eq!(reporter.current_package(), 0);
+        assert_eq!(reporter.current_name(), "zero-indexed@0.0.0");
+        reporter.finish_package();
+        reporter.finish();
+    }
+
+    #[test]
+    fn test_set_package_decreasing_index() {
+        let mut reporter = ProgressReporter::silent(5);
+        reporter.set_package(3, "middle", "1.0.0");
+        assert_eq!(reporter.current_package(), 3);
+        // Decrease the index — simulates going backward.
+        reporter.set_package(1, "back-to-start", "0.1.0");
+        assert_eq!(reporter.current_package(), 1);
+        assert_eq!(reporter.current_name(), "back-to-start@0.1.0");
+    }
+
+    // --- 9. Status transitions: pending → in_progress → completed ---
+
+    #[test]
+    fn test_status_transition_pending_to_completed() {
+        let mut reporter = ProgressReporter::silent(2);
+
+        // Pending: fresh state.
+        assert_eq!(reporter.current_package(), 0);
+        assert_eq!(reporter.current_name(), "");
+
+        // In-progress: first package.
+        reporter.set_package(1, "dep", "0.1.0");
+        reporter.set_status("Publishing dep@0.1.0");
+        assert_eq!(reporter.current_package(), 1);
+        reporter.finish_package();
+
+        // In-progress: second package.
+        reporter.set_package(2, "app", "1.0.0");
+        reporter.set_status("Publishing app@1.0.0");
+        assert_eq!(reporter.current_package(), 2);
+        reporter.finish_package();
+
+        // Completed.
+        assert_eq!(reporter.current_package(), 2);
+        assert_eq!(reporter.total_packages(), 2);
+        reporter.finish();
+    }
+
+    #[test]
+    fn test_status_transitions_with_intermediate_statuses() {
+        let mut reporter = ProgressReporter::silent(1);
+
+        // Pending.
+        reporter.set_status("Queued");
+
+        // In-progress.
+        reporter.set_package(1, "my-crate", "1.0.0");
+        reporter.set_status("Compiling");
+        reporter.set_status("Packaging");
+        reporter.set_status("Uploading");
+        reporter.set_status("Verifying on registry");
+
+        // Completed.
+        reporter.finish_package();
+        reporter.set_status("Published successfully");
+        reporter.finish();
+    }
+
+    // --- 10. Display formatting edge cases ---
+
+    #[test]
+    fn test_display_format_with_hyphenated_name() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_package(1, "my-super-crate-name", "0.1.0-rc.1");
+        assert_eq!(reporter.current_name(), "my-super-crate-name@0.1.0-rc.1");
+    }
+
+    #[test]
+    fn test_display_format_with_build_metadata() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_package(1, "crate", "1.0.0+build.123");
+        assert_eq!(reporter.current_name(), "crate@1.0.0+build.123");
+    }
+
+    #[test]
+    fn test_display_format_at_sign_in_version() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_package(1, "crate", "1.0.0@special");
+        assert_eq!(reporter.current_name(), "crate@1.0.0@special");
+    }
+
+    #[test]
+    fn test_display_format_whitespace_in_name() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_package(1, "name with spaces", "1.0.0");
+        assert_eq!(reporter.current_name(), "name with spaces@1.0.0");
+    }
+
+    #[test]
+    fn test_display_format_newlines_in_status() {
+        let reporter = ProgressReporter::silent(1);
+        reporter.set_status("line1\nline2\nline3");
+    }
+
+    #[test]
+    fn snapshot_display_format_edge_cases() {
+        let cases: Vec<(&str, &str, String)> = vec![
+            ("normal", "1.0.0", "normal@1.0.0".to_string()),
+            ("", "", "@".to_string()),
+            ("a", "0.0.0", "a@0.0.0".to_string()),
+            (
+                "crate-with-dashes",
+                "0.1.0-alpha.1+meta",
+                "crate-with-dashes@0.1.0-alpha.1+meta".to_string(),
+            ),
+        ];
+        let formatted: Vec<String> = cases
+            .iter()
+            .map(|(name, ver, expected)| {
+                let mut r = ProgressReporter::silent(1);
+                r.set_package(1, name, ver);
+                assert_eq!(r.current_name(), expected.as_str());
+                format!("name={name:?} ver={ver:?} => {:?}", r.current_name())
+            })
+            .collect();
+        insta::assert_debug_snapshot!(formatted);
+    }
 }
 
 #[cfg(test)]

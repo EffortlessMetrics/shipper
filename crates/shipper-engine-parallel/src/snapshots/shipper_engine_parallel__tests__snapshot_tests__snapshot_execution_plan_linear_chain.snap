@@ -1,0 +1,24 @@
+---
+source: crates/shipper-engine-parallel/src/lib.rs
+expression: layout
+---
+[
+    (
+        0,
+        [
+            "a",
+        ],
+    ),
+    (
+        1,
+        [
+            "b",
+        ],
+    ),
+    (
+        2,
+        [
+            "c",
+        ],
+    ),
+]

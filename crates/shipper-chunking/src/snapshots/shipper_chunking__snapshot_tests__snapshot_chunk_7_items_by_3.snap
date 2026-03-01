@@ -1,0 +1,19 @@
+---
+source: crates/shipper-chunking/src/lib.rs
+expression: "chunk_by_max_concurrent(&items, 3)"
+---
+[
+    [
+        "alpha",
+        "bravo",
+        "charlie",
+    ],
+    [
+        "delta",
+        "echo",
+        "foxtrot",
+    ],
+    [
+        "golf",
+    ],
+]

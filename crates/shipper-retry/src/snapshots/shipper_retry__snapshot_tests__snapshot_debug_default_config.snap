@@ -1,0 +1,11 @@
+---
+source: crates/shipper-retry/src/lib.rs
+expression: "RetryStrategyConfig::default()"
+---
+RetryStrategyConfig {
+    strategy: Exponential,
+    max_attempts: 6,
+    base_delay: 2s,
+    max_delay: 120s,
+    jitter: 0.5,
+}

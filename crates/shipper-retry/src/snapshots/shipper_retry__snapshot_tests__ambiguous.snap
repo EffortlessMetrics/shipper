@@ -1,0 +1,5 @@
+---
+source: crates/shipper-retry/src/lib.rs
+expression: "ErrorClass::Ambiguous"
+---
+ambiguous
