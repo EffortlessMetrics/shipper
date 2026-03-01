@@ -1,0 +1,5 @@
+---
+source: crates/shipper-storage/src/lib.rs
+expression: moved_content
+---
+payload

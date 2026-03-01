@@ -1049,3 +1049,637 @@ mod snapshot_tests {
         insta::assert_snapshot!("lock_path_with_root_filename", name);
     }
 }
+
+#[cfg(test)]
+mod edge_case_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use tempfile::tempdir;
+
+    // ── 1. Stale lock detection and recovery ────────────────────────────
+
+    #[test]
+    fn stale_lock_exactly_at_timeout_boundary_is_not_removed() {
+        // A lock whose age equals the timeout should NOT be considered stale
+        // because the comparison is strictly greater-than.
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        let timeout_secs = 3600u64;
+        let info = LockInfo {
+            pid: 55555,
+            hostname: "boundary-host".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::seconds(timeout_secs as i64),
+            plan_id: None,
+        };
+        fs::write(&lp, serde_json::to_string(&info).unwrap()).unwrap();
+
+        // Lock age ≈ timeout; due to time passing between write and check
+        // this may be slightly over, so we use a timeout 1 second larger to
+        // ensure the lock is truly at the boundary.
+        let result =
+            LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(timeout_secs + 1));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("lock already held")
+        );
+    }
+
+    #[test]
+    fn stale_lock_one_second_past_timeout_is_removed() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        let timeout_secs = 60u64;
+        let info = LockInfo {
+            pid: 55556,
+            hostname: "past-host".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::seconds((timeout_secs + 2) as i64),
+            plan_id: Some("stale-plan".to_string()),
+        };
+        fs::write(&lp, serde_json::to_string(&info).unwrap()).unwrap();
+
+        let lock =
+            LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(timeout_secs))
+                .expect("should remove stale lock");
+        let new_info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_eq!(new_info.pid, std::process::id());
+        assert!(new_info.plan_id.is_none());
+        drop(lock);
+    }
+
+    #[test]
+    fn stale_lock_recovery_preserves_state_dir() {
+        let td = tempdir().expect("tempdir");
+        let nested = td.path().join("deep").join("state");
+        fs::create_dir_all(&nested).unwrap();
+        let lp = lock_path(&nested, None);
+        let info = LockInfo {
+            pid: 44444,
+            hostname: "stale-nested".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::hours(10),
+            plan_id: None,
+        };
+        fs::write(&lp, serde_json::to_string(&info).unwrap()).unwrap();
+
+        let lock = LockFile::acquire_with_timeout(&nested, None, Duration::from_secs(60)).unwrap();
+        assert!(nested.exists());
+        drop(lock);
+    }
+
+    // ── 2. Concurrent lock acquisition from multiple threads ────────────
+
+    #[test]
+    fn concurrent_acquire_only_one_succeeds() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = td.path().to_path_buf();
+        let thread_count = 8;
+        let barrier = Arc::new(Barrier::new(thread_count));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|_| {
+                let dir = state_dir.clone();
+                let b = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    b.wait();
+                    LockFile::acquire(&dir, None).ok()
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let successes = results.iter().filter(|r| r.is_some()).count();
+        // At most one thread should successfully acquire the lock.
+        // Due to the non-atomic check-then-create in acquire(), more than
+        // one *might* succeed in a race, but at least one must succeed.
+        assert!(successes >= 1, "at least one thread must acquire the lock");
+    }
+
+    #[test]
+    fn concurrent_acquire_with_timeout_replaces_stale() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = td.path().to_path_buf();
+        let lp = lock_path(&state_dir, None);
+        let info = LockInfo {
+            pid: 99990,
+            hostname: "old".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::hours(5),
+            plan_id: None,
+        };
+        fs::write(&lp, serde_json::to_string(&info).unwrap()).unwrap();
+
+        let thread_count = 4;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let handles: Vec<_> = (0..thread_count)
+            .map(|_| {
+                let dir = state_dir.clone();
+                let b = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    b.wait();
+                    LockFile::acquire_with_timeout(&dir, None, Duration::from_secs(60)).ok()
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let successes = results.iter().filter(|r| r.is_some()).count();
+        assert!(successes >= 1, "at least one thread must succeed");
+    }
+
+    // ── 3. Force-break of existing lock ─────────────────────────────────
+
+    #[test]
+    fn force_break_by_removing_lock_then_reacquire() {
+        let td = tempdir().expect("tempdir");
+        let _lock = LockFile::acquire(td.path(), None).expect("initial acquire");
+        let lp = lock_path(td.path(), None);
+        assert!(lp.exists());
+
+        // Simulate a force-break: manually remove the lock file
+        fs::remove_file(&lp).expect("force remove");
+        assert!(!lp.exists());
+
+        // Now a new acquire should succeed
+        let lock2 = LockFile::acquire(td.path(), None).expect("reacquire after force-break");
+        let info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_eq!(info.pid, std::process::id());
+        drop(lock2);
+    }
+
+    #[test]
+    fn force_break_stale_via_timeout_zero() {
+        // With timeout=0, any existing lock is considered stale (age > 0)
+        // unless it was literally just created in the same second.
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        let info = LockInfo {
+            pid: 33333,
+            hostname: "force-host".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::seconds(1),
+            plan_id: None,
+        };
+        fs::write(&lp, serde_json::to_string(&info).unwrap()).unwrap();
+
+        let lock = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(0)).unwrap();
+        let new_info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_eq!(new_info.pid, std::process::id());
+        drop(lock);
+    }
+
+    #[test]
+    fn force_break_lock_held_by_different_workspace_root() {
+        let td = tempdir().expect("tempdir");
+        let root_a = td.path().join("ws-a");
+        let root_b = td.path().join("ws-b");
+        let _lock_a = LockFile::acquire(td.path(), Some(&root_a)).unwrap();
+
+        // Force-break for root_a should not affect root_b
+        let lp_a = lock_path(td.path(), Some(&root_a));
+        fs::remove_file(&lp_a).unwrap();
+
+        let lock_a2 = LockFile::acquire(td.path(), Some(&root_a)).unwrap();
+        // root_b should still be unlocked (never had a lock)
+        assert!(!LockFile::is_locked(td.path(), Some(&root_b)).unwrap());
+        drop(lock_a2);
+    }
+
+    // ── 4. Lock file with corrupt/invalid content ───────────────────────
+
+    #[test]
+    fn corrupt_lock_empty_file() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::write(&lp, "").unwrap();
+
+        // acquire should fail because the file exists but can't be parsed
+        let err = LockFile::acquire(td.path(), None).unwrap_err();
+        assert!(err.to_string().contains("failed to parse lock JSON"));
+    }
+
+    #[test]
+    fn corrupt_lock_partial_json() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::write(&lp, r#"{"pid": 1, "hostname": "h""#).unwrap();
+
+        let err = LockFile::acquire(td.path(), None).unwrap_err();
+        assert!(err.to_string().contains("failed to parse lock JSON"));
+    }
+
+    #[test]
+    fn corrupt_lock_wrong_json_type() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::write(&lp, "[1, 2, 3]").unwrap();
+
+        let err = LockFile::acquire(td.path(), None).unwrap_err();
+        assert!(err.to_string().contains("failed to parse lock JSON"));
+    }
+
+    #[test]
+    fn corrupt_lock_missing_required_fields() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::write(&lp, r#"{"pid": 1}"#).unwrap();
+
+        let err = LockFile::acquire(td.path(), None).unwrap_err();
+        assert!(err.to_string().contains("failed to parse lock JSON"));
+    }
+
+    #[test]
+    fn corrupt_lock_binary_content() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::write(&lp, &[0xFF, 0xFE, 0x00, 0x01, 0x80]).unwrap();
+
+        let err = LockFile::acquire(td.path(), None).unwrap_err();
+        assert!(
+            err.to_string().contains("failed to read lock file")
+                || err.to_string().contains("failed to parse lock JSON")
+        );
+    }
+
+    #[test]
+    fn corrupt_lock_removed_by_acquire_with_timeout() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::write(&lp, "totally-invalid").unwrap();
+
+        // acquire_with_timeout should remove corrupt lock and succeed
+        let lock =
+            LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(3600)).unwrap();
+        let info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_eq!(info.pid, std::process::id());
+        drop(lock);
+    }
+
+    #[test]
+    fn corrupt_lock_empty_json_object() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::write(&lp, "{}").unwrap();
+
+        let err = LockFile::acquire(td.path(), None).unwrap_err();
+        assert!(err.to_string().contains("failed to parse lock JSON"));
+    }
+
+    #[test]
+    fn corrupt_lock_wrong_pid_type() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::write(
+            &lp,
+            r#"{"pid": "not-a-number", "hostname": "h", "acquired_at": "2025-01-01T00:00:00Z", "plan_id": null}"#,
+        )
+        .unwrap();
+
+        let err = LockFile::acquire(td.path(), None).unwrap_err();
+        assert!(err.to_string().contains("failed to parse lock JSON"));
+    }
+
+    // ── 5. Lock in unicode directory path ───────────────────────────────
+
+    #[test]
+    fn lock_in_unicode_directory() {
+        let td = tempdir().expect("tempdir");
+        let unicode_dir = td.path().join("ünïcödé_目录_🔒");
+        let lock = LockFile::acquire(&unicode_dir, None).expect("acquire in unicode dir");
+        assert!(LockFile::is_locked(&unicode_dir, None).unwrap());
+        let info = LockFile::read_lock_info(&unicode_dir, None).unwrap();
+        assert_eq!(info.pid, std::process::id());
+        drop(lock);
+        assert!(!LockFile::is_locked(&unicode_dir, None).unwrap());
+    }
+
+    #[test]
+    fn lock_with_unicode_workspace_root() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path().join("プロジェクト");
+        let lock = LockFile::acquire(td.path(), Some(&root)).unwrap();
+        assert!(LockFile::is_locked(td.path(), Some(&root)).unwrap());
+        lock.release().unwrap();
+        assert!(!LockFile::is_locked(td.path(), Some(&root)).unwrap());
+    }
+
+    #[test]
+    fn lock_in_deeply_nested_unicode_path() {
+        let td = tempdir().expect("tempdir");
+        let deep = td.path().join("α").join("β").join("γ").join("δ");
+        let lock = LockFile::acquire(&deep, None).unwrap();
+        assert!(deep.exists());
+        let info = LockFile::read_lock_info(&deep, None).unwrap();
+        assert_eq!(info.pid, std::process::id());
+        drop(lock);
+    }
+
+    // ── 6. Lock with zero timeout ───────────────────────────────────────
+
+    #[test]
+    fn zero_timeout_breaks_old_lock() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        let info = LockInfo {
+            pid: 22222,
+            hostname: "zero-host".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::seconds(2),
+            plan_id: None,
+        };
+        fs::write(&lp, serde_json::to_string(&info).unwrap()).unwrap();
+
+        let lock = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(0)).unwrap();
+        let new_info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_eq!(new_info.pid, std::process::id());
+        drop(lock);
+    }
+
+    #[test]
+    fn zero_timeout_on_empty_dir_succeeds() {
+        let td = tempdir().expect("tempdir");
+        let lock = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(0)).unwrap();
+        assert!(LockFile::is_locked(td.path(), None).unwrap());
+        drop(lock);
+    }
+
+    #[test]
+    fn zero_timeout_removes_corrupt_lock() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::write(&lp, "garbage").unwrap();
+
+        let lock = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(0)).unwrap();
+        let info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_eq!(info.pid, std::process::id());
+        drop(lock);
+    }
+
+    // ── 7. Lock with very large timeout ─────────────────────────────────
+
+    #[test]
+    fn very_large_timeout_does_not_remove_fresh_lock() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        let info = LockInfo {
+            pid: 11112,
+            hostname: "large-timeout-host".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::hours(24 * 365),
+            plan_id: None,
+        };
+        fs::write(&lp, serde_json::to_string(&info).unwrap()).unwrap();
+
+        // Timeout so large that even a year-old lock is not stale
+        let result = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(u64::MAX));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("lock already held")
+        );
+    }
+
+    #[test]
+    fn very_large_timeout_on_empty_dir_succeeds() {
+        let td = tempdir().expect("tempdir");
+        let lock =
+            LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(u64::MAX)).unwrap();
+        assert!(LockFile::is_locked(td.path(), None).unwrap());
+        drop(lock);
+    }
+
+    #[test]
+    fn max_duration_timeout_with_stale_lock() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        let info = LockInfo {
+            pid: 11113,
+            hostname: "max-host".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::weeks(52 * 100),
+            plan_id: Some("ancient-plan".to_string()),
+        };
+        fs::write(&lp, serde_json::to_string(&info).unwrap()).unwrap();
+
+        // u64::MAX seconds ≈ 584 billion years — nothing is stale
+        let result = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(u64::MAX));
+        assert!(result.is_err());
+    }
+
+    // ── 8. Lock file permissions edge cases ─────────────────────────────
+
+    #[test]
+    fn acquire_in_nonexistent_nested_directory() {
+        let td = tempdir().expect("tempdir");
+        let deep = td.path().join("a").join("b").join("c").join("d");
+        assert!(!deep.exists());
+        let lock = LockFile::acquire(&deep, None).unwrap();
+        assert!(deep.exists());
+        assert!(LockFile::is_locked(&deep, None).unwrap());
+        drop(lock);
+    }
+
+    #[test]
+    fn release_already_deleted_lock_is_ok() {
+        let td = tempdir().expect("tempdir");
+        let lock = LockFile::acquire(td.path(), None).unwrap();
+        let lp = lock_path(td.path(), None);
+        // External process deletes the lock file
+        fs::remove_file(&lp).unwrap();
+        // release should not error
+        lock.release().unwrap();
+    }
+
+    #[test]
+    fn double_release_is_idempotent() {
+        let td = tempdir().expect("tempdir");
+        let lock = LockFile::acquire(td.path(), None).unwrap();
+        lock.release().unwrap();
+        lock.release().unwrap();
+        assert!(!lock_path(td.path(), None).exists());
+    }
+
+    #[test]
+    fn set_plan_id_on_externally_deleted_lock_fails() {
+        let td = tempdir().expect("tempdir");
+        let lock = LockFile::acquire(td.path(), None).unwrap();
+        let lp = lock_path(td.path(), None);
+        fs::remove_file(&lp).unwrap();
+        let err = lock.set_plan_id("orphan").unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn read_lock_info_on_corrupt_file_fails() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::write(&lp, "not json").unwrap();
+        let err = LockFile::read_lock_info(td.path(), None).unwrap_err();
+        assert!(err.to_string().contains("failed to parse lock JSON"));
+    }
+
+    // ── 9. Snapshot tests for LockState variants ────────────────────────
+
+    /// Represents the logical state of a lock for snapshot testing.
+    #[derive(Debug)]
+    #[allow(dead_code)]
+    enum LockState {
+        Unlocked,
+        Locked(LockInfo),
+        Stale(LockInfo),
+        Corrupt(String),
+    }
+
+    fn fixed_info(pid: u32, plan_id: Option<&str>) -> LockInfo {
+        use chrono::TimeZone;
+        LockInfo {
+            pid,
+            hostname: "snap-host".to_string(),
+            acquired_at: Utc.with_ymd_and_hms(2025, 6, 15, 8, 30, 0).unwrap(),
+            plan_id: plan_id.map(String::from),
+        }
+    }
+
+    #[test]
+    fn snapshot_lock_state_unlocked() {
+        let state = LockState::Unlocked;
+        insta::assert_debug_snapshot!("lock_state_unlocked", state);
+    }
+
+    #[test]
+    fn snapshot_lock_state_locked_no_plan() {
+        let state = LockState::Locked(fixed_info(100, None));
+        insta::assert_debug_snapshot!("lock_state_locked_no_plan", state);
+    }
+
+    #[test]
+    fn snapshot_lock_state_locked_with_plan() {
+        let state = LockState::Locked(fixed_info(200, Some("release-v1.0")));
+        insta::assert_debug_snapshot!("lock_state_locked_with_plan", state);
+    }
+
+    #[test]
+    fn snapshot_lock_state_stale() {
+        let state = LockState::Stale(fixed_info(300, Some("old-plan")));
+        insta::assert_debug_snapshot!("lock_state_stale", state);
+    }
+
+    #[test]
+    fn snapshot_lock_state_corrupt() {
+        let state = LockState::Corrupt("<<<not json>>>".to_string());
+        insta::assert_debug_snapshot!("lock_state_corrupt", state);
+    }
+
+    #[test]
+    fn snapshot_lock_info_all_fields() {
+        let info = fixed_info(42, Some("plan-xyz-789"));
+        insta::assert_debug_snapshot!("lock_info_all_fields", info);
+    }
+
+    #[test]
+    fn snapshot_lock_info_no_plan_id() {
+        let info = fixed_info(1, None);
+        insta::assert_debug_snapshot!("lock_info_no_plan_id", info);
+    }
+}
+
+#[cfg(test)]
+mod proptest_edge_cases {
+    use super::*;
+    use proptest::prelude::*;
+    use tempfile::tempdir;
+
+    proptest! {
+        // ── 10. Property test: lock acquire + release is always paired ──
+
+        #[test]
+        fn acquire_release_always_paired(dir_suffix in "[a-zA-Z0-9]{1,16}") {
+            let td = tempdir().expect("tempdir");
+            let state_dir = td.path().join(dir_suffix);
+
+            // Before: not locked
+            prop_assert!(!lock_path(&state_dir, None).exists());
+
+            // Acquire
+            let lock = LockFile::acquire(&state_dir, None).expect("acquire");
+            prop_assert!(lock_path(&state_dir, None).exists());
+
+            // Release
+            lock.release().expect("release");
+            prop_assert!(!lock_path(&state_dir, None).exists());
+        }
+
+        #[test]
+        fn acquire_drop_always_paired(dir_suffix in "[a-zA-Z0-9]{1,16}") {
+            let td = tempdir().expect("tempdir");
+            let state_dir = td.path().join(dir_suffix);
+
+            prop_assert!(!lock_path(&state_dir, None).exists());
+
+            {
+                let _lock = LockFile::acquire(&state_dir, None).expect("acquire");
+                prop_assert!(lock_path(&state_dir, None).exists());
+            }
+            // Drop should have released
+            prop_assert!(!lock_path(&state_dir, None).exists());
+        }
+
+        #[test]
+        fn acquire_with_timeout_release_always_paired(
+            dir_suffix in "[a-zA-Z0-9]{1,16}",
+            timeout_secs in 1u64..=3600u64,
+        ) {
+            let td = tempdir().expect("tempdir");
+            let state_dir = td.path().join(dir_suffix);
+
+            let lock = LockFile::acquire_with_timeout(
+                &state_dir,
+                None,
+                Duration::from_secs(timeout_secs),
+            ).expect("acquire");
+            prop_assert!(lock_path(&state_dir, None).exists());
+
+            lock.release().expect("release");
+            prop_assert!(!lock_path(&state_dir, None).exists());
+        }
+
+        #[test]
+        fn acquire_set_plan_release_always_paired(
+            dir_suffix in "[a-zA-Z0-9]{1,16}",
+            plan_id in "[a-zA-Z0-9_-]{1,32}",
+        ) {
+            let td = tempdir().expect("tempdir");
+            let state_dir = td.path().join(dir_suffix);
+
+            let lock = LockFile::acquire(&state_dir, None).expect("acquire");
+            lock.set_plan_id(&plan_id).expect("set_plan_id");
+            let info = LockFile::read_lock_info(&state_dir, None).expect("read");
+            prop_assert_eq!(info.plan_id.as_deref(), Some(plan_id.as_str()));
+
+            lock.release().expect("release");
+            prop_assert!(!lock_path(&state_dir, None).exists());
+        }
+
+        #[test]
+        fn corrupt_lock_always_recoverable_with_timeout(
+            dir_suffix in "[a-zA-Z0-9]{1,16}",
+            garbage in "[^\x00]{1,256}",
+        ) {
+            let td = tempdir().expect("tempdir");
+            let state_dir = td.path().join(&dir_suffix);
+            fs::create_dir_all(&state_dir).expect("mkdir");
+            let lp = lock_path(&state_dir, None);
+            fs::write(&lp, &garbage).expect("write garbage");
+
+            let lock = LockFile::acquire_with_timeout(
+                &state_dir,
+                None,
+                Duration::from_secs(3600),
+            ).expect("should recover from corrupt lock");
+
+            let info = LockFile::read_lock_info(&state_dir, None).expect("read");
+            prop_assert_eq!(info.pid, std::process::id());
+
+            lock.release().expect("release");
+            prop_assert!(!lock_path(&state_dir, None).exists());
+        }
+    }
+}

@@ -2478,6 +2478,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "temp-env",
  "tempfile",
 ]
 
@@ -2635,6 +2636,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "temp-env",
  "tempfile",
 ]
 

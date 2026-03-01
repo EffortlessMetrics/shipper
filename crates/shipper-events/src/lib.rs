@@ -1091,6 +1091,895 @@ mod tests {
         );
         insta::assert_yaml_snapshot!("preflight_ownership_check_yaml", event);
     }
+
+    // -- Edge-case: corrupt / truncated JSONL --
+
+    #[test]
+    fn read_from_file_errors_on_truncated_json() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+        // A valid JSON object missing the closing brace
+        fs::write(&path, r#"{"timestamp":"2025-01-15T12:00:00Z","event_type":{"type":"execution_started"},"package":"all"#).expect("write");
+        let result = EventLog::read_from_file(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_from_file_errors_on_binary_data() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+        fs::write(&path, b"\x00\x01\x02\xFF\xFE\n").expect("write");
+        let result = EventLog::read_from_file(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_from_file_errors_on_empty_line_between_valid_events() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let mut log = EventLog::new();
+        log.record(sample_event("ok@1.0.0"));
+        log.write_to_file(&path).expect("write");
+
+        // Insert a blank line followed by another valid event
+        let mut file = OpenOptions::new().append(true).open(&path).expect("open");
+        writeln!(file).expect("write blank line");
+        // The blank line itself should cause a parse error
+        let content = fs::read_to_string(&path).expect("read");
+        assert!(content.contains("\n\n"));
+
+        let result = EventLog::read_from_file(&path);
+        assert!(
+            result.is_err(),
+            "empty line mid-file should cause parse error"
+        );
+    }
+
+    #[test]
+    fn read_from_file_errors_on_valid_json_but_wrong_schema() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+        fs::write(&path, r#"{"name":"not-an-event","value":42}"#).expect("write");
+        let result = EventLog::read_from_file(&path);
+        assert!(result.is_err());
+    }
+
+    // -- Edge-case: very large event payloads --
+
+    #[test]
+    fn large_payload_over_1mb_roundtrips() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let large_string = "x".repeat(1_100_000); // >1MB
+        let event = make_event(
+            EventType::PackageOutput {
+                stdout_tail: large_string.clone(),
+                stderr_tail: "small".to_string(),
+            },
+            "big@1.0.0",
+        );
+
+        let mut log = EventLog::new();
+        log.record(event);
+        log.write_to_file(&path).expect("write");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.len(), 1);
+        match &loaded.all_events()[0].event_type {
+            EventType::PackageOutput { stdout_tail, .. } => {
+                assert_eq!(stdout_tail.len(), 1_100_000);
+                assert_eq!(stdout_tail, &large_string);
+            }
+            other => panic!("unexpected event type: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn large_error_message_roundtrips() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let big_msg = "E".repeat(2_000_000); // 2MB
+        let event = make_event(
+            EventType::PackageFailed {
+                class: ErrorClass::Ambiguous,
+                message: big_msg.clone(),
+            },
+            "huge@0.1.0",
+        );
+
+        let mut log = EventLog::new();
+        log.record(event);
+        log.write_to_file(&path).expect("write");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        match &loaded.all_events()[0].event_type {
+            EventType::PackageFailed { message, .. } => assert_eq!(message, &big_msg),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    // -- Edge-case: unicode in package names and messages --
+
+    #[test]
+    fn unicode_cjk_package_name_roundtrips() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let event = make_event(
+            EventType::PackageStarted {
+                name: "日本語クレート".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            "日本語クレート@1.0.0",
+        );
+        let mut log = EventLog::new();
+        log.record(event);
+        log.write_to_file(&path).expect("write");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.all_events()[0].package, "日本語クレート@1.0.0");
+    }
+
+    #[test]
+    fn unicode_emoji_in_messages_roundtrips() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let event = make_event(
+            EventType::PackageFailed {
+                class: ErrorClass::Retryable,
+                message: "🔥 error: build failed 💀 with 🚫 permissions".to_string(),
+            },
+            "emoji-crate@2.0.0",
+        );
+        let mut log = EventLog::new();
+        log.record(event);
+        log.write_to_file(&path).expect("write");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        match &loaded.all_events()[0].event_type {
+            EventType::PackageFailed { message, .. } => {
+                assert!(message.contains("🔥"));
+                assert!(message.contains("💀"));
+                assert!(message.contains("🚫"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unicode_combining_chars_and_rtl_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        // Combining characters (e + combining acute = é) and RTL Arabic
+        let event = make_event(
+            EventType::PackageOutput {
+                stdout_tail: "cafe\u{0301} naïve résumé".to_string(),
+                stderr_tail: "مرحبا بالعالم".to_string(), // Arabic "hello world"
+            },
+            "i18n@1.0.0",
+        );
+        let mut log = EventLog::new();
+        log.record(event);
+        log.write_to_file(&path).expect("write");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        match &loaded.all_events()[0].event_type {
+            EventType::PackageOutput {
+                stdout_tail,
+                stderr_tail,
+            } => {
+                assert!(stdout_tail.contains("cafe\u{0301}"));
+                assert!(stderr_tail.contains("مرحبا"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    // -- Edge-case: empty events file --
+
+    #[test]
+    fn read_from_existing_empty_file_returns_empty_log() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+        fs::write(&path, "").expect("create empty file");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert!(loaded.is_empty());
+        assert_eq!(loaded.len(), 0);
+    }
+
+    #[test]
+    fn read_from_zero_byte_file_returns_empty_log() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+        File::create(&path).expect("create zero-byte file");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert!(loaded.is_empty());
+    }
+
+    // -- Edge-case: trailing newline handling --
+
+    #[test]
+    fn file_with_trailing_newline_reads_correctly() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        // Write one event which produces "...\n" (trailing newline from writeln!)
+        let mut log = EventLog::new();
+        log.record(sample_event("a@1.0.0"));
+        log.write_to_file(&path).expect("write");
+
+        let content = fs::read_to_string(&path).expect("read");
+        assert!(
+            content.ends_with('\n'),
+            "writeln! should produce trailing newline"
+        );
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.len(), 1);
+    }
+
+    #[test]
+    fn file_without_trailing_newline_reads_correctly() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let event = sample_event("a@1.0.0");
+        let json = serde_json::to_string(&event).expect("serialize");
+        // Write without trailing newline
+        fs::write(&path, &json).expect("write");
+
+        let content = fs::read_to_string(&path).expect("read");
+        assert!(!content.ends_with('\n'));
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.all_events()[0].package, "a@1.0.0");
+    }
+
+    #[test]
+    fn file_with_multiple_trailing_newlines_errors() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let mut log = EventLog::new();
+        log.record(sample_event("a@1.0.0"));
+        log.write_to_file(&path).expect("write");
+
+        // Append extra blank line
+        let mut file = OpenOptions::new().append(true).open(&path).expect("open");
+        writeln!(file).expect("blank line");
+
+        // The extra blank line becomes an empty string which fails JSON parse
+        let result = EventLog::read_from_file(&path);
+        assert!(result.is_err());
+    }
+
+    // -- Roundtrip serialization for every EventType variant (field-level verification) --
+
+    #[test]
+    fn roundtrip_plan_created_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::PlanCreated {
+                plan_id: "plan-xyz-99".to_string(),
+                package_count: 42,
+            },
+            "workspace",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.timestamp, event.timestamp);
+        assert_eq!(parsed.package, "workspace");
+        match &parsed.event_type {
+            EventType::PlanCreated {
+                plan_id,
+                package_count,
+            } => {
+                assert_eq!(plan_id, "plan-xyz-99");
+                assert_eq!(*package_count, 42);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_execution_started_preserves_all_fields() {
+        let event = fixed_event(EventType::ExecutionStarted, "ws");
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.timestamp, event.timestamp);
+        assert!(matches!(parsed.event_type, EventType::ExecutionStarted));
+    }
+
+    #[test]
+    fn roundtrip_execution_finished_preserves_all_fields() {
+        for result in [
+            ExecutionResult::Success,
+            ExecutionResult::PartialFailure,
+            ExecutionResult::CompleteFailure,
+        ] {
+            let event = fixed_event(
+                EventType::ExecutionFinished {
+                    result: result.clone(),
+                },
+                "ws",
+            );
+            let json = serde_json::to_string(&event).expect("serialize");
+            let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+            match &parsed.event_type {
+                EventType::ExecutionFinished { result: r } => assert_eq!(r, &result),
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn roundtrip_package_started_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::PackageStarted {
+                name: "my-lib".to_string(),
+                version: "3.2.1".to_string(),
+            },
+            "my-lib@3.2.1",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::PackageStarted { name, version } => {
+                assert_eq!(name, "my-lib");
+                assert_eq!(version, "3.2.1");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_package_attempted_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::PackageAttempted {
+                attempt: 3,
+                command: "cargo publish -p foo --no-verify".to_string(),
+            },
+            "foo@1.0.0",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::PackageAttempted { attempt, command } => {
+                assert_eq!(*attempt, 3);
+                assert_eq!(command, "cargo publish -p foo --no-verify");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_package_output_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::PackageOutput {
+                stdout_tail: "uploading...done\n".to_string(),
+                stderr_tail: "warning: unused var\n".to_string(),
+            },
+            "bar@0.1.0",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::PackageOutput {
+                stdout_tail,
+                stderr_tail,
+            } => {
+                assert_eq!(stdout_tail, "uploading...done\n");
+                assert_eq!(stderr_tail, "warning: unused var\n");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_package_published_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::PackagePublished { duration_ms: 99999 },
+            "z@9.0.0",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::PackagePublished { duration_ms } => assert_eq!(*duration_ms, 99999),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_package_failed_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::PackageFailed {
+                class: ErrorClass::Ambiguous,
+                message: "timeout after 30s".to_string(),
+            },
+            "flaky@0.1.0",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::PackageFailed { class, message } => {
+                assert_eq!(class, &ErrorClass::Ambiguous);
+                assert_eq!(message, "timeout after 30s");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_package_skipped_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::PackageSkipped {
+                reason: "version already on registry".to_string(),
+            },
+            "old@1.0.0",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::PackageSkipped { reason } => {
+                assert_eq!(reason, "version already on registry");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_readiness_poll_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::ReadinessPoll {
+                attempt: 7,
+                visible: true,
+            },
+            "x@1.0.0",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::ReadinessPoll { attempt, visible } => {
+                assert_eq!(*attempt, 7);
+                assert!(*visible);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_readiness_timeout_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::ReadinessTimeout {
+                max_wait_ms: 600_000,
+            },
+            "slow@1.0.0",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::ReadinessTimeout { max_wait_ms } => assert_eq!(*max_wait_ms, 600_000),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_preflight_started_preserves_all_fields() {
+        let event = fixed_event(EventType::PreflightStarted, "all");
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(parsed.event_type, EventType::PreflightStarted));
+    }
+
+    #[test]
+    fn roundtrip_preflight_workspace_verify_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::PreflightWorkspaceVerify {
+                passed: false,
+                output: "error[E0433]: failed to resolve".to_string(),
+            },
+            "all",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::PreflightWorkspaceVerify { passed, output } => {
+                assert!(!passed);
+                assert_eq!(output, "error[E0433]: failed to resolve");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_preflight_new_crate_detected_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::PreflightNewCrateDetected {
+                crate_name: "brand-new".to_string(),
+            },
+            "all",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::PreflightNewCrateDetected { crate_name } => {
+                assert_eq!(crate_name, "brand-new");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_index_readiness_started_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::IndexReadinessStarted {
+                crate_name: "idx".to_string(),
+                version: "0.5.0".to_string(),
+            },
+            "idx@0.5.0",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::IndexReadinessStarted {
+                crate_name,
+                version,
+            } => {
+                assert_eq!(crate_name, "idx");
+                assert_eq!(version, "0.5.0");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_index_readiness_check_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::IndexReadinessCheck {
+                crate_name: "idx".to_string(),
+                version: "0.5.0".to_string(),
+                found: false,
+            },
+            "idx@0.5.0",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::IndexReadinessCheck {
+                crate_name,
+                version,
+                found,
+            } => {
+                assert_eq!(crate_name, "idx");
+                assert_eq!(version, "0.5.0");
+                assert!(!found);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_index_readiness_complete_preserves_all_fields() {
+        let event = fixed_event(
+            EventType::IndexReadinessComplete {
+                crate_name: "idx".to_string(),
+                version: "0.5.0".to_string(),
+                visible: true,
+            },
+            "idx@0.5.0",
+        );
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+        match &parsed.event_type {
+            EventType::IndexReadinessComplete {
+                crate_name,
+                version,
+                visible,
+            } => {
+                assert_eq!(crate_name, "idx");
+                assert_eq!(version, "0.5.0");
+                assert!(visible);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    // -- Snapshot tests for missing EventType variants --
+
+    #[test]
+    fn snapshot_execution_started_debug() {
+        let event = fixed_event(EventType::ExecutionStarted, "workspace");
+        insta::assert_debug_snapshot!("execution_started_debug", event);
+    }
+
+    #[test]
+    fn snapshot_package_attempted_debug() {
+        let event = fixed_event(
+            EventType::PackageAttempted {
+                attempt: 2,
+                command: "cargo publish -p core-lib".to_string(),
+            },
+            "core-lib@0.1.0",
+        );
+        insta::assert_debug_snapshot!("package_attempted_debug", event);
+    }
+
+    #[test]
+    fn snapshot_package_output_debug() {
+        let event = fixed_event(
+            EventType::PackageOutput {
+                stdout_tail: "Uploading core-lib v0.1.0\nFinished".to_string(),
+                stderr_tail: "warning: unused import".to_string(),
+            },
+            "core-lib@0.1.0",
+        );
+        insta::assert_debug_snapshot!("package_output_debug", event);
+    }
+
+    #[test]
+    fn snapshot_readiness_poll_debug() {
+        let event = fixed_event(
+            EventType::ReadinessPoll {
+                attempt: 3,
+                visible: false,
+            },
+            "my-crate@1.0.0",
+        );
+        insta::assert_debug_snapshot!("readiness_poll_debug", event);
+    }
+
+    #[test]
+    fn snapshot_readiness_timeout_debug() {
+        let event = fixed_event(
+            EventType::ReadinessTimeout {
+                max_wait_ms: 300000,
+            },
+            "my-crate@1.0.0",
+        );
+        insta::assert_debug_snapshot!("readiness_timeout_debug", event);
+    }
+
+    #[test]
+    fn snapshot_preflight_started_debug() {
+        let event = fixed_event(EventType::PreflightStarted, "workspace");
+        insta::assert_debug_snapshot!("preflight_started_debug", event);
+    }
+
+    #[test]
+    fn snapshot_preflight_workspace_verify_debug() {
+        let event = fixed_event(
+            EventType::PreflightWorkspaceVerify {
+                passed: true,
+                output: "dry-run successful".to_string(),
+            },
+            "workspace",
+        );
+        insta::assert_debug_snapshot!("preflight_workspace_verify_debug", event);
+    }
+
+    #[test]
+    fn snapshot_preflight_new_crate_detected_debug() {
+        let event = fixed_event(
+            EventType::PreflightNewCrateDetected {
+                crate_name: "brand-new-crate".to_string(),
+            },
+            "workspace",
+        );
+        insta::assert_debug_snapshot!("preflight_new_crate_detected_debug", event);
+    }
+
+    #[test]
+    fn snapshot_index_readiness_started_debug() {
+        let event = fixed_event(
+            EventType::IndexReadinessStarted {
+                crate_name: "my-crate".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            "my-crate@1.0.0",
+        );
+        insta::assert_debug_snapshot!("index_readiness_started_debug", event);
+    }
+
+    #[test]
+    fn snapshot_index_readiness_check_debug() {
+        let event = fixed_event(
+            EventType::IndexReadinessCheck {
+                crate_name: "my-crate".to_string(),
+                version: "1.0.0".to_string(),
+                found: true,
+            },
+            "my-crate@1.0.0",
+        );
+        insta::assert_debug_snapshot!("index_readiness_check_debug", event);
+    }
+
+    #[test]
+    fn snapshot_index_readiness_complete_debug() {
+        let event = fixed_event(
+            EventType::IndexReadinessComplete {
+                crate_name: "my-crate".to_string(),
+                version: "1.0.0".to_string(),
+                visible: true,
+            },
+            "my-crate@1.0.0",
+        );
+        insta::assert_debug_snapshot!("index_readiness_complete_debug", event);
+    }
+
+    #[test]
+    fn snapshot_execution_finished_partial_failure_debug() {
+        let event = fixed_event(
+            EventType::ExecutionFinished {
+                result: ExecutionResult::PartialFailure,
+            },
+            "workspace",
+        );
+        insta::assert_debug_snapshot!("execution_finished_partial_failure_debug", event);
+    }
+
+    #[test]
+    fn snapshot_execution_finished_complete_failure_debug() {
+        let event = fixed_event(
+            EventType::ExecutionFinished {
+                result: ExecutionResult::CompleteFailure,
+            },
+            "workspace",
+        );
+        insta::assert_debug_snapshot!("execution_finished_complete_failure_debug", event);
+    }
+
+    #[test]
+    fn snapshot_package_failed_permanent_debug() {
+        let event = fixed_event(
+            EventType::PackageFailed {
+                class: ErrorClass::Permanent,
+                message: "crate name is reserved".to_string(),
+            },
+            "reserved@1.0.0",
+        );
+        insta::assert_debug_snapshot!("package_failed_permanent_debug", event);
+    }
+
+    #[test]
+    fn snapshot_package_failed_ambiguous_debug() {
+        let event = fixed_event(
+            EventType::PackageFailed {
+                class: ErrorClass::Ambiguous,
+                message: "connection reset during upload".to_string(),
+            },
+            "flaky@1.0.0",
+        );
+        insta::assert_debug_snapshot!("package_failed_ambiguous_debug", event);
+    }
+
+    // -- Snapshot: event log with all major event types --
+
+    #[test]
+    fn snapshot_full_publish_lifecycle_debug() {
+        let events = vec![
+            fixed_event(
+                EventType::PlanCreated {
+                    plan_id: "plan-full".to_string(),
+                    package_count: 2,
+                },
+                "workspace",
+            ),
+            fixed_event(EventType::PreflightStarted, "workspace"),
+            fixed_event(
+                EventType::PreflightWorkspaceVerify {
+                    passed: true,
+                    output: "ok".to_string(),
+                },
+                "workspace",
+            ),
+            fixed_event(
+                EventType::PreflightComplete {
+                    finishability: Finishability::Proven,
+                },
+                "workspace",
+            ),
+            fixed_event(EventType::ExecutionStarted, "workspace"),
+            fixed_event(
+                EventType::PackageStarted {
+                    name: "core".to_string(),
+                    version: "0.1.0".to_string(),
+                },
+                "core@0.1.0",
+            ),
+            fixed_event(
+                EventType::PackageAttempted {
+                    attempt: 1,
+                    command: "cargo publish -p core".to_string(),
+                },
+                "core@0.1.0",
+            ),
+            fixed_event(
+                EventType::PackagePublished { duration_ms: 1500 },
+                "core@0.1.0",
+            ),
+            fixed_event(
+                EventType::ReadinessStarted {
+                    method: ReadinessMethod::Api,
+                },
+                "core@0.1.0",
+            ),
+            fixed_event(
+                EventType::ReadinessComplete {
+                    duration_ms: 3000,
+                    attempts: 2,
+                },
+                "core@0.1.0",
+            ),
+            fixed_event(
+                EventType::PackageStarted {
+                    name: "cli".to_string(),
+                    version: "0.1.0".to_string(),
+                },
+                "cli@0.1.0",
+            ),
+            fixed_event(
+                EventType::PackagePublished { duration_ms: 2000 },
+                "cli@0.1.0",
+            ),
+            fixed_event(
+                EventType::ExecutionFinished {
+                    result: ExecutionResult::Success,
+                },
+                "workspace",
+            ),
+        ];
+
+        let mut log = EventLog::new();
+        for e in events {
+            log.record(e);
+        }
+        insta::assert_debug_snapshot!("full_publish_lifecycle_debug", log.all_events());
+    }
+
+    // -- Concurrent append from multiple threads --
+
+    #[test]
+    fn concurrent_appends_from_multiple_threads() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let td = tempdir().expect("tempdir");
+        let path = Arc::new(td.path().join("events.jsonl"));
+        let num_threads = 8;
+        let events_per_thread = 10;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|t| {
+                let path = Arc::clone(&path);
+                thread::spawn(move || {
+                    for i in 0..events_per_thread {
+                        let mut log = EventLog::new();
+                        log.record(make_event(
+                            EventType::PackagePublished {
+                                duration_ms: (t * 100 + i) as u64,
+                            },
+                            &format!("thread{t}-pkg{i}@1.0.0"),
+                        ));
+                        log.write_to_file(&path).expect("write");
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread join");
+        }
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.len(), num_threads * events_per_thread);
+    }
 }
 
 #[cfg(test)]
@@ -1390,6 +2279,38 @@ mod proptests {
             let content = std::fs::read_to_string(&path).expect("read");
             let line_count = if content.is_empty() { 0 } else { content.lines().count() };
             prop_assert_eq!(line_count, events.len());
+        }
+
+        #[test]
+        fn roundtrip_json_preserves_all_fields(event in arb_publish_event()) {
+            let json = serde_json::to_string(&event).expect("serialize");
+            let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+
+            // Re-serialize and compare JSON to ensure full fidelity
+            let json2 = serde_json::to_string(&parsed).expect("re-serialize");
+            prop_assert_eq!(&json, &json2, "JSON roundtrip mismatch");
+        }
+
+        #[test]
+        fn roundtrip_via_file_preserves_json_fidelity(events in proptest::collection::vec(arb_publish_event(), 1..10)) {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join("events.jsonl");
+
+            let mut log = EventLog::new();
+            let orig_jsons: Vec<String> = events
+                .iter()
+                .map(|e| {
+                    log.record(e.clone());
+                    serde_json::to_string(e).expect("serialize")
+                })
+                .collect();
+            log.write_to_file(&path).expect("write");
+
+            let loaded = EventLog::read_from_file(&path).expect("read");
+            for (orig_json, loaded_event) in orig_jsons.iter().zip(loaded.all_events().iter()) {
+                let loaded_json = serde_json::to_string(loaded_event).expect("re-serialize");
+                prop_assert_eq!(orig_json, &loaded_json, "File roundtrip JSON mismatch");
+            }
         }
     }
 }

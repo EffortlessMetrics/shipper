@@ -4,4 +4,4 @@ expression: config
 ---
 storage_type: File
 bucket: ""
-base_path: .shipper
+base_path: ".shipper"

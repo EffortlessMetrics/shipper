@@ -1,0 +1,11 @@
+---
+source: crates/shipper-events/src/lib.rs
+expression: event
+---
+PublishEvent {
+    timestamp: 2025-01-15T12:00:00Z,
+    event_type: PreflightNewCrateDetected {
+        crate_name: "brand-new-crate",
+    },
+    package: "workspace",
+}

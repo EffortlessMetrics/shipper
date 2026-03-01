@@ -266,6 +266,16 @@ pub fn mask_token(token: &str) -> String {
     format!("{}****{}", &token[..4], &token[token.len() - 4..])
 }
 
+/// Detect whether trusted publishing (GitHub Actions OIDC) is available.
+///
+/// Returns `true` when both `ACTIONS_ID_TOKEN_REQUEST_URL` and
+/// `ACTIONS_ID_TOKEN_REQUEST_TOKEN` environment variables are set,
+/// indicating a GitHub Actions environment with OIDC token support.
+pub fn is_trusted_publishing_available() -> bool {
+    env::var_os("ACTIONS_ID_TOKEN_REQUEST_URL").is_some()
+        && env::var_os("ACTIONS_ID_TOKEN_REQUEST_TOKEN").is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1114,6 +1124,565 @@ token = "b"
                     prop_assert!(masked.contains("****"));
                 }
             }
+
+            /// resolve_token never panics for arbitrary registry names.
+            #[test]
+            fn resolve_token_never_panics(registry in "[a-zA-Z0-9_\\-]{0,50}") {
+                let td = tempfile::tempdir().expect("tempdir");
+                temp_env::with_vars(
+                    [
+                        (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                        (CARGO_HOME_ENV, None::<&str>),
+                    ],
+                    || -> Result<(), proptest::test_runner::TestCaseError> {
+                        let _ = resolve_token(&registry, Some(td.path()));
+                        Ok(())
+                    },
+                )?;
+            }
+
+            /// cargo_home_path never panics for arbitrary inputs.
+            #[test]
+            fn cargo_home_path_never_panics(home in "[^\x00]{1,100}") {
+                temp_env::with_var(CARGO_HOME_ENV, Some(home.as_str()), || {
+                    let _ = cargo_home_path(None);
+                });
+            }
+
+            /// mask_token never panics for arbitrary ASCII strings.
+            #[test]
+            fn mask_token_never_panics(token in "[[:ascii:]]{1,500}") {
+                let _ = mask_token(&token);
+            }
+
+            /// has_token never panics for arbitrary inputs.
+            #[test]
+            fn has_token_never_panics(registry in "[a-zA-Z0-9_\\-]{0,50}") {
+                let td = tempfile::tempdir().expect("tempdir");
+                temp_env::with_vars(
+                    [
+                        (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                        (CARGO_HOME_ENV, None::<&str>),
+                    ],
+                    || -> Result<(), proptest::test_runner::TestCaseError> {
+                        let _ = has_token(&registry, Some(td.path()));
+                        Ok(())
+                    },
+                )?;
+            }
+
+            /// list_configured_registries never panics on arbitrary TOML.
+            #[test]
+            fn list_registries_never_panics(content in "\\PC{0,200}") {
+                let td = tempfile::tempdir().expect("tempdir");
+                let path = td.path().join(CREDENTIALS_FILE);
+                std::fs::write(&path, &content).expect("write");
+                let _ = list_configured_registries(&path);
+            }
+        }
+    }
+
+    // --- Edge-case: credential precedence ---
+
+    #[test]
+    fn credentials_file_registry_section_over_registries_for_crates_io() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join(CREDENTIALS_FILE);
+        let content = r#"
+[registry]
+token = "registry-section-token"
+
+[registries.crates-io]
+token = "registries-crates-io-token"
+"#;
+        std::fs::write(&path, content).expect("write");
+        let token = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap();
+        assert_eq!(token, "registry-section-token");
+    }
+
+    #[test]
+    fn credentials_file_registries_crates_io_fallback() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join(CREDENTIALS_FILE);
+        let content = r#"
+[registries.crates-io]
+token = "registries-crates-io-token"
+"#;
+        std::fs::write(&path, content).expect("write");
+        let token = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap();
+        assert_eq!(token, "registries-crates-io-token");
+    }
+
+    #[test]
+    fn env_default_over_env_registry_for_crates_io() {
+        // CARGO_REGISTRY_TOKEN should win over CARGO_REGISTRIES_CRATES_IO_TOKEN
+        temp_env::with_vars(
+            [
+                (CARGO_REGISTRY_TOKEN_ENV, Some("env-default")),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", Some("env-registry")),
+            ],
+            || {
+                let auth = resolve_token(CRATES_IO_REGISTRY, None);
+                assert!(auth.detected);
+                assert_eq!(auth.token, Some("env-default".to_string()));
+                assert_eq!(auth.source, TokenSource::EnvDefault);
+            },
+        );
+    }
+
+    #[test]
+    fn env_registry_used_when_default_unset_for_crates_io() {
+        // When CARGO_REGISTRY_TOKEN is unset, fall through to CARGO_REGISTRIES_CRATES_IO_TOKEN
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", Some("env-registry")),
+            ],
+            || {
+                let auth = resolve_token(CRATES_IO_REGISTRY, Some(td.path()));
+                assert!(auth.detected);
+                assert_eq!(auth.token, Some("env-registry".to_string()));
+                assert_eq!(auth.source, TokenSource::EnvRegistry);
+            },
+        );
+    }
+
+    #[test]
+    fn full_precedence_chain_env_default_wins() {
+        let td = tempdir().expect("tempdir");
+        let creds = td.path().join(CREDENTIALS_FILE);
+        std::fs::write(&creds, "[registry]\ntoken = \"file-token\"\n").expect("write");
+
+        temp_env::with_vars(
+            [
+                (CARGO_REGISTRY_TOKEN_ENV, Some("env-default")),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", Some("env-registry")),
+            ],
+            || {
+                let auth = resolve_token(CRATES_IO_REGISTRY, Some(td.path()));
+                assert_eq!(auth.source, TokenSource::EnvDefault);
+                assert_eq!(auth.token, Some("env-default".to_string()));
+            },
+        );
+    }
+
+    #[test]
+    fn full_precedence_chain_env_registry_second() {
+        let td = tempdir().expect("tempdir");
+        let creds = td.path().join(CREDENTIALS_FILE);
+        std::fs::write(&creds, "[registry]\ntoken = \"file-token\"\n").expect("write");
+
+        temp_env::with_vars(
+            [
+                (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", Some("env-registry")),
+            ],
+            || {
+                let auth = resolve_token(CRATES_IO_REGISTRY, Some(td.path()));
+                assert_eq!(auth.source, TokenSource::EnvRegistry);
+                assert_eq!(auth.token, Some("env-registry".to_string()));
+            },
+        );
+    }
+
+    #[test]
+    fn full_precedence_chain_file_last() {
+        let td = tempdir().expect("tempdir");
+        let creds = td.path().join(CREDENTIALS_FILE);
+        std::fs::write(&creds, "[registry]\ntoken = \"file-token\"\n").expect("write");
+
+        temp_env::with_vars(
+            [
+                (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+            ],
+            || {
+                let auth = resolve_token(CRATES_IO_REGISTRY, Some(td.path()));
+                assert_eq!(auth.source, TokenSource::CredentialsFile);
+                assert_eq!(auth.token, Some("file-token".to_string()));
+            },
+        );
+    }
+
+    // --- Edge-case: malformed token strings ---
+
+    #[test]
+    fn resolve_token_whitespace_only_env_is_not_skipped() {
+        // Whitespace-only token is non-empty per the `!token.is_empty()` check
+        temp_env::with_var(CARGO_REGISTRY_TOKEN_ENV, Some("   "), || {
+            let auth = resolve_token(CRATES_IO_REGISTRY, None);
+            assert!(auth.detected);
+            assert_eq!(auth.token, Some("   ".to_string()));
+        });
+    }
+
+    #[test]
+    fn resolve_token_very_long_env_token() {
+        let long_token = "x".repeat(10_000);
+        temp_env::with_var(CARGO_REGISTRY_TOKEN_ENV, Some(long_token.as_str()), || {
+            let auth = resolve_token(CRATES_IO_REGISTRY, None);
+            assert!(auth.detected);
+            assert_eq!(auth.token.as_deref(), Some(long_token.as_str()));
+        });
+    }
+
+    #[test]
+    fn credentials_file_whitespace_only_token() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join(CREDENTIALS_FILE);
+        std::fs::write(&path, "[registry]\ntoken = \"   \"\n").expect("write");
+        let token = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap();
+        assert_eq!(token, "   ");
+    }
+
+    #[test]
+    fn credentials_file_very_long_token() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join(CREDENTIALS_FILE);
+        let long_token = "a".repeat(10_000);
+        let content = format!("[registry]\ntoken = \"{long_token}\"\n");
+        std::fs::write(&path, &content).expect("write");
+        let token = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap();
+        assert_eq!(token.len(), 10_000);
+    }
+
+    // --- Edge-case: special characters in tokens ---
+
+    #[test]
+    fn resolve_token_env_with_unicode() {
+        temp_env::with_var(CARGO_REGISTRY_TOKEN_ENV, Some("tök€n_πλ∞"), || {
+            let auth = resolve_token(CRATES_IO_REGISTRY, None);
+            assert!(auth.detected);
+            assert_eq!(auth.token, Some("tök€n_πλ∞".to_string()));
+        });
+    }
+
+    #[test]
+    fn credentials_file_token_with_unicode() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join(CREDENTIALS_FILE);
+        std::fs::write(&path, "[registry]\ntoken = \"tök€n_πλ∞\"\n").expect("write");
+        let token = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap();
+        assert_eq!(token, "tök€n_πλ∞");
+    }
+
+    #[test]
+    fn resolve_token_env_with_tabs() {
+        temp_env::with_var(CARGO_REGISTRY_TOKEN_ENV, Some("token\twith\ttabs"), || {
+            let auth = resolve_token(CRATES_IO_REGISTRY, None);
+            assert!(auth.detected);
+            assert_eq!(auth.token, Some("token\twith\ttabs".to_string()));
+        });
+    }
+
+    #[test]
+    fn resolve_token_env_with_newlines() {
+        temp_env::with_var(
+            CARGO_REGISTRY_TOKEN_ENV,
+            Some("token\nwith\nnewlines"),
+            || {
+                let auth = resolve_token(CRATES_IO_REGISTRY, None);
+                assert!(auth.detected);
+                assert_eq!(auth.token, Some("token\nwith\nnewlines".to_string()));
+            },
+        );
+    }
+
+    // --- Edge-case: CARGO_HOME not set AND no env token ---
+
+    #[test]
+    fn resolve_token_no_cargo_home_no_env_no_creds() {
+        temp_env::with_vars(
+            [
+                (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                (CARGO_HOME_ENV, None::<&str>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+            ],
+            || {
+                let td = tempdir().expect("tempdir");
+                let auth = resolve_token(CRATES_IO_REGISTRY, Some(td.path()));
+                assert!(!auth.detected);
+                assert!(auth.token.is_none());
+                assert_eq!(auth.source, TokenSource::None);
+            },
+        );
+    }
+
+    #[test]
+    fn cargo_home_path_no_env_falls_to_home_dir() {
+        temp_env::with_var(CARGO_HOME_ENV, None::<&str>, || {
+            let path = cargo_home_path(None);
+            assert!(path.to_str().unwrap().contains(".cargo"));
+        });
+    }
+
+    // --- Edge-case: credentials file that is a directory ---
+
+    #[test]
+    fn credentials_file_is_directory_not_file() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join(CREDENTIALS_FILE);
+        std::fs::create_dir(&path).expect("create dir");
+        let result = token_from_credentials_file(&path, CRATES_IO_REGISTRY);
+        assert!(result.is_err());
+    }
+
+    // --- Edge-case: alternative registry resolution ---
+
+    #[test]
+    fn resolve_token_multiple_registries_independent() {
+        temp_env::with_vars(
+            [
+                (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                ("CARGO_REGISTRIES_ALPHA_TOKEN", Some("alpha-token")),
+                ("CARGO_REGISTRIES_BETA_TOKEN", Some("beta-token")),
+            ],
+            || {
+                let auth_a = resolve_token("alpha", None);
+                let auth_b = resolve_token("beta", None);
+                assert_eq!(auth_a.token, Some("alpha-token".to_string()));
+                assert_eq!(auth_b.token, Some("beta-token".to_string()));
+                assert_eq!(auth_a.source, TokenSource::EnvRegistry);
+                assert_eq!(auth_b.source, TokenSource::EnvRegistry);
+            },
+        );
+    }
+
+    #[test]
+    fn resolve_token_registry_with_numbers_in_name() {
+        temp_env::with_var("CARGO_REGISTRIES_REG123_TOKEN", Some("num-tok"), || {
+            let auth = resolve_token("reg123", None);
+            assert!(auth.detected);
+            assert_eq!(auth.token, Some("num-tok".to_string()));
+        });
+    }
+
+    #[test]
+    fn resolve_token_registry_single_char_name() {
+        temp_env::with_var("CARGO_REGISTRIES_X_TOKEN", Some("x-tok"), || {
+            let auth = resolve_token("x", None);
+            assert!(auth.detected);
+            assert_eq!(auth.token, Some("x-tok".to_string()));
+            assert_eq!(auth.source, TokenSource::EnvRegistry);
+        });
+    }
+
+    // --- Trusted publishing detection ---
+
+    #[test]
+    fn trusted_publishing_both_vars_set() {
+        temp_env::with_vars(
+            [
+                (
+                    "ACTIONS_ID_TOKEN_REQUEST_URL",
+                    Some("https://example.invalid/oidc"),
+                ),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", Some("oidc-token")),
+            ],
+            || {
+                assert!(is_trusted_publishing_available());
+            },
+        );
+    }
+
+    #[test]
+    fn trusted_publishing_only_url_set() {
+        temp_env::with_vars(
+            [
+                (
+                    "ACTIONS_ID_TOKEN_REQUEST_URL",
+                    Some("https://example.invalid/oidc"),
+                ),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None::<&str>),
+            ],
+            || {
+                assert!(!is_trusted_publishing_available());
+            },
+        );
+    }
+
+    #[test]
+    fn trusted_publishing_only_token_set() {
+        temp_env::with_vars(
+            [
+                ("ACTIONS_ID_TOKEN_REQUEST_URL", None::<&str>),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", Some("oidc-token")),
+            ],
+            || {
+                assert!(!is_trusted_publishing_available());
+            },
+        );
+    }
+
+    #[test]
+    fn trusted_publishing_neither_set() {
+        temp_env::with_vars(
+            [
+                ("ACTIONS_ID_TOKEN_REQUEST_URL", None::<&str>),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None::<&str>),
+            ],
+            || {
+                assert!(!is_trusted_publishing_available());
+            },
+        );
+    }
+
+    #[test]
+    fn trusted_publishing_empty_values_still_detected() {
+        // var_os returns Some("") for empty values — still "set"
+        temp_env::with_vars(
+            [
+                ("ACTIONS_ID_TOKEN_REQUEST_URL", Some("")),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", Some("")),
+            ],
+            || {
+                assert!(is_trusted_publishing_available());
+            },
+        );
+    }
+
+    // --- Additional snapshot tests ---
+
+    mod edge_snapshots {
+        use super::*;
+        use insta::assert_debug_snapshot;
+        use tempfile::tempdir;
+
+        #[test]
+        fn snapshot_token_source_none() {
+            assert_debug_snapshot!(TokenSource::None);
+        }
+
+        #[test]
+        fn snapshot_token_source_env_default() {
+            assert_debug_snapshot!(TokenSource::EnvDefault);
+        }
+
+        #[test]
+        fn snapshot_token_source_env_registry() {
+            assert_debug_snapshot!(TokenSource::EnvRegistry);
+        }
+
+        #[test]
+        fn snapshot_token_source_credentials_file() {
+            assert_debug_snapshot!(TokenSource::CredentialsFile);
+        }
+
+        #[test]
+        fn snapshot_auth_info_with_env_default() {
+            let info = AuthInfo {
+                token: Some("tok-from-env".to_string()),
+                source: TokenSource::EnvDefault,
+                detected: true,
+            };
+            assert_debug_snapshot!(info);
+        }
+
+        #[test]
+        fn snapshot_auth_info_with_env_registry() {
+            let info = AuthInfo {
+                token: Some("tok-from-registry-env".to_string()),
+                source: TokenSource::EnvRegistry,
+                detected: true,
+            };
+            assert_debug_snapshot!(info);
+        }
+
+        #[test]
+        fn snapshot_auth_info_with_credentials_file() {
+            let info = AuthInfo {
+                token: Some("tok-from-file".to_string()),
+                source: TokenSource::CredentialsFile,
+                detected: true,
+            };
+            assert_debug_snapshot!(info);
+        }
+
+        #[test]
+        fn snapshot_auth_info_not_detected() {
+            let info = AuthInfo {
+                token: None,
+                source: TokenSource::None,
+                detected: false,
+            };
+            assert_debug_snapshot!(info);
+        }
+
+        #[test]
+        fn snapshot_resolve_whitespace_token() {
+            temp_env::with_var(CARGO_REGISTRY_TOKEN_ENV, Some("   "), || {
+                let auth = resolve_token(CRATES_IO_REGISTRY, None);
+                assert_debug_snapshot!(auth);
+            });
+        }
+
+        #[test]
+        fn snapshot_resolve_unicode_token() {
+            temp_env::with_var(CARGO_REGISTRY_TOKEN_ENV, Some("tök€n_πλ∞"), || {
+                let auth = resolve_token(CRATES_IO_REGISTRY, None);
+                assert_debug_snapshot!(auth);
+            });
+        }
+
+        #[test]
+        fn snapshot_mask_token_short_values() {
+            let results: Vec<String> = ["", "a", "ab", "abcd", "abcdefgh"]
+                .iter()
+                .map(|t| mask_token(t))
+                .collect();
+            assert_debug_snapshot!(results);
+        }
+
+        #[test]
+        fn snapshot_mask_token_long_value() {
+            assert_debug_snapshot!(mask_token("abcdefghijklmnopqrstuvwxyz"));
+        }
+
+        #[test]
+        fn snapshot_list_registries_many() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            let content = r#"
+[registry]
+token = "default-token"
+
+[registries.alpha]
+token = "a"
+
+[registries.beta]
+token = "b"
+
+[registries.gamma]
+token = "c"
+
+[registries.delta]
+token = "d"
+"#;
+            std::fs::write(&path, content).expect("write");
+            let mut registries = list_configured_registries(&path).unwrap();
+            registries.sort();
+            assert_debug_snapshot!(registries);
+        }
+
+        #[test]
+        fn snapshot_credentials_file_with_all_formats() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            let content = r#"
+token = "legacy-top-level"
+
+[registry]
+token = "registry-section"
+
+[registries.custom]
+token = "custom-registry"
+"#;
+            std::fs::write(&path, content).expect("write");
+            // registry section wins for crates-io
+            let crates_io = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap();
+            let custom = token_from_credentials_file(&path, "custom").unwrap();
+            assert_debug_snapshot!((crates_io, custom));
         }
     }
 }

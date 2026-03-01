@@ -3,8 +3,8 @@ source: crates/shipper-storage/src/lib.rs
 expression: errors
 ---
 - - s3
-  - "S3 storage is not yet implemented. Use file storage for now."
+  - S3 storage is not yet implemented. Use file storage for now.
 - - gcs
-  - "GCS storage is not yet implemented. Use file storage for now."
+  - GCS storage is not yet implemented. Use file storage for now.
 - - azure
-  - "Azure storage is not yet implemented. Use file storage for now."
+  - Azure storage is not yet implemented. Use file storage for now.

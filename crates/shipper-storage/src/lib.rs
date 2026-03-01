@@ -653,6 +653,220 @@ mod tests {
         assert!(json.contains("\"region\":\"us-east-1\""));
     }
 
+    // --- Edge-case tests ---
+
+    #[test]
+    fn concurrent_reads_and_writes_same_file() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let td = tempdir().expect("tempdir");
+        let storage = Arc::new(FileStorage::new(td.path().to_path_buf()));
+
+        storage
+            .write("shared.txt", b"initial")
+            .expect("initial write");
+
+        let mut handles = vec![];
+
+        for i in 0..5 {
+            let s = Arc::clone(&storage);
+            handles.push(thread::spawn(move || {
+                let data = format!("writer-{i}");
+                s.write("shared.txt", data.as_bytes()).expect("write");
+            }));
+        }
+
+        for _ in 0..5 {
+            let s = Arc::clone(&storage);
+            handles.push(thread::spawn(move || {
+                let _ = s.read("shared.txt");
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread join");
+        }
+
+        let data = storage.read("shared.txt").expect("final read");
+        assert!(!data.is_empty());
+    }
+
+    #[test]
+    fn large_file_content_over_1mb() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        let size = 1_500_000;
+        let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+
+        storage.write("large.bin", &data).expect("write large");
+        let read_back = storage.read("large.bin").expect("read large");
+        assert_eq!(read_back.len(), size);
+        assert_eq!(read_back, data);
+    }
+
+    #[test]
+    fn empty_file_content_write_and_read() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage.write("empty.txt", b"").expect("write empty");
+        let data = storage.read("empty.txt").expect("read empty");
+        assert!(data.is_empty());
+        assert!(storage.exists("empty.txt").expect("exists"));
+    }
+
+    #[test]
+    fn unicode_in_content() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        let content = "こんにちは世界 🌍 Ñoño café résumé 中文 Ελληνικά";
+        storage
+            .write("unicode.txt", content.as_bytes())
+            .expect("write unicode");
+        let data = storage.read("unicode.txt").expect("read unicode");
+        assert_eq!(String::from_utf8(data).unwrap(), content);
+    }
+
+    #[test]
+    fn unicode_in_file_paths() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage
+            .write("données/café.txt", b"data")
+            .expect("write unicode path");
+        let data = storage.read("données/café.txt").expect("read unicode path");
+        assert_eq!(data, b"data");
+        assert!(storage.exists("données/café.txt").expect("exists"));
+    }
+
+    #[test]
+    fn deeply_nested_directory_creation_20_levels() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        let segments: Vec<String> = (0..20).map(|i| format!("level_{i}")).collect();
+        let deep_path = format!("{}/file.txt", segments.join("/"));
+
+        storage.write(&deep_path, b"deep").expect("write deep");
+        let data = storage.read(&deep_path).expect("read deep");
+        assert_eq!(data, b"deep");
+
+        let mut dir = td.path().to_path_buf();
+        for seg in &segments {
+            dir = dir.join(seg);
+            assert!(dir.exists(), "directory {} should exist", dir.display());
+        }
+    }
+
+    #[test]
+    fn atomic_write_no_tmp_file_remains() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage.write("atomic.txt", b"content").expect("write");
+
+        let tmp_path = td.path().join("atomic.tmp");
+        assert!(
+            !tmp_path.exists(),
+            ".tmp file should not remain after successful write"
+        );
+        assert!(td.path().join("atomic.txt").exists());
+    }
+
+    #[test]
+    fn atomic_write_simulated_interrupt_stale_tmp() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        // Simulate a prior interrupted write by leaving a stale .tmp file
+        let tmp_path = td.path().join("interrupted.tmp");
+        std::fs::write(&tmp_path, b"stale temp").expect("create stale tmp");
+
+        // A new write to the same logical name should succeed
+        storage
+            .write("interrupted.txt", b"completed")
+            .expect("write");
+        let data = storage.read("interrupted.txt").expect("read");
+        assert_eq!(data, b"completed");
+    }
+
+    #[test]
+    fn read_nonexistent_file_returns_error() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        let result = storage.read("does_not_exist.txt");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("failed to read file"));
+    }
+
+    #[test]
+    fn write_to_path_blocked_by_existing_file() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        // Create a regular file where a directory would need to be
+        storage
+            .write("blocker", b"I am a file")
+            .expect("write blocker");
+
+        // Try to write below it — should fail because "blocker" is not a directory
+        let result = storage.write("blocker/sub/file.txt", b"should fail");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn config_from_env_defaults_with_temp_env() {
+        temp_env::with_vars(
+            [
+                ("SHIPPER_STORAGE_TYPE", None::<&str>),
+                ("SHIPPER_STORAGE_BUCKET", None::<&str>),
+                ("SHIPPER_STORAGE_REGION", None::<&str>),
+                ("SHIPPER_STORAGE_BASE_PATH", None::<&str>),
+                ("SHIPPER_STORAGE_ENDPOINT", None::<&str>),
+                ("SHIPPER_STORAGE_ACCESS_KEY_ID", None::<&str>),
+                ("SHIPPER_STORAGE_SECRET_ACCESS_KEY", None::<&str>),
+                ("SHIPPER_STORAGE_SESSION_TOKEN", None::<&str>),
+            ],
+            || {
+                let config = config_from_env();
+                assert_eq!(config.storage_type, StorageType::File);
+                assert_eq!(config.base_path, ".shipper");
+                assert!(config.region.is_none());
+                assert!(config.endpoint.is_none());
+            },
+        );
+    }
+
+    #[test]
+    fn config_from_env_s3_with_temp_env() {
+        temp_env::with_vars(
+            [
+                ("SHIPPER_STORAGE_TYPE", Some("s3")),
+                ("SHIPPER_STORAGE_BUCKET", Some("my-bucket")),
+                ("SHIPPER_STORAGE_REGION", Some("us-west-2")),
+                ("SHIPPER_STORAGE_BASE_PATH", Some("state")),
+                ("SHIPPER_STORAGE_ENDPOINT", None::<&str>),
+                ("SHIPPER_STORAGE_ACCESS_KEY_ID", Some("AKIA123")),
+                ("SHIPPER_STORAGE_SECRET_ACCESS_KEY", Some("secret")),
+                ("SHIPPER_STORAGE_SESSION_TOKEN", None::<&str>),
+            ],
+            || {
+                let config = config_from_env();
+                assert_eq!(config.storage_type, StorageType::S3);
+                assert_eq!(config.bucket, "my-bucket");
+                assert_eq!(config.region, Some("us-west-2".to_string()));
+                assert_eq!(config.base_path, "state");
+                assert_eq!(config.access_key_id, Some("AKIA123".to_string()));
+            },
+        );
+    }
+
     mod proptests {
         use super::*;
         use proptest::prelude::*;
@@ -754,6 +968,30 @@ mod tests {
 
                 storage.delete(&name).expect("delete");
                 prop_assert!(!storage.exists(&name).expect("exists after delete"));
+            }
+
+            #[test]
+            fn write_then_read_roundtrip_large_preserves_content(
+                content in proptest::collection::vec(any::<u8>(), 0..131072),
+            ) {
+                let td = tempdir().expect("tempdir");
+                let storage = FileStorage::new(td.path().to_path_buf());
+
+                storage.write("roundtrip_large.bin", &content).expect("write");
+                let read_back = storage.read("roundtrip_large.bin").expect("read");
+                prop_assert_eq!(read_back, content);
+            }
+
+            #[test]
+            fn write_then_read_roundtrip_unicode_content(
+                content in "[a-zA-Z0-9 \\n\\t]{0,500}",
+            ) {
+                let td = tempdir().expect("tempdir");
+                let storage = FileStorage::new(td.path().to_path_buf());
+
+                storage.write("unicode_rt.txt", content.as_bytes()).expect("write");
+                let read_back = storage.read("unicode_rt.txt").expect("read");
+                prop_assert_eq!(String::from_utf8(read_back).unwrap(), content);
             }
         }
     }
@@ -1052,5 +1290,40 @@ mod snapshot_tests {
         let parsed: CloudStorageConfig = serde_json::from_str(&json).unwrap();
         assert_yaml_snapshot!("json_output", json);
         assert_yaml_snapshot!("parsed_back", parsed);
+    }
+
+    // --- Debug snapshot tests for storage config/options ---
+
+    #[test]
+    fn snapshot_debug_storage_type_all() {
+        let types = vec![
+            StorageType::File,
+            StorageType::S3,
+            StorageType::Gcs,
+            StorageType::Azure,
+        ];
+        insta::assert_debug_snapshot!(types);
+    }
+
+    #[test]
+    fn snapshot_debug_cloud_config_all_options() {
+        let config = CloudStorageConfig::s3("release-artifacts")
+            .with_region("eu-central-1")
+            .with_base_path("shipper/state")
+            .with_endpoint("https://minio.internal:9000")
+            .with_credentials("ACCESS_KEY", "SECRET_KEY")
+            .with_session_token("session-token-xyz");
+        insta::assert_debug_snapshot!(config);
+    }
+
+    #[test]
+    fn snapshot_debug_cloud_config_defaults() {
+        insta::assert_debug_snapshot!(CloudStorageConfig::default());
+    }
+
+    #[test]
+    fn snapshot_debug_file_storage() {
+        let storage = FileStorage::new(PathBuf::from("/mock/path"));
+        insta::assert_debug_snapshot!(storage);
     }
 }

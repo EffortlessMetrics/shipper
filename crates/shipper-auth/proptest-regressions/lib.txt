@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 43efe3eae7708f266786303f485bfbd37a3eae9b957c1dfc1c0f7a15483299a1 # shrinks to token = " 𐀀a\u{b}\0A"
+cc 3158e317e89c0990a94f4178d5dd27f0e736e73a51cc797ad88f484c9d136ad2 # shrinks to token = "A𞸡𐬹"

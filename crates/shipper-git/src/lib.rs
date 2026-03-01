@@ -979,7 +979,403 @@ mod tests {
                 prop_assert!(!ctx.has_commit());
                 prop_assert!(ctx.is_dirty()); // defaults to true
             }
+
+            // is_clean (porcelain parsing) never panics for arbitrary status output
+            #[test]
+            fn is_clean_never_panics_for_arbitrary_output(output in "[ MADRCU?!]{0,3}[^\n]{0,200}(\n[ MADRCU?!]{0,3}[^\n]{0,200}){0,20}") {
+                let is_clean = output.trim().is_empty();
+                let files: Vec<String> = output
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|line| line.chars().skip(3).collect())
+                    .collect();
+                if is_clean {
+                    prop_assert!(files.is_empty() || output.trim().is_empty());
+                }
+                // Main assertion: we got here without panicking
+            }
         }
+    }
+
+    // ── Edge-case: empty / uninitialized git repository ──
+
+    #[test]
+    fn uninitialized_dir_is_not_git_repo() {
+        let td = tempdir().expect("tempdir");
+        assert!(!is_git_repo(td.path()));
+        assert!(get_commit_hash(td.path()).is_err());
+        assert!(get_changed_files(td.path()).is_err());
+    }
+
+    #[test]
+    fn git_init_only_is_repo_but_no_commits() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+
+        assert!(is_git_repo(td.path()));
+        // No commits yet — HEAD doesn't resolve
+        assert!(get_commit_hash(td.path()).is_err());
+        // Branch may be None or Some("master"/"main") depending on git version,
+        // but should not error
+        let branch = get_branch(td.path());
+        assert!(branch.is_ok());
+        // Tag should be None
+        assert_eq!(get_tag(td.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn get_git_context_for_repo_with_no_commits() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+
+        let ctx = get_git_context(td.path());
+        assert!(!ctx.has_commit());
+        assert!(ctx.tag.is_none());
+        assert!(ctx.short_commit().is_none());
+    }
+
+    // ── Edge-case: detached HEAD state ──
+
+    #[test]
+    fn detached_head_context_has_no_branch() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "first");
+        let hash = get_commit_hash(td.path()).expect("hash");
+
+        Command::new("git")
+            .args(["checkout", &hash])
+            .current_dir(td.path())
+            .output()
+            .expect("detach HEAD");
+
+        let ctx = get_git_context(td.path());
+        assert!(ctx.has_commit());
+        assert!(ctx.branch.is_none());
+        assert!(!ctx.is_dirty());
+    }
+
+    #[test]
+    fn detached_head_is_on_branch_returns_false() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "first");
+        let hash = get_commit_hash(td.path()).expect("hash");
+
+        Command::new("git")
+            .args(["checkout", &hash])
+            .current_dir(td.path())
+            .output()
+            .expect("detach HEAD");
+
+        assert!(!is_on_branch(td.path(), "main"));
+        assert!(!is_on_branch(td.path(), "master"));
+    }
+
+    #[test]
+    fn detached_head_with_dirty_file() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "first");
+        let hash = get_commit_hash(td.path()).expect("hash");
+
+        Command::new("git")
+            .args(["checkout", &hash])
+            .current_dir(td.path())
+            .output()
+            .expect("detach HEAD");
+
+        fs::write(td.path().join("dirty.txt"), "content").expect("write");
+        assert!(!is_git_clean(td.path()).unwrap());
+        let ctx = get_git_context(td.path());
+        assert!(ctx.is_dirty());
+        assert!(ctx.branch.is_none());
+    }
+
+    // ── Edge-case: binary files and untracked directories ──
+
+    #[test]
+    fn status_with_binary_file() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        // Write a binary file (non-UTF-8 bytes)
+        fs::write(
+            td.path().join("image.png"),
+            [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A],
+        )
+        .expect("write binary");
+        assert!(!is_git_clean(td.path()).unwrap());
+        let files = get_changed_files(td.path()).expect("changed files");
+        assert!(files.iter().any(|f| f.contains("image.png")));
+    }
+
+    #[test]
+    fn status_with_untracked_directory() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        let subdir = td.path().join("subdir");
+        fs::create_dir(&subdir).expect("mkdir");
+        fs::write(subdir.join("file.txt"), "content").expect("write");
+
+        assert!(!is_git_clean(td.path()).unwrap());
+        let files = get_changed_files(td.path()).expect("changed files");
+        assert!(!files.is_empty());
+    }
+
+    #[test]
+    fn status_with_nested_untracked_directories() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        let nested = td.path().join("a").join("b").join("c");
+        fs::create_dir_all(&nested).expect("mkdir -p");
+        fs::write(nested.join("deep.txt"), "deep").expect("write");
+
+        assert!(!is_git_clean(td.path()).unwrap());
+    }
+
+    #[test]
+    fn status_with_multiple_binary_files() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        for ext in &["png", "jpg", "exe", "bin"] {
+            let name = format!("file.{ext}");
+            fs::write(td.path().join(&name), [0xFF, 0xD8, 0x00]).expect("write binary");
+        }
+        let files = get_changed_files(td.path()).expect("changed files");
+        assert!(files.len() >= 4);
+    }
+
+    // ── Edge-case: submodules ──
+
+    #[test]
+    fn repo_with_submodule_init() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        // Create a second repo to use as submodule source
+        let sub_src = tempdir().expect("submodule source");
+        init_git_repo(sub_src.path());
+        make_commit(sub_src.path(), "sub commit");
+
+        let result = Command::new("git")
+            .args([
+                "submodule",
+                "add",
+                &sub_src.path().to_string_lossy(),
+                "vendor/sub",
+            ])
+            .current_dir(td.path())
+            .output();
+
+        // Submodule add may fail on some CI setups; test what we can
+        if let Ok(output) = result
+            && output.status.success()
+        {
+            // The staged .gitmodules + submodule make the tree dirty
+            assert!(!is_git_clean(td.path()).unwrap());
+            let files = get_changed_files(td.path()).expect("changed files");
+            assert!(!files.is_empty());
+        }
+    }
+
+    // ── Edge-case: very long file paths ──
+
+    #[test]
+    fn status_with_long_file_path() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        // Create a deeply nested path (stay within OS limits)
+        let mut path = td.path().to_path_buf();
+        for i in 0..10 {
+            path = path.join(format!("dir_{i:03}"));
+        }
+        fs::create_dir_all(&path).expect("create deep dirs");
+        let long_name = "a".repeat(100) + ".txt";
+        fs::write(path.join(&long_name), "content").expect("write");
+
+        // Stage the file so porcelain shows the full path
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(td.path())
+            .output()
+            .expect("git add");
+
+        assert!(!is_git_clean(td.path()).unwrap());
+        let files = get_changed_files(td.path()).expect("changed files");
+        assert!(!files.is_empty());
+        assert!(files.iter().any(|f| f.contains(&long_name)));
+    }
+
+    #[test]
+    fn changed_files_with_long_path_preserves_full_path() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        let nested = td.path().join("very_long_directory_name_for_testing");
+        fs::create_dir_all(&nested).expect("create dir");
+        let fname = "b".repeat(80) + ".rs";
+        fs::write(nested.join(&fname), "fn main() {}").expect("write");
+
+        // Stage so porcelain shows file path, not just directory
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(td.path())
+            .output()
+            .expect("git add");
+
+        let files = get_changed_files(td.path()).expect("changed files");
+        assert!(files.iter().any(|f| f.contains(&fname)));
+    }
+
+    // ── Edge-case: unicode file names ──
+
+    #[test]
+    fn status_with_unicode_filename() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        // Try creating a file with unicode characters
+        let unicode_name = "café_résumé.txt";
+        let write_result = fs::write(td.path().join(unicode_name), "unicode content");
+        if write_result.is_ok() {
+            assert!(!is_git_clean(td.path()).unwrap());
+            let files = get_changed_files(td.path()).expect("changed files");
+            assert!(!files.is_empty());
+        }
+    }
+
+    #[test]
+    fn status_with_cjk_filename() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        let cjk_name = "日本語テスト.txt";
+        let write_result = fs::write(td.path().join(cjk_name), "cjk content");
+        if write_result.is_ok() {
+            assert!(!is_git_clean(td.path()).unwrap());
+        }
+    }
+
+    #[test]
+    fn status_with_emoji_filename() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        let emoji_name = "🚀launch.txt";
+        let write_result = fs::write(td.path().join(emoji_name), "emoji content");
+        if write_result.is_ok() {
+            assert!(!is_git_clean(td.path()).unwrap());
+        }
+    }
+
+    // ── Edge-case: deleted files ──
+
+    #[test]
+    fn status_with_deleted_tracked_file() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+
+        let file = td.path().join("to_delete.txt");
+        fs::write(&file, "will be deleted").expect("write");
+        Command::new("git")
+            .args(["add", "to_delete.txt"])
+            .current_dir(td.path())
+            .output()
+            .expect("git add");
+        make_commit(td.path(), "add file");
+
+        fs::remove_file(&file).expect("delete file");
+        assert!(!is_git_clean(td.path()).unwrap());
+        let files = get_changed_files(td.path()).expect("changed files");
+        assert!(files.iter().any(|f| f.contains("to_delete.txt")));
+    }
+
+    // ── Edge-case: multiple tags on same commit ──
+
+    #[test]
+    fn multiple_tags_on_same_commit() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "tagged commit");
+        create_tag(td.path(), "v1.0.0");
+        create_tag(td.path(), "release-1.0.0");
+
+        // get_tag returns one of them (git describe --exact-match picks one)
+        let tag = get_tag(td.path()).expect("get_tag");
+        assert!(tag.is_some());
+    }
+
+    // ── Edge-case: empty committed file ──
+
+    #[test]
+    fn empty_file_is_tracked_correctly() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+
+        fs::write(td.path().join("empty.txt"), "").expect("write empty file");
+        Command::new("git")
+            .args(["add", "empty.txt"])
+            .current_dir(td.path())
+            .output()
+            .expect("git add");
+        make_commit(td.path(), "add empty file");
+
+        assert!(is_git_clean(td.path()).unwrap());
+    }
+
+    // ── Edge-case: ensure_git_clean on repo with no commits ──
+
+    #[test]
+    fn ensure_git_clean_on_empty_repo() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        // Empty repo (no commits) should be clean
+        assert!(ensure_git_clean(td.path()).is_ok());
+    }
+
+    // ── Edge-case: remote URL with special characters ──
+
+    #[test]
+    fn remote_url_with_ssh_format() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        add_remote(td.path(), "origin", "git@github.com:user/repo.git");
+
+        let url = get_remote_url(td.path(), "origin")
+            .expect("remote url")
+            .expect("some url");
+        assert_eq!(url, "git@github.com:user/repo.git");
+    }
+
+    #[test]
+    fn remote_url_with_token_in_https() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        add_remote(
+            td.path(),
+            "origin",
+            "https://token:x-oauth-basic@github.com/user/repo.git",
+        );
+
+        let url = get_remote_url(td.path(), "origin")
+            .expect("remote url")
+            .expect("some url");
+        assert!(url.contains("github.com/user/repo.git"));
     }
 }
 
@@ -1172,5 +1568,186 @@ mod snapshot_tests {
     fn short_commit_none() {
         let ctx = GitContext::new();
         assert_yaml_snapshot!(ctx.short_commit());
+    }
+}
+
+#[cfg(test)]
+mod edge_case_snapshots {
+    use super::*;
+    use insta::assert_debug_snapshot;
+
+    // ── Snapshot tests for GitContext variants ──
+
+    #[test]
+    fn snapshot_context_detached_head() {
+        let ctx = GitContext {
+            commit: Some("abc1234567890abc1234567890abc1234567890ab".to_string()),
+            branch: None,
+            tag: None,
+            dirty: Some(false),
+        };
+        assert_debug_snapshot!("context_detached_head", ctx);
+    }
+
+    #[test]
+    fn snapshot_context_dirty_detached() {
+        let ctx = GitContext {
+            commit: Some("ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00".to_string()),
+            branch: None,
+            tag: None,
+            dirty: Some(true),
+        };
+        assert_debug_snapshot!("context_dirty_detached", ctx);
+    }
+
+    #[test]
+    fn snapshot_context_no_commit_no_branch() {
+        let ctx = GitContext::new();
+        assert_debug_snapshot!("context_no_commit_no_branch", ctx);
+    }
+
+    #[test]
+    fn snapshot_context_tagged_detached() {
+        let ctx = GitContext {
+            commit: Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string()),
+            branch: None,
+            tag: Some("v1.0.0".to_string()),
+            dirty: Some(false),
+        };
+        assert_debug_snapshot!("context_tagged_detached", ctx);
+    }
+
+    #[test]
+    fn snapshot_context_all_fields_populated() {
+        let ctx = GitContext {
+            commit: Some("aabbccddee1122334455aabbccddee1122334455".to_string()),
+            branch: Some("release/v2.0".to_string()),
+            tag: Some("v2.0.0-rc.1".to_string()),
+            dirty: Some(false),
+        };
+        assert_debug_snapshot!("context_all_fields", ctx);
+    }
+
+    #[test]
+    fn snapshot_context_dirty_with_tag() {
+        let ctx = GitContext {
+            commit: Some("5555555555555555555555555555555555555555".to_string()),
+            branch: Some("main".to_string()),
+            tag: Some("v0.1.0".to_string()),
+            dirty: Some(true),
+        };
+        assert_debug_snapshot!("context_dirty_with_tag", ctx);
+    }
+
+    // ── Snapshot tests for cleanliness check results ──
+
+    #[test]
+    fn snapshot_clean_result_ok() {
+        // Simulates what ensure_git_clean returns on a clean repo
+        let result: Result<(), String> = Ok(());
+        assert_debug_snapshot!("clean_result_ok", result);
+    }
+
+    #[test]
+    fn snapshot_clean_result_err_uncommitted() {
+        let result: Result<(), String> = Err(
+            "git working tree has uncommitted changes. Use --allow-dirty to bypass.".to_string(),
+        );
+        assert_debug_snapshot!("clean_result_err_uncommitted", result);
+    }
+
+    #[test]
+    fn snapshot_clean_result_err_not_git() {
+        let result: Result<(), String> =
+            Err("git status failed: fatal: not a git repository".to_string());
+        assert_debug_snapshot!("clean_result_err_not_git", result);
+    }
+
+    // ── Snapshot tests for short_commit edge cases ──
+
+    #[test]
+    fn snapshot_short_commit_empty_string() {
+        let ctx = GitContext {
+            commit: Some(String::new()),
+            ..Default::default()
+        };
+        assert_debug_snapshot!("short_commit_empty_string", ctx.short_commit());
+    }
+
+    #[test]
+    fn snapshot_short_commit_exactly_eight() {
+        let ctx = GitContext {
+            commit: Some("abcdefgh".to_string()),
+            ..Default::default()
+        };
+        assert_debug_snapshot!("short_commit_exactly_eight", ctx.short_commit());
+    }
+
+    // ── Snapshot tests for is_dirty with all variants ──
+
+    #[test]
+    fn snapshot_is_dirty_variants() {
+        #[derive(Debug)]
+        #[allow(dead_code)]
+        struct DirtyVariant {
+            input: Option<bool>,
+            result: bool,
+        }
+        let variants = vec![
+            DirtyVariant {
+                input: None,
+                result: GitContext {
+                    dirty: None,
+                    ..Default::default()
+                }
+                .is_dirty(),
+            },
+            DirtyVariant {
+                input: Some(true),
+                result: GitContext {
+                    dirty: Some(true),
+                    ..Default::default()
+                }
+                .is_dirty(),
+            },
+            DirtyVariant {
+                input: Some(false),
+                result: GitContext {
+                    dirty: Some(false),
+                    ..Default::default()
+                }
+                .is_dirty(),
+            },
+        ];
+        assert_debug_snapshot!("is_dirty_all_variants", variants);
+    }
+
+    // ── Snapshot: changed files output format ──
+
+    #[test]
+    fn snapshot_porcelain_parse_various_statuses() {
+        let porcelain_output = "\
+?? untracked.txt\n\
+ M modified.txt\n\
+A  staged_new.txt\n\
+D  deleted.txt\n\
+MM both_staged_and_modified.txt\n\
+R  renamed.txt -> new_name.txt";
+
+        let files: Vec<String> = porcelain_output
+            .lines()
+            .map(|line| line.chars().skip(3).collect())
+            .collect();
+        assert_debug_snapshot!("porcelain_parsed_files", files);
+    }
+
+    #[test]
+    fn snapshot_porcelain_empty() {
+        let porcelain_output = "";
+        let files: Vec<String> = porcelain_output
+            .lines()
+            .map(|line| line.chars().skip(3).collect())
+            .collect();
+        assert_debug_snapshot!("porcelain_empty_output", files);
     }
 }

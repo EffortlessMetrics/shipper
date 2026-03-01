@@ -1,0 +1,10 @@
+---
+source: crates/shipper-lock/src/lib.rs
+expression: info
+---
+LockInfo {
+    pid: 1,
+    hostname: "snap-host",
+    acquired_at: 2025-06-15T08:30:00Z,
+    plan_id: None,
+}
