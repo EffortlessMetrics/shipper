@@ -141,9 +141,13 @@ impl EventLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
     use shipper_types::{ErrorClass, EventType, ExecutionResult, Finishability, ReadinessMethod};
     use tempfile::tempdir;
+
+    fn fixed_time() -> DateTime<Utc> {
+        "2025-01-15T12:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    }
 
     fn sample_event(package: &str) -> PublishEvent {
         PublishEvent {
@@ -152,6 +156,14 @@ mod tests {
                 name: package.split('@').next().unwrap_or(package).to_string(),
                 version: package.split('@').nth(1).unwrap_or("1.0.0").to_string(),
             },
+            package: package.to_string(),
+        }
+    }
+
+    fn fixed_event(event_type: EventType, package: &str) -> PublishEvent {
+        PublishEvent {
+            timestamp: fixed_time(),
+            event_type,
             package: package.to_string(),
         }
     }
@@ -869,6 +881,215 @@ mod tests {
         let log = EventLog::new();
         let debug_str = format!("{:?}", log);
         assert!(debug_str.contains("EventLog"));
+    }
+
+    // -- Insta snapshot tests --
+
+    #[test]
+    fn snapshot_package_started_event_json() {
+        let event = fixed_event(
+            EventType::PackageStarted {
+                name: "my-crate".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            "my-crate@1.0.0",
+        );
+        let json = serde_json::to_string_pretty(&event).unwrap();
+        insta::assert_snapshot!("package_started_json", json);
+    }
+
+    #[test]
+    fn snapshot_package_started_event_yaml() {
+        let event = fixed_event(
+            EventType::PackageStarted {
+                name: "my-crate".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            "my-crate@1.0.0",
+        );
+        insta::assert_yaml_snapshot!("package_started_yaml", event);
+    }
+
+    #[test]
+    fn snapshot_plan_created_event_yaml() {
+        let event = fixed_event(
+            EventType::PlanCreated {
+                plan_id: "plan-abc123".to_string(),
+                package_count: 3,
+            },
+            "workspace",
+        );
+        insta::assert_yaml_snapshot!("plan_created_yaml", event);
+    }
+
+    #[test]
+    fn snapshot_execution_finished_event_yaml() {
+        let event = fixed_event(
+            EventType::ExecutionFinished {
+                result: ExecutionResult::Success,
+            },
+            "workspace",
+        );
+        insta::assert_yaml_snapshot!("execution_finished_success_yaml", event);
+    }
+
+    #[test]
+    fn snapshot_package_failed_event_yaml() {
+        let event = fixed_event(
+            EventType::PackageFailed {
+                class: ErrorClass::Retryable,
+                message: "registry returned 503".to_string(),
+            },
+            "my-crate@1.0.0",
+        );
+        insta::assert_yaml_snapshot!("package_failed_retryable_yaml", event);
+    }
+
+    #[test]
+    fn snapshot_package_published_event_yaml() {
+        let event = fixed_event(
+            EventType::PackagePublished { duration_ms: 4500 },
+            "my-crate@1.0.0",
+        );
+        insta::assert_yaml_snapshot!("package_published_yaml", event);
+    }
+
+    #[test]
+    fn snapshot_readiness_complete_event_yaml() {
+        let event = fixed_event(
+            EventType::ReadinessComplete {
+                duration_ms: 12000,
+                attempts: 4,
+            },
+            "my-crate@1.0.0",
+        );
+        insta::assert_yaml_snapshot!("readiness_complete_yaml", event);
+    }
+
+    #[test]
+    fn snapshot_preflight_complete_event_yaml() {
+        let event = fixed_event(
+            EventType::PreflightComplete {
+                finishability: Finishability::Proven,
+            },
+            "workspace",
+        );
+        insta::assert_yaml_snapshot!("preflight_complete_yaml", event);
+    }
+
+    #[test]
+    fn snapshot_multiple_events_jsonl_format() {
+        let events = vec![
+            fixed_event(
+                EventType::PlanCreated {
+                    plan_id: "plan-42".to_string(),
+                    package_count: 2,
+                },
+                "workspace",
+            ),
+            fixed_event(EventType::ExecutionStarted, "workspace"),
+            fixed_event(
+                EventType::PackageStarted {
+                    name: "core-lib".to_string(),
+                    version: "0.1.0".to_string(),
+                },
+                "core-lib@0.1.0",
+            ),
+            fixed_event(
+                EventType::PackagePublished { duration_ms: 3200 },
+                "core-lib@0.1.0",
+            ),
+            fixed_event(
+                EventType::ExecutionFinished {
+                    result: ExecutionResult::Success,
+                },
+                "workspace",
+            ),
+        ];
+
+        let mut log = EventLog::new();
+        for e in events {
+            log.record(e);
+        }
+
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+        log.write_to_file(&path).expect("write");
+
+        let content = fs::read_to_string(&path).expect("read");
+        insta::assert_snapshot!("multiple_events_jsonl", content);
+    }
+
+    #[test]
+    fn snapshot_event_log_roundtrip_yaml() {
+        let events = vec![
+            fixed_event(
+                EventType::PackageStarted {
+                    name: "alpha".to_string(),
+                    version: "0.1.0".to_string(),
+                },
+                "alpha@0.1.0",
+            ),
+            fixed_event(
+                EventType::PackageAttempted {
+                    attempt: 1,
+                    command: "cargo publish -p alpha".to_string(),
+                },
+                "alpha@0.1.0",
+            ),
+            fixed_event(
+                EventType::PackageOutput {
+                    stdout_tail: "Uploading alpha v0.1.0".to_string(),
+                    stderr_tail: String::new(),
+                },
+                "alpha@0.1.0",
+            ),
+            fixed_event(
+                EventType::PackagePublished { duration_ms: 2100 },
+                "alpha@0.1.0",
+            ),
+        ];
+
+        let mut log = EventLog::new();
+        for e in events {
+            log.record(e);
+        }
+
+        insta::assert_yaml_snapshot!("event_log_package_lifecycle", log.all_events());
+    }
+
+    #[test]
+    fn snapshot_package_skipped_event_yaml() {
+        let event = fixed_event(
+            EventType::PackageSkipped {
+                reason: "already published".to_string(),
+            },
+            "old-crate@0.9.0",
+        );
+        insta::assert_yaml_snapshot!("package_skipped_yaml", event);
+    }
+
+    #[test]
+    fn snapshot_readiness_started_event_yaml() {
+        let event = fixed_event(
+            EventType::ReadinessStarted {
+                method: ReadinessMethod::Api,
+            },
+            "my-crate@1.0.0",
+        );
+        insta::assert_yaml_snapshot!("readiness_started_yaml", event);
+    }
+
+    #[test]
+    fn snapshot_preflight_ownership_check_yaml() {
+        let event = fixed_event(
+            EventType::PreflightOwnershipCheck {
+                crate_name: "my-crate".to_string(),
+                verified: true,
+            },
+            "my-crate@1.0.0",
+        );
+        insta::assert_yaml_snapshot!("preflight_ownership_check_yaml", event);
     }
 }
 

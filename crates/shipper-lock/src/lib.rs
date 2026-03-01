@@ -276,6 +276,152 @@ mod tests {
 
     use super::*;
 
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn lock_path_without_root_ends_with_lock_file(dir_name in "[a-zA-Z0-9_]{1,64}") {
+                let base = PathBuf::from(&dir_name);
+                let p = lock_path(&base, None);
+                prop_assert_eq!(p, base.join(LOCK_FILE));
+            }
+
+            #[test]
+            fn lock_path_with_root_contains_hex_hash(
+                dir_name in "[a-zA-Z0-9_]{1,64}",
+                root_name in "[a-zA-Z0-9_/]{1,128}",
+            ) {
+                let base = PathBuf::from(&dir_name);
+                let root = PathBuf::from(&root_name);
+                let p = lock_path(&base, Some(&root));
+                let name = p.file_name().unwrap().to_string_lossy();
+                let expected_prefix = format!("{}_", LOCK_FILE);
+                prop_assert!(name.starts_with(&expected_prefix));
+                // 16 hex chars after the underscore
+                let suffix = &name[LOCK_FILE.len() + 1..];
+                prop_assert_eq!(suffix.len(), 16);
+                prop_assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+            }
+
+            #[test]
+            fn lock_path_with_root_is_deterministic(
+                dir_name in "[a-zA-Z0-9_]{1,64}",
+                root_name in "[a-zA-Z0-9_/]{1,128}",
+            ) {
+                let base = PathBuf::from(&dir_name);
+                let root = PathBuf::from(&root_name);
+                prop_assert_eq!(
+                    lock_path(&base, Some(&root)),
+                    lock_path(&base, Some(&root))
+                );
+            }
+
+            #[test]
+            fn timeout_duration_from_arbitrary_secs(secs in 0u64..=u64::MAX) {
+                let d = Duration::from_secs(secs);
+                prop_assert_eq!(d.as_secs(), secs);
+            }
+
+            #[test]
+            fn acquire_release_lifecycle(dir_suffix in "[a-zA-Z0-9]{1,32}") {
+                let td = tempdir().expect("tempdir");
+                let state_dir = td.path().join(dir_suffix);
+
+                let lock = LockFile::acquire(&state_dir, None).expect("acquire");
+                prop_assert!(lock_path(&state_dir, None).exists());
+
+                let info = LockFile::read_lock_info(&state_dir, None).expect("read");
+                prop_assert_eq!(info.pid, std::process::id());
+                prop_assert!(!info.hostname.is_empty());
+
+                lock.release().expect("release");
+                prop_assert!(!lock_path(&state_dir, None).exists());
+            }
+
+            #[test]
+            fn stale_lock_detected_by_arbitrary_age(
+                age_hours in 2u32..1000u32,
+                timeout_secs in 1u64..3600u64,
+            ) {
+                let td = tempdir().expect("tempdir");
+                let lp = lock_path(td.path(), None);
+
+                let old_info = LockInfo {
+                    pid: 99999,
+                    hostname: "prop-host".to_string(),
+                    acquired_at: Utc::now() - chrono::Duration::hours(i64::from(age_hours)),
+                    plan_id: None,
+                };
+                std::fs::write(
+                    &lp,
+                    serde_json::to_string(&old_info).expect("ser"),
+                ).expect("write");
+
+                // age_hours >= 2 means at least 7200 seconds; timeout_secs < 3600
+                // so the lock is always stale relative to the timeout
+                let lock = LockFile::acquire_with_timeout(
+                    td.path(),
+                    None,
+                    Duration::from_secs(timeout_secs),
+                ).expect("should replace stale lock");
+
+                let new_info = LockFile::read_lock_info(td.path(), None).expect("read");
+                prop_assert_eq!(new_info.pid, std::process::id());
+                prop_assert_ne!(new_info.pid, 99999);
+                drop(lock);
+            }
+
+            #[test]
+            fn fresh_lock_not_removed_with_large_timeout(
+                age_minutes in 1u32..59u32,
+            ) {
+                let td = tempdir().expect("tempdir");
+                let lp = lock_path(td.path(), None);
+
+                let info = LockInfo {
+                    pid: 88888,
+                    hostname: "fresh-host".to_string(),
+                    acquired_at: Utc::now() - chrono::Duration::minutes(i64::from(age_minutes)),
+                    plan_id: None,
+                };
+                std::fs::write(
+                    &lp,
+                    serde_json::to_string(&info).expect("ser"),
+                ).expect("write");
+
+                // 1-hour timeout; lock is < 1 hour old → should fail
+                let result = LockFile::acquire_with_timeout(
+                    td.path(),
+                    None,
+                    Duration::from_secs(3600),
+                );
+                prop_assert!(result.is_err());
+                prop_assert!(result.unwrap_err().to_string().contains("lock already held"));
+            }
+
+            #[test]
+            fn lock_info_serde_roundtrip_proptest(
+                pid in any::<u32>(),
+                hostname in "[a-zA-Z0-9._-]{1,64}",
+                plan_id in proptest::option::of("[a-zA-Z0-9_-]{1,64}"),
+            ) {
+                let info = LockInfo {
+                    pid,
+                    hostname: hostname.clone(),
+                    acquired_at: Utc::now(),
+                    plan_id: plan_id.clone(),
+                };
+                let json = serde_json::to_string(&info).expect("ser");
+                let parsed: LockInfo = serde_json::from_str(&json).expect("de");
+                prop_assert_eq!(parsed.pid, pid);
+                prop_assert_eq!(parsed.hostname, hostname);
+                prop_assert_eq!(parsed.plan_id, plan_id);
+            }
+        }
+    }
+
     #[test]
     fn lock_path_returns_expected_path() {
         let base = PathBuf::from("x");

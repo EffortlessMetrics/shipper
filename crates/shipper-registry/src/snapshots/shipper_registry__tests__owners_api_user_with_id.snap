@@ -1,0 +1,8 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: user
+---
+id: 42
+login: bob
+name: Bob Jones
+avatar: "https://example.com/bob.png"

@@ -624,6 +624,111 @@ mod tests {
         assert_eq!(o.class, CargoFailureClass::Ambiguous);
     }
 
+    // ── insta snapshot tests ────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_retryable_classification() {
+        let outcome = classify_publish_failure("HTTP 429 too many requests", "");
+        insta::assert_debug_snapshot!("retryable_classification", outcome);
+    }
+
+    #[test]
+    fn snapshot_permanent_classification() {
+        let outcome = classify_publish_failure("permission denied", "");
+        insta::assert_debug_snapshot!("permanent_classification", outcome);
+    }
+
+    #[test]
+    fn snapshot_ambiguous_classification() {
+        let outcome = classify_publish_failure("unexpected output", "");
+        insta::assert_debug_snapshot!("ambiguous_classification", outcome);
+    }
+
+    #[test]
+    fn snapshot_retryable_precedence_over_permanent() {
+        let outcome = classify_publish_failure("permission denied and 429", "");
+        insta::assert_debug_snapshot!("retryable_precedence", outcome);
+    }
+
+    #[test]
+    fn snapshot_debug_retryable() {
+        let outcome = classify_publish_failure("connection reset", "");
+        insta::assert_snapshot!("debug_retryable", format!("{outcome:?}"));
+    }
+
+    #[test]
+    fn snapshot_debug_permanent() {
+        let outcome = classify_publish_failure("token is invalid", "");
+        insta::assert_snapshot!("debug_permanent", format!("{outcome:?}"));
+    }
+
+    #[test]
+    fn snapshot_debug_ambiguous() {
+        let outcome = classify_publish_failure("", "");
+        insta::assert_snapshot!("debug_ambiguous", format!("{outcome:?}"));
+    }
+
+    #[test]
+    fn snapshot_debug_failure_class_variants() {
+        insta::assert_snapshot!(
+            "debug_class_retryable",
+            format!("{:?}", CargoFailureClass::Retryable)
+        );
+        insta::assert_snapshot!(
+            "debug_class_permanent",
+            format!("{:?}", CargoFailureClass::Permanent)
+        );
+        insta::assert_snapshot!(
+            "debug_class_ambiguous",
+            format!("{:?}", CargoFailureClass::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn snapshot_all_classification_messages() {
+        let retryable = classify_publish_failure("503", "");
+        let permanent = classify_publish_failure("forbidden", "");
+        let ambiguous = classify_publish_failure("???", "");
+        insta::assert_snapshot!(
+            "all_messages",
+            format!(
+                "retryable: {}\npermanent: {}\nambiguous: {}",
+                retryable.message, permanent.message, ambiguous.message
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_realistic_rate_limit() {
+        let outcome = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  the remote server responded with 429 Too Many Requests",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_rate_limit", outcome);
+    }
+
+    #[test]
+    fn snapshot_realistic_already_published() {
+        let outcome = classify_publish_failure(
+            "error: failed to publish crate `my-crate v1.0.0`\n\
+             Caused by:\n  the remote server responded: crate version `1.0.0` \
+             is already uploaded",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_already_published", outcome);
+    }
+
+    #[test]
+    fn snapshot_realistic_compilation_failure() {
+        let outcome = classify_publish_failure(
+            "error[E0308]: mismatched types\n\
+             error: could not compile `my-crate` due to previous error",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_compilation_failure", outcome);
+    }
+
     // ── realistic cargo publish error messages ──────────────────────────
 
     #[test]

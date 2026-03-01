@@ -1,0 +1,10 @@
+---
+source: crates/shipper-events/src/lib.rs
+expression: event
+---
+timestamp: "2025-01-15T12:00:00Z"
+event_type:
+  type: package_failed
+  class: retryable
+  message: registry returned 503
+package: my-crate@1.0.0

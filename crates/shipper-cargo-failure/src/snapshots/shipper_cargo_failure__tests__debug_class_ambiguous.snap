@@ -1,0 +1,5 @@
+---
+source: crates/shipper-cargo-failure/src/lib.rs
+expression: "format!(\"{:?}\", CargoFailureClass::Ambiguous)"
+---
+Ambiguous

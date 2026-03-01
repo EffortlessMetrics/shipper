@@ -834,4 +834,454 @@ mod tests {
         assert!(!state_path(&dir).exists());
         assert!(receipt_path(&dir).exists());
     }
+
+    // ── Insta snapshot helpers ──────────────────────────────────────
+
+    use chrono::TimeZone;
+
+    /// Build an `ExecutionState` with deterministic, fixed timestamps so
+    /// that snapshot output is stable across runs.
+    fn deterministic_state() -> ExecutionState {
+        let fixed = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "alpha@0.1.0".to_string(),
+            PackageProgress {
+                name: "alpha".to_string(),
+                version: "0.1.0".to_string(),
+                attempts: 0,
+                state: PackageState::Pending,
+                last_updated_at: fixed,
+            },
+        );
+        packages.insert(
+            "beta@0.2.0".to_string(),
+            PackageProgress {
+                name: "beta".to_string(),
+                version: "0.2.0".to_string(),
+                attempts: 1,
+                state: PackageState::Published,
+                last_updated_at: fixed,
+            },
+        );
+
+        ExecutionState {
+            state_version: CURRENT_STATE_VERSION.to_string(),
+            plan_id: "plan-abc123".to_string(),
+            registry: Registry::crates_io(),
+            created_at: fixed,
+            updated_at: fixed,
+            packages,
+        }
+    }
+
+    /// Build a `Receipt` with deterministic timestamps.
+    fn deterministic_receipt() -> Receipt {
+        let fixed = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let finished = Utc.with_ymd_and_hms(2025, 1, 15, 12, 5, 0).unwrap();
+
+        Receipt {
+            receipt_version: CURRENT_RECEIPT_VERSION.to_string(),
+            plan_id: "plan-abc123".to_string(),
+            registry: Registry::crates_io(),
+            started_at: fixed,
+            finished_at: finished,
+            packages: vec![
+                PackageReceipt {
+                    name: "alpha".to_string(),
+                    version: "0.1.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    started_at: fixed,
+                    finished_at: finished,
+                    duration_ms: 300_000,
+                    evidence: shipper_types::PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+                PackageReceipt {
+                    name: "beta".to_string(),
+                    version: "0.2.0".to_string(),
+                    attempts: 2,
+                    state: PackageState::Failed {
+                        class: shipper_types::ErrorClass::Retryable,
+                        message: "registry timeout".to_string(),
+                    },
+                    started_at: fixed,
+                    finished_at: finished,
+                    duration_ms: 120_000,
+                    evidence: shipper_types::PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                },
+            ],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: None,
+            environment: shipper_types::EnvironmentFingerprint {
+                shipper_version: "0.3.0".to_string(),
+                cargo_version: Some("1.82.0".to_string()),
+                rust_version: Some("1.82.0".to_string()),
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        }
+    }
+
+    // ── Snapshot: state JSON format ─────────────────────────────────
+
+    #[test]
+    fn snapshot_state_json_format() {
+        let state = deterministic_state();
+        let json = serde_json::to_string_pretty(&state).expect("serialize state");
+        insta::assert_snapshot!("state_json_format", json);
+    }
+
+    // ── Snapshot: receipt JSON format ────────────────────────────────
+
+    #[test]
+    fn snapshot_receipt_json_format() {
+        let receipt = deterministic_receipt();
+        let json = serde_json::to_string_pretty(&receipt).expect("serialize receipt");
+        insta::assert_snapshot!("receipt_json_format", json);
+    }
+
+    // ── Snapshot: state transitions ─────────────────────────────────
+
+    #[test]
+    fn snapshot_state_transition_pending_to_published() {
+        let fixed = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let mut state = deterministic_state();
+
+        // Transition alpha from Pending → Published
+        if let Some(pkg) = state.packages.get_mut("alpha@0.1.0") {
+            pkg.state = PackageState::Published;
+            pkg.attempts = 1;
+            pkg.last_updated_at = fixed;
+        }
+        state.updated_at = fixed;
+
+        let json = serde_json::to_string_pretty(&state).expect("serialize");
+        insta::assert_snapshot!("state_transition_pending_to_published", json);
+    }
+
+    #[test]
+    fn snapshot_state_transition_pending_to_failed() {
+        let fixed = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let mut state = deterministic_state();
+
+        // Transition alpha from Pending → Failed
+        if let Some(pkg) = state.packages.get_mut("alpha@0.1.0") {
+            pkg.state = PackageState::Failed {
+                class: shipper_types::ErrorClass::Permanent,
+                message: "crate name is reserved".to_string(),
+            };
+            pkg.attempts = 1;
+            pkg.last_updated_at = fixed;
+        }
+        state.updated_at = fixed;
+
+        let json = serde_json::to_string_pretty(&state).expect("serialize");
+        insta::assert_snapshot!("state_transition_pending_to_failed", json);
+    }
+
+    #[test]
+    fn snapshot_state_transition_pending_to_skipped() {
+        let fixed = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let mut state = deterministic_state();
+
+        // Transition alpha from Pending → Skipped
+        if let Some(pkg) = state.packages.get_mut("alpha@0.1.0") {
+            pkg.state = PackageState::Skipped {
+                reason: "already published".to_string(),
+            };
+            pkg.attempts = 0;
+            pkg.last_updated_at = fixed;
+        }
+        state.updated_at = fixed;
+
+        let json = serde_json::to_string_pretty(&state).expect("serialize");
+        insta::assert_snapshot!("state_transition_pending_to_skipped", json);
+    }
+
+    // ── Property-based tests (proptest) ─────────────────────────────
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_error_class() -> impl Strategy<Value = shipper_types::ErrorClass> {
+            prop_oneof![
+                Just(shipper_types::ErrorClass::Retryable),
+                Just(shipper_types::ErrorClass::Permanent),
+                Just(shipper_types::ErrorClass::Ambiguous),
+            ]
+        }
+
+        fn arb_package_state() -> impl Strategy<Value = PackageState> {
+            prop_oneof![
+                Just(PackageState::Pending),
+                Just(PackageState::Uploaded),
+                Just(PackageState::Published),
+                "\\PC{1,50}".prop_map(|reason| PackageState::Skipped { reason }),
+                (arb_error_class(), "\\PC{1,50}")
+                    .prop_map(|(class, message)| PackageState::Failed { class, message }),
+                "\\PC{1,50}".prop_map(|message| PackageState::Ambiguous { message }),
+            ]
+        }
+
+        fn arb_registry() -> impl Strategy<Value = Registry> {
+            (
+                "[a-z][a-z0-9-]{0,19}",
+                "https?://[a-z]{1,10}\\.[a-z]{2,4}",
+                proptest::option::of("https?://[a-z]{1,10}\\.[a-z]{2,4}"),
+            )
+                .prop_map(|(name, api_base, index_base)| Registry {
+                    name,
+                    api_base,
+                    index_base,
+                })
+        }
+
+        fn arb_datetime() -> impl Strategy<Value = chrono::DateTime<Utc>> {
+            (0i64..=4_000_000_000i64)
+                .prop_map(|secs| chrono::DateTime::from_timestamp(secs, 0).unwrap_or_default())
+        }
+
+        fn arb_package_progress() -> impl Strategy<Value = PackageProgress> {
+            (
+                "[a-z][a-z0-9_-]{0,19}",
+                "[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}",
+                0u32..100,
+                arb_package_state(),
+                arb_datetime(),
+            )
+                .prop_map(|(name, version, attempts, state, ts)| PackageProgress {
+                    name,
+                    version,
+                    attempts,
+                    state,
+                    last_updated_at: ts,
+                })
+        }
+
+        fn arb_execution_state() -> impl Strategy<Value = ExecutionState> {
+            (
+                arb_registry(),
+                arb_datetime(),
+                arb_datetime(),
+                proptest::collection::btree_map(
+                    "[a-z]{1,8}@[0-9]{1,2}\\.[0-9]{1,2}\\.[0-9]{1,2}",
+                    arb_package_progress(),
+                    0..5,
+                ),
+                "\\PC{1,30}",
+            )
+                .prop_map(|(registry, created, updated, packages, plan_id)| {
+                    ExecutionState {
+                        state_version: CURRENT_STATE_VERSION.to_string(),
+                        plan_id,
+                        registry,
+                        created_at: created,
+                        updated_at: updated,
+                        packages,
+                    }
+                })
+        }
+
+        fn arb_receipt() -> impl Strategy<Value = Receipt> {
+            (
+                arb_registry(),
+                arb_datetime(),
+                arb_datetime(),
+                proptest::collection::vec(arb_package_receipt(), 0..5),
+                "\\PC{1,30}",
+            )
+                .prop_map(|(registry, started, finished, packages, plan_id)| Receipt {
+                    receipt_version: CURRENT_RECEIPT_VERSION.to_string(),
+                    plan_id,
+                    registry,
+                    started_at: started,
+                    finished_at: finished,
+                    packages,
+                    event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                    git_context: None,
+                    environment: shipper_types::EnvironmentFingerprint {
+                        shipper_version: "0.1.0".to_string(),
+                        cargo_version: Some("1.80.0".to_string()),
+                        rust_version: Some("1.80.0".to_string()),
+                        os: "linux".to_string(),
+                        arch: "x86_64".to_string(),
+                    },
+                })
+        }
+
+        fn arb_package_receipt() -> impl Strategy<Value = PackageReceipt> {
+            (
+                "[a-z][a-z0-9_-]{0,19}",
+                "[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}",
+                0u32..100,
+                arb_package_state(),
+                arb_datetime(),
+                arb_datetime(),
+                0u128..1_000_000,
+            )
+                .prop_map(
+                    |(name, version, attempts, state, started, finished, dur)| PackageReceipt {
+                        name,
+                        version,
+                        attempts,
+                        state,
+                        started_at: started,
+                        finished_at: finished,
+                        duration_ms: dur,
+                        evidence: shipper_types::PackageEvidence {
+                            attempts: vec![],
+                            readiness_checks: vec![],
+                        },
+                    },
+                )
+        }
+
+        // ── State serialization roundtrip ───────────────────────────
+
+        proptest! {
+            #[test]
+            fn execution_state_json_roundtrip(state in arb_execution_state()) {
+                let json = serde_json::to_string(&state).expect("serialize");
+                let deser: ExecutionState = serde_json::from_str(&json).expect("deserialize");
+                prop_assert_eq!(state.plan_id, deser.plan_id);
+                prop_assert_eq!(state.state_version, deser.state_version);
+                prop_assert_eq!(state.registry.name, deser.registry.name);
+                prop_assert_eq!(state.packages.len(), deser.packages.len());
+                for (k, v) in &state.packages {
+                    let d = deser.packages.get(k).expect("key exists");
+                    prop_assert_eq!(&v.name, &d.name);
+                    prop_assert_eq!(&v.version, &d.version);
+                    prop_assert_eq!(v.attempts, d.attempts);
+                }
+            }
+
+            #[test]
+            fn receipt_json_roundtrip(receipt in arb_receipt()) {
+                let json = serde_json::to_string(&receipt).expect("serialize");
+                let deser: Receipt = serde_json::from_str(&json).expect("deserialize");
+                prop_assert_eq!(receipt.plan_id, deser.plan_id);
+                prop_assert_eq!(receipt.receipt_version, deser.receipt_version);
+                prop_assert_eq!(receipt.registry.name, deser.registry.name);
+                prop_assert_eq!(receipt.packages.len(), deser.packages.len());
+            }
+        }
+
+        // ── Plan ID with arbitrary inputs ───────────────────────────
+
+        proptest! {
+            #[test]
+            fn plan_id_survives_roundtrip(plan_id in "\\PC{1,64}") {
+                let fixed = chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap_or_default();
+                let state = ExecutionState {
+                    state_version: CURRENT_STATE_VERSION.to_string(),
+                    plan_id: plan_id.clone(),
+                    registry: Registry::crates_io(),
+                    created_at: fixed,
+                    updated_at: fixed,
+                    packages: BTreeMap::new(),
+                };
+                let json = serde_json::to_string(&state).expect("serialize");
+                let deser: ExecutionState = serde_json::from_str(&json).expect("deserialize");
+                prop_assert_eq!(plan_id, deser.plan_id);
+            }
+        }
+
+        // ── Package state transitions ───────────────────────────────
+
+        proptest! {
+            #[test]
+            fn package_state_roundtrips_through_json(pkg_state in arb_package_state()) {
+                let json = serde_json::to_string(&pkg_state).expect("serialize");
+                let deser: PackageState = serde_json::from_str(&json).expect("deserialize");
+                prop_assert_eq!(pkg_state, deser);
+            }
+
+            #[test]
+            fn package_progress_state_update_persists(
+                initial in arb_package_progress(),
+                new_state in arb_package_state(),
+            ) {
+                let fixed = chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap_or_default();
+                let mut packages = BTreeMap::new();
+                let key = format!("{}@{}", initial.name, initial.version);
+                packages.insert(key.clone(), initial);
+
+                let mut state = ExecutionState {
+                    state_version: CURRENT_STATE_VERSION.to_string(),
+                    plan_id: "test".to_string(),
+                    registry: Registry::crates_io(),
+                    created_at: fixed,
+                    updated_at: fixed,
+                    packages,
+                };
+
+                // Apply state transition
+                if let Some(pkg) = state.packages.get_mut(&key) {
+                    pkg.state = new_state.clone();
+                    pkg.last_updated_at = fixed;
+                }
+
+                let json = serde_json::to_string(&state).expect("serialize");
+                let deser: ExecutionState = serde_json::from_str(&json).expect("deserialize");
+                let pkg = deser.packages.get(&key).expect("package exists");
+                prop_assert_eq!(&new_state, &pkg.state);
+            }
+        }
+
+        // ── Atomic write/read consistency ───────────────────────────
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(20))]
+
+            #[test]
+            fn save_load_state_is_consistent(state in arb_execution_state()) {
+                let td = tempfile::tempdir().expect("tempdir");
+                let dir = td.path().join("proptest-state");
+
+                save_state(&dir, &state).expect("save");
+                let loaded = load_state(&dir).expect("load").expect("exists");
+
+                prop_assert_eq!(state.plan_id, loaded.plan_id);
+                prop_assert_eq!(state.state_version, loaded.state_version);
+                prop_assert_eq!(state.registry.name, loaded.registry.name);
+                prop_assert_eq!(state.registry.api_base, loaded.registry.api_base);
+                prop_assert_eq!(state.packages.len(), loaded.packages.len());
+                for (k, v) in &state.packages {
+                    let d = loaded.packages.get(k).expect("key exists");
+                    prop_assert_eq!(&v.name, &d.name);
+                    prop_assert_eq!(&v.version, &d.version);
+                    prop_assert_eq!(v.attempts, d.attempts);
+                }
+            }
+
+            #[test]
+            fn save_load_receipt_is_consistent(receipt in arb_receipt()) {
+                let td = tempfile::tempdir().expect("tempdir");
+                let dir = td.path().join("proptest-receipt");
+
+                write_receipt(&dir, &receipt).expect("write");
+                let loaded = load_receipt(&dir).expect("load").expect("exists");
+
+                prop_assert_eq!(receipt.plan_id, loaded.plan_id);
+                prop_assert_eq!(receipt.receipt_version, loaded.receipt_version);
+                prop_assert_eq!(receipt.registry.name, loaded.registry.name);
+                prop_assert_eq!(receipt.packages.len(), loaded.packages.len());
+                for (orig, ld) in receipt.packages.iter().zip(loaded.packages.iter()) {
+                    prop_assert_eq!(&orig.name, &ld.name);
+                    prop_assert_eq!(&orig.version, &ld.version);
+                    prop_assert_eq!(orig.attempts, ld.attempts);
+                }
+            }
+        }
+    }
 }

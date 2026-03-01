@@ -1,0 +1,7 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: owner
+---
+login: bot-user
+name: ~
+avatar: ~

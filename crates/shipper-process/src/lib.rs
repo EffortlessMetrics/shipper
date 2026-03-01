@@ -822,6 +822,198 @@ mod tests {
         }
     }
 
+    // ── Property-based tests (proptest) ─────────────────────────────
+
+    mod proptest_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        // ── Process output handling with arbitrary stdout/stderr ──
+
+        proptest! {
+            #[test]
+            fn command_result_ok_succeeds_when_success_is_true(
+                stdout in any::<String>(),
+                stderr in any::<String>(),
+                exit_code in proptest::option::of(any::<i32>()),
+                duration_ms in any::<u64>(),
+            ) {
+                let result = CommandResult {
+                    success: true,
+                    exit_code,
+                    stdout,
+                    stderr,
+                    duration_ms,
+                };
+                prop_assert!(result.ok().is_ok());
+            }
+
+            #[test]
+            fn command_result_ok_fails_when_success_is_false(
+                stdout in any::<String>(),
+                stderr in any::<String>(),
+                exit_code in proptest::option::of(any::<i32>()),
+                duration_ms in any::<u64>(),
+            ) {
+                let result = CommandResult {
+                    success: false,
+                    exit_code,
+                    stdout,
+                    stderr: stderr.clone(),
+                    duration_ms,
+                };
+                let err = result.ok().unwrap_err();
+                let msg = err.to_string();
+                prop_assert!(msg.contains(&stderr));
+            }
+
+            #[test]
+            fn command_result_serde_roundtrip(
+                success in any::<bool>(),
+                exit_code in proptest::option::of(any::<i32>()),
+                stdout in any::<String>(),
+                stderr in any::<String>(),
+                duration_ms in any::<u64>(),
+            ) {
+                let original = CommandResult {
+                    success,
+                    exit_code,
+                    stdout: stdout.clone(),
+                    stderr: stderr.clone(),
+                    duration_ms,
+                };
+                let json = serde_json::to_string(&original).unwrap();
+                let decoded: CommandResult = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(decoded.success, success);
+                prop_assert_eq!(decoded.exit_code, exit_code);
+                prop_assert_eq!(&decoded.stdout, &stdout);
+                prop_assert_eq!(&decoded.stderr, &stderr);
+                prop_assert_eq!(decoded.duration_ms, duration_ms);
+            }
+
+            #[test]
+            fn command_output_serde_roundtrip(
+                exit_code in any::<i32>(),
+                stdout in any::<String>(),
+                stderr in any::<String>(),
+                timed_out in any::<bool>(),
+                duration_ms in 0u64..=u64::MAX / 1_000_000,
+            ) {
+                let original = CommandOutput {
+                    exit_code,
+                    stdout: stdout.clone(),
+                    stderr: stderr.clone(),
+                    timed_out,
+                    duration: Duration::from_millis(duration_ms),
+                };
+                let json = serde_json::to_string(&original).unwrap();
+                let decoded: CommandOutput = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(decoded.exit_code, exit_code);
+                prop_assert_eq!(&decoded.stdout, &stdout);
+                prop_assert_eq!(&decoded.stderr, &stderr);
+                prop_assert_eq!(decoded.timed_out, timed_out);
+                prop_assert_eq!(decoded.duration, Duration::from_millis(duration_ms));
+            }
+        }
+
+        // ── Exit code interpretation (arbitrary i32 exit codes) ──
+
+        proptest! {
+            #[test]
+            fn error_message_contains_exit_code(code in any::<i32>()) {
+                let result = CommandResult {
+                    success: false,
+                    exit_code: Some(code),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: 0,
+                };
+                let err = result.ok().unwrap_err();
+                let msg = err.to_string();
+                let code_str = code.to_string();
+                prop_assert!(msg.contains(&code_str));
+            }
+
+            #[test]
+            fn error_message_contains_none_when_exit_code_missing(
+                stderr in any::<String>(),
+            ) {
+                let result = CommandResult {
+                    success: false,
+                    exit_code: None,
+                    stdout: String::new(),
+                    stderr,
+                    duration_ms: 0,
+                };
+                let err = result.ok().unwrap_err();
+                prop_assert!(err.to_string().contains("None"));
+            }
+
+            #[test]
+            fn exit_code_zero_is_always_success(
+                stdout in any::<String>(),
+                stderr in any::<String>(),
+                duration_ms in any::<u64>(),
+            ) {
+                let result = CommandResult {
+                    success: true,
+                    exit_code: Some(0),
+                    stdout,
+                    stderr,
+                    duration_ms,
+                };
+                prop_assert!(result.ok().is_ok());
+                prop_assert_eq!(result.exit_code, Some(0));
+            }
+
+            #[test]
+            fn nonzero_exit_code_produces_error(code in any::<i32>().prop_filter(
+                "non-zero exit code",
+                |c| *c != 0,
+            )) {
+                let result = CommandResult {
+                    success: false,
+                    exit_code: Some(code),
+                    stdout: String::new(),
+                    stderr: "failed".to_string(),
+                    duration_ms: 0,
+                };
+                prop_assert!(result.ok().is_err());
+            }
+        }
+
+        // ── Command building with arbitrary argument lists ──
+
+        proptest! {
+            #[test]
+            fn command_building_does_not_panic(
+                args in proptest::collection::vec(any::<String>(), 0..20),
+            ) {
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                let mut cmd = Command::new("echo");
+                cmd.args(&arg_refs);
+                // Building a command must never panic regardless of arguments
+                prop_assert!(true);
+            }
+
+            #[test]
+            fn command_with_env_building_does_not_panic(
+                args in proptest::collection::vec(any::<String>(), 0..10),
+                env_keys in proptest::collection::vec("[A-Z_]{1,20}", 0..5),
+                env_vals in proptest::collection::vec(any::<String>(), 0..5),
+            ) {
+                let mut cmd = Command::new("echo");
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                cmd.args(&arg_refs);
+                let pairs = env_keys.len().min(env_vals.len());
+                for i in 0..pairs {
+                    cmd.env(&env_keys[i], &env_vals[i]);
+                }
+                prop_assert!(true);
+            }
+        }
+    }
+
     // ── Helper to create ExitStatus with a given code ────────────────
 
     /// Create an `ExitStatus` by actually running a process that exits with the given code.

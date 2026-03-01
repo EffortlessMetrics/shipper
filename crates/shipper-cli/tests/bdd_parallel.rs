@@ -143,7 +143,7 @@ fn create_fake_cargo_proxy(bin_dir: &Path) {
         .expect("write fake cargo");
         let mut perms = fs::metadata(&path).expect("meta").permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(path, perms).expect("chmod");
+        fs::set_permissions(&path, perms).expect("chmod");
     }
 }
 
@@ -169,7 +169,7 @@ fn create_fake_cargo_failing(bin_dir: &Path) {
         .expect("write fake cargo");
         let mut perms = fs::metadata(&path).expect("meta").permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(path, perms).expect("chmod");
+        fs::set_permissions(&path, perms).expect("chmod");
     }
 }
 
@@ -217,7 +217,18 @@ fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper"))
 }
 
-fn prepend_fake_cargo(td: &Path) -> (String, String) {
+fn fake_cargo_bin_path(bin_dir: &Path) -> String {
+    #[cfg(windows)]
+    {
+        bin_dir.join("cargo.cmd").display().to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        bin_dir.join("cargo").display().to_string()
+    }
+}
+
+fn prepend_fake_cargo(td: &Path) -> (String, String, String) {
     let bin_dir = td.join("fake-bin");
     fs::create_dir_all(&bin_dir).expect("mkdir");
     create_fake_cargo_proxy(&bin_dir);
@@ -229,10 +240,11 @@ fn prepend_fake_cargo(td: &Path) -> (String, String) {
         new_path.push_str(&old_path);
     }
     let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    (new_path, real_cargo)
+    let fake_cargo = fake_cargo_bin_path(&bin_dir);
+    (new_path, real_cargo, fake_cargo)
 }
 
-fn prepend_fake_cargo_failing(td: &Path) -> (String, String) {
+fn prepend_fake_cargo_failing(td: &Path) -> (String, String, String) {
     let bin_dir = td.join("fake-bin");
     fs::create_dir_all(&bin_dir).expect("mkdir");
     create_fake_cargo_failing(&bin_dir);
@@ -244,7 +256,8 @@ fn prepend_fake_cargo_failing(td: &Path) -> (String, String) {
         new_path.push_str(&old_path);
     }
     let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    (new_path, real_cargo)
+    let fake_cargo = fake_cargo_bin_path(&bin_dir);
+    (new_path, real_cargo, fake_cargo)
 }
 
 // ============================================================================
@@ -423,12 +436,12 @@ mod resume_skips_completed_levels {
         // Given: Set up workspace + fake cargo + state dir
         let td = tempdir().expect("tempdir");
         create_parallel_workspace(td.path());
-        let (new_path, real_cargo) = prepend_fake_cargo(td.path());
+        let (new_path, real_cargo, fake_cargo) = prepend_fake_cargo(td.path());
 
         let state_dir = td.path().join(".shipper");
 
-        // Publish all crates first (4 crates: version check + readiness = 8 reqs)
-        let registry = spawn_registry(vec![404, 200, 404, 200, 404, 200, 404, 200], 8);
+        // Publish all crates first (4 crates × 1 version check = 4 reqs; readiness disabled)
+        let registry = spawn_registry(vec![404, 404, 404, 404], 4);
 
         shipper_cmd()
             .arg("--manifest-path")
@@ -436,6 +449,7 @@ mod resume_skips_completed_levels {
             .arg("--api-base")
             .arg(&registry.base_url)
             .arg("--allow-dirty")
+            .arg("--no-readiness")
             .arg("--verify-timeout")
             .arg("0ms")
             .arg("--verify-poll")
@@ -447,6 +461,7 @@ mod resume_skips_completed_levels {
             .arg("publish")
             .env("PATH", &new_path)
             .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
             .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
             .assert()
             .success();
@@ -505,7 +520,7 @@ mod failure_stops_subsequent_levels {
         // Given: Workspace + failing cargo proxy
         let td = tempdir().expect("tempdir");
         create_parallel_workspace(td.path());
-        let (new_path, real_cargo) = prepend_fake_cargo_failing(td.path());
+        let (new_path, real_cargo, fake_cargo) = prepend_fake_cargo_failing(td.path());
 
         let state_dir = td.path().join(".shipper");
 
@@ -533,6 +548,7 @@ mod failure_stops_subsequent_levels {
             .arg("publish")
             .env("PATH", &new_path)
             .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
             .assert()
             .failure();
 
@@ -583,7 +599,7 @@ mod max_concurrent_limits_parallelism {
         // Given
         let td = tempdir().expect("tempdir");
         create_independent_workspace(td.path());
-        let (new_path, real_cargo) = prepend_fake_cargo(td.path());
+        let (new_path, real_cargo, fake_cargo) = prepend_fake_cargo(td.path());
 
         let state_dir = td.path().join(".shipper");
 
@@ -610,6 +626,7 @@ mod max_concurrent_limits_parallelism {
             .arg("publish")
             .env("PATH", &new_path)
             .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
             .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
             .assert()
             .success();

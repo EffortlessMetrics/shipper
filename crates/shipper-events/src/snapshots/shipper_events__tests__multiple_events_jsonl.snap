@@ -1,0 +1,9 @@
+---
+source: crates/shipper-events/src/lib.rs
+expression: content
+---
+{"timestamp":"2025-01-15T12:00:00Z","event_type":{"type":"plan_created","plan_id":"plan-42","package_count":2},"package":"workspace"}
+{"timestamp":"2025-01-15T12:00:00Z","event_type":{"type":"execution_started"},"package":"workspace"}
+{"timestamp":"2025-01-15T12:00:00Z","event_type":{"type":"package_started","name":"core-lib","version":"0.1.0"},"package":"core-lib@0.1.0"}
+{"timestamp":"2025-01-15T12:00:00Z","event_type":{"type":"package_published","duration_ms":3200},"package":"core-lib@0.1.0"}
+{"timestamp":"2025-01-15T12:00:00Z","event_type":{"type":"execution_finished","result":"success"},"package":"workspace"}

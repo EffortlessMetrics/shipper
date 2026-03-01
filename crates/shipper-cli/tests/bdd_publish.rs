@@ -183,7 +183,7 @@ fn create_fake_cargo_proxy(bin_dir: &Path) {
         .expect("write fake cargo");
         let mut perms = fs::metadata(&path).expect("meta").permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(path, perms).expect("chmod");
+        fs::set_permissions(&path, perms).expect("chmod");
     }
 }
 
@@ -211,7 +211,7 @@ fn create_fake_cargo_with_sensitive_output(bin_dir: &Path) -> PathBuf {
         .expect("write fake cargo");
         let mut perms = fs::metadata(&path).expect("meta").permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(path, perms).expect("chmod");
+        fs::set_permissions(&path, perms).expect("chmod");
         path
     }
 }

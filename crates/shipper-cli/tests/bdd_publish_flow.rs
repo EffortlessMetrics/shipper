@@ -122,12 +122,23 @@ fn create_fake_cargo_proxy(bin_dir: &Path) {
         .expect("write fake cargo");
         let mut perms = fs::metadata(&path).expect("meta").permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(path, perms).expect("chmod");
+        fs::set_permissions(&path, perms).expect("chmod");
     }
 }
 
 fn path_sep() -> &'static str {
     if cfg!(windows) { ";" } else { ":" }
+}
+
+fn fake_cargo_bin_path(bin_dir: &Path) -> String {
+    #[cfg(windows)]
+    {
+        bin_dir.join("cargo.cmd").display().to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        bin_dir.join("cargo").display().to_string()
+    }
 }
 
 struct TestRegistry {
@@ -468,6 +479,7 @@ mod state_directory {
             new_path.push_str(&old_path);
         }
         let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let fake_cargo = fake_cargo_bin_path(&bin_dir);
 
         let custom_state_dir = td.path().join("my-custom-state");
 
@@ -492,6 +504,7 @@ mod state_directory {
             .arg("publish")
             .env("PATH", &new_path)
             .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
             .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
             .assert()
             .success();
@@ -540,6 +553,7 @@ mod state_directory {
             new_path.push_str(&old_path);
         }
         let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let fake_cargo = fake_cargo_bin_path(&bin_dir);
 
         let state_dir = td.path().join("artifacts");
         let registry = spawn_registry(vec![404, 200], 2);
@@ -562,6 +576,7 @@ mod state_directory {
             .arg("publish")
             .env("PATH", &new_path)
             .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
             .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
             .assert()
             .success();
@@ -609,6 +624,7 @@ mod publish_execution {
             new_path.push_str(&old_path);
         }
         let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let fake_cargo = fake_cargo_bin_path(&bin_dir);
 
         // version-check 404 (not yet published), then readiness 200 (visible)
         let registry = spawn_registry(vec![404, 200], 2);
@@ -633,6 +649,7 @@ mod publish_execution {
             .arg("publish")
             .env("PATH", &new_path)
             .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
             .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
             .assert()
             .success();
@@ -679,6 +696,7 @@ mod publish_execution {
             new_path.push_str(&old_path);
         }
         let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let fake_cargo = fake_cargo_bin_path(&bin_dir);
 
         // 3 crates × (version-check 404 + readiness 200) = 6 requests
         let registry = spawn_registry(vec![404, 200, 404, 200, 404, 200], 6);
@@ -703,6 +721,7 @@ mod publish_execution {
             .arg("publish")
             .env("PATH", &new_path)
             .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
             .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
             .assert()
             .success();

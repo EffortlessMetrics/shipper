@@ -1,0 +1,5 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: err.to_string()
+---
+unexpected status code: 500 Internal Server Error

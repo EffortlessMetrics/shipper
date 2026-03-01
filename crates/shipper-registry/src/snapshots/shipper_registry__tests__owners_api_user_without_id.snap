@@ -1,0 +1,8 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: user
+---
+id: ~
+login: "team:core"
+name: ~
+avatar: ~

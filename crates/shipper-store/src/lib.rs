@@ -945,4 +945,165 @@ mod tests {
         let loaded = store.load_state().expect("load").unwrap();
         assert_eq!(loaded.plan_id, "p1");
     }
+
+    // --- Property-based tests (proptest) ---
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Strategy for valid crate-like package names (lowercase alphanumeric + hyphens/underscores).
+        fn pkg_name_strategy() -> impl Strategy<Value = String> {
+            "[a-z][a-z0-9_-]{0,30}".prop_map(|s| s)
+        }
+
+        /// Strategy for semver-like version strings.
+        fn version_strategy() -> impl Strategy<Value = String> {
+            (0u32..100, 0u32..100, 0u32..100).prop_map(|(ma, mi, pa)| format!("{ma}.{mi}.{pa}"))
+        }
+
+        /// Strategy for non-empty directory name segments.
+        fn dir_segment_strategy() -> impl Strategy<Value = String> {
+            "[a-zA-Z0-9_-]{1,20}".prop_map(|s| s)
+        }
+
+        proptest! {
+            #[test]
+            fn receipt_roundtrip_arbitrary_names_and_versions(
+                name in pkg_name_strategy(),
+                version in version_strategy(),
+                plan_id in "[a-z0-9]{1,16}",
+            ) {
+                let td = tempdir().expect("tempdir");
+                let store = FileStore::new(td.path().to_path_buf());
+
+                let receipt = Receipt {
+                    receipt_version: "shipper.receipt.v2".to_string(),
+                    plan_id,
+                    registry: Registry::crates_io(),
+                    started_at: Utc::now(),
+                    finished_at: Utc::now(),
+                    packages: vec![PackageReceipt {
+                        name: name.clone(),
+                        version: version.clone(),
+                        attempts: 1,
+                        state: PackageState::Published,
+                        started_at: Utc::now(),
+                        finished_at: Utc::now(),
+                        duration_ms: 10,
+                        evidence: shipper_types::PackageEvidence {
+                            attempts: vec![],
+                            readiness_checks: vec![],
+                        },
+                    }],
+                    event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                    git_context: None,
+                    environment: shipper_types::EnvironmentFingerprint {
+                        shipper_version: "0.1.0".to_string(),
+                        cargo_version: Some("1.75.0".to_string()),
+                        rust_version: Some("1.75.0".to_string()),
+                        os: "linux".to_string(),
+                        arch: "x86_64".to_string(),
+                    },
+                };
+
+                store.save_receipt(&receipt).expect("save receipt");
+                let loaded = store.load_receipt().expect("load receipt").expect("receipt present");
+                prop_assert_eq!(&loaded.packages[0].name, &name);
+                prop_assert_eq!(&loaded.packages[0].version, &version);
+            }
+
+            #[test]
+            fn store_path_construction_with_arbitrary_dirs(
+                segments in proptest::collection::vec(dir_segment_strategy(), 1..5),
+            ) {
+                let td = tempdir().expect("tempdir");
+                let mut path = td.path().to_path_buf();
+                for seg in &segments {
+                    path = path.join(seg);
+                }
+                let store = FileStore::new(path.clone());
+                prop_assert_eq!(store.state_dir(), path.as_path());
+            }
+
+            #[test]
+            fn receipt_json_serialization_roundtrip(
+                name in pkg_name_strategy(),
+                version in version_strategy(),
+                attempts in 1u32..10,
+                duration in 0u128..100_000,
+            ) {
+                let receipt = Receipt {
+                    receipt_version: "shipper.receipt.v2".to_string(),
+                    plan_id: "rt-test".to_string(),
+                    registry: Registry::crates_io(),
+                    started_at: Utc::now(),
+                    finished_at: Utc::now(),
+                    packages: vec![PackageReceipt {
+                        name: name.clone(),
+                        version: version.clone(),
+                        attempts,
+                        state: PackageState::Published,
+                        started_at: Utc::now(),
+                        finished_at: Utc::now(),
+                        duration_ms: duration,
+                        evidence: shipper_types::PackageEvidence {
+                            attempts: vec![],
+                            readiness_checks: vec![],
+                        },
+                    }],
+                    event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                    git_context: None,
+                    environment: shipper_types::EnvironmentFingerprint {
+                        shipper_version: "0.1.0".to_string(),
+                        cargo_version: None,
+                        rust_version: None,
+                        os: "test".to_string(),
+                        arch: "test".to_string(),
+                    },
+                };
+
+                let json = serde_json::to_string(&receipt).expect("serialize");
+                let deserialized: Receipt = serde_json::from_str(&json).expect("deserialize");
+                prop_assert_eq!(&deserialized.packages[0].name, &name);
+                prop_assert_eq!(&deserialized.packages[0].version, &version);
+                prop_assert_eq!(deserialized.packages[0].attempts, attempts);
+                prop_assert_eq!(deserialized.packages[0].duration_ms, duration);
+            }
+
+            #[test]
+            fn events_log_append_with_arbitrary_data(
+                pkg_name in pkg_name_strategy(),
+                version in version_strategy(),
+                event_count in 1usize..20,
+            ) {
+                let td = tempdir().expect("tempdir");
+                let store = FileStore::new(td.path().to_path_buf());
+
+                let mut events = EventLog::new();
+                // Always start with ExecutionStarted
+                events.record(shipper_types::PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type: shipper_types::EventType::ExecutionStarted,
+                    package: "all".to_string(),
+                });
+                // Add N package events
+                for _ in 0..event_count {
+                    events.record(shipper_types::PublishEvent {
+                        timestamp: Utc::now(),
+                        event_type: shipper_types::EventType::PackageStarted {
+                            name: pkg_name.clone(),
+                            version: version.clone(),
+                        },
+                        package: format!("{pkg_name}@{version}"),
+                    });
+                }
+
+                store.save_events(&events).expect("save events");
+                let loaded = store.load_events().expect("load events").expect("events present");
+                // 1 ExecutionStarted + event_count PackageStarted
+                prop_assert_eq!(loaded.all_events().len(), 1 + event_count);
+            }
+        }
+    }
 }

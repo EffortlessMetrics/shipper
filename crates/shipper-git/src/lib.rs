@@ -820,4 +820,165 @@ mod tests {
         assert!(deserialized.tag.is_none());
         assert!(deserialized.dirty.is_none());
     }
+
+    // ── Property-based tests (proptest) ──
+
+    mod prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_option_string() -> impl Strategy<Value = Option<String>> {
+            prop_oneof![Just(None), ".*".prop_map(Some),]
+        }
+
+        fn arb_git_context() -> impl Strategy<Value = GitContext> {
+            (
+                arb_option_string(),
+                arb_option_string(),
+                arb_option_string(),
+                prop_oneof![Just(None), any::<bool>().prop_map(Some)],
+            )
+                .prop_map(|(commit, branch, tag, dirty)| GitContext {
+                    commit,
+                    branch,
+                    tag,
+                    dirty,
+                })
+        }
+
+        proptest! {
+            // GitContext field values: has_commit iff commit is Some
+            #[test]
+            fn has_commit_iff_commit_is_some(ctx in arb_git_context()) {
+                prop_assert_eq!(ctx.has_commit(), ctx.commit.is_some());
+            }
+
+            // is_dirty defaults to true when dirty is None, otherwise returns the inner value
+            #[test]
+            fn is_dirty_respects_field(dirty_opt in prop_oneof![Just(None), any::<bool>().prop_map(Some)]) {
+                let ctx = GitContext { dirty: dirty_opt, ..Default::default() };
+                let expected = dirty_opt.unwrap_or(true);
+                prop_assert_eq!(ctx.is_dirty(), expected);
+            }
+
+            // short_commit truncates to 7 chars for realistic hex commit hashes
+            #[test]
+            fn short_commit_length(commit in "[0-9a-f]{1,40}") {
+                let ctx = GitContext { commit: Some(commit.clone()), ..Default::default() };
+                let short = ctx.short_commit().unwrap();
+                if commit.len() > 7 {
+                    prop_assert_eq!(short.len(), 7);
+                    prop_assert_eq!(short, &commit[..7]);
+                } else {
+                    prop_assert_eq!(short, commit.as_str());
+                }
+            }
+
+            // short_commit with arbitrary ASCII strings (safe for byte indexing)
+            #[test]
+            fn short_commit_ascii(commit in "[[:ascii:]]{1,80}") {
+                let ctx = GitContext { commit: Some(commit.clone()), ..Default::default() };
+                let short = ctx.short_commit().unwrap();
+                if commit.len() > 7 {
+                    prop_assert_eq!(short.len(), 7);
+                } else {
+                    prop_assert_eq!(short, commit.as_str());
+                }
+            }
+
+            // short_commit is None when commit is None
+            #[test]
+            fn short_commit_none_when_no_commit(
+                branch in arb_option_string(),
+                tag in arb_option_string(),
+                dirty in prop_oneof![Just(None), any::<bool>().prop_map(Some)],
+            ) {
+                let ctx = GitContext { commit: None, branch, tag, dirty };
+                prop_assert!(ctx.short_commit().is_none());
+            }
+
+            // Porcelain line parsing: extracting filename by skipping first 3 chars
+            #[test]
+            fn porcelain_line_parsing(
+                xy in "[MADRCU?! ]{2}",
+                filename in "[a-zA-Z0-9_./-]+",
+            ) {
+                let line = format!("{} {}", xy, filename);
+                let parsed: String = line.chars().skip(3).collect();
+                prop_assert_eq!(parsed, filename);
+            }
+
+            // Porcelain parsing: empty output means no changed files
+            #[test]
+            fn porcelain_empty_output_means_clean(_dummy in 0..100u32) {
+                let status = "";
+                let files: Vec<String> = status
+                    .lines()
+                    .map(|line| line.chars().skip(3).collect())
+                    .collect();
+                prop_assert!(files.is_empty());
+            }
+
+            // Porcelain parsing: number of files matches number of lines
+            #[test]
+            fn porcelain_file_count_matches_lines(
+                entries in prop::collection::vec(
+                    ("[MADRCU?! ]{2}", "[a-zA-Z0-9_./]+"),
+                    1..20,
+                ),
+            ) {
+                let status: String = entries
+                    .iter()
+                    .map(|(xy, name)| format!("{} {}", xy, name))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let files: Vec<String> = status
+                    .lines()
+                    .map(|line| line.chars().skip(3).collect())
+                    .collect();
+                prop_assert_eq!(files.len(), entries.len());
+            }
+
+            // Serde round-trip preserves all fields for arbitrary contexts
+            #[test]
+            fn serde_round_trip_arbitrary(ctx in arb_git_context()) {
+                let json = serde_json::to_string(&ctx).expect("serialize");
+                let deserialized: GitContext = serde_json::from_str(&json).expect("deserialize");
+                prop_assert_eq!(ctx.commit, deserialized.commit);
+                prop_assert_eq!(ctx.branch, deserialized.branch);
+                prop_assert_eq!(ctx.tag, deserialized.tag);
+                prop_assert_eq!(ctx.dirty, deserialized.dirty);
+            }
+
+            // Debug output is non-empty and contains "GitContext"
+            #[test]
+            fn debug_output_valid(ctx in arb_git_context()) {
+                let debug = format!("{:?}", ctx);
+                prop_assert!(!debug.is_empty());
+                prop_assert!(debug.contains("GitContext"));
+            }
+
+            // Clone produces identical context
+            #[test]
+            fn clone_is_identical(ctx in arb_git_context()) {
+                let cloned = ctx.clone();
+                prop_assert_eq!(ctx.commit, cloned.commit);
+                prop_assert_eq!(ctx.branch, cloned.branch);
+                prop_assert_eq!(ctx.tag, cloned.tag);
+                prop_assert_eq!(ctx.dirty, cloned.dirty);
+            }
+
+            // Default context: all fields are None
+            #[test]
+            fn default_context_all_none(_dummy in 0..100u32) {
+                let ctx = GitContext::default();
+                prop_assert!(ctx.commit.is_none());
+                prop_assert!(ctx.branch.is_none());
+                prop_assert!(ctx.tag.is_none());
+                prop_assert!(ctx.dirty.is_none());
+                prop_assert!(!ctx.has_commit());
+                prop_assert!(ctx.is_dirty()); // defaults to true
+            }
+        }
+    }
 }

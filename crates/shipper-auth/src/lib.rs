@@ -727,4 +727,373 @@ token = "c"
             assert_eq!(auth.source, TokenSource::EnvRegistry);
         });
     }
+
+    // --- Snapshot tests (insta) ---
+
+    mod snapshots {
+        use super::*;
+        use insta::assert_debug_snapshot;
+        use tempfile::tempdir;
+
+        #[test]
+        fn snapshot_resolve_token_from_env_default() {
+            temp_env::with_vars(
+                [
+                    (CARGO_REGISTRY_TOKEN_ENV, Some("cio-secret-token-value")),
+                    ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+                ],
+                || {
+                    let auth = resolve_token(CRATES_IO_REGISTRY, None);
+                    assert_debug_snapshot!(auth);
+                },
+            );
+        }
+
+        #[test]
+        fn snapshot_resolve_token_from_env_registry() {
+            temp_env::with_vars(
+                [
+                    (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                    ("CARGO_REGISTRIES_MY_REGISTRY_TOKEN", Some("my-reg-token")),
+                ],
+                || {
+                    let td = tempdir().expect("tempdir");
+                    let auth = resolve_token("my-registry", Some(td.path()));
+                    assert_debug_snapshot!(auth);
+                },
+            );
+        }
+
+        #[test]
+        fn snapshot_resolve_token_none_found() {
+            temp_env::with_vars(
+                [
+                    (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                    ("CARGO_REGISTRIES_MISSING_TOKEN", None::<&str>),
+                ],
+                || {
+                    let td = tempdir().expect("tempdir");
+                    let auth = resolve_token("missing", Some(td.path()));
+                    assert_debug_snapshot!(auth);
+                },
+            );
+        }
+
+        #[test]
+        fn snapshot_resolve_token_from_credentials_file() {
+            let td = tempdir().expect("tempdir");
+            let creds = td.path().join(CREDENTIALS_FILE);
+            std::fs::write(&creds, "[registry]\ntoken = \"file-secret-token\"\n").expect("write");
+
+            temp_env::with_vars(
+                [
+                    (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                    ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+                ],
+                || {
+                    let auth = resolve_token(CRATES_IO_REGISTRY, Some(td.path()));
+                    assert_debug_snapshot!(auth);
+                },
+            );
+        }
+
+        #[test]
+        fn snapshot_resolve_token_custom_registry_from_credentials() {
+            let td = tempdir().expect("tempdir");
+            let creds = td.path().join(CREDENTIALS_FILE);
+            std::fs::write(
+                &creds,
+                "[registries.private-reg]\ntoken = \"priv-token-abc\"\n",
+            )
+            .expect("write");
+
+            temp_env::with_var("CARGO_REGISTRIES_PRIVATE_REG_TOKEN", None::<&str>, || {
+                let auth = resolve_token("private-reg", Some(td.path()));
+                assert_debug_snapshot!(auth);
+            });
+        }
+
+        #[test]
+        fn snapshot_error_missing_credentials_file() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join("nonexistent.toml");
+            let err = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap_err();
+            assert_debug_snapshot!(err.to_string());
+        }
+
+        #[test]
+        fn snapshot_error_malformed_credentials_file() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            std::fs::write(&path, "this is not valid toml [[[").expect("write");
+
+            let err = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap_err();
+            // Snapshot just the root cause message, not the path-dependent context
+            let msg = err.root_cause().to_string();
+            assert_debug_snapshot!(msg);
+        }
+
+        #[test]
+        fn snapshot_error_token_not_found_for_registry() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            std::fs::write(&path, "[registry]\ntoken = \"tok\"\n").expect("write");
+
+            let err = token_from_credentials_file(&path, "nonexistent-registry").unwrap_err();
+            assert_debug_snapshot!(err.to_string());
+        }
+
+        #[test]
+        fn snapshot_credentials_crates_io_registry_section() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            let content = r#"
+[registry]
+token = "crates-io-token"
+"#;
+            std::fs::write(&path, content).expect("write");
+            let token = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap();
+            assert_debug_snapshot!(token);
+        }
+
+        #[test]
+        fn snapshot_credentials_custom_registry_section() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            let content = r#"
+[registries.my-custom-registry]
+token = "custom-reg-token"
+"#;
+            std::fs::write(&path, content).expect("write");
+            let token = token_from_credentials_file(&path, "my-custom-registry").unwrap();
+            assert_debug_snapshot!(token);
+        }
+
+        #[test]
+        fn snapshot_credentials_legacy_toplevel_format() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            std::fs::write(&path, "token = \"legacy-format-token\"\n").expect("write");
+            let token = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap();
+            assert_debug_snapshot!(token);
+        }
+
+        #[test]
+        fn snapshot_list_configured_registries_mixed() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            let content = r#"
+[registry]
+token = "default-token"
+
+[registries.alpha]
+token = "a"
+
+[registries.beta]
+token = "b"
+"#;
+            std::fs::write(&path, content).expect("write");
+            let mut registries = list_configured_registries(&path).unwrap();
+            registries.sort();
+            assert_debug_snapshot!(registries);
+        }
+
+        #[test]
+        fn snapshot_list_configured_registries_empty() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            std::fs::write(&path, "").expect("write");
+            let registries = list_configured_registries(&path).unwrap();
+            assert_debug_snapshot!(registries);
+        }
+
+        #[test]
+        fn snapshot_auth_info_default() {
+            let info = AuthInfo::default();
+            assert_debug_snapshot!(info);
+        }
+    }
+
+    // --- Property-based tests (proptest) ---
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Strategy for non-empty token strings (ASCII printable, no control chars).
+        fn token_strategy() -> impl Strategy<Value = String> {
+            "[a-zA-Z0-9_\\-\\.]{1,128}"
+        }
+
+        /// Strategy for valid TOML-safe registry names (lowercase alphanumeric + hyphens).
+        fn registry_name_strategy() -> impl Strategy<Value = String> {
+            "[a-z][a-z0-9\\-]{0,20}"
+        }
+
+        proptest! {
+            /// Token strings written to a credentials file can be read back unchanged.
+            #[test]
+            fn token_roundtrip_via_credentials_file(token in token_strategy()) {
+                let td = tempfile::tempdir().expect("tempdir");
+                let path = td.path().join(CREDENTIALS_FILE);
+                let content = format!("[registry]\ntoken = \"{token}\"\n");
+                std::fs::write(&path, &content).expect("write");
+
+                let result = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap();
+                prop_assert_eq!(result, token);
+            }
+
+            /// Token strings written under [registries.<name>] can be read back unchanged.
+            #[test]
+            fn token_roundtrip_custom_registry(
+                name in registry_name_strategy(),
+                token in token_strategy(),
+            ) {
+                let td = tempfile::tempdir().expect("tempdir");
+                let path = td.path().join(CREDENTIALS_FILE);
+                let content = format!("[registries.{name}]\ntoken = \"{token}\"\n");
+                std::fs::write(&path, &content).expect("write");
+
+                let result = token_from_credentials_file(&path, &name).unwrap();
+                prop_assert_eq!(result, token);
+            }
+
+            /// Credentials files with both [registry] and [registries.*] sections
+            /// parse correctly: [registry] for crates-io, [registries.x] for custom.
+            #[test]
+            fn credentials_file_mixed_sections(
+                default_token in token_strategy(),
+                custom_name in registry_name_strategy(),
+                custom_token in token_strategy(),
+            ) {
+                let td = tempfile::tempdir().expect("tempdir");
+                let path = td.path().join(CREDENTIALS_FILE);
+                let content = format!(
+                    "[registry]\ntoken = \"{default_token}\"\n\n[registries.{custom_name}]\ntoken = \"{custom_token}\"\n"
+                );
+                std::fs::write(&path, &content).expect("write");
+
+                let default = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap();
+                prop_assert_eq!(default, default_token);
+
+                let custom = token_from_credentials_file(&path, &custom_name).unwrap();
+                prop_assert_eq!(custom, custom_token);
+            }
+
+            /// Environment variable token resolution works for arbitrary non-empty tokens
+            /// via CARGO_REGISTRY_TOKEN for crates-io.
+            #[test]
+            fn env_default_token_resolution(token in token_strategy()) {
+                temp_env::with_vars(
+                    [
+                        (CARGO_REGISTRY_TOKEN_ENV, Some(token.as_str())),
+                        ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+                    ],
+                    || {
+                        let auth = resolve_token(CRATES_IO_REGISTRY, None);
+                        prop_assert_eq!(auth.token.as_deref(), Some(token.as_str()));
+                        prop_assert_eq!(auth.source, TokenSource::EnvDefault);
+                        prop_assert!(auth.detected);
+                        Ok(())
+                    },
+                )?;
+            }
+
+            /// Environment variable token resolution works for arbitrary registry names
+            /// via CARGO_REGISTRIES_<NAME>_TOKEN.
+            #[test]
+            fn env_registry_token_resolution(
+                name in registry_name_strategy(),
+                token in token_strategy(),
+            ) {
+                let env_var = format!(
+                    "{}{}_TOKEN",
+                    CARGO_REGISTRIES_TOKEN_PREFIX,
+                    name.to_uppercase().replace('-', "_")
+                );
+                temp_env::with_vars(
+                    [
+                        (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                        (env_var.as_str(), Some(token.as_str())),
+                    ],
+                    || {
+                        let auth = resolve_token(&name, None);
+                        prop_assert_eq!(auth.token.as_deref(), Some(token.as_str()));
+                        prop_assert_eq!(auth.source, TokenSource::EnvRegistry);
+                        prop_assert!(auth.detected);
+                        Ok(())
+                    },
+                )?;
+            }
+
+            /// Token precedence: env var always wins over credentials file.
+            /// For crates-io, CARGO_REGISTRY_TOKEN takes priority.
+            #[test]
+            fn env_token_takes_precedence_over_credentials(
+                env_token in token_strategy(),
+                file_token in token_strategy(),
+            ) {
+                let td = tempfile::tempdir().expect("tempdir");
+                let creds = td.path().join(CREDENTIALS_FILE);
+                let content = format!("[registry]\ntoken = \"{file_token}\"\n");
+                std::fs::write(&creds, &content).expect("write");
+
+                temp_env::with_var(CARGO_REGISTRY_TOKEN_ENV, Some(env_token.as_str()), || {
+                    let auth = resolve_token(CRATES_IO_REGISTRY, Some(td.path()));
+                    prop_assert_eq!(auth.token.as_deref(), Some(env_token.as_str()));
+                    prop_assert_eq!(auth.source, TokenSource::EnvDefault);
+                    Ok(())
+                })?;
+            }
+
+            /// Token precedence for custom registries: CARGO_REGISTRIES_<NAME>_TOKEN
+            /// wins over [registries.<name>] in credentials file.
+            #[test]
+            fn env_registry_token_takes_precedence_over_credentials(
+                name in registry_name_strategy(),
+                env_token in token_strategy(),
+                file_token in token_strategy(),
+            ) {
+                let td = tempfile::tempdir().expect("tempdir");
+                let creds = td.path().join(CREDENTIALS_FILE);
+                let content = format!("[registries.{name}]\ntoken = \"{file_token}\"\n");
+                std::fs::write(&creds, &content).expect("write");
+
+                let env_var = format!(
+                    "{}{}_TOKEN",
+                    CARGO_REGISTRIES_TOKEN_PREFIX,
+                    name.to_uppercase().replace('-', "_")
+                );
+                temp_env::with_vars(
+                    [
+                        (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                        (env_var.as_str(), Some(env_token.as_str())),
+                    ],
+                    || {
+                        let auth = resolve_token(&name, Some(td.path()));
+                        prop_assert_eq!(auth.token.as_deref(), Some(env_token.as_str()));
+                        prop_assert_eq!(auth.source, TokenSource::EnvRegistry);
+                        Ok(())
+                    },
+                )?;
+            }
+
+            /// mask_token always returns a string of the same or shorter length,
+            /// and never exposes the middle of the token.
+            #[test]
+            fn mask_token_never_exposes_middle(token in "[[:ascii:]]{1,200}") {
+                let masked = mask_token(&token);
+                if token.len() <= 8 {
+                    // Fully masked
+                    prop_assert!(masked.chars().all(|c| c == '*'));
+                    prop_assert_eq!(masked.len(), token.len());
+                } else {
+                    // Starts with first 4, ends with last 4, middle is "****"
+                    prop_assert!(masked.starts_with(&token[..4]));
+                    prop_assert!(masked.ends_with(&token[token.len() - 4..]));
+                    prop_assert!(masked.contains("****"));
+                }
+            }
+        }
+    }
 }

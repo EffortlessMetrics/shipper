@@ -1190,4 +1190,310 @@ mod tests {
         let debug = format!("{:?}", CiEnvironment::GitHubActions);
         assert_eq!(debug, "GitHubActions");
     }
+
+    // ── Property-based tests (proptest) ──
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Strategy for generating arbitrary `CiEnvironment` variants.
+        fn arb_ci_environment() -> impl Strategy<Value = CiEnvironment> {
+            prop_oneof![
+                Just(CiEnvironment::GitHubActions),
+                Just(CiEnvironment::GitLabCI),
+                Just(CiEnvironment::CircleCI),
+                Just(CiEnvironment::TravisCI),
+                Just(CiEnvironment::AzurePipelines),
+                Just(CiEnvironment::Jenkins),
+                Just(CiEnvironment::BitbucketPipelines),
+                Just(CiEnvironment::Local),
+            ]
+        }
+
+        /// The CI detection env var for each provider.
+        fn ci_var_for(env: &CiEnvironment) -> Option<&'static str> {
+            match env {
+                CiEnvironment::GitHubActions => Some("GITHUB_ACTIONS"),
+                CiEnvironment::GitLabCI => Some("GITLAB_CI"),
+                CiEnvironment::CircleCI => Some("CIRCLECI"),
+                CiEnvironment::TravisCI => Some("TRAVIS"),
+                CiEnvironment::AzurePipelines => Some("TF_BUILD"),
+                CiEnvironment::Jenkins => Some("JENKINS_URL"),
+                CiEnvironment::BitbucketPipelines => Some("BITBUCKET_BUILD_NUMBER"),
+                CiEnvironment::Local => None,
+            }
+        }
+
+        // ── Environment detection with arbitrary values ──
+
+        proptest! {
+            #[test]
+            #[serial]
+            fn detect_environment_returns_correct_provider_for_any_value(
+                ci_env in arb_ci_environment().prop_filter(
+                    "skip Local - it has no trigger var",
+                    |e| *e != CiEnvironment::Local,
+                ),
+                value in "[a-zA-Z0-9_.-]+",
+            ) {
+                let var = ci_var_for(&ci_env).unwrap();
+                let pair = (var, Some(value.as_str()));
+                let overrides = [pair];
+                let env_spec = super::ci_env(&overrides);
+                temp_env::with_vars(env_spec, || {
+                    prop_assert_eq!(detect_environment(), ci_env);
+                    prop_assert!(is_ci());
+                    Ok(())
+                })?;
+            }
+
+            #[test]
+            #[serial]
+            fn detect_local_when_all_ci_vars_cleared(
+                dummy in "[a-z]*",
+            ) {
+                let _ = dummy;
+                let env_spec = super::ci_env(&[]);
+                temp_env::with_vars(env_spec, || {
+                    prop_assert_eq!(detect_environment(), CiEnvironment::Local);
+                    prop_assert!(!is_ci());
+                    Ok(())
+                })?;
+            }
+        }
+
+        // ── CI detection: setting any single CI var is detected ──
+
+        proptest! {
+            #[test]
+            #[serial]
+            fn setting_single_ci_var_detects_that_provider(
+                idx in 0usize..7,
+                value in "[a-zA-Z0-9_.-]{1,50}",
+            ) {
+                let providers = [
+                    CiEnvironment::GitHubActions,
+                    CiEnvironment::GitLabCI,
+                    CiEnvironment::CircleCI,
+                    CiEnvironment::TravisCI,
+                    CiEnvironment::AzurePipelines,
+                    CiEnvironment::Jenkins,
+                    CiEnvironment::BitbucketPipelines,
+                ];
+                let expected = providers[idx];
+                let var = ci_var_for(&expected).unwrap();
+                let pair = (var, Some(value.as_str()));
+                let overrides = [pair];
+                let env_spec = super::ci_env(&overrides);
+                temp_env::with_vars(env_spec, || {
+                    let detected = detect_environment();
+                    prop_assert_eq!(detected, expected);
+                    Ok(())
+                })?;
+            }
+        }
+
+        // ── Fingerprint properties ──
+
+        proptest! {
+            #[test]
+            fn fingerprint_contains_all_base_components(
+                ci_env in arb_ci_environment(),
+                os in "[a-z]{1,20}",
+                arch in "[a-z0-9_]{1,20}",
+                rust_ver in "[0-9]+\\.[0-9]+\\.[0-9]+",
+                cargo_ver in "[0-9]+\\.[0-9]+\\.[0-9]+",
+            ) {
+                let info = EnvironmentInfo {
+                    ci_environment: ci_env,
+                    os: os.clone(),
+                    arch: arch.clone(),
+                    rust_version: rust_ver.clone(),
+                    cargo_version: cargo_ver.clone(),
+                    env_vars: BTreeMap::new(),
+                    collected_at: Utc::now(),
+                };
+                let fp = info.fingerprint();
+                let ci_str = format!("ci:{}", ci_env);
+                let os_str = format!("os:{}", os);
+                let arch_str = format!("arch:{}", arch);
+                let rust_str = format!("rust:{}", rust_ver);
+                let cargo_str = format!("cargo:{}", cargo_ver);
+                prop_assert!(fp.contains(&ci_str));
+                prop_assert!(fp.contains(&os_str));
+                prop_assert!(fp.contains(&arch_str));
+                prop_assert!(fp.contains(&rust_str));
+                prop_assert!(fp.contains(&cargo_str));
+            }
+
+            #[test]
+            fn fingerprint_pipe_count_equals_components_minus_one(
+                ci_env in arb_ci_environment(),
+                n_vars in 0usize..5,
+            ) {
+                let mut env_vars = BTreeMap::new();
+                for i in 0..n_vars {
+                    env_vars.insert(format!("VAR_{i}"), format!("val_{i}"));
+                }
+                let info = EnvironmentInfo {
+                    ci_environment: ci_env,
+                    os: "os".to_string(),
+                    arch: "arch".to_string(),
+                    rust_version: "1.0.0".to_string(),
+                    cargo_version: "1.0.0".to_string(),
+                    env_vars,
+                    collected_at: Utc::now(),
+                };
+                let fp = info.fingerprint();
+                // 5 base components + n_vars env var components
+                let expected_pipes = 5 + n_vars - 1;
+                prop_assert_eq!(fp.matches('|').count(), expected_pipes);
+            }
+
+            #[test]
+            fn fingerprint_is_deterministic(
+                os in "[a-z]{1,10}",
+                arch in "[a-z0-9_]{1,10}",
+            ) {
+                let make = || {
+                    let info = EnvironmentInfo {
+                        ci_environment: CiEnvironment::Local,
+                        os: os.clone(),
+                        arch: arch.clone(),
+                        rust_version: "1.80.0".to_string(),
+                        cargo_version: "1.80.0".to_string(),
+                        env_vars: BTreeMap::new(),
+                        collected_at: Utc::now(),
+                    };
+                    info.fingerprint()
+                };
+                prop_assert_eq!(make(), make());
+            }
+        }
+
+        // ── normalize_tool_version properties ──
+
+        proptest! {
+            #[test]
+            fn normalize_tool_version_with_two_tokens_returns_second(
+                first in "[a-z]{1,10}",
+                second in "[a-z0-9\\.]{1,20}",
+            ) {
+                let input = format!("{first} {second}");
+                let result = normalize_tool_version(&input);
+                prop_assert_eq!(result, Some(second));
+            }
+
+            #[test]
+            fn normalize_tool_version_single_token_returns_none(
+                single in "[a-zA-Z0-9_.-]{1,20}",
+            ) {
+                let result = normalize_tool_version(&single);
+                prop_assert_eq!(result, None);
+            }
+        }
+
+        // ── CiEnvironment Display roundtrip ──
+
+        proptest! {
+            #[test]
+            fn ci_environment_display_never_panics(ci_env in arb_ci_environment()) {
+                let display = format!("{ci_env}");
+                prop_assert!(!display.is_empty());
+            }
+        }
+
+        // ── Serialization roundtrip ──
+
+        proptest! {
+            #[test]
+            fn ci_environment_serde_roundtrip(ci_env in arb_ci_environment()) {
+                let json = serde_json::to_string(&ci_env).unwrap();
+                let back: CiEnvironment = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(ci_env, back);
+            }
+
+            #[test]
+            fn environment_info_serde_roundtrip(
+                ci_env in arb_ci_environment(),
+                os in "[a-z]{1,10}",
+                arch in "[a-z0-9_]{1,10}",
+                rust_ver in "[0-9]+\\.[0-9]+\\.[0-9]+",
+                cargo_ver in "[0-9]+\\.[0-9]+\\.[0-9]+",
+            ) {
+                let info = EnvironmentInfo {
+                    ci_environment: ci_env,
+                    os,
+                    arch,
+                    rust_version: rust_ver,
+                    cargo_version: cargo_ver,
+                    env_vars: BTreeMap::new(),
+                    collected_at: Utc::now(),
+                };
+                let json = serde_json::to_string(&info).unwrap();
+                let back: EnvironmentInfo = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(info.ci_environment, back.ci_environment);
+                prop_assert_eq!(info.os, back.os);
+                prop_assert_eq!(info.arch, back.arch);
+                prop_assert_eq!(info.rust_version, back.rust_version);
+                prop_assert_eq!(info.cargo_version, back.cargo_version);
+            }
+        }
+
+        // ── collect_env_vars: only known keys are captured ──
+
+        proptest! {
+            #[test]
+            #[serial]
+            fn collect_env_vars_never_captures_unknown_keys(
+                key in "[A-Z_]{5,15}",
+                value in "[a-zA-Z0-9_.-]{1,30}",
+            ) {
+                let known: std::collections::HashSet<&str> = [
+                    "CI", "GITHUB_REF", "GITHUB_SHA", "GITHUB_REPOSITORY",
+                    "GITHUB_RUN_ID", "GITHUB_RUN_NUMBER", "GITLAB_CI_PIPELINE_ID",
+                    "CIRCLE_BUILD_NUM", "CIRCLE_BRANCH", "TRAVIS_BUILD_NUMBER",
+                    "TRAVIS_BRANCH", "BUILD_BUILDID", "BUILD_NUMBER",
+                    "BITBUCKET_BRANCH", "BITBUCKET_COMMIT",
+                ].into_iter().collect();
+                if known.contains(key.as_str()) {
+                    return Ok(());
+                }
+                temp_env::with_vars([(key.as_str(), Some(value.as_str()))], || {
+                    let vars = collect_env_vars();
+                    prop_assert!(
+                        !vars.contains_key(&key),
+                        "Unknown key '{}' should not be captured", key
+                    );
+                    Ok(())
+                })?;
+            }
+        }
+
+        // ── Hostname / workspace path handling ──
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1))]
+
+            #[test]
+            fn get_environment_fingerprint_always_has_three_pipes(
+                _dummy in 0u8..1,
+            ) {
+                let fp = get_environment_fingerprint();
+                prop_assert_eq!(fp.matches('|').count(), 3);
+                prop_assert!(!fp.is_empty());
+            }
+
+            #[test]
+            fn collect_environment_fingerprint_os_arch_are_stable(
+                _dummy in 0u8..1,
+            ) {
+                let fp = collect_environment_fingerprint();
+                prop_assert_eq!(fp.os, env::consts::OS);
+                prop_assert_eq!(fp.arch, env::consts::ARCH);
+                prop_assert!(!fp.shipper_version.is_empty());
+            }
+        }
+    }
 }

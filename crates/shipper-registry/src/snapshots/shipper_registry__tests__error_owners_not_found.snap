@@ -1,0 +1,5 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: err.to_string()
+---
+crate not found when querying owners: nope

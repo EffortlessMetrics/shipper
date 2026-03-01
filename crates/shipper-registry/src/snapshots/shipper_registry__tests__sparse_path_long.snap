@@ -1,0 +1,5 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: "sparse_index_path(\"serde_json\")"
+---
+se/rd/serde_json

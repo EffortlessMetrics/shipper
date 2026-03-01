@@ -1019,6 +1019,173 @@ mod tests {
         assert_eq!(DEFAULT_TIMEOUT_SECS, 30);
     }
 
+    // ── insta snapshot tests ─────────────────────────────────────────
+
+    #[test]
+    fn snapshot_crate_info() {
+        let info = CrateInfo {
+            name: "my-crate".to_string(),
+            newest_version: "1.2.3".to_string(),
+            created_at: "2024-01-15T10:30:00Z".to_string(),
+            updated_at: "2024-06-20T14:00:00Z".to_string(),
+        };
+        insta::assert_yaml_snapshot!("crate_info", info);
+    }
+
+    #[test]
+    fn snapshot_owner_all_fields() {
+        let owner = Owner {
+            login: "alice".to_string(),
+            name: Some("Alice Smith".to_string()),
+            avatar: Some("https://example.com/alice.png".to_string()),
+        };
+        insta::assert_yaml_snapshot!("owner_all_fields", owner);
+    }
+
+    #[test]
+    fn snapshot_owner_minimal() {
+        let owner = Owner {
+            login: "bot-user".to_string(),
+            name: None,
+            avatar: None,
+        };
+        insta::assert_yaml_snapshot!("owner_minimal", owner);
+    }
+
+    #[test]
+    fn snapshot_owners_api_user_with_id() {
+        let user = OwnersApiUser {
+            id: Some(42),
+            login: "bob".to_string(),
+            name: Some("Bob Jones".to_string()),
+            avatar: Some("https://example.com/bob.png".to_string()),
+        };
+        insta::assert_yaml_snapshot!("owners_api_user_with_id", user);
+    }
+
+    #[test]
+    fn snapshot_owners_api_user_without_id() {
+        let user = OwnersApiUser {
+            id: None,
+            login: "team:core".to_string(),
+            name: None,
+            avatar: None,
+        };
+        insta::assert_yaml_snapshot!("owners_api_user_without_id", user);
+    }
+
+    #[test]
+    fn snapshot_owners_response_multiple() {
+        let resp = OwnersResponse {
+            users: vec![
+                OwnersApiUser {
+                    id: Some(1),
+                    login: "alice".to_string(),
+                    name: Some("Alice".to_string()),
+                    avatar: None,
+                },
+                OwnersApiUser {
+                    id: Some(2),
+                    login: "bob".to_string(),
+                    name: None,
+                    avatar: Some("https://example.com/bob.png".to_string()),
+                },
+            ],
+        };
+        insta::assert_yaml_snapshot!("owners_response_multiple", resp);
+    }
+
+    #[test]
+    fn snapshot_owners_response_empty() {
+        let resp = OwnersResponse::default();
+        insta::assert_yaml_snapshot!("owners_response_empty", resp);
+    }
+
+    #[test]
+    fn snapshot_url_construction_crate() {
+        let client = RegistryClient::new("https://crates.io");
+        let url = format!("{}/api/v1/crates/{}", client.base_url(), "my-crate");
+        insta::assert_snapshot!("url_crate", url);
+    }
+
+    #[test]
+    fn snapshot_url_construction_version() {
+        let client = RegistryClient::new("https://crates.io");
+        let url = format!(
+            "{}/api/v1/crates/{}/{}",
+            client.base_url(),
+            "my-crate",
+            "1.2.3"
+        );
+        insta::assert_snapshot!("url_version", url);
+    }
+
+    #[test]
+    fn snapshot_url_construction_owners() {
+        let client = RegistryClient::new("https://crates.io");
+        let url = format!("{}/api/v1/crates/{}/owners", client.base_url(), "my-crate");
+        insta::assert_snapshot!("url_owners", url);
+    }
+
+    #[test]
+    fn snapshot_url_construction_custom_registry() {
+        let client = RegistryClient::new("https://my-registry.example.com/");
+        let url = format!("{}/api/v1/crates/{}", client.base_url(), "private-lib");
+        insta::assert_snapshot!("url_custom_registry", url);
+    }
+
+    #[test]
+    fn snapshot_sparse_index_paths() {
+        insta::assert_snapshot!("sparse_path_1char", sparse_index_path("a"));
+        insta::assert_snapshot!("sparse_path_2char", sparse_index_path("ab"));
+        insta::assert_snapshot!("sparse_path_3char", sparse_index_path("abc"));
+        insta::assert_snapshot!("sparse_path_4char", sparse_index_path("demo"));
+        insta::assert_snapshot!("sparse_path_long", sparse_index_path("serde_json"));
+    }
+
+    #[test]
+    fn snapshot_error_connection_refused() {
+        let client = RegistryClient::new("http://127.0.0.1:1");
+        let err = client.crate_exists("anything").unwrap_err();
+        insta::assert_snapshot!("error_connection_refused", err.to_string());
+    }
+
+    #[test]
+    fn snapshot_error_unexpected_status_crate_exists() {
+        let (server, base) = mock_server();
+        let handle = std::thread::spawn(move || {
+            respond(server.recv().expect("req"), 500, "");
+        });
+        let client = RegistryClient::new(&base);
+        let err = client.crate_exists("bad").unwrap_err();
+        insta::assert_snapshot!("error_unexpected_status", err.to_string());
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn snapshot_error_owners_forbidden() {
+        let (server, base) = mock_server();
+        let handle = std::thread::spawn(move || {
+            respond(server.recv().expect("req"), 403, "");
+        });
+        let client = RegistryClient::new(&base);
+        let err = client.list_owners("demo", "bad-token").unwrap_err();
+        insta::assert_snapshot!("error_owners_forbidden", err.to_string());
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn snapshot_error_owners_not_found() {
+        let (server, base) = mock_server();
+        let handle = std::thread::spawn(move || {
+            respond(server.recv().expect("req"), 404, "");
+        });
+        let client = RegistryClient::new(&base);
+        let err = client.list_owners("nope", "token").unwrap_err();
+        insta::assert_snapshot!("error_owners_not_found", err.to_string());
+        handle.join().expect("join");
+    }
+
     // ── property-based tests ─────────────────────────────────────────
 
     mod proptests {

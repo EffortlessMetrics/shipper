@@ -1,0 +1,13 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: resp
+---
+users:
+  - id: 1
+    login: alice
+    name: Alice
+    avatar: ~
+  - id: 2
+    login: bob
+    name: ~
+    avatar: "https://example.com/bob.png"

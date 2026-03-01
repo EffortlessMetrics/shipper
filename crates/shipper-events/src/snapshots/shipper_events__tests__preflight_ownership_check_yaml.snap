@@ -1,0 +1,10 @@
+---
+source: crates/shipper-events/src/lib.rs
+expression: event
+---
+timestamp: "2025-01-15T12:00:00Z"
+event_type:
+  type: preflight_ownership_check
+  crate_name: my-crate
+  verified: true
+package: my-crate@1.0.0

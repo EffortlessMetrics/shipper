@@ -2271,6 +2271,8 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "dirs",
+ "insta",
+ "proptest",
  "serde",
  "serde_json",
  "temp-env",
@@ -2285,6 +2287,7 @@ dependencies = [
  "anyhow",
  "cargo_metadata",
  "humantime",
+ "proptest",
  "serde",
  "serde_json",
  "shipper-output-sanitizer",
@@ -2295,6 +2298,7 @@ dependencies = [
 name = "shipper-cargo-failure"
 version = "0.3.0-rc.1"
 dependencies = [
+ "insta",
  "proptest",
 ]
 
@@ -2418,6 +2422,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "proptest",
  "serde",
  "serde_json",
  "serial_test",
@@ -2432,6 +2437,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "insta",
  "proptest",
  "serde",
  "serde_json",
@@ -2458,6 +2464,7 @@ name = "shipper-git"
 version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -2477,6 +2484,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "gethostname",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -2522,6 +2530,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "humantime",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -2542,6 +2551,7 @@ name = "shipper-registry"
 version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
+ "insta",
  "proptest",
  "reqwest",
  "serde",
@@ -2584,6 +2594,8 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "insta",
+ "proptest",
  "serde",
  "serde_json",
  "shipper-encrypt",
@@ -2598,6 +2610,7 @@ name = "shipper-storage"
 version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -2609,6 +2622,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "proptest",
  "serde",
  "serde_json",
  "shipper-events",
@@ -2641,6 +2655,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "hmac",
+ "proptest",
  "reqwest",
  "serde",
  "serde_json",

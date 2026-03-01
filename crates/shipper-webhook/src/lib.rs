@@ -1010,4 +1010,177 @@ mod tests {
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("403"));
     }
+
+    // --- Property-based tests (proptest) ---
+
+    mod prop {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Strategy for generating crate-like package names.
+        fn package_name() -> impl Strategy<Value = String> {
+            "[a-z][a-z0-9_-]{0,39}".prop_map(|s| s)
+        }
+
+        /// Strategy for generating semver-like versions.
+        fn version_string() -> impl Strategy<Value = String> {
+            (0u32..100, 0u32..100, 0u32..100).prop_map(|(ma, mi, pa)| format!("{ma}.{mi}.{pa}"))
+        }
+
+        /// Strategy for generating an arbitrary WebhookPayload.
+        fn arb_payload() -> impl Strategy<Value = WebhookPayload> {
+            (
+                ".*",                                   // message
+                proptest::option::of(".*"),             // title
+                any::<bool>(),                          // success
+                proptest::option::of(package_name()),   // package
+                proptest::option::of(version_string()), // version
+                proptest::option::of("[a-z-]{1,20}"),   // registry
+                proptest::option::of(".*"),             // error
+            )
+                .prop_map(
+                    |(message, title, success, package, version, registry, error)| WebhookPayload {
+                        message,
+                        title,
+                        success,
+                        package,
+                        version,
+                        registry,
+                        error,
+                        extra: std::collections::BTreeMap::new(),
+                    },
+                )
+        }
+
+        proptest! {
+            // Payload serialization round-trip with arbitrary names/versions
+            #[test]
+            fn payload_roundtrip(payload in arb_payload()) {
+                let json = serde_json::to_string(&payload).unwrap();
+                let rt: WebhookPayload = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(&rt.message, &payload.message);
+                prop_assert_eq!(rt.success, payload.success);
+                prop_assert_eq!(&rt.package, &payload.package);
+                prop_assert_eq!(&rt.version, &payload.version);
+                prop_assert_eq!(&rt.registry, &payload.registry);
+                prop_assert_eq!(&rt.error, &payload.error);
+                prop_assert_eq!(&rt.title, &payload.title);
+            }
+
+            // Generic JSON always contains required keys
+            #[test]
+            fn generic_json_has_required_keys(payload in arb_payload()) {
+                let json = serde_json::to_string(&payload).unwrap();
+                let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+                let obj = parsed.as_object().unwrap();
+                prop_assert!(obj.contains_key("message"));
+                prop_assert!(obj.contains_key("success"));
+            }
+
+            // Slack payload is always valid JSON with "attachments" array
+            #[test]
+            fn slack_payload_always_valid(payload in arb_payload()) {
+                let json = slack_payload(&payload).unwrap();
+                let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+                prop_assert!(parsed["attachments"].is_array());
+                let att = &parsed["attachments"][0];
+                // Color is always "good" or "danger"
+                let color = att["color"].as_str().unwrap();
+                prop_assert!(color == "good" || color == "danger");
+            }
+
+            // Discord payload is always valid JSON with "embeds" array
+            #[test]
+            fn discord_payload_always_valid(payload in arb_payload()) {
+                let json = discord_payload(&payload).unwrap();
+                let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+                prop_assert!(parsed["embeds"].is_array());
+                let embed = &parsed["embeds"][0];
+                let color = embed["color"].as_u64().unwrap();
+                prop_assert!(color == 65280 || color == 16711680);
+            }
+
+            // publish_success_payload preserves arbitrary names and versions
+            #[test]
+            fn success_payload_preserves_inputs(
+                name in package_name(),
+                ver in version_string(),
+                reg in "[a-z-]{1,20}",
+            ) {
+                let p = publish_success_payload(&name, &ver, &reg);
+                prop_assert_eq!(p.package.as_deref(), Some(name.as_str()));
+                prop_assert_eq!(p.version.as_deref(), Some(ver.as_str()));
+                prop_assert_eq!(p.registry.as_deref(), Some(reg.as_str()));
+                prop_assert!(p.success);
+                prop_assert!(p.message.contains(&name));
+                prop_assert!(p.message.contains(&ver));
+            }
+
+            // publish_failure_payload preserves arbitrary names and versions
+            #[test]
+            fn failure_payload_preserves_inputs(
+                name in package_name(),
+                ver in version_string(),
+                err in ".*",
+            ) {
+                let p = publish_failure_payload(&name, &ver, &err);
+                prop_assert_eq!(p.package.as_deref(), Some(name.as_str()));
+                prop_assert_eq!(p.version.as_deref(), Some(ver.as_str()));
+                prop_assert_eq!(p.error.as_deref(), Some(err.as_str()));
+                prop_assert!(!p.success);
+            }
+
+            // HMAC signature is deterministic and well-formed
+            #[test]
+            fn signature_deterministic_and_wellformed(
+                secret in ".{1,64}",
+                body in ".*",
+            ) {
+                let s1 = webhook_signature(&secret, &body).unwrap();
+                let s2 = webhook_signature(&secret, &body).unwrap();
+                prop_assert_eq!(&s1, &s2);
+                prop_assert!(s1.starts_with("sha256="));
+                // sha256 hex digest is 64 chars
+                prop_assert_eq!(s1.len(), "sha256=".len() + 64);
+            }
+
+            // WebhookConfig URL: various patterns never panic during serialization
+            #[test]
+            fn config_with_arbitrary_url_serializes(
+                url in "https?://[a-z0-9.-]{1,30}(:[0-9]{1,5})?(/[a-z0-9/_-]*)?",
+            ) {
+                let config = WebhookConfig {
+                    url: url.clone(),
+                    ..Default::default()
+                };
+                let json = serde_json::to_string(&config).unwrap();
+                let rt: WebhookConfig = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(&rt.url, &url);
+            }
+
+            // Optional fields are omitted from JSON when None
+            #[test]
+            fn none_fields_omitted(msg in ".*", success in any::<bool>()) {
+                let payload = WebhookPayload {
+                    message: msg,
+                    success,
+                    ..Default::default()
+                };
+                let json = serde_json::to_string(&payload).unwrap();
+                prop_assert!(!json.contains("\"title\""));
+                prop_assert!(!json.contains("\"package\""));
+                prop_assert!(!json.contains("\"version\""));
+                prop_assert!(!json.contains("\"registry\""));
+                prop_assert!(!json.contains("\"error\""));
+            }
+
+            // hex_encode produces correct length and only hex chars
+            #[test]
+            fn hex_encode_valid(bytes in proptest::collection::vec(any::<u8>(), 0..128)) {
+                let encoded = hex_encode(&bytes);
+                prop_assert_eq!(encoded.len(), bytes.len() * 2);
+                prop_assert!(encoded.chars().all(|c| c.is_ascii_hexdigit()));
+            }
+        }
+    }
 }

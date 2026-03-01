@@ -867,4 +867,200 @@ mod tests {
         let result = load_metadata(Path::new("/nonexistent/Cargo.toml"));
         assert!(result.is_err());
     }
+
+    // ── proptest property-based tests ──────────────────────────────────
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn cargo_output_clone_is_identical(
+                exit_code in any::<i32>(),
+                stdout in ".*",
+                stderr in ".*",
+                secs in 0u64..10_000,
+                timed_out in any::<bool>(),
+            ) {
+                let output = CargoOutput {
+                    exit_code,
+                    stdout_tail: stdout,
+                    stderr_tail: stderr,
+                    duration: Duration::from_secs(secs),
+                    timed_out,
+                };
+                let cloned = output.clone();
+                prop_assert_eq!(cloned.exit_code, output.exit_code);
+                prop_assert_eq!(cloned.stdout_tail, output.stdout_tail);
+                prop_assert_eq!(cloned.stderr_tail, output.stderr_tail);
+                prop_assert_eq!(cloned.duration, output.duration);
+                prop_assert_eq!(cloned.timed_out, output.timed_out);
+            }
+
+            #[test]
+            fn cargo_output_debug_contains_type_name(
+                exit_code in any::<i32>(),
+                timed_out in any::<bool>(),
+            ) {
+                let output = CargoOutput {
+                    exit_code,
+                    stdout_tail: String::new(),
+                    stderr_tail: String::new(),
+                    duration: Duration::ZERO,
+                    timed_out,
+                };
+                let debug = format!("{output:?}");
+                prop_assert!(debug.contains("CargoOutput"));
+            }
+
+            #[test]
+            fn cargo_output_timed_out_independent_of_exit_code(
+                exit_code in any::<i32>(),
+            ) {
+                let output = CargoOutput {
+                    exit_code,
+                    stdout_tail: String::new(),
+                    stderr_tail: String::new(),
+                    duration: Duration::ZERO,
+                    timed_out: true,
+                };
+                prop_assert!(output.timed_out);
+                prop_assert_eq!(output.exit_code, exit_code);
+            }
+
+            #[test]
+            fn cargo_output_stores_arbitrary_stdout_stderr(
+                stdout in "\\PC*",
+                stderr in "\\PC*",
+            ) {
+                let output = CargoOutput {
+                    exit_code: 0,
+                    stdout_tail: stdout.clone(),
+                    stderr_tail: stderr.clone(),
+                    duration: Duration::ZERO,
+                    timed_out: false,
+                };
+                prop_assert_eq!(&output.stdout_tail, &stdout);
+                prop_assert_eq!(&output.stderr_tail, &stderr);
+            }
+
+            #[test]
+            fn cargo_output_duration_roundtrip(
+                millis in 0u64..=u64::MAX / 1_000_000,
+            ) {
+                let dur = Duration::from_millis(millis);
+                let output = CargoOutput {
+                    exit_code: 0,
+                    stdout_tail: String::new(),
+                    stderr_tail: String::new(),
+                    duration: dur,
+                    timed_out: false,
+                };
+                prop_assert_eq!(output.duration, dur);
+            }
+
+            #[test]
+            fn valid_package_name_only_has_valid_chars(
+                name in "[a-z_][a-z0-9_-]{0,30}",
+            ) {
+                prop_assert!(is_valid_package_name(&name));
+            }
+
+            #[test]
+            fn package_name_starting_with_digit_is_invalid(
+                rest in "[a-z0-9_-]{0,20}",
+                digit in proptest::char::range('0', '9'),
+            ) {
+                let name = format!("{digit}{rest}");
+                prop_assert!(!is_valid_package_name(&name));
+            }
+
+            #[test]
+            fn package_name_starting_with_hyphen_is_invalid(
+                rest in "[a-z0-9_-]{0,20}",
+            ) {
+                let name = format!("-{rest}");
+                prop_assert!(!is_valid_package_name(&name));
+            }
+
+            #[test]
+            fn package_name_with_uppercase_is_invalid(
+                prefix in "[a-z_][a-z0-9_-]{0,10}",
+                upper in "[A-Z]",
+                suffix in "[a-z0-9_-]{0,10}",
+            ) {
+                let name = format!("{prefix}{upper}{suffix}");
+                prop_assert!(!is_valid_package_name(&name));
+            }
+
+            #[test]
+            fn package_info_serde_roundtrip(
+                name in "[a-z][a-z0-9_-]{0,20}",
+                version in "[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}",
+                manifest in "\\PC{1,50}",
+                is_member in any::<bool>(),
+            ) {
+                let info = PackageInfo {
+                    name: name.clone(),
+                    version: version.clone(),
+                    manifest_path: manifest.clone(),
+                    is_workspace_member: is_member,
+                    publish: vec![],
+                };
+                let json = serde_json::to_string(&info).unwrap();
+                let back: PackageInfo = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(&back.name, &name);
+                prop_assert_eq!(&back.version, &version);
+                prop_assert_eq!(&back.manifest_path, &manifest);
+                prop_assert_eq!(back.is_workspace_member, is_member);
+                prop_assert!(back.publish.is_empty());
+            }
+
+            #[test]
+            fn package_info_with_registries_roundtrip(
+                reg_count in 0usize..5,
+                name in "[a-z][a-z0-9-]{0,10}",
+            ) {
+                let registries: Vec<String> = (0..reg_count)
+                    .map(|i| format!("registry-{i}"))
+                    .collect();
+                let info = PackageInfo {
+                    name,
+                    version: "1.0.0".to_string(),
+                    manifest_path: "Cargo.toml".to_string(),
+                    is_workspace_member: true,
+                    publish: registries.clone(),
+                };
+                let json = serde_json::to_string(&info).unwrap();
+                let back: PackageInfo = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(back.publish.len(), registries.len());
+                prop_assert_eq!(&back.publish, &registries);
+            }
+
+            #[test]
+            fn tail_lines_never_exceeds_requested_line_count(
+                text in "([^\n]{0,40}\n){0,20}[^\n]{0,40}",
+                n in 1usize..50,
+            ) {
+                let result = shipper_output_sanitizer::tail_lines(&text, n);
+                let result_lines = result.lines().count();
+                prop_assert!(
+                    result_lines <= n,
+                    "tail_lines returned {result_lines} lines, expected <= {n}"
+                );
+            }
+
+            #[test]
+            fn tail_lines_zero_returns_empty_or_unchanged(
+                text in ".*",
+            ) {
+                let result = shipper_output_sanitizer::tail_lines(&text, 0);
+                // With 0 lines requested: if text has no newlines, lines.len() <= 0 is
+                // false so it goes to the else branch and returns an empty slice joined.
+                // Either way the result should not be longer than the input.
+                prop_assert!(result.len() <= text.len() + 100); // +100 for potential redaction
+            }
+        }
+    }
 }

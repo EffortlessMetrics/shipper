@@ -1,0 +1,11 @@
+---
+source: crates/shipper-auth/src/lib.rs
+expression: auth
+---
+AuthInfo {
+    token: Some(
+        "cio-secret-token-value",
+    ),
+    source: EnvDefault,
+    detected: true,
+}

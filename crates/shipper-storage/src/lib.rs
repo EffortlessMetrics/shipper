@@ -652,4 +652,109 @@ mod tests {
         assert!(json.contains("\"bucket\":\"bucket\""));
         assert!(json.contains("\"region\":\"us-east-1\""));
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Strategy for generating safe directory/file name segments.
+        fn safe_name_strategy() -> impl Strategy<Value = String> {
+            "[a-zA-Z0-9][a-zA-Z0-9_]{0,19}".prop_filter("non-empty", |s| !s.is_empty())
+        }
+
+        proptest! {
+            #[test]
+            fn storage_path_construction(
+                base in safe_name_strategy(),
+                relative in safe_name_strategy(),
+            ) {
+                let storage = FileStorage::new(PathBuf::from(&base));
+                let full = storage.full_path(&relative);
+                // The full path must start with the base and end with the relative component
+                prop_assert!(full.starts_with(&base));
+                prop_assert!(full.ends_with(&relative));
+            }
+
+            #[test]
+            fn cloud_config_full_path_with_base(
+                base in safe_name_strategy(),
+                relative in safe_name_strategy(),
+            ) {
+                let config = CloudStorageConfig::s3("bucket").with_base_path(&base);
+                let full = config.full_path(&relative);
+                prop_assert!(full.starts_with(&base));
+                prop_assert!(full.ends_with(&relative));
+                prop_assert!(full.contains('/'));
+            }
+
+            #[test]
+            fn cloud_config_full_path_no_base(relative in safe_name_strategy()) {
+                let config = CloudStorageConfig::s3("bucket");
+                let full = config.full_path(&relative);
+                prop_assert_eq!(full, relative);
+            }
+
+            #[test]
+            fn atomic_write_read_roundtrip(content in proptest::collection::vec(any::<u8>(), 0..4096)) {
+                let td = tempdir().expect("tempdir");
+                let storage = FileStorage::new(td.path().to_path_buf());
+
+                storage.write("roundtrip.bin", &content).expect("write");
+                let read_back = storage.read("roundtrip.bin").expect("read");
+                prop_assert_eq!(read_back, content);
+            }
+
+            #[test]
+            fn write_read_arbitrary_filename(
+                name in safe_name_strategy(),
+                content in proptest::collection::vec(any::<u8>(), 0..512),
+            ) {
+                let td = tempdir().expect("tempdir");
+                let storage = FileStorage::new(td.path().to_path_buf());
+
+                storage.write(&name, &content).expect("write");
+                prop_assert!(storage.exists(&name).expect("exists"));
+                let read_back = storage.read(&name).expect("read");
+                prop_assert_eq!(read_back, content);
+            }
+
+            #[test]
+            fn nested_directory_creation(
+                segments in proptest::collection::vec(safe_name_strategy(), 1..5),
+                content in proptest::collection::vec(any::<u8>(), 0..256),
+            ) {
+                let td = tempdir().expect("tempdir");
+                let storage = FileStorage::new(td.path().to_path_buf());
+
+                let nested_path = format!("{}/file.bin", segments.join("/"));
+                storage.write(&nested_path, &content).expect("write");
+
+                prop_assert!(storage.exists(&nested_path).expect("exists"));
+                let read_back = storage.read(&nested_path).expect("read");
+                prop_assert_eq!(read_back, content);
+
+                // Verify intermediate directories were created
+                let mut dir = td.path().to_path_buf();
+                for seg in &segments {
+                    dir = dir.join(seg);
+                    prop_assert!(dir.exists(), "directory {} should exist", dir.display());
+                }
+            }
+
+            #[test]
+            fn delete_after_write(
+                name in safe_name_strategy(),
+                content in proptest::collection::vec(any::<u8>(), 1..256),
+            ) {
+                let td = tempdir().expect("tempdir");
+                let storage = FileStorage::new(td.path().to_path_buf());
+
+                storage.write(&name, &content).expect("write");
+                prop_assert!(storage.exists(&name).expect("exists"));
+
+                storage.delete(&name).expect("delete");
+                prop_assert!(!storage.exists(&name).expect("exists after delete"));
+            }
+        }
+    }
 }
