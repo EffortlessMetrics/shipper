@@ -1,0 +1,33 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: plan
+---
+plan_version: shipper.plan.v1
+plan_id: deep-deps-001
+created_at: "2025-01-15T12:00:00Z"
+registry:
+  name: crates-io
+  api_base: "https://crates.io"
+  index_base: "https://index.crates.io"
+packages:
+  - name: foundation
+    version: 0.1.0
+    manifest_path: crates/foundation/Cargo.toml
+  - name: middleware
+    version: 0.2.0
+    manifest_path: crates/middleware/Cargo.toml
+  - name: service
+    version: 0.3.0
+    manifest_path: crates/service/Cargo.toml
+  - name: gateway
+    version: 1.0.0
+    manifest_path: crates/gateway/Cargo.toml
+dependencies:
+  foundation: []
+  gateway:
+    - service
+  middleware:
+    - foundation
+  service:
+    - foundation
+    - middleware

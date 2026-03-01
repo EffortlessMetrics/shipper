@@ -251,7 +251,9 @@ fn resume_continues_from_failed_state() {
     let state_path = state_dir.join("state.json");
     assert!(state_path.exists(), "state.json should exist after failure");
 
-    // Resume: cargo publish now succeeds (exit 0)
+    // Resume: cargo publish now succeeds (exit 0).
+    // Use --max-attempts 2 because the state already has attempts=1;
+    // the retry loop needs max_attempts > saved attempts to enter.
     shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
@@ -263,7 +265,7 @@ fn resume_continues_from_failed_state() {
         .arg("--verify-poll")
         .arg("0ms")
         .arg("--max-attempts")
-        .arg("1")
+        .arg("2")
         .arg("--base-delay")
         .arg("0ms")
         .arg("--state-dir")
@@ -284,6 +286,11 @@ fn resume_continues_from_failed_state() {
     let packages = receipt["packages"].as_array().expect("packages array");
     assert_eq!(packages.len(), 1);
     assert_eq!(packages[0]["name"].as_str(), Some("demo"));
+    assert_eq!(
+        packages[0]["state"]["state"].as_str(),
+        Some("published"),
+        "resumed package should be published"
+    );
 
     registry.join();
 }
@@ -518,7 +525,8 @@ fn resume_after_partial_publish() {
         .expect("app state");
     assert_eq!(app_state, "failed", "app should be failed");
 
-    // Resume: core already complete → skip, app retried and succeeds
+    // Resume: core already complete → skip, app retried and succeeds.
+    // Use --max-attempts 2 because state already has attempts=1 for app.
     shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
@@ -530,7 +538,7 @@ fn resume_after_partial_publish() {
         .arg("--verify-poll")
         .arg("0ms")
         .arg("--max-attempts")
-        .arg("1")
+        .arg("2")
         .arg("--base-delay")
         .arg("0ms")
         .arg("--state-dir")

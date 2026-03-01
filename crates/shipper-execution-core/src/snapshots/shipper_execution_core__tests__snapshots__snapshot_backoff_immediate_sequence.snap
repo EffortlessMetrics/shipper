@@ -1,0 +1,14 @@
+---
+source: crates/shipper-execution-core/src/lib.rs
+expression: seq
+---
+strategy: Immediate
+base_ms: 100
+max_ms: 5000
+jitter: 0
+delays_ms:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0

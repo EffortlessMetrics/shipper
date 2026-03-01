@@ -878,5 +878,496 @@ mod tests {
             prop_assert!(key.contains('@'));
             prop_assert_eq!(key, format!("{name}@{version}"));
         }
+
+        // -- Retry logic: monotonicity and range --
+
+        #[test]
+        fn exponential_monotonic_without_jitter(
+            base_ms in 1u64..10_000,
+            extra_ms in 1u64..100_000,
+            a in 1u32..50,
+            b in 1u32..50,
+        ) {
+            let base = Duration::from_millis(base_ms);
+            let max = Duration::from_millis(base_ms + extra_ms);
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            let d_lo = backoff_delay(base, max, lo, shipper_retry::RetryStrategyType::Exponential, 0.0);
+            let d_hi = backoff_delay(base, max, hi, shipper_retry::RetryStrategyType::Exponential, 0.0);
+            prop_assert!(d_hi >= d_lo, "exp backoff not monotonic: attempt {hi} ({d_hi:?}) < attempt {lo} ({d_lo:?})");
+        }
+
+        #[test]
+        fn linear_monotonic_without_jitter(
+            base_ms in 1u64..10_000,
+            extra_ms in 1u64..100_000,
+            a in 1u32..50,
+            b in 1u32..50,
+        ) {
+            let base = Duration::from_millis(base_ms);
+            let max = Duration::from_millis(base_ms + extra_ms);
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            let d_lo = backoff_delay(base, max, lo, shipper_retry::RetryStrategyType::Linear, 0.0);
+            let d_hi = backoff_delay(base, max, hi, shipper_retry::RetryStrategyType::Linear, 0.0);
+            prop_assert!(d_hi >= d_lo, "linear backoff not monotonic: attempt {hi} ({d_hi:?}) < attempt {lo} ({d_lo:?})");
+        }
+
+        #[test]
+        fn immediate_always_zero_regardless_of_params(
+            base_ms in 0u64..100_000,
+            max_ms in 0u64..300_000,
+            attempt in 0u32..1000,
+            jitter in 0.0..1.0f64,
+        ) {
+            let d = backoff_delay(
+                Duration::from_millis(base_ms),
+                Duration::from_millis(max_ms),
+                attempt,
+                shipper_retry::RetryStrategyType::Immediate,
+                jitter,
+            );
+            prop_assert_eq!(d, Duration::ZERO);
+        }
+
+        #[test]
+        fn constant_same_delay_regardless_of_attempt(
+            base_ms in 0u64..100_000,
+            max_ms in 0u64..300_000,
+            a in 1u32..100,
+            b in 1u32..100,
+        ) {
+            let base = Duration::from_millis(base_ms);
+            let max = Duration::from_millis(max_ms);
+            let d_a = backoff_delay(base, max, a, shipper_retry::RetryStrategyType::Constant, 0.0);
+            let d_b = backoff_delay(base, max, b, shipper_retry::RetryStrategyType::Constant, 0.0);
+            prop_assert_eq!(d_a, d_b);
+            prop_assert_eq!(d_a, base.min(max));
+        }
+
+        // -- State transitions: invariants --
+
+        #[test]
+        fn update_state_locked_sets_exact_state(state in arb_package_state()) {
+            let key = "t@1.0.0";
+            let mut st = sample_state(key, PackageState::Pending);
+            update_state_locked(&mut st, key, state.clone());
+            prop_assert_eq!(&st.packages[key].state, &state);
+        }
+
+        #[test]
+        fn update_state_locked_timestamp_never_decreases(state in arb_package_state()) {
+            let key = "t@1.0.0";
+            let mut st = sample_state(key, PackageState::Pending);
+            let before = st.updated_at;
+            update_state_locked(&mut st, key, state);
+            prop_assert!(st.updated_at >= before);
+        }
+
+        #[test]
+        fn sequential_transitions_preserve_count(
+            s1 in arb_package_state(),
+            s2 in arb_package_state(),
+            s3 in arb_package_state(),
+        ) {
+            let mut st = multi_state(&[
+                ("a@1.0.0", PackageState::Pending),
+                ("b@1.0.0", PackageState::Pending),
+                ("c@1.0.0", PackageState::Pending),
+            ]);
+            update_state_locked(&mut st, "a@1.0.0", s1);
+            update_state_locked(&mut st, "b@1.0.0", s2);
+            update_state_locked(&mut st, "c@1.0.0", s3);
+            prop_assert_eq!(st.packages.len(), 3);
+        }
+
+        // -- Error categorization: mapping correctness --
+
+        #[test]
+        fn classify_cargo_failure_preserves_class_mapping(
+            stderr in ascii_text(),
+            stdout in ascii_text(),
+        ) {
+            let internal = shipper_cargo_failure::classify_publish_failure(&stderr, &stdout);
+            let (mapped_class, _) = classify_cargo_failure(&stderr, &stdout);
+            let expected = match internal.class {
+                shipper_cargo_failure::CargoFailureClass::Retryable => ErrorClass::Retryable,
+                shipper_cargo_failure::CargoFailureClass::Permanent => ErrorClass::Permanent,
+                shipper_cargo_failure::CargoFailureClass::Ambiguous => ErrorClass::Ambiguous,
+            };
+            prop_assert_eq!(mapped_class, expected);
+        }
+
+        #[test]
+        fn classify_stderr_stdout_symmetric(stderr in ascii_text(), stdout in ascii_text()) {
+            let normal = classify_cargo_failure(&stderr, &stdout);
+            let swapped = classify_cargo_failure(&stdout, &stderr);
+            prop_assert_eq!(normal.0, swapped.0, "classification differs when swapping stderr/stdout");
+        }
+
+        // -- Timeout / overflow safety --
+
+        #[test]
+        fn backoff_arbitrary_strategy_never_panics(
+            base_ms in 0u64..500_000,
+            max_ms in 0u64..500_000,
+            attempt in 0u32..10_000,
+            strategy_idx in 0u8..4,
+            jitter in 0.0..1.0f64,
+        ) {
+            let strategy = match strategy_idx {
+                0 => shipper_retry::RetryStrategyType::Immediate,
+                1 => shipper_retry::RetryStrategyType::Exponential,
+                2 => shipper_retry::RetryStrategyType::Linear,
+                _ => shipper_retry::RetryStrategyType::Constant,
+            };
+            let d = backoff_delay(
+                Duration::from_millis(base_ms),
+                Duration::from_millis(max_ms),
+                attempt,
+                strategy,
+                jitter,
+            );
+            prop_assert!(d.as_secs() < u64::MAX);
+        }
+
+        #[test]
+        fn backoff_base_exceeds_max_clamps(
+            base_ms in 100u64..500_000,
+            delta in 1u64..100_000,
+            attempt in 1u32..100,
+            jitter in 0.0..1.0f64,
+        ) {
+            let base = Duration::from_millis(base_ms);
+            let max = Duration::from_millis(base_ms.saturating_sub(delta).max(1));
+            let d = backoff_delay(base, max, attempt, shipper_retry::RetryStrategyType::Exponential, jitter);
+            let upper = max + max.mul_f64(jitter);
+            prop_assert!(d <= upper, "delay {d:?} exceeded upper bound {upper:?} when base > max");
+        }
+
+        #[test]
+        fn backoff_large_attempt_all_strategies(
+            attempt in 10_000u32..=u32::MAX,
+            strategy_idx in 0u8..4,
+        ) {
+            let strategy = match strategy_idx {
+                0 => shipper_retry::RetryStrategyType::Immediate,
+                1 => shipper_retry::RetryStrategyType::Exponential,
+                2 => shipper_retry::RetryStrategyType::Linear,
+                _ => shipper_retry::RetryStrategyType::Constant,
+            };
+            let base = Duration::from_millis(100);
+            let max = Duration::from_secs(60);
+            let d = backoff_delay(base, max, attempt, strategy, 0.5);
+            let upper = max + max.mul_f64(0.5);
+            prop_assert!(d <= upper, "large attempt overflow: {d:?} > {upper:?}");
+        }
+    }
+
+    mod snapshots {
+        use super::*;
+
+        fn fixed_time() -> chrono::DateTime<chrono::Utc> {
+            "2025-01-15T12:00:00Z".parse().unwrap()
+        }
+
+        #[derive(serde::Serialize)]
+        struct ClassificationSnapshot {
+            class: shipper_types::ErrorClass,
+            message: String,
+        }
+
+        impl From<(shipper_types::ErrorClass, String)> for ClassificationSnapshot {
+            fn from((class, message): (shipper_types::ErrorClass, String)) -> Self {
+                Self { class, message }
+            }
+        }
+
+        #[derive(serde::Serialize)]
+        struct DelaySequence {
+            strategy: String,
+            base_ms: u64,
+            max_ms: u64,
+            jitter: f64,
+            delays_ms: Vec<u64>,
+        }
+
+        fn delay_sequence(
+            strategy: shipper_retry::RetryStrategyType,
+            base_ms: u64,
+            max_ms: u64,
+            attempts: u32,
+        ) -> DelaySequence {
+            let base = Duration::from_millis(base_ms);
+            let max = Duration::from_millis(max_ms);
+            let delays_ms: Vec<u64> = (1..=attempts)
+                .map(|a| backoff_delay(base, max, a, strategy, 0.0).as_millis() as u64)
+                .collect();
+            DelaySequence {
+                strategy: format!("{strategy:?}"),
+                base_ms,
+                max_ms,
+                jitter: 0.0,
+                delays_ms,
+            }
+        }
+
+        fn make_fixed_progress(
+            name: &str,
+            version: &str,
+            state: PackageState,
+        ) -> shipper_types::PackageProgress {
+            shipper_types::PackageProgress {
+                name: name.to_string(),
+                version: version.to_string(),
+                attempts: 0,
+                state,
+                last_updated_at: fixed_time(),
+            }
+        }
+
+        fn fixed_state(entries: &[(&str, &str, &str, PackageState)]) -> ExecutionState {
+            let mut packages = BTreeMap::new();
+            for (key, name, version, state) in entries {
+                packages.insert(
+                    key.to_string(),
+                    make_fixed_progress(name, version, state.clone()),
+                );
+            }
+            ExecutionState {
+                state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+                plan_id: "plan-snapshot-test".to_string(),
+                registry: shipper_types::Registry::crates_io(),
+                created_at: fixed_time(),
+                updated_at: fixed_time(),
+                packages,
+            }
+        }
+
+        fn stabilize_timestamps(st: &mut ExecutionState) {
+            let t = fixed_time();
+            st.updated_at = t;
+            for p in st.packages.values_mut() {
+                p.last_updated_at = t;
+            }
+        }
+
+        // --- 1. Retry strategy configurations ---
+
+        #[test]
+        fn snapshot_retry_config_immediate() {
+            let config = shipper_retry::RetryStrategyConfig {
+                strategy: shipper_retry::RetryStrategyType::Immediate,
+                max_attempts: 3,
+                base_delay: Duration::from_millis(100),
+                max_delay: Duration::from_secs(10),
+                jitter: 0.0,
+            };
+            insta::assert_yaml_snapshot!(config);
+        }
+
+        #[test]
+        fn snapshot_retry_config_exponential() {
+            let config = shipper_retry::RetryStrategyConfig {
+                strategy: shipper_retry::RetryStrategyType::Exponential,
+                max_attempts: 5,
+                base_delay: Duration::from_secs(2),
+                max_delay: Duration::from_secs(120),
+                jitter: 0.5,
+            };
+            insta::assert_yaml_snapshot!(config);
+        }
+
+        #[test]
+        fn snapshot_retry_config_linear() {
+            let config = shipper_retry::RetryStrategyConfig {
+                strategy: shipper_retry::RetryStrategyType::Linear,
+                max_attempts: 4,
+                base_delay: Duration::from_millis(500),
+                max_delay: Duration::from_secs(30),
+                jitter: 0.25,
+            };
+            insta::assert_yaml_snapshot!(config);
+        }
+
+        #[test]
+        fn snapshot_retry_config_constant() {
+            let config = shipper_retry::RetryStrategyConfig {
+                strategy: shipper_retry::RetryStrategyType::Constant,
+                max_attempts: 10,
+                base_delay: Duration::from_secs(5),
+                max_delay: Duration::from_secs(5),
+                jitter: 0.0,
+            };
+            insta::assert_yaml_snapshot!(config);
+        }
+
+        // --- 2. Error categorization results ---
+
+        #[test]
+        fn snapshot_classify_rate_limit() {
+            let snap: ClassificationSnapshot =
+                classify_cargo_failure("HTTP 429 too many requests", "").into();
+            insta::assert_yaml_snapshot!(snap);
+        }
+
+        #[test]
+        fn snapshot_classify_network_timeout() {
+            let snap: ClassificationSnapshot =
+                classify_cargo_failure("connection timeout", "").into();
+            insta::assert_yaml_snapshot!(snap);
+        }
+
+        #[test]
+        fn snapshot_classify_auth_denied() {
+            let snap: ClassificationSnapshot =
+                classify_cargo_failure("error: not authorized", "").into();
+            insta::assert_yaml_snapshot!(snap);
+        }
+
+        #[test]
+        fn snapshot_classify_already_uploaded() {
+            let snap: ClassificationSnapshot =
+                classify_cargo_failure("error: crate version `1.0.0` is already uploaded", "")
+                    .into();
+            insta::assert_yaml_snapshot!(snap);
+        }
+
+        #[test]
+        fn snapshot_classify_network_reset() {
+            let snap: ClassificationSnapshot =
+                classify_cargo_failure("connection reset by peer", "").into();
+            insta::assert_yaml_snapshot!(snap);
+        }
+
+        #[test]
+        fn snapshot_classify_empty_output() {
+            let snap: ClassificationSnapshot = classify_cargo_failure("", "").into();
+            insta::assert_yaml_snapshot!(snap);
+        }
+
+        #[test]
+        fn snapshot_classify_unknown_error() {
+            let snap: ClassificationSnapshot =
+                classify_cargo_failure("some strange unexpected output", "").into();
+            insta::assert_yaml_snapshot!(snap);
+        }
+
+        // --- 3. Backoff delay calculations ---
+
+        #[test]
+        fn snapshot_backoff_exponential_sequence() {
+            let seq = delay_sequence(shipper_retry::RetryStrategyType::Exponential, 100, 5000, 8);
+            insta::assert_yaml_snapshot!(seq);
+        }
+
+        #[test]
+        fn snapshot_backoff_linear_sequence() {
+            let seq = delay_sequence(shipper_retry::RetryStrategyType::Linear, 200, 5000, 8);
+            insta::assert_yaml_snapshot!(seq);
+        }
+
+        #[test]
+        fn snapshot_backoff_constant_sequence() {
+            let seq = delay_sequence(shipper_retry::RetryStrategyType::Constant, 500, 5000, 5);
+            insta::assert_yaml_snapshot!(seq);
+        }
+
+        #[test]
+        fn snapshot_backoff_immediate_sequence() {
+            let seq = delay_sequence(shipper_retry::RetryStrategyType::Immediate, 100, 5000, 5);
+            insta::assert_yaml_snapshot!(seq);
+        }
+
+        #[test]
+        fn snapshot_backoff_exponential_clamped() {
+            let seq = delay_sequence(shipper_retry::RetryStrategyType::Exponential, 100, 300, 8);
+            insta::assert_yaml_snapshot!(seq);
+        }
+
+        // --- 4. State transition sequences ---
+
+        #[test]
+        fn snapshot_state_success_flow() {
+            let mut st = fixed_state(&[("demo@1.0.0", "demo", "1.0.0", PackageState::Pending)]);
+            update_state_locked(&mut st, "demo@1.0.0", PackageState::Uploaded);
+            update_state_locked(&mut st, "demo@1.0.0", PackageState::Published);
+            st.packages.get_mut("demo@1.0.0").unwrap().attempts = 1;
+            stabilize_timestamps(&mut st);
+            insta::assert_yaml_snapshot!(st);
+        }
+
+        #[test]
+        fn snapshot_state_failure_flow() {
+            let mut st = fixed_state(&[("demo@1.0.0", "demo", "1.0.0", PackageState::Pending)]);
+            update_state_locked(
+                &mut st,
+                "demo@1.0.0",
+                PackageState::Failed {
+                    class: ErrorClass::Retryable,
+                    message: "429 rate limited".to_string(),
+                },
+            );
+            st.packages.get_mut("demo@1.0.0").unwrap().attempts = 3;
+            stabilize_timestamps(&mut st);
+            insta::assert_yaml_snapshot!(st);
+        }
+
+        #[test]
+        fn snapshot_state_skip_flow() {
+            let mut st = fixed_state(&[("demo@1.0.0", "demo", "1.0.0", PackageState::Pending)]);
+            update_state_locked(
+                &mut st,
+                "demo@1.0.0",
+                PackageState::Skipped {
+                    reason: "already published on registry".to_string(),
+                },
+            );
+            stabilize_timestamps(&mut st);
+            insta::assert_yaml_snapshot!(st);
+        }
+
+        #[test]
+        fn snapshot_state_ambiguous_resolved() {
+            let mut st = fixed_state(&[(
+                "demo@1.0.0",
+                "demo",
+                "1.0.0",
+                PackageState::Ambiguous {
+                    message: "timeout during upload".to_string(),
+                },
+            )]);
+            update_state_locked(&mut st, "demo@1.0.0", PackageState::Published);
+            st.packages.get_mut("demo@1.0.0").unwrap().attempts = 2;
+            stabilize_timestamps(&mut st);
+            insta::assert_yaml_snapshot!(st);
+        }
+
+        #[test]
+        fn snapshot_state_multi_package_mixed_outcomes() {
+            let mut st = fixed_state(&[
+                ("core@1.0.0", "core", "1.0.0", PackageState::Pending),
+                ("utils@1.0.0", "utils", "1.0.0", PackageState::Pending),
+                ("cli@1.0.0", "cli", "1.0.0", PackageState::Pending),
+            ]);
+            update_state_locked(&mut st, "core@1.0.0", PackageState::Published);
+            st.packages.get_mut("core@1.0.0").unwrap().attempts = 1;
+            update_state_locked(
+                &mut st,
+                "utils@1.0.0",
+                PackageState::Failed {
+                    class: ErrorClass::Permanent,
+                    message: "not authorized".to_string(),
+                },
+            );
+            st.packages.get_mut("utils@1.0.0").unwrap().attempts = 1;
+            update_state_locked(
+                &mut st,
+                "cli@1.0.0",
+                PackageState::Skipped {
+                    reason: "dependency utils@1.0.0 failed".to_string(),
+                },
+            );
+            stabilize_timestamps(&mut st);
+            insta::assert_yaml_snapshot!(st);
+        }
     }
 }

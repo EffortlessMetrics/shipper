@@ -1,0 +1,45 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: state
+---
+state_version: shipper.state.v1
+plan_id: plan-mixed
+registry:
+  name: crates-io
+  api_base: "https://crates.io"
+  index_base: "https://index.crates.io"
+created_at: "2025-01-15T12:00:00Z"
+updated_at: "2025-01-15T12:00:00Z"
+packages:
+  cli@0.3.0:
+    name: cli
+    version: 0.3.0
+    attempts: 1
+    state:
+      state: ambiguous
+      message: upload succeeded but readiness timed out
+    last_updated_at: "2025-01-15T12:00:00Z"
+  compat@0.1.0:
+    name: compat
+    version: 0.1.0
+    attempts: 0
+    state:
+      state: skipped
+      reason: version already on registry
+    last_updated_at: "2025-01-15T12:00:00Z"
+  core@0.1.0:
+    name: core
+    version: 0.1.0
+    attempts: 1
+    state:
+      state: published
+    last_updated_at: "2025-01-15T12:00:00Z"
+  net@0.2.0:
+    name: net
+    version: 0.2.0
+    attempts: 3
+    state:
+      state: failed
+      class: retryable
+      message: connection reset
+    last_updated_at: "2025-01-15T12:00:00Z"

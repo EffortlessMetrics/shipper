@@ -1,0 +1,18 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: report
+---
+plan_id: plan-fail-preflight
+token_detected: false
+finishability: failed
+packages:
+  - name: broken
+    version: 0.1.0
+    already_published: false
+    is_new_crate: true
+    auth_type: ~
+    ownership_verified: false
+    dry_run_passed: false
+    dry_run_output: "error: could not compile"
+timestamp: "2025-01-15T12:00:00Z"
+dry_run_output: workspace dry-run failed

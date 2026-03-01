@@ -523,12 +523,19 @@ impl Default for ParallelConfig {
 /// ```
 #[derive(Debug, Clone)]
 pub struct RuntimeOptions {
+    /// Allow publishing from a dirty git working tree.
     pub allow_dirty: bool,
+    /// Skip crate-ownership preflight checks.
     pub skip_ownership_check: bool,
+    /// Fail preflight if ownership verification fails.
     pub strict_ownership: bool,
+    /// Pass `--no-verify` to `cargo publish` (skip pre-publish build).
     pub no_verify: bool,
+    /// Maximum number of publish attempts per crate.
     pub max_attempts: u32,
+    /// Initial backoff delay between retries.
     pub base_delay: Duration,
+    /// Upper bound on backoff delay.
     pub max_delay: Duration,
     /// Retry strategy type: immediate, exponential, linear, constant
     pub retry_strategy: shipper_retry::RetryStrategyType,
@@ -536,13 +543,21 @@ pub struct RuntimeOptions {
     pub retry_jitter: f64,
     /// Per-error-type retry configuration
     pub retry_per_error: shipper_retry::PerErrorConfig,
+    /// Timeout for the workspace-level dry-run verification step.
     pub verify_timeout: Duration,
+    /// Poll interval for the dry-run verification step.
     pub verify_poll_interval: Duration,
+    /// Directory for persisted state, receipts, and event logs.
     pub state_dir: PathBuf,
+    /// Force resume even when the plan ID has changed.
     pub force_resume: bool,
+    /// Publishing policy preset (safe / balanced / fast).
     pub policy: PublishPolicy,
+    /// Dry-run verification mode (workspace / package / none).
     pub verify_mode: VerifyMode,
+    /// Readiness (post-publish visibility) configuration.
     pub readiness: ReadinessConfig,
+    /// Number of stdout/stderr lines to capture as evidence.
     pub output_lines: usize,
     /// Force override of existing locks
     pub force: bool,
@@ -1685,6 +1700,634 @@ mod tests {
                 ],
                 timestamp: fixed_time(),
                 dry_run_output: Some("workspace dry-run passed".to_string()),
+            };
+            insta::assert_yaml_snapshot!(report);
+        }
+
+        // --- ReleasePlan variations ---
+
+        #[test]
+        fn release_plan_single_package() {
+            let plan = ReleasePlan {
+                plan_version: "shipper.plan.v1".to_string(),
+                plan_id: "single-pkg-001".to_string(),
+                created_at: fixed_time(),
+                registry: Registry::crates_io(),
+                packages: vec![PlannedPackage {
+                    name: "solo-crate".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("Cargo.toml"),
+                }],
+                dependencies: BTreeMap::new(),
+            };
+            insta::assert_yaml_snapshot!(plan);
+        }
+
+        #[test]
+        fn release_plan_custom_registry() {
+            let plan = ReleasePlan {
+                plan_version: "shipper.plan.v1".to_string(),
+                plan_id: "custom-reg-001".to_string(),
+                created_at: fixed_time(),
+                registry: Registry {
+                    name: "my-private-registry".to_string(),
+                    api_base: "https://registry.example.com".to_string(),
+                    index_base: Some("https://index.registry.example.com".to_string()),
+                },
+                packages: vec![
+                    PlannedPackage {
+                        name: "internal-utils".to_string(),
+                        version: "2.1.0".to_string(),
+                        manifest_path: PathBuf::from("crates/internal-utils/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "internal-api".to_string(),
+                        version: "3.0.0".to_string(),
+                        manifest_path: PathBuf::from("crates/internal-api/Cargo.toml"),
+                    },
+                ],
+                dependencies: BTreeMap::from([(
+                    "internal-api".to_string(),
+                    vec!["internal-utils".to_string()],
+                )]),
+            };
+            insta::assert_yaml_snapshot!(plan);
+        }
+
+        #[test]
+        fn release_plan_deep_dependency_chain() {
+            let plan = ReleasePlan {
+                plan_version: "shipper.plan.v1".to_string(),
+                plan_id: "deep-deps-001".to_string(),
+                created_at: fixed_time(),
+                registry: Registry::crates_io(),
+                packages: vec![
+                    PlannedPackage {
+                        name: "foundation".to_string(),
+                        version: "0.1.0".to_string(),
+                        manifest_path: PathBuf::from("crates/foundation/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "middleware".to_string(),
+                        version: "0.2.0".to_string(),
+                        manifest_path: PathBuf::from("crates/middleware/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "service".to_string(),
+                        version: "0.3.0".to_string(),
+                        manifest_path: PathBuf::from("crates/service/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "gateway".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("crates/gateway/Cargo.toml"),
+                    },
+                ],
+                dependencies: BTreeMap::from([
+                    ("foundation".to_string(), Vec::new()),
+                    ("middleware".to_string(), vec!["foundation".to_string()]),
+                    (
+                        "service".to_string(),
+                        vec!["foundation".to_string(), "middleware".to_string()],
+                    ),
+                    ("gateway".to_string(), vec!["service".to_string()]),
+                ]),
+            };
+            insta::assert_yaml_snapshot!(plan);
+        }
+
+        // --- Receipt variations ---
+
+        #[test]
+        fn receipt_partial_failure() {
+            let t = fixed_time();
+            let receipt = Receipt {
+                receipt_version: "shipper.receipt.v1".to_string(),
+                plan_id: "plan-partial".to_string(),
+                registry: Registry::crates_io(),
+                started_at: t,
+                finished_at: t,
+                packages: vec![
+                    PackageReceipt {
+                        name: "core-lib".to_string(),
+                        version: "0.1.0".to_string(),
+                        attempts: 1,
+                        state: PackageState::Published,
+                        started_at: t,
+                        finished_at: t,
+                        duration_ms: 3200,
+                        evidence: PackageEvidence {
+                            attempts: vec![AttemptEvidence {
+                                attempt_number: 1,
+                                command: "cargo publish -p core-lib".to_string(),
+                                exit_code: 0,
+                                stdout_tail: "Uploading core-lib v0.1.0".to_string(),
+                                stderr_tail: String::new(),
+                                timestamp: t,
+                                duration: Duration::from_millis(3000),
+                            }],
+                            readiness_checks: vec![ReadinessEvidence {
+                                attempt: 1,
+                                visible: true,
+                                timestamp: t,
+                                delay_before: Duration::from_secs(1),
+                            }],
+                        },
+                    },
+                    PackageReceipt {
+                        name: "api-server".to_string(),
+                        version: "0.2.0".to_string(),
+                        attempts: 3,
+                        state: PackageState::Failed {
+                            class: ErrorClass::Retryable,
+                            message: "rate limited by registry".to_string(),
+                        },
+                        started_at: t,
+                        finished_at: t,
+                        duration_ms: 15000,
+                        evidence: PackageEvidence {
+                            attempts: vec![
+                                AttemptEvidence {
+                                    attempt_number: 1,
+                                    command: "cargo publish -p api-server".to_string(),
+                                    exit_code: 1,
+                                    stdout_tail: String::new(),
+                                    stderr_tail: "error: rate limit exceeded".to_string(),
+                                    timestamp: t,
+                                    duration: Duration::from_millis(500),
+                                },
+                                AttemptEvidence {
+                                    attempt_number: 2,
+                                    command: "cargo publish -p api-server".to_string(),
+                                    exit_code: 1,
+                                    stdout_tail: String::new(),
+                                    stderr_tail: "error: rate limit exceeded".to_string(),
+                                    timestamp: t,
+                                    duration: Duration::from_millis(600),
+                                },
+                                AttemptEvidence {
+                                    attempt_number: 3,
+                                    command: "cargo publish -p api-server".to_string(),
+                                    exit_code: 1,
+                                    stdout_tail: String::new(),
+                                    stderr_tail: "error: rate limit exceeded".to_string(),
+                                    timestamp: t,
+                                    duration: Duration::from_millis(700),
+                                },
+                            ],
+                            readiness_checks: vec![],
+                        },
+                    },
+                    PackageReceipt {
+                        name: "old-compat".to_string(),
+                        version: "0.1.0".to_string(),
+                        attempts: 0,
+                        state: PackageState::Skipped {
+                            reason: "version already exists on registry".to_string(),
+                        },
+                        started_at: t,
+                        finished_at: t,
+                        duration_ms: 50,
+                        evidence: PackageEvidence {
+                            attempts: vec![],
+                            readiness_checks: vec![],
+                        },
+                    },
+                ],
+                event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                git_context: Some(GitContext {
+                    commit: Some("deadbeef12345678".to_string()),
+                    branch: Some("release/v0.2".to_string()),
+                    tag: None,
+                    dirty: Some(true),
+                }),
+                environment: EnvironmentFingerprint {
+                    shipper_version: "0.3.0".to_string(),
+                    cargo_version: Some("1.82.0".to_string()),
+                    rust_version: Some("1.82.0".to_string()),
+                    os: "linux".to_string(),
+                    arch: "x86_64".to_string(),
+                },
+            };
+            insta::assert_yaml_snapshot!(receipt);
+        }
+
+        #[test]
+        fn receipt_no_git_context() {
+            let t = fixed_time();
+            let receipt = Receipt {
+                receipt_version: "shipper.receipt.v1".to_string(),
+                plan_id: "plan-nogit".to_string(),
+                registry: Registry::crates_io(),
+                started_at: t,
+                finished_at: t,
+                packages: vec![PackageReceipt {
+                    name: "headless-lib".to_string(),
+                    version: "0.5.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    started_at: t,
+                    finished_at: t,
+                    duration_ms: 2000,
+                    evidence: PackageEvidence {
+                        attempts: vec![],
+                        readiness_checks: vec![],
+                    },
+                }],
+                event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                git_context: None,
+                environment: EnvironmentFingerprint {
+                    shipper_version: "0.3.0".to_string(),
+                    cargo_version: None,
+                    rust_version: None,
+                    os: "windows".to_string(),
+                    arch: "aarch64".to_string(),
+                },
+            };
+            insta::assert_yaml_snapshot!(receipt);
+        }
+
+        #[test]
+        fn receipt_complete_failure() {
+            let t = fixed_time();
+            let receipt = Receipt {
+                receipt_version: "shipper.receipt.v1".to_string(),
+                plan_id: "plan-allfail".to_string(),
+                registry: Registry::crates_io(),
+                started_at: t,
+                finished_at: t,
+                packages: vec![
+                    PackageReceipt {
+                        name: "broken-crate".to_string(),
+                        version: "0.1.0".to_string(),
+                        attempts: 3,
+                        state: PackageState::Failed {
+                            class: ErrorClass::Permanent,
+                            message: "invalid credentials".to_string(),
+                        },
+                        started_at: t,
+                        finished_at: t,
+                        duration_ms: 800,
+                        evidence: PackageEvidence {
+                            attempts: vec![AttemptEvidence {
+                                attempt_number: 1,
+                                command: "cargo publish -p broken-crate".to_string(),
+                                exit_code: 1,
+                                stdout_tail: String::new(),
+                                stderr_tail: "error: 403 Forbidden".to_string(),
+                                timestamp: t,
+                                duration: Duration::from_millis(200),
+                            }],
+                            readiness_checks: vec![],
+                        },
+                    },
+                    PackageReceipt {
+                        name: "dependent-crate".to_string(),
+                        version: "0.2.0".to_string(),
+                        attempts: 0,
+                        state: PackageState::Skipped {
+                            reason: "dependency broken-crate failed".to_string(),
+                        },
+                        started_at: t,
+                        finished_at: t,
+                        duration_ms: 0,
+                        evidence: PackageEvidence {
+                            attempts: vec![],
+                            readiness_checks: vec![],
+                        },
+                    },
+                ],
+                event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                git_context: Some(GitContext {
+                    commit: Some("abcdef0123456789".to_string()),
+                    branch: Some("main".to_string()),
+                    tag: Some("v0.1.0".to_string()),
+                    dirty: Some(false),
+                }),
+                environment: EnvironmentFingerprint {
+                    shipper_version: "0.3.0".to_string(),
+                    cargo_version: Some("1.82.0".to_string()),
+                    rust_version: Some("1.82.0".to_string()),
+                    os: "macos".to_string(),
+                    arch: "aarch64".to_string(),
+                },
+            };
+            insta::assert_yaml_snapshot!(receipt);
+        }
+
+        // --- ExecutionState variations ---
+
+        #[test]
+        fn execution_state_all_pending() {
+            let t = fixed_time();
+            let mut packages = BTreeMap::new();
+            for (name, ver) in [("alpha", "0.1.0"), ("beta", "0.2.0"), ("gamma", "0.3.0")] {
+                packages.insert(
+                    format!("{name}@{ver}"),
+                    PackageProgress {
+                        name: name.to_string(),
+                        version: ver.to_string(),
+                        attempts: 0,
+                        state: PackageState::Pending,
+                        last_updated_at: t,
+                    },
+                );
+            }
+            let state = ExecutionState {
+                state_version: "shipper.state.v1".to_string(),
+                plan_id: "plan-fresh".to_string(),
+                registry: Registry::crates_io(),
+                created_at: t,
+                updated_at: t,
+                packages,
+            };
+            insta::assert_yaml_snapshot!(state);
+        }
+
+        #[test]
+        fn execution_state_completed() {
+            let t = fixed_time();
+            let mut packages = BTreeMap::new();
+            for (name, ver) in [("alpha", "0.1.0"), ("beta", "0.2.0")] {
+                packages.insert(
+                    format!("{name}@{ver}"),
+                    PackageProgress {
+                        name: name.to_string(),
+                        version: ver.to_string(),
+                        attempts: 1,
+                        state: PackageState::Published,
+                        last_updated_at: t,
+                    },
+                );
+            }
+            let state = ExecutionState {
+                state_version: "shipper.state.v1".to_string(),
+                plan_id: "plan-done".to_string(),
+                registry: Registry::crates_io(),
+                created_at: t,
+                updated_at: t,
+                packages,
+            };
+            insta::assert_yaml_snapshot!(state);
+        }
+
+        #[test]
+        fn execution_state_mixed_with_failures() {
+            let t = fixed_time();
+            let mut packages = BTreeMap::new();
+            packages.insert(
+                "core@0.1.0".to_string(),
+                PackageProgress {
+                    name: "core".to_string(),
+                    version: "0.1.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    last_updated_at: t,
+                },
+            );
+            packages.insert(
+                "net@0.2.0".to_string(),
+                PackageProgress {
+                    name: "net".to_string(),
+                    version: "0.2.0".to_string(),
+                    attempts: 3,
+                    state: PackageState::Failed {
+                        class: ErrorClass::Retryable,
+                        message: "connection reset".to_string(),
+                    },
+                    last_updated_at: t,
+                },
+            );
+            packages.insert(
+                "cli@0.3.0".to_string(),
+                PackageProgress {
+                    name: "cli".to_string(),
+                    version: "0.3.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Ambiguous {
+                        message: "upload succeeded but readiness timed out".to_string(),
+                    },
+                    last_updated_at: t,
+                },
+            );
+            packages.insert(
+                "compat@0.1.0".to_string(),
+                PackageProgress {
+                    name: "compat".to_string(),
+                    version: "0.1.0".to_string(),
+                    attempts: 0,
+                    state: PackageState::Skipped {
+                        reason: "version already on registry".to_string(),
+                    },
+                    last_updated_at: t,
+                },
+            );
+            let state = ExecutionState {
+                state_version: "shipper.state.v1".to_string(),
+                plan_id: "plan-mixed".to_string(),
+                registry: Registry::crates_io(),
+                created_at: t,
+                updated_at: t,
+                packages,
+            };
+            insta::assert_yaml_snapshot!(state);
+        }
+
+        // --- Config snapshots ---
+
+        #[test]
+        fn readiness_config_default_snapshot() {
+            let config = ReadinessConfig::default();
+            insta::assert_yaml_snapshot!(config);
+        }
+
+        #[test]
+        fn readiness_config_custom_snapshot() {
+            let config = ReadinessConfig {
+                enabled: false,
+                method: ReadinessMethod::Both,
+                initial_delay: Duration::from_millis(500),
+                max_delay: Duration::from_secs(120),
+                max_total_wait: Duration::from_secs(900),
+                poll_interval: Duration::from_secs(10),
+                jitter_factor: 0.25,
+                index_path: Some(PathBuf::from("/tmp/test-index")),
+                prefer_index: true,
+            };
+            insta::assert_yaml_snapshot!(config);
+        }
+
+        #[test]
+        fn parallel_config_default_snapshot() {
+            let config = ParallelConfig::default();
+            insta::assert_yaml_snapshot!(config);
+        }
+
+        #[test]
+        fn parallel_config_enabled_snapshot() {
+            let config = ParallelConfig {
+                enabled: true,
+                max_concurrent: 8,
+                per_package_timeout: Duration::from_secs(600),
+            };
+            insta::assert_yaml_snapshot!(config);
+        }
+
+        // --- Ancillary type snapshots ---
+
+        #[test]
+        fn environment_fingerprint_snapshot() {
+            let fp = EnvironmentFingerprint {
+                shipper_version: "0.3.0".to_string(),
+                cargo_version: Some("1.82.0".to_string()),
+                rust_version: Some("1.82.0".to_string()),
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            };
+            insta::assert_yaml_snapshot!(fp);
+        }
+
+        #[test]
+        fn git_context_full_snapshot() {
+            let ctx = GitContext {
+                commit: Some("a1b2c3d4e5f6".to_string()),
+                branch: Some("release/v2.0".to_string()),
+                tag: Some("v2.0.0".to_string()),
+                dirty: Some(false),
+            };
+            insta::assert_yaml_snapshot!(ctx);
+        }
+
+        #[test]
+        fn git_context_minimal_snapshot() {
+            let ctx = GitContext {
+                commit: None,
+                branch: None,
+                tag: None,
+                dirty: None,
+            };
+            insta::assert_yaml_snapshot!(ctx);
+        }
+
+        #[test]
+        fn publish_event_lifecycle_snapshot() {
+            let t = fixed_time();
+            let events = vec![
+                PublishEvent {
+                    timestamp: t,
+                    event_type: EventType::PlanCreated {
+                        plan_id: "plan-99".to_string(),
+                        package_count: 3,
+                    },
+                    package: String::new(),
+                },
+                PublishEvent {
+                    timestamp: t,
+                    event_type: EventType::ExecutionStarted,
+                    package: String::new(),
+                },
+                PublishEvent {
+                    timestamp: t,
+                    event_type: EventType::ExecutionFinished {
+                        result: ExecutionResult::PartialFailure,
+                    },
+                    package: String::new(),
+                },
+            ];
+            insta::assert_yaml_snapshot!(events);
+        }
+
+        #[test]
+        fn publish_event_package_flow_snapshot() {
+            let t = fixed_time();
+            let events = vec![
+                PublishEvent {
+                    timestamp: t,
+                    event_type: EventType::PackageStarted {
+                        name: "my-crate".to_string(),
+                        version: "1.0.0".to_string(),
+                    },
+                    package: "my-crate@1.0.0".to_string(),
+                },
+                PublishEvent {
+                    timestamp: t,
+                    event_type: EventType::PackageAttempted {
+                        attempt: 1,
+                        command: "cargo publish -p my-crate".to_string(),
+                    },
+                    package: "my-crate@1.0.0".to_string(),
+                },
+                PublishEvent {
+                    timestamp: t,
+                    event_type: EventType::PackageOutput {
+                        stdout_tail: "Uploading my-crate v1.0.0".to_string(),
+                        stderr_tail: String::new(),
+                    },
+                    package: "my-crate@1.0.0".to_string(),
+                },
+                PublishEvent {
+                    timestamp: t,
+                    event_type: EventType::PackagePublished { duration_ms: 4500 },
+                    package: "my-crate@1.0.0".to_string(),
+                },
+            ];
+            insta::assert_yaml_snapshot!(events);
+        }
+
+        #[test]
+        fn error_class_all_variants_snapshot() {
+            let variants: Vec<(&str, ErrorClass)> = vec![
+                ("retryable", ErrorClass::Retryable),
+                ("permanent", ErrorClass::Permanent),
+                ("ambiguous", ErrorClass::Ambiguous),
+            ];
+            for (label, class) in variants {
+                insta::assert_yaml_snapshot!(format!("error_class_{label}"), class);
+            }
+        }
+
+        #[test]
+        fn execution_result_all_variants_snapshot() {
+            let variants: Vec<(&str, ExecutionResult)> = vec![
+                ("success", ExecutionResult::Success),
+                ("partial_failure", ExecutionResult::PartialFailure),
+                ("complete_failure", ExecutionResult::CompleteFailure),
+            ];
+            for (label, result) in variants {
+                insta::assert_yaml_snapshot!(format!("execution_result_{label}"), result);
+            }
+        }
+
+        #[test]
+        fn finishability_all_variants_snapshot() {
+            let variants: Vec<(&str, Finishability)> = vec![
+                ("proven", Finishability::Proven),
+                ("not_proven", Finishability::NotProven),
+                ("failed", Finishability::Failed),
+            ];
+            for (label, fin) in variants {
+                insta::assert_yaml_snapshot!(format!("finishability_{label}"), fin);
+            }
+        }
+
+        #[test]
+        fn preflight_report_failed_snapshot() {
+            let report = PreflightReport {
+                plan_id: "plan-fail-preflight".to_string(),
+                token_detected: false,
+                finishability: Finishability::Failed,
+                packages: vec![PreflightPackage {
+                    name: "broken".to_string(),
+                    version: "0.1.0".to_string(),
+                    already_published: false,
+                    is_new_crate: true,
+                    auth_type: None,
+                    ownership_verified: false,
+                    dry_run_passed: false,
+                    dry_run_output: Some("error: could not compile".to_string()),
+                }],
+                timestamp: fixed_time(),
+                dry_run_output: Some("workspace dry-run failed".to_string()),
             };
             insta::assert_yaml_snapshot!(report);
         }

@@ -1,14 +1,9 @@
-    Blocking waiting for file lock on build directory
-   Compiling shipper-progress v0.3.0-rc.1 (H:\Code\Rust\shipper\crates\shipper-progress)
-error: there is no argument named `display`
-   --> crates\shipper-progress\src\lib.rs:569:13
-    |
-569 |             prop_assert_eq!(at_count, 1, "expected exactly one '@' in '{display}'");
-    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    |
-    = note: did you intend to capture a variable `display` from the surrounding scope?
-    = note: to avoid ambiguity, `format_args!` cannot capture variables when the format string is expanded from a macro
-    = note: this error originates in the macro `concat` which comes from the expansion of the macro `prop_assert_eq` (in Nightly builds, run with -Z macro-backtrace for more info)
+   Compiling shipper-cargo-failure v0.3.0-rc.1 (H:\Code\Rust\shipper\crates\shipper-cargo-failure)
+   Compiling shipper-execution-core v0.3.0-rc.1 (H:\Code\Rust\shipper\crates\shipper-execution-core)
+   Compiling shipper-engine-parallel v0.3.0-rc.1 (H:\Code\Rust\shipper\crates\shipper-engine-parallel)
+   Compiling shipper v0.3.0-rc.1 (H:\Code\Rust\shipper\crates\shipper)
+   Compiling shipper-cli v0.3.0-rc.1 (H:\Code\Rust\shipper\crates\shipper-cli)
+error: failed to remove file `H:\Code\Rust\shipper\target\debug\shipper.exe`
 
-error: could not compile `shipper-progress` (lib test) due to 1 previous error
-warning: build failed, waiting for other jobs to finish...
+Caused by:
+  Access is denied. (os error 5)

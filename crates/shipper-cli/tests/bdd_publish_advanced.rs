@@ -3,6 +3,9 @@
 //! These tests cover edge cases around registry errors (401, 429), retry
 //! behaviour on cargo-publish failures, plan-as-dry-run previews, skipping
 //! already-published crates, and partial multi-crate failures.
+//!
+//! Tests that spawn mock registries use `#[serial]` to avoid Windows-specific
+//! network contention when multiple tiny_http servers run in parallel.
 
 use std::fs;
 use std::path::Path;
@@ -12,6 +15,7 @@ use std::time::Duration;
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
+use serial_test::serial;
 use tempfile::tempdir;
 use tiny_http::{Header, Response, Server, StatusCode};
 
@@ -134,14 +138,14 @@ fn create_succeed_then_fail_cargo(bin_dir: &Path) {
         fs::write(
             bin_dir.join("cargo.cmd"),
             "@echo off\r\n\
-             if \"%1\"==\"publish\" (\r\n\
-             if exist \"%SHIPPER_FAIL_FLAG%\" (\r\n\
-             echo cargo publish failed 1>&2\r\n\
-             exit /b 1\r\n\
-             )\r\n\
+             if not \"%1\"==\"publish\" goto :fallback\r\n\
+             if exist \"%SHIPPER_FAIL_FLAG%\" goto :fail\r\n\
              echo done > \"%SHIPPER_FAIL_FLAG%\"\r\n\
              exit /b 0\r\n\
-             )\r\n\
+             :fail\r\n\
+             echo cargo publish failed 1>&2\r\n\
+             exit /b 1\r\n\
+             :fallback\r\n\
              \"%REAL_CARGO%\" %*\r\n\
              exit /b %ERRORLEVEL%\r\n",
         )
@@ -260,6 +264,7 @@ mod registry_errors {
     // When:  Running `publish`
     // Then:  Publish fails with an error mentioning the unexpected status
     #[test]
+    #[serial]
     fn given_registry_returns_401_when_publish_then_fails_with_auth_error() {
         // Given
         let td = tempdir().expect("tempdir");
@@ -303,6 +308,7 @@ mod registry_errors {
     // When:  Running `publish`
     // Then:  Publish fails with an error mentioning the unexpected status
     #[test]
+    #[serial]
     fn given_registry_returns_429_when_publish_then_fails_with_rate_limit_error() {
         // Given
         let td = tempdir().expect("tempdir");
@@ -355,6 +361,7 @@ mod retry_on_failure {
     // When:  Running `publish` with --max-attempts 2 --base-delay 0ms
     // Then:  Publish eventually fails after retrying, and state is saved
     #[test]
+    #[serial]
     fn given_cargo_fails_when_publish_with_retries_then_exhausts_attempts_and_fails() {
         // Given
         let td = tempdir().expect("tempdir");
@@ -524,6 +531,7 @@ mod already_published_skip {
     // When:  Running `publish`
     // Then:  Publish succeeds, receipt shows the package as skipped
     #[test]
+    #[serial]
     fn given_already_published_crate_when_publish_then_skipped_in_receipt() {
         // Given
         let td = tempdir().expect("tempdir");
@@ -531,7 +539,8 @@ mod already_published_skip {
         let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
 
         // Registry returns 200 for version check (already published)
-        let registry = spawn_registry(vec![200], 2);
+        // Provide extra buffer requests in case readiness checks happen
+        let registry = spawn_registry(vec![200], 4);
         let state_dir = td.path().join(".shipper");
 
         // When
@@ -601,6 +610,7 @@ mod multi_crate_partial_failure {
     // Then:  Publish fails; state.json shows core as published, utils as
     //        failed, and app still pending (never attempted)
     #[test]
+    #[serial]
     fn given_middle_crate_fails_when_publish_then_later_crates_not_attempted() {
         // Given
         let td = tempdir().expect("tempdir");
@@ -619,7 +629,8 @@ mod multi_crate_partial_failure {
         //   3. version check for utils → 404 (not published)
         //   4. version check after utils failure → 404 (not visible)
         //   5. final version check for utils → 404
-        let registry = spawn_registry(vec![404, 200, 404, 404, 404], 5);
+        // Extra buffer for any additional readiness/verification requests.
+        let registry = spawn_registry(vec![404, 200, 404, 404, 404], 8);
         let state_dir = td.path().join(".shipper");
 
         // When

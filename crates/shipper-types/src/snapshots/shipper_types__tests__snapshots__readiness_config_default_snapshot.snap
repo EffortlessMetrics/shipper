@@ -1,0 +1,12 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: config
+---
+enabled: true
+method: api
+initial_delay: 1000
+max_delay: 60000
+max_total_wait: 300000
+poll_interval: 2000
+jitter_factor: 0.5
+prefer_index: false

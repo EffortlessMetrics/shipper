@@ -729,6 +729,186 @@ mod tests {
         insta::assert_debug_snapshot!("realistic_compilation_failure", outcome);
     }
 
+    // ── snapshot: realistic network / transient failures ────────────────
+
+    #[test]
+    fn snapshot_realistic_network_connection_reset() {
+        let outcome = classify_publish_failure(
+            "error: failed to publish to registry\n\
+             Caused by:\n  failed to send request: \
+             error sending request for url (https://crates.io/api/v1/crates/new): \
+             connection reset by peer",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_network_connection_reset", outcome);
+    }
+
+    #[test]
+    fn snapshot_realistic_dns_resolution_failure() {
+        let outcome = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  dns error: failed to lookup address information: \
+             Name or service not known",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_dns_resolution_failure", outcome);
+    }
+
+    #[test]
+    fn snapshot_realistic_tls_handshake_failure() {
+        let outcome = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  tls handshake failed: the certificate was not trusted",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_tls_handshake_failure", outcome);
+    }
+
+    #[test]
+    fn snapshot_realistic_broken_pipe() {
+        let outcome = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  broken pipe (os error 32)",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_broken_pipe", outcome);
+    }
+
+    // ── snapshot: realistic auth / permission failures ──────────────────
+
+    #[test]
+    fn snapshot_realistic_auth_unauthorized() {
+        let outcome = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  the remote server responded with 401 Unauthorized\n\
+             Note: check your API token",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_auth_unauthorized", outcome);
+    }
+
+    #[test]
+    fn snapshot_realistic_forbidden_not_owner() {
+        let outcome = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  the remote server responded with 403 Forbidden: \
+             you are not an owner of this crate",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_forbidden_not_owner", outcome);
+    }
+
+    #[test]
+    fn snapshot_realistic_token_expired() {
+        let outcome = classify_publish_failure(
+            "error: failed to publish to registry crates-io\n\
+             Caused by:\n  token is invalid or has expired; \
+             please generate a new token at https://crates.io/me",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_token_expired", outcome);
+    }
+
+    // ── snapshot: realistic manifest / config failures ──────────────────
+
+    #[test]
+    fn snapshot_realistic_manifest_missing_fields() {
+        let outcome = classify_publish_failure(
+            "",
+            "error: 3 fields are missing from `Cargo.toml`:\n\
+             - description\n- license\n- repository",
+        );
+        insta::assert_debug_snapshot!("realistic_manifest_missing_fields", outcome);
+    }
+
+    #[test]
+    fn snapshot_realistic_verification_failure() {
+        let outcome = classify_publish_failure(
+            "error: failed to verify package tarball\n\
+             Caused by:\n  failed to compile `my-crate v0.1.0`",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_verification_failure", outcome);
+    }
+
+    #[test]
+    fn snapshot_realistic_publish_disabled() {
+        let outcome = classify_publish_failure(
+            "error: `my-crate` cannot be published.\n\
+             `publish` is set to `false` or an empty list in Cargo.toml \
+             and prevents publishing.",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_publish_disabled", outcome);
+    }
+
+    #[test]
+    fn snapshot_realistic_checksum_mismatch() {
+        let outcome = classify_publish_failure(
+            "error: failed to verify package tarball\n\
+             Caused by:\n  checksum mismatch for crate `my-dep v0.2.0`",
+            "",
+        );
+        insta::assert_debug_snapshot!("realistic_checksum_mismatch", outcome);
+    }
+
+    // ── snapshot: edge-case and cross-stream detection ──────────────────
+
+    #[test]
+    fn snapshot_stdout_retryable_detection() {
+        let outcome = classify_publish_failure("", "503 Service Unavailable");
+        insta::assert_debug_snapshot!("stdout_retryable_detection", outcome);
+    }
+
+    #[test]
+    fn snapshot_stdout_permanent_detection() {
+        let outcome = classify_publish_failure("", "version already exists");
+        insta::assert_debug_snapshot!("stdout_permanent_detection", outcome);
+    }
+
+    #[test]
+    fn snapshot_empty_input() {
+        let outcome = classify_publish_failure("", "");
+        insta::assert_debug_snapshot!("empty_input", outcome);
+    }
+
+    #[test]
+    fn snapshot_whitespace_only_input() {
+        let outcome = classify_publish_failure("   \n\t  ", "   \n  ");
+        insta::assert_debug_snapshot!("whitespace_only_input", outcome);
+    }
+
+    #[test]
+    fn snapshot_case_insensitive_uppercase_retryable() {
+        let outcome = classify_publish_failure("CONNECTION REFUSED", "");
+        insta::assert_debug_snapshot!("case_insensitive_uppercase_retryable", outcome);
+    }
+
+    #[test]
+    fn snapshot_case_insensitive_uppercase_permanent() {
+        let outcome = classify_publish_failure("TOKEN IS INVALID", "");
+        insta::assert_debug_snapshot!("case_insensitive_uppercase_permanent", outcome);
+    }
+
+    #[test]
+    fn snapshot_cross_stream_retryable_precedence() {
+        let outcome = classify_publish_failure("permission denied", "503 unavailable");
+        insta::assert_debug_snapshot!("cross_stream_retryable_precedence", outcome);
+    }
+
+    #[test]
+    fn snapshot_multiline_noise_buried_pattern() {
+        let outcome = classify_publish_failure(
+            "Compiling my-crate v0.1.0\n\
+             Packaging my-crate v0.1.0\n\
+             Uploading my-crate v0.1.0\n\
+             error: failed to send request\n\
+             network unreachable",
+            "",
+        );
+        insta::assert_debug_snapshot!("multiline_noise_buried_pattern", outcome);
+    }
+
     // ── realistic cargo publish error messages ──────────────────────────
 
     #[test]

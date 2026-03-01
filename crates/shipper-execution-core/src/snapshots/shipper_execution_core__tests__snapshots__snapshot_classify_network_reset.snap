@@ -1,0 +1,6 @@
+---
+source: crates/shipper-execution-core/src/lib.rs
+expression: snap
+---
+class: retryable
+message: transient failure (retryable)

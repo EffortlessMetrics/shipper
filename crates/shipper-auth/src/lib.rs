@@ -37,7 +37,10 @@ pub const CARGO_HOME_ENV: &str = "CARGO_HOME";
 /// Credentials file name
 pub const CREDENTIALS_FILE: &str = "credentials.toml";
 
-/// Authentication information
+/// Result of token resolution for a single registry.
+///
+/// Returned by [`resolve_token`].  When `detected` is `true` a valid
+/// token was found; its origin is recorded in [`source`](AuthInfo::source).
 #[derive(Debug, Clone)]
 pub struct AuthInfo {
     /// The resolved token (if found)
@@ -58,7 +61,10 @@ impl Default for AuthInfo {
     }
 }
 
-/// Source of the authentication token
+/// Where the authentication token was resolved from.
+///
+/// Used for diagnostics and the `shipper doctor` command so users can
+/// verify which credential source is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenSource {
     /// No token found
@@ -141,12 +147,21 @@ pub fn resolve_token(registry: &str, cargo_home: Option<&Path>) -> AuthInfo {
     AuthInfo::default()
 }
 
-/// Check if a token is available for the registry.
+/// Check whether any token is available for the given registry.
+///
+/// This is a convenience wrapper around [`resolve_token`] that returns
+/// `true` when a token was found from any source.
 pub fn has_token(registry: &str, cargo_home: Option<&Path>) -> bool {
     resolve_token(registry, cargo_home).detected
 }
 
-/// Get the default CARGO_HOME path.
+/// Resolve the `CARGO_HOME` directory path.
+///
+/// Checks, in order:
+/// 1. The explicit `cargo_home` argument (if `Some`).
+/// 2. The `CARGO_HOME` environment variable.
+/// 3. `~/.cargo` (platform home directory).
+/// 4. Falls back to `.cargo` in the current directory.
 pub fn cargo_home_path(cargo_home: Option<&Path>) -> PathBuf {
     if let Some(path) = cargo_home {
         return path.to_path_buf();
@@ -209,7 +224,9 @@ fn token_from_credentials_file(path: &Path, registry: &str) -> Result<String> {
     ))
 }
 
-/// Parse credentials.toml and return all configured registries.
+/// List all registry names found in a `credentials.toml` file.
+///
+/// Returns an empty `Vec` if the file does not exist.
 pub fn list_configured_registries(path: &Path) -> Result<Vec<String>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -238,7 +255,10 @@ pub fn list_configured_registries(path: &Path) -> Result<Vec<String>> {
     Ok(registries)
 }
 
-/// Mask a token for safe display (show first 4 and last 4 chars).
+/// Mask a token for safe display.
+///
+/// Shows the first 4 and last 4 characters, replacing the middle with
+/// `****`.  Tokens of 8 characters or fewer are fully masked.
 pub fn mask_token(token: &str) -> String {
     if token.len() <= 8 {
         return "*".repeat(token.len());

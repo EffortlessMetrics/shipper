@@ -1,7 +1,35 @@
-//! Configuration file support for Shipper (.shipper.toml)
+//! # Configuration
 //!
-//! This module provides support for project-specific configuration via a
-//! `.shipper.toml` file in the workspace root.
+//! Project-specific configuration for Shipper via `.shipper.toml`.
+//!
+//! This crate loads, validates, and merges configuration from three layers
+//! (highest priority first):
+//!
+//! 1. **CLI flags** — passed via [`CliOverrides`]
+//! 2. **Config file** — `.shipper.toml` in the workspace root
+//! 3. **Built-in defaults** — sensible defaults for all settings
+//!
+//! The central type is [`ShipperConfig`], which maps 1:1 to the TOML file
+//! and exposes [`ShipperConfig::build_runtime_options`] to produce the
+//! final [`RuntimeOptions`] used by the engine.
+//!
+//! ## Sections
+//!
+//! | TOML section    | Rust type              | Controls                              |
+//! |-----------------|------------------------|---------------------------------------|
+//! | `[policy]`      | [`PolicyConfig`]       | Safety vs speed preset                |
+//! | `[verify]`      | [`VerifyConfig`]       | Pre-publish compilation check         |
+//! | `[readiness]`   | [`ReadinessConfig`]    | Post-publish visibility polling       |
+//! | `[output]`      | [`OutputConfig`]       | Evidence capture line count           |
+//! | `[lock]`        | [`LockConfig`]         | Distributed lock timeout              |
+//! | `[retry]`       | [`RetryConfig`]        | Retry strategy and backoff            |
+//! | `[flags]`       | [`FlagsConfig`]        | Git-dirty, ownership, etc.            |
+//! | `[parallel]`    | [`ParallelConfig`]     | Concurrent publishing                 |
+//! | `[registry]`    | [`RegistryConfig`]     | Custom registry                       |
+//! | `[registries]`  | [`MultiRegistryConfig`]| Multi-registry publishing             |
+//! | `[webhook]`     | [`WebhookConfig`]      | Publish notifications                 |
+//! | `[encryption]`  | [`EncryptionConfigInner`] | State file encryption              |
+//! | `[storage]`     | [`StorageConfigInner`] | Cloud storage backend                 |
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -236,7 +264,14 @@ pub struct FlagsConfig {
     pub strict_ownership: bool,
 }
 
-/// Configuration loaded from .shipper.toml
+/// Project-specific configuration loaded from `.shipper.toml`.
+///
+/// This is the root deserialization target for the config file.  Each
+/// field corresponds to a TOML section (e.g. `[retry]` → [`RetryConfig`]).
+///
+/// Use [`ShipperConfig::load_from_workspace`] to discover and parse the
+/// file, then [`ShipperConfig::build_runtime_options`] to merge CLI
+/// overrides and produce the final [`RuntimeOptions`].
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipperConfig {
@@ -378,10 +413,14 @@ impl MultiRegistryConfig {
     }
 }
 
-/// CLI overrides for merging with config file values.
+/// CLI flag overrides for merging with config file values.
 ///
-/// `Option` fields mean "user did not pass this flag" when `None`.
-/// `bool` fields mean "user explicitly enabled this" when `true`.
+/// Each `Option` field represents a flag the user may or may not have
+/// passed.  `None` means "use the config-file / default value".
+/// Boolean flags use OR semantics: `true` if either CLI or config enables it.
+///
+/// Passed to [`ShipperConfig::build_runtime_options`] to produce the
+/// final [`RuntimeOptions`].
 #[derive(Debug, Default)]
 pub struct CliOverrides {
     pub policy: Option<PublishPolicy>,

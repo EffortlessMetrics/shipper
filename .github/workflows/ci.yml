@@ -9,6 +9,10 @@ on:
     # Nightly quick fuzz and elevated property tests
     - cron: '0 3 * * *'
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings

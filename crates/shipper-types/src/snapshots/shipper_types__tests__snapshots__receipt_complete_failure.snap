@@ -1,0 +1,57 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: receipt
+---
+receipt_version: shipper.receipt.v1
+plan_id: plan-allfail
+registry:
+  name: crates-io
+  api_base: "https://crates.io"
+  index_base: "https://index.crates.io"
+started_at: "2025-01-15T12:00:00Z"
+finished_at: "2025-01-15T12:00:00Z"
+packages:
+  - name: broken-crate
+    version: 0.1.0
+    attempts: 3
+    state:
+      state: failed
+      class: permanent
+      message: invalid credentials
+    started_at: "2025-01-15T12:00:00Z"
+    finished_at: "2025-01-15T12:00:00Z"
+    duration_ms: 800
+    evidence:
+      attempts:
+        - attempt_number: 1
+          command: cargo publish -p broken-crate
+          exit_code: 1
+          stdout_tail: ""
+          stderr_tail: "error: 403 Forbidden"
+          timestamp: "2025-01-15T12:00:00Z"
+          duration: 200
+      readiness_checks: []
+  - name: dependent-crate
+    version: 0.2.0
+    attempts: 0
+    state:
+      state: skipped
+      reason: dependency broken-crate failed
+    started_at: "2025-01-15T12:00:00Z"
+    finished_at: "2025-01-15T12:00:00Z"
+    duration_ms: 0
+    evidence:
+      attempts: []
+      readiness_checks: []
+event_log_path: ".shipper/events.jsonl"
+git_context:
+  commit: abcdef0123456789
+  branch: main
+  tag: v0.1.0
+  dirty: false
+environment:
+  shipper_version: 0.3.0
+  cargo_version: 1.82.0
+  rust_version: 1.82.0
+  os: macos
+  arch: aarch64

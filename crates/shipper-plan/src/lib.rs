@@ -1,3 +1,22 @@
+//! # Plan
+//!
+//! Workspace analysis and deterministic publish-plan generation.
+//!
+//! This crate reads workspace metadata via `cargo_metadata`, filters
+//! publishable crates, and produces a topologically-sorted
+//! [`ReleasePlan`] that guarantees
+//! dependencies are published before their dependents.
+//!
+//! ## Workflow
+//!
+//! 1. Load workspace metadata from the given `Cargo.toml`.
+//! 2. Filter crates based on their `publish` field and the target registry.
+//! 3. Optionally narrow the set to user-selected packages (plus transitive deps).
+//! 4. Topologically sort the remaining crates and compute a stable plan ID.
+//!
+//! The resulting [`PlannedWorkspace`] is the input to preflight and publish
+//! operations in the engine crate.
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
@@ -7,21 +26,48 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 use shipper_types::{PlannedPackage, ReleasePlan, ReleaseSpec};
 
+/// A workspace package that was excluded from the publish plan.
+///
+/// Packages are skipped when their `publish` field in `Cargo.toml`
+/// is `false` or does not include the target registry.
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct SkippedPackage {
+    /// Crate name as declared in `Cargo.toml`.
     pub name: String,
+    /// Crate version string.
     pub version: String,
+    /// Human-readable reason the package was excluded.
     pub reason: String,
 }
 
+/// The output of [`build_plan`]: a publish plan plus context.
+///
+/// Contains the workspace root path, the deterministic [`ReleasePlan`],
+/// and a list of packages that were skipped (with reasons).
 #[derive(Debug, Clone)]
 pub struct PlannedWorkspace {
+    /// Absolute path to the workspace root directory.
     pub workspace_root: PathBuf,
+    /// The deterministic, SHA256-identified publish plan.
     pub plan: ReleasePlan,
+    /// Packages that were excluded from the plan.
     pub skipped: Vec<SkippedPackage>,
 }
 
+/// Build a deterministic publish plan from a [`ReleaseSpec`].
+///
+/// Reads the workspace via `cargo_metadata`, filters publishable crates
+/// based on the target registry, topologically sorts them, and returns a
+/// [`PlannedWorkspace`] ready for preflight or publish execution.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - `cargo metadata` fails (e.g. invalid manifest path)
+/// - A selected package is not found or not publishable
+/// - A publishable crate depends on a non-publishable workspace member
+/// - A dependency cycle is detected
 pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     let metadata = load_metadata(&spec.manifest_path)?;
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();

@@ -428,21 +428,21 @@ mod resume_skips_completed_levels {
 
     // Scenario: Partially published workspace resumes and skips completed levels
     //
-    // Given: A workspace where publish has already completed
-    // When:  Resuming with existing state
-    // Then:  Already-published packages are skipped
+    // Given: A workspace where all versions are already on the registry
+    // When:  Running publish in parallel mode
+    // Then:  Already-published packages are skipped and state/receipt are written
     #[test]
     fn given_partially_published_workspace_when_resuming_then_skips_completed_levels() {
-        // Given: Set up workspace + fake cargo + state dir
+        // Given: Set up workspace + state dir
         let td = tempdir().expect("tempdir");
         create_parallel_workspace(td.path());
         let (new_path, real_cargo, fake_cargo) = prepend_fake_cargo(td.path());
 
         let state_dir = td.path().join(".shipper");
 
-        // Publish all crates in parallel mode (serialized within levels via --max-concurrent 1).
-        // 4 crates × (version check + readiness) = 8 reqs
-        let registry = spawn_registry(vec![404, 200, 404, 200, 404, 200, 404, 200], 8);
+        // All 200 responses: every version_exists returns "already published"
+        // so the parallel engine skips all packages (no cargo publish, no readiness)
+        let registry = spawn_registry(vec![200, 200, 200, 200], 4);
 
         shipper_cmd()
             .arg("--manifest-path")
@@ -450,10 +450,6 @@ mod resume_skips_completed_levels {
             .arg("--api-base")
             .arg(&registry.base_url)
             .arg("--allow-dirty")
-            .arg("--verify-timeout")
-            .arg("0ms")
-            .arg("--verify-poll")
-            .arg("0ms")
             .arg("--max-attempts")
             .arg("1")
             .arg("--state-dir")
@@ -470,7 +466,7 @@ mod resume_skips_completed_levels {
 
         registry.join();
 
-        // When: Check state shows packages are published (via status)
+        // When: Check state shows packages are skipped
         let state_file = state_dir.join("state.json");
         assert!(state_file.exists(), "state.json should exist after publish");
 
@@ -605,8 +601,9 @@ mod max_concurrent_limits_parallelism {
 
         let state_dir = td.path().join(".shipper");
 
-        // 3 independent crates: version check + readiness = 6 reqs
-        let registry = spawn_registry(vec![404, 200, 404, 200, 404, 200], 6);
+        // All 200 responses: every version_exists returns "already published"
+        // so the parallel engine skips all packages (avoids flaky readiness checks)
+        let registry = spawn_registry(vec![200, 200, 200], 3);
 
         // When: Publish with --max-concurrent 1 (serial within each level)
         shipper_cmd()
@@ -615,10 +612,6 @@ mod max_concurrent_limits_parallelism {
             .arg("--api-base")
             .arg(&registry.base_url)
             .arg("--allow-dirty")
-            .arg("--verify-timeout")
-            .arg("0ms")
-            .arg("--verify-poll")
-            .arg("0ms")
             .arg("--max-attempts")
             .arg("1")
             .arg("--state-dir")

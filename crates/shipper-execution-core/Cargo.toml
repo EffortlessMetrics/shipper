@@ -19,7 +19,9 @@ shipper-state = { path = "../shipper-state" }
 shipper-types = { path = "../shipper-types" }
 
 [dev-dependencies]
+insta = { workspace = true }
 proptest.workspace = true
+serde = { version = "1", features = ["derive"] }
 tempfile = "3.25.0"
 
 [lints]

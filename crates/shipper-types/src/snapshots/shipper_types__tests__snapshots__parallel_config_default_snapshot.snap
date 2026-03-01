@@ -1,0 +1,7 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: config
+---
+enabled: false
+max_concurrent: 4
+per_package_timeout: 1800000

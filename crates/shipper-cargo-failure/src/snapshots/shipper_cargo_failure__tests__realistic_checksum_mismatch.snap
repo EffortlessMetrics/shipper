@@ -1,0 +1,8 @@
+---
+source: crates/shipper-cargo-failure/src/lib.rs
+expression: outcome
+---
+CargoFailureOutcome {
+    class: Permanent,
+    message: "permanent failure (fix required)",
+}

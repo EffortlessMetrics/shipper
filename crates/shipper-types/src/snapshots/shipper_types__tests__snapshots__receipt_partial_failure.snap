@@ -1,0 +1,93 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: receipt
+---
+receipt_version: shipper.receipt.v1
+plan_id: plan-partial
+registry:
+  name: crates-io
+  api_base: "https://crates.io"
+  index_base: "https://index.crates.io"
+started_at: "2025-01-15T12:00:00Z"
+finished_at: "2025-01-15T12:00:00Z"
+packages:
+  - name: core-lib
+    version: 0.1.0
+    attempts: 1
+    state:
+      state: published
+    started_at: "2025-01-15T12:00:00Z"
+    finished_at: "2025-01-15T12:00:00Z"
+    duration_ms: 3200
+    evidence:
+      attempts:
+        - attempt_number: 1
+          command: cargo publish -p core-lib
+          exit_code: 0
+          stdout_tail: Uploading core-lib v0.1.0
+          stderr_tail: ""
+          timestamp: "2025-01-15T12:00:00Z"
+          duration: 3000
+      readiness_checks:
+        - attempt: 1
+          visible: true
+          timestamp: "2025-01-15T12:00:00Z"
+          delay_before: 1000
+  - name: api-server
+    version: 0.2.0
+    attempts: 3
+    state:
+      state: failed
+      class: retryable
+      message: rate limited by registry
+    started_at: "2025-01-15T12:00:00Z"
+    finished_at: "2025-01-15T12:00:00Z"
+    duration_ms: 15000
+    evidence:
+      attempts:
+        - attempt_number: 1
+          command: cargo publish -p api-server
+          exit_code: 1
+          stdout_tail: ""
+          stderr_tail: "error: rate limit exceeded"
+          timestamp: "2025-01-15T12:00:00Z"
+          duration: 500
+        - attempt_number: 2
+          command: cargo publish -p api-server
+          exit_code: 1
+          stdout_tail: ""
+          stderr_tail: "error: rate limit exceeded"
+          timestamp: "2025-01-15T12:00:00Z"
+          duration: 600
+        - attempt_number: 3
+          command: cargo publish -p api-server
+          exit_code: 1
+          stdout_tail: ""
+          stderr_tail: "error: rate limit exceeded"
+          timestamp: "2025-01-15T12:00:00Z"
+          duration: 700
+      readiness_checks: []
+  - name: old-compat
+    version: 0.1.0
+    attempts: 0
+    state:
+      state: skipped
+      reason: version already exists on registry
+    started_at: "2025-01-15T12:00:00Z"
+    finished_at: "2025-01-15T12:00:00Z"
+    duration_ms: 50
+    evidence:
+      attempts: []
+      readiness_checks: []
+event_log_path: ".shipper/events.jsonl"
+git_context:
+  commit: deadbeef12345678
+  branch: release/v0.2
+  tag: ~
+  dirty: true
+environment:
+  shipper_version: 0.3.0
+  cargo_version: 1.82.0
+  rust_version: 1.82.0
+  os: linux
+  arch: x86_64
