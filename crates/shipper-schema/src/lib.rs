@@ -59,12 +59,163 @@ pub fn validate_schema_version(version: &str, minimum_supported: &str, label: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::assert_debug_snapshot;
     use proptest::prelude::*;
 
     #[test]
     fn parse_schema_version_extracts_numeric_suffix() {
         let parsed = parse_schema_version("shipper.receipt.v42").expect("parse");
         assert_eq!(parsed, 42);
+    }
+
+    // --- Additional parse edge-case tests ---
+
+    #[test]
+    fn parse_schema_version_accepts_v0() {
+        assert_eq!(parse_schema_version("shipper.receipt.v0").unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_schema_version_accepts_leading_zeros() {
+        // Rust's u32 parse treats "007" as 7
+        assert_eq!(parse_schema_version("shipper.receipt.v007").unwrap(), 7);
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_empty_string() {
+        assert!(parse_schema_version("").is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_empty_version_after_v() {
+        assert!(parse_schema_version("shipper.receipt.v").is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_negative_version() {
+        assert!(parse_schema_version("shipper.receipt.v-1").is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_float_version() {
+        assert!(parse_schema_version("shipper.receipt.v1.5").is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_whitespace_around_input() {
+        assert!(parse_schema_version(" shipper.receipt.v1 ").is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_single_segment() {
+        assert!(parse_schema_version("shipper").is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_only_dots() {
+        assert!(parse_schema_version("..").is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_accepts_u32_max() {
+        let input = format!("shipper.receipt.v{}", u32::MAX);
+        assert_eq!(parse_schema_version(&input).unwrap(), u32::MAX);
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_overflow_u32() {
+        let overflow = u64::from(u32::MAX) + 1;
+        let input = format!("shipper.receipt.v{overflow}");
+        assert!(parse_schema_version(&input).is_err());
+    }
+
+    #[test]
+    fn parse_schema_version_ignores_middle_segment_content() {
+        // The middle segment can be anything; only prefix and version suffix matter
+        assert_eq!(parse_schema_version("shipper.anything.v5").unwrap(), 5);
+        assert_eq!(parse_schema_version("shipper..v5").unwrap(), 5);
+    }
+
+    // --- Additional validate edge-case tests ---
+
+    #[test]
+    fn validate_schema_version_accepts_both_zero() {
+        validate_schema_version("shipper.receipt.v0", "shipper.receipt.v0", "receipt")
+            .expect("v0 >= v0 should succeed");
+    }
+
+    #[test]
+    fn validate_schema_version_does_not_compare_middle_segments() {
+        // Middle segments differ (receipt vs state) — function only compares version numbers
+        validate_schema_version("shipper.receipt.v3", "shipper.state.v2", "mixed")
+            .expect("cross-segment comparison should still work");
+    }
+
+    #[test]
+    fn validate_schema_version_fails_when_version_is_invalid() {
+        let err = validate_schema_version("garbage", "shipper.receipt.v1", "receipt")
+            .expect_err("must fail");
+        assert!(err.to_string().contains("invalid receipt version format"));
+    }
+
+    #[test]
+    fn validate_schema_version_fails_when_minimum_is_invalid() {
+        let err = validate_schema_version("shipper.receipt.v1", "garbage", "receipt")
+            .expect_err("must fail");
+        assert!(err.to_string().contains("invalid minimum version format"));
+    }
+
+    #[test]
+    fn validate_schema_version_label_appears_in_error_message() {
+        let err = validate_schema_version("shipper.x.v0", "shipper.x.v5", "my_custom_label")
+            .expect_err("must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("my_custom_label"), "label missing from: {msg}");
+    }
+
+    // --- Snapshot tests using assert_debug_snapshot! ---
+
+    #[test]
+    fn snapshot_parse_ok_result() {
+        assert_debug_snapshot!(parse_schema_version("shipper.receipt.v42"));
+    }
+
+    #[test]
+    fn snapshot_parse_err_invalid_format() {
+        assert_debug_snapshot!(parse_schema_version("invalid").map_err(|e| e.to_string()));
+    }
+
+    #[test]
+    fn snapshot_parse_err_non_numeric() {
+        assert_debug_snapshot!(parse_schema_version("shipper.receipt.vx").map_err(|e| e.to_string()));
+    }
+
+    #[test]
+    fn snapshot_validate_ok() {
+        assert_debug_snapshot!(
+            validate_schema_version("shipper.state.v3", "shipper.state.v1", "state")
+        );
+    }
+
+    #[test]
+    fn snapshot_validate_err_too_old() {
+        assert_debug_snapshot!(
+            validate_schema_version("shipper.state.v0", "shipper.state.v5", "state")
+                .map_err(|e| e.to_string())
+        );
+    }
+
+    #[test]
+    fn snapshot_parse_boundary_values() {
+        let results: Vec<_> = [
+            "shipper.x.v0",
+            "shipper.x.v1",
+            &format!("shipper.x.v{}", u32::MAX),
+        ]
+        .iter()
+        .map(|s| (s.to_string(), parse_schema_version(s).ok()))
+        .collect();
+        assert_debug_snapshot!(results);
     }
 
     #[test]

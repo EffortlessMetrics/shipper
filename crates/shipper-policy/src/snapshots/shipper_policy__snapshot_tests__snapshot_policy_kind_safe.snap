@@ -1,0 +1,6 @@
+---
+source: crates/shipper-policy/src/lib.rs
+assertion_line: 600
+expression: "PolicyKind::Safe"
+---
+Safe

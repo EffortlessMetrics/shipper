@@ -74,6 +74,57 @@ mod tests {
         assert_eq!(flattened, items);
         assert_eq!(chunks.len(), 1);
     }
+
+    #[test]
+    fn chunking_max_concurrent_zero_treated_as_one() {
+        let items = vec!["a", "b", "c"];
+        let chunks = chunk_by_max_concurrent(&items, 0);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0], vec!["a"]);
+        assert_eq!(chunks[1], vec!["b"]);
+        assert_eq!(chunks[2], vec!["c"]);
+    }
+
+    #[test]
+    fn chunking_max_concurrent_usize_max() {
+        let items = vec!["x", "y", "z"];
+        let chunks = chunk_by_max_concurrent(&items, usize::MAX);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], vec!["x", "y", "z"]);
+    }
+
+    #[test]
+    fn chunking_single_item_with_max_concurrent_one() {
+        let items = vec!["only"];
+        let chunks = chunk_by_max_concurrent(&items, 1);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], vec!["only"]);
+    }
+
+    #[test]
+    fn chunking_large_list_100_items_by_7() {
+        let items: Vec<i32> = (0..100).collect();
+        let chunks = chunk_by_max_concurrent(&items, 7);
+
+        // 100 / 7 = 14 full chunks of 7 + 1 chunk of 2 = 15 chunks
+        assert_eq!(chunks.len(), 15);
+        for chunk in &chunks[..14] {
+            assert_eq!(chunk.len(), 7);
+        }
+        assert_eq!(chunks[14].len(), 2);
+
+        let flattened: Vec<i32> = chunks.into_iter().flatten().collect();
+        assert_eq!(flattened, items);
+    }
+
+    #[test]
+    fn chunking_with_integer_types() {
+        let items: Vec<u64> = vec![10, 20, 30, 40, 50, 60];
+        let chunks = chunk_by_max_concurrent(&items, 4);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], vec![10, 20, 30, 40]);
+        assert_eq!(chunks[1], vec![50, 60]);
+    }
 }
 
 #[cfg(test)]
@@ -102,6 +153,29 @@ mod property_tests {
                 prop_assert!(chunk.len() <= max_concurrent.max(1));
             }
         }
+
+        #[test]
+        fn chunk_sizes_never_exceed_max_and_total_preserved(
+            items in prop::collection::vec(0i32..1000, 0..200),
+            max_concurrent in 0usize..32,
+        ) {
+            let effective = max_concurrent.max(1);
+            let chunks = chunk_by_max_concurrent(&items, max_concurrent);
+
+            // Every chunk respects the bound
+            for chunk in &chunks {
+                prop_assert!(chunk.len() <= effective);
+                prop_assert!(!chunk.is_empty());
+            }
+
+            // Total items preserved
+            let total: usize = chunks.iter().map(|c| c.len()).sum();
+            prop_assert_eq!(total, items.len());
+
+            // Order preserved
+            let flattened: Vec<i32> = chunks.into_iter().flatten().collect();
+            prop_assert_eq!(flattened, items);
+        }
     }
 }
 
@@ -109,6 +183,7 @@ mod property_tests {
 mod snapshot_tests {
     use super::chunk_by_max_concurrent;
     use insta::assert_yaml_snapshot;
+    use insta::assert_debug_snapshot;
 
     #[test]
     fn snapshot_chunk_5_by_2() {
@@ -144,5 +219,29 @@ mod snapshot_tests {
     fn snapshot_chunk_empty() {
         let items: Vec<&str> = vec![];
         assert_yaml_snapshot!(chunk_by_max_concurrent(&items, 4));
+    }
+
+    #[test]
+    fn snapshot_chunk_max_concurrent_zero() {
+        let items = vec!["a", "b", "c"];
+        assert_debug_snapshot!(chunk_by_max_concurrent(&items, 0));
+    }
+
+    #[test]
+    fn snapshot_chunk_max_concurrent_usize_max() {
+        let items = vec!["x", "y", "z"];
+        assert_debug_snapshot!(chunk_by_max_concurrent(&items, usize::MAX));
+    }
+
+    #[test]
+    fn snapshot_chunk_single_item_max_one() {
+        let items = vec!["solo"];
+        assert_debug_snapshot!(chunk_by_max_concurrent(&items, 1));
+    }
+
+    #[test]
+    fn snapshot_chunk_large_list_by_7() {
+        let items: Vec<i32> = (1..=21).collect();
+        assert_debug_snapshot!(chunk_by_max_concurrent(&items, 7));
     }
 }

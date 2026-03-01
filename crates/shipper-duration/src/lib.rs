@@ -205,3 +205,213 @@ mod proptests {
         }
     }
 }
+
+#[cfg(test)]
+mod edge_case_tests {
+    use super::*;
+
+    // -- Zero duration --
+
+    #[test]
+    fn parse_zero_ms() {
+        assert_eq!(parse_duration("0ms").unwrap(), Duration::ZERO);
+    }
+
+    #[test]
+    fn parse_zero_seconds() {
+        assert_eq!(parse_duration("0s").unwrap(), Duration::ZERO);
+    }
+
+    #[test]
+    fn deserialize_zero_from_integer() {
+        #[derive(serde::Deserialize)]
+        struct H {
+            #[serde(deserialize_with = "deserialize_duration")]
+            v: Duration,
+        }
+        let h: H = serde_json::from_str(r#"{"v":0}"#).unwrap();
+        assert_eq!(h.v, Duration::ZERO);
+    }
+
+    #[test]
+    fn serialize_zero_is_zero() {
+        #[derive(serde::Serialize)]
+        struct H {
+            #[serde(serialize_with = "serialize_duration")]
+            v: Duration,
+        }
+        let json = serde_json::to_value(H { v: Duration::ZERO }).unwrap();
+        assert_eq!(json["v"], 0);
+    }
+
+    // -- Large durations --
+
+    #[test]
+    fn parse_large_hours() {
+        let d = parse_duration("9999h").unwrap();
+        assert_eq!(d, Duration::from_secs(9999 * 3600));
+    }
+
+    #[test]
+    fn serialize_large_millis() {
+        #[derive(serde::Serialize)]
+        struct H {
+            #[serde(serialize_with = "serialize_duration")]
+            v: Duration,
+        }
+        let large = Duration::from_secs(365 * 24 * 3600); // 1 year
+        let json = serde_json::to_value(H { v: large }).unwrap();
+        assert_eq!(json["v"], 365 * 24 * 3600 * 1000_u64);
+    }
+
+    // -- Sub-millisecond precision --
+
+    #[test]
+    fn parse_microseconds() {
+        let d = parse_duration("500us").unwrap();
+        assert_eq!(d, Duration::from_micros(500));
+    }
+
+    #[test]
+    fn parse_nanoseconds() {
+        let d = parse_duration("100ns").unwrap();
+        assert_eq!(d, Duration::from_nanos(100));
+    }
+
+    #[test]
+    fn serialize_truncates_sub_millis_to_zero() {
+        // Duration with only microseconds → as_millis() == 0
+        #[derive(serde::Serialize)]
+        struct H {
+            #[serde(serialize_with = "serialize_duration")]
+            v: Duration,
+        }
+        let d = Duration::from_micros(999);
+        let json = serde_json::to_value(H { v: d }).unwrap();
+        assert_eq!(json["v"], 0);
+    }
+
+    // -- Parsing edge cases --
+
+    #[test]
+    fn parse_empty_string_is_error() {
+        assert!(parse_duration("").is_err());
+    }
+
+    #[test]
+    fn parse_whitespace_only_is_error() {
+        assert!(parse_duration("   ").is_err());
+    }
+
+    #[test]
+    fn parse_combined_units() {
+        let d = parse_duration("1h 30m 15s").unwrap();
+        assert_eq!(d, Duration::from_secs(3600 + 30 * 60 + 15));
+    }
+
+    #[test]
+    fn parse_day_unit() {
+        let d = parse_duration("2days").unwrap();
+        assert_eq!(d, Duration::from_secs(2 * 86400));
+    }
+
+    // -- Comparison / ordering --
+
+    #[test]
+    fn parsed_durations_maintain_ordering() {
+        let a = parse_duration("500ms").unwrap();
+        let b = parse_duration("1s").unwrap();
+        let c = parse_duration("1m").unwrap();
+        let d = parse_duration("1h").unwrap();
+        assert!(a < b);
+        assert!(b < c);
+        assert!(c < d);
+    }
+
+    // -- Arithmetic --
+
+    #[test]
+    fn parsed_durations_support_addition() {
+        let a = parse_duration("30s").unwrap();
+        let b = parse_duration("30s").unwrap();
+        assert_eq!(a + b, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn parsed_durations_support_subtraction() {
+        let a = parse_duration("2m").unwrap();
+        let b = parse_duration("30s").unwrap();
+        assert_eq!(a - b, Duration::from_secs(90));
+    }
+
+    #[test]
+    fn parsed_duration_supports_multiplication() {
+        let a = parse_duration("500ms").unwrap();
+        assert_eq!(a * 4, Duration::from_secs(2));
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use insta::assert_debug_snapshot;
+
+    #[test]
+    fn snapshot_parsed_zero() {
+        assert_debug_snapshot!(parse_duration("0s").unwrap());
+    }
+
+    #[test]
+    fn snapshot_parsed_millis() {
+        assert_debug_snapshot!(parse_duration("250ms").unwrap());
+    }
+
+    #[test]
+    fn snapshot_parsed_seconds() {
+        assert_debug_snapshot!(parse_duration("42s").unwrap());
+    }
+
+    #[test]
+    fn snapshot_parsed_minutes() {
+        assert_debug_snapshot!(parse_duration("5m").unwrap());
+    }
+
+    #[test]
+    fn snapshot_parsed_hours() {
+        assert_debug_snapshot!(parse_duration("2h").unwrap());
+    }
+
+    #[test]
+    fn snapshot_parsed_combined() {
+        assert_debug_snapshot!(parse_duration("1h 30m 15s 200ms").unwrap());
+    }
+
+    #[test]
+    fn snapshot_parse_error() {
+        assert_debug_snapshot!(parse_duration("not-valid"));
+    }
+
+    #[test]
+    fn snapshot_deserialized_from_integer() {
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
+        struct H {
+            #[serde(deserialize_with = "deserialize_duration")]
+            v: Duration,
+        }
+        let h: H = serde_json::from_str(r#"{"v":3661000}"#).unwrap();
+        assert_debug_snapshot!(h);
+    }
+
+    #[test]
+    fn snapshot_deserialized_from_string() {
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
+        struct H {
+            #[serde(deserialize_with = "deserialize_duration")]
+            v: Duration,
+        }
+        let h: H = serde_json::from_str(r#"{"v":"1h 1m 1s"}"#).unwrap();
+        assert_debug_snapshot!(h);
+    }
+}

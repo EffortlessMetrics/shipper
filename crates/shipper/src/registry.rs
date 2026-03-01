@@ -222,7 +222,7 @@ impl RegistryClient {
             Err(e) => {
                 // Graceful degradation: if the endpoint is unavailable or returns forbidden,
                 // return false rather than failing the entire preflight
-                let msg = e.to_string();
+                let msg = format!("{e:#}");
                 if msg.contains("forbidden")
                     || msg.contains("403")
                     || msg.contains("unauthorized")

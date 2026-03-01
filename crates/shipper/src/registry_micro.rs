@@ -93,7 +93,7 @@ impl RegistryClient {
         match self.list_owners(crate_name, token) {
             Ok(_) => Ok(true),
             Err(e) => {
-                let msg = e.to_string();
+                let msg = format!("{e:#}");
                 if msg.contains("forbidden")
                     || msg.contains("403")
                     || msg.contains("unauthorized")

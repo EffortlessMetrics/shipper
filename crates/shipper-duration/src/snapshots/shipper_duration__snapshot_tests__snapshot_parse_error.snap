@@ -1,0 +1,10 @@
+---
+source: crates/shipper-duration/src/lib.rs
+assertion_line: 391
+expression: "parse_duration(\"not-valid\")"
+---
+Err(
+    NumberExpected(
+        0,
+    ),
+)

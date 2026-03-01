@@ -1,0 +1,11 @@
+---
+source: crates/shipper-policy/src/lib.rs
+assertion_line: 529
+expression: effects
+---
+PolicyEffects {
+    run_dry_run: false,
+    check_ownership: true,
+    strict_ownership: true,
+    readiness_enabled: true,
+}
