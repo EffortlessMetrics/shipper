@@ -3,7 +3,9 @@
 use std::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
-use shipper_config::{CliOverrides, PublishPolicy, ReadinessMethod, Registry, ShipperConfig, VerifyMode};
+use shipper_config::{
+    CliOverrides, PublishPolicy, ReadinessMethod, Registry, ShipperConfig, VerifyMode,
+};
 use shipper_config_runtime::into_runtime_options;
 
 fn next_u8(data: &[u8], idx: &mut usize) -> u8 {
@@ -53,7 +55,9 @@ fuzz_target!(|data: &[u8]| {
     source.readiness.method = readiness_method;
     source.max_attempts = (next_u64(data, &mut idx) % 500 + 1) as u32;
     source.base_delay = Duration::from_millis(next_u64(data, &mut idx) % 60_000);
-    source.max_delay = source.base_delay.max(Duration::from_millis(next_u64(data, &mut idx) % 120_000));
+    source.max_delay = source
+        .base_delay
+        .max(Duration::from_millis(next_u64(data, &mut idx) % 120_000));
     source.output_lines = (next_u64(data, &mut idx) % 2000 + 1) as usize;
     source.webhook.url = if (next_u8(data, &mut idx) % 2) == 0 {
         String::from("https://fuzz.example/webhook")
@@ -79,7 +83,8 @@ fuzz_target!(|data: &[u8]| {
     };
     source.parallel.enabled = (next_u8(data, &mut idx) % 2) == 1;
     source.parallel.max_concurrent = (next_u8(data, &mut idx) % 16) as usize + 1;
-    source.parallel.per_package_timeout = Duration::from_secs(120 + (next_u64(data, &mut idx) % 600));
+    source.parallel.per_package_timeout =
+        Duration::from_secs(120 + (next_u64(data, &mut idx) % 600));
     source.registries = (0..((next_u8(data, &mut idx) % 4) as usize))
         .map(|idx| Registry {
             name: format!("registry-{idx}"),
@@ -104,6 +109,9 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(converted.webhook.secret, source.webhook.secret);
     assert_eq!(converted.webhook.timeout_secs, source.webhook.timeout_secs);
     assert_eq!(converted.force_resume, source.force_resume);
-    assert_eq!(converted.parallel.max_concurrent, source.parallel.max_concurrent);
+    assert_eq!(
+        converted.parallel.max_concurrent,
+        source.parallel.max_concurrent
+    );
     assert_eq!(converted.registries.len(), source.registries.len());
 });

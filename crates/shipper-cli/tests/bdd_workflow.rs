@@ -1212,3 +1212,315 @@ mod preflight_checks_without_publishing {
         registry.join();
     }
 }
+
+// ============================================================================
+// Feature: Edge-case scenarios
+// ============================================================================
+
+fn create_dev_dependency_workspace(root: &Path) {
+    write_file(
+        &root.join("Cargo.toml"),
+        r#"
+[workspace]
+members = ["lib-a", "lib-b"]
+resolver = "2"
+"#,
+    );
+    write_file(
+        &root.join("lib-a/Cargo.toml"),
+        r#"
+[package]
+name = "lib-a"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    write_file(&root.join("lib-a/src/lib.rs"), "pub fn a() {}\n");
+    write_file(
+        &root.join("lib-b/Cargo.toml"),
+        r#"
+[package]
+name = "lib-b"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+lib-a = { path = "../lib-a" }
+"#,
+    );
+    write_file(
+        &root.join("lib-b/src/lib.rs"),
+        "pub fn b() {}\n#[cfg(test)] mod tests { use lib_a::a; #[test] fn it() { a(); } }\n",
+    );
+}
+
+mod publish_all_already_published_sequential {
+    use super::*;
+
+    // Scenario: Sequential publish when all crates are already published skips everything
+    //
+    // Given: a workspace with "core" and "app" where "app" depends on "core"
+    // And: registry reports both versions as already published (200)
+    // When: I run "shipper publish" (sequential, no --parallel)
+    // Then: exit code is 0, receipt shows both crates as skipped
+    #[test]
+    #[serial]
+    fn given_all_published_when_sequential_publish_then_all_skipped() {
+        let td = tempdir().expect("tempdir");
+        create_two_crate_workspace(td.path());
+        let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
+        let state_dir = td.path().join(".shipper");
+
+        // Both return 200 → already published → skip
+        let registry = spawn_registry(vec![200, 200], 2);
+
+        let mut cmd = shipper_cmd();
+        fast_args(
+            &mut cmd,
+            &td.path().join("Cargo.toml"),
+            &registry.base_url,
+            &state_dir,
+        );
+        cmd.arg("publish")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+            .assert()
+            .success();
+
+        // Then: receipt shows all crates as skipped
+        let receipt: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(state_dir.join("receipt.json")).expect("read receipt"),
+        )
+        .expect("parse receipt");
+        let packages = receipt["packages"].as_array().expect("packages array");
+        assert_eq!(packages.len(), 2, "receipt should have 2 packages");
+
+        for pkg in packages {
+            let pkg_state = pkg["state"]["state"].as_str().unwrap_or("unknown");
+            assert_eq!(
+                pkg_state, "skipped",
+                "expected skipped for {}, got: {pkg_state}",
+                pkg["name"]
+            );
+        }
+
+        registry.join();
+    }
+}
+
+mod clean_with_no_state_directory {
+    use super::*;
+
+    // Scenario: Clean when .shipper directory does not exist exits gracefully
+    //
+    // Given: a workspace with "demo" and no .shipper directory
+    // When: I run "shipper clean"
+    // Then: exit code is 0, output says "State directory does not exist"
+    #[test]
+    fn given_no_state_dir_when_clean_then_reports_not_exist() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join(".shipper");
+
+        // Ensure .shipper does not exist
+        assert!(!state_dir.exists());
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("clean")
+            .assert()
+            .success()
+            .stdout(contains("State directory does not exist"));
+    }
+}
+
+mod doctor_reports_unreachable_registry {
+    use super::*;
+
+    // Scenario: Doctor reports registry unreachable when mock server is not running
+    //
+    // Given: a valid workspace with an unreachable registry API base
+    // When: I run "shipper doctor"
+    // Then: exit code is 0, output contains "registry_reachable: false"
+    #[test]
+    fn given_unreachable_registry_when_doctor_then_reports_unreachable() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+        // Use a port that is guaranteed not to be listening
+        let bad_url = "http://127.0.0.1:1";
+
+        let assert = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(bad_url)
+            .arg("doctor")
+            .env("CARGO_HOME", td.path().join("cargo-home"))
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+            .assert()
+            .success();
+
+        // registry_reachable: false is emitted via reporter.warn() → stderr
+        let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf8");
+        assert!(
+            stderr.contains("registry_reachable: false"),
+            "expected 'registry_reachable: false' in stderr, got: {stderr}"
+        );
+    }
+}
+
+mod plan_with_dev_dependencies_only {
+    use super::*;
+
+    // Scenario: Plan on a workspace where crates have only dev-dependencies
+    //
+    // Given: a workspace with "lib-a" and "lib-b" where "lib-b" dev-depends on "lib-a"
+    // When: I run "shipper plan"
+    // Then: exit code is 0, output lists both crates, total is 2
+    #[test]
+    fn given_dev_deps_only_when_plan_then_both_crates_listed() {
+        let td = tempdir().expect("tempdir");
+        create_dev_dependency_workspace(td.path());
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("plan")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        assert!(
+            stdout.contains("lib-a@0.1.0"),
+            "expected lib-a@0.1.0 in plan output, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("lib-b@0.1.0"),
+            "expected lib-b@0.1.0 in plan output, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("Total packages to publish:"),
+            "expected total packages line in output, got: {stdout}"
+        );
+    }
+}
+
+mod preflight_fails_on_non_git_directory {
+    use super::*;
+
+    // Scenario: Preflight fails when run in a non-git directory without --allow-dirty
+    //
+    // Given: a workspace with "demo" that is NOT inside a git repository
+    // When: I run "shipper preflight" (without --allow-dirty)
+    // Then: exit code is non-zero (git cleanliness check fails)
+    #[test]
+    fn given_non_git_dir_when_preflight_without_allow_dirty_then_fails() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let registry = spawn_registry(vec![200, 200, 200], 3);
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--skip-ownership-check")
+            .arg("--no-verify")
+            .arg("preflight")
+            .assert()
+            .failure();
+
+        registry.join();
+    }
+}
+
+mod resume_with_corrupted_state_file {
+    use super::*;
+
+    // Scenario: Resume with a corrupted (non-JSON) state file fails gracefully
+    //
+    // Given: a workspace with "demo" and a state file containing garbage data
+    // When: I run "shipper resume"
+    // Then: exit code is non-zero, error output mentions parse/state issue
+    #[test]
+    #[serial]
+    fn given_corrupted_state_when_resume_then_fails_with_error() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join(".shipper");
+        fs::create_dir_all(&state_dir).expect("mkdir");
+
+        // Write corrupted state
+        write_file(&state_dir.join("state.json"), "NOT VALID JSON {{{{");
+
+        let registry = spawn_registry(vec![200], 1);
+
+        let mut cmd = shipper_cmd();
+        fast_args(
+            &mut cmd,
+            &td.path().join("Cargo.toml"),
+            &registry.base_url,
+            &state_dir,
+        );
+        cmd.arg("resume").assert().failure();
+
+        registry.join();
+    }
+}
+
+mod status_all_published {
+    use super::*;
+
+    // Scenario: Status shows all crates as published when registry reports all exist
+    //
+    // Given: a workspace with "core" and "app"
+    // And: registry returns 200 for both versions
+    // When: I run "shipper status"
+    // Then: exit code is 0, output contains "published" for both, no "missing"
+    #[test]
+    fn given_all_published_when_status_then_no_missing() {
+        let td = tempdir().expect("tempdir");
+        create_two_crate_workspace(td.path());
+
+        // Both return 200 → published
+        let registry = spawn_registry(vec![200, 200], 2);
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("status")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        assert!(
+            stdout.contains("published"),
+            "expected published in output, got: {stdout}"
+        );
+        assert!(
+            !stdout.contains("missing"),
+            "expected no missing in output, got: {stdout}"
+        );
+
+        registry.join();
+    }
+}

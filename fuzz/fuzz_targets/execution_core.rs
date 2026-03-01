@@ -26,13 +26,7 @@ fuzz_target!(|input: (Vec<u8>, Vec<u8>, u8, bool)| {
     };
     let base = Duration::from_millis(u64::from(attempt) * 11);
     let max = Duration::from_millis(u64::from(attempt).saturating_mul(23).saturating_add(1));
-    let _ = execution_core::backoff_delay(
-        base,
-        max.max(base),
-        u32::from(attempt),
-        strategy,
-        0.15,
-    );
+    let _ = execution_core::backoff_delay(base, max.max(base), u32::from(attempt), strategy, 0.15);
 
     let workspace_root = PathBuf::from("workspace-root");
     let rel = execution_core::resolve_state_dir(&workspace_root, &PathBuf::from(".shipper"));
@@ -56,7 +50,6 @@ fuzz_target!(|input: (Vec<u8>, Vec<u8>, u8, bool)| {
         )]),
     };
 
-    let mut st = st;
     execution_core::update_state_locked(&mut st, &key, PackageState::Uploaded);
     assert!(matches!(
         st.packages.get(&key).expect("pkg").state,

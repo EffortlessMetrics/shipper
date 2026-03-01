@@ -13,9 +13,11 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(d) = parse_duration(input) {
         // A successfully parsed duration formatted and re-parsed should roundtrip
         let formatted = humantime::format_duration(d).to_string();
-        let reparsed =
-            parse_duration(&formatted).expect("formatted duration must re-parse");
-        assert_eq!(reparsed, d, "roundtrip failed for {input:?} → {formatted:?}");
+        let reparsed = parse_duration(&formatted).expect("formatted duration must re-parse");
+        assert_eq!(
+            reparsed, d,
+            "roundtrip failed for {input:?} → {formatted:?}"
+        );
     }
 
     // Try substrings — parsing should never panic

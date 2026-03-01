@@ -2,7 +2,6 @@
 
 use libfuzzer_sys::fuzz_target;
 use shipper::types::*;
-use std::collections::BTreeMap;
 
 fuzz_target!(|data: &[u8]| {
     // Try to parse as JSON and verify serialization roundtrips
@@ -16,7 +15,7 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
         }
-        
+
         // Test PreflightReport roundtrip
         if let Ok(report) = serde_json::from_str::<PreflightReport>(json_str) {
             if let Ok(roundtripped) = serde_json::to_string(&report) {
@@ -25,7 +24,7 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
         }
-        
+
         // Test Receipt roundtrip
         if let Ok(receipt) = serde_json::from_str::<Receipt>(json_str) {
             if let Ok(roundtripped) = serde_json::to_string(&receipt) {

@@ -11,9 +11,11 @@
 /// assert_eq!(tail_lines(log, 2), "line3\nline4");
 /// ```
 pub fn tail_lines(s: &str, n: usize) -> String {
-    let lines: Vec<&str> = s.lines().collect();
+    // Normalize line endings before splitting to ensure consistent line counts.
+    let normalized = s.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.lines().collect();
     let tail = if lines.len() <= n {
-        s.to_string()
+        normalized
     } else {
         lines[lines.len() - n..].join("\n")
     };

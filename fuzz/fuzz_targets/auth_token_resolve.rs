@@ -36,10 +36,7 @@ fuzz_target!(|data: &[u8]| {
     // Resolve token with an arbitrary registry name and credentials content
     temp_env::with_vars(
         [
-            (
-                "CARGO_HOME",
-                Some(td.path().to_str().unwrap_or_default()),
-            ),
+            ("CARGO_HOME", Some(td.path().to_str().unwrap_or_default())),
             ("CARGO_REGISTRY_TOKEN", None::<&str>),
             ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
         ],

@@ -8,8 +8,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(state) = serde_json::from_slice::<ExecutionState>(data) {
         // Roundtrip: serialize then deserialize again
         let json = serde_json::to_vec(&state).expect("serialize back");
-        let rt: ExecutionState =
-            serde_json::from_slice(&json).expect("roundtrip deserialize");
+        let rt: ExecutionState = serde_json::from_slice(&json).expect("roundtrip deserialize");
 
         // Verify structural invariants survive the roundtrip
         assert_eq!(state.packages.len(), rt.packages.len());

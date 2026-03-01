@@ -49,10 +49,7 @@ fuzz_target!(|data: (u8, Vec<(u8, u8)>)| {
     }
 
     for (pkg, deps) in &dependencies {
-        let pkg_level = level_by_package
-            .get(pkg)
-            .copied()
-            .expect("package exists");
+        let pkg_level = level_by_package.get(pkg).copied().expect("package exists");
         for dep in deps {
             let dep_level = level_by_package
                 .get(dep)

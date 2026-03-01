@@ -11,15 +11,13 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(payload) = serde_json::from_slice::<WebhookPayload>(data) {
         // Roundtrip: serialize then deserialize again must succeed
         let json = serde_json::to_vec(&payload).expect("serialize back");
-        let _: WebhookPayload =
-            serde_json::from_slice(&json).expect("roundtrip deserialize");
+        let _: WebhookPayload = serde_json::from_slice(&json).expect("roundtrip deserialize");
     }
 
     // 2. WebhookConfig deserialization from arbitrary bytes
     if let Ok(config) = serde_json::from_slice::<WebhookConfig>(data) {
         let json = serde_json::to_vec(&config).expect("serialize back");
-        let _: WebhookConfig =
-            serde_json::from_slice(&json).expect("roundtrip deserialize");
+        let _: WebhookConfig = serde_json::from_slice(&json).expect("roundtrip deserialize");
     }
 
     // 3. HMAC signature computation with arbitrary inputs
