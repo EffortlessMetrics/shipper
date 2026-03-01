@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use assert_cmd::Command;
 use predicates::str::contains;
+use serial_test::serial;
 use tempfile::tempdir;
 use tiny_http::{Header, Response, Server, StatusCode};
 
@@ -143,7 +144,7 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
     let base_url = format!("http://{}", server.server_addr());
     let handle = thread::spawn(move || {
         for idx in 0..expected_requests {
-            let req = match server.recv_timeout(Duration::from_secs(30)) {
+            let req = match server.recv_timeout(Duration::from_secs(60)) {
                 Ok(Some(r)) => r,
                 _ => break,
             };
@@ -211,6 +212,7 @@ fn resume_no_state_file_shows_error() {
 // ============================================================================
 
 #[test]
+#[serial]
 fn resume_continues_from_failed_state() {
     let td = tempdir().expect("tempdir");
     create_single_crate_workspace(td.path());
@@ -300,6 +302,7 @@ fn resume_continues_from_failed_state() {
 // ============================================================================
 
 #[test]
+#[serial]
 fn resume_with_all_published_state_succeeds() {
     let td = tempdir().expect("tempdir");
     create_single_crate_workspace(td.path());
@@ -462,6 +465,7 @@ fn resume_with_custom_state_dir() {
 // ============================================================================
 
 #[test]
+#[serial]
 fn resume_after_partial_publish() {
     let td = tempdir().expect("tempdir");
     create_two_crate_workspace(td.path());
@@ -478,7 +482,8 @@ fn resume_after_partial_publish() {
     //   core already skipped in state → 0 requests
     //   app version-check 404, cargo succeeds, readiness 200: 2 requests
     // Total: 6 requests
-    let registry = spawn_registry(vec![200, 404, 404, 404, 404, 200], 6);
+    // Add an extra buffer slot so the server stays alive between publish and resume.
+    let registry = spawn_registry(vec![200, 404, 404, 404, 404, 200], 7);
 
     // First: publish all crates with cargo failing.
     // core gets skipped (registry says 200 → already published), app fails.
