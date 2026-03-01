@@ -160,3 +160,24 @@ path = "fuzz_targets/receipt_load.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "receipt_deserialize"
+path = "fuzz_targets/receipt_deserialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "execution_state_deserialize"
+path = "fuzz_targets/execution_state_deserialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plan_levels"
+path = "fuzz_targets/plan_levels.rs"
+test = false
+doc = false
+bench = false

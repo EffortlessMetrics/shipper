@@ -1358,13 +1358,14 @@ fn environment_fingerprint_in_receipt_through_store() {
 // ===========================================================================
 
 #[test]
+#[allow(unused_mut)]
 fn lock_acquire_publish_release_sequence() {
     let td = tempdir().expect("tempdir");
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir");
 
     // Step 1: Acquire lock
-    let lock = shipper::lock::LockFile::acquire(&state_dir, None).expect("acquire");
+    let mut lock = shipper::lock::LockFile::acquire(&state_dir, None).expect("acquire");
     assert!(shipper::lock::LockFile::is_locked(&state_dir, None).expect("locked"));
 
     // Step 2: Set plan_id (simulating engine linking the plan to the lock)

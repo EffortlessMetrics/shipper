@@ -1191,6 +1191,288 @@ mod tests {
         assert_eq!(debug, "GitHubActions");
     }
 
+    // ── Fingerprint completeness ──
+
+    #[test]
+    fn collect_environment_fingerprint_all_fields_populated() {
+        let fp = collect_environment_fingerprint();
+        assert!(
+            !fp.shipper_version.is_empty(),
+            "shipper_version must be set"
+        );
+        assert!(!fp.os.is_empty(), "os must be set");
+        assert!(!fp.arch.is_empty(), "arch must be set");
+        // In a dev environment, rustc and cargo should be available
+        assert!(fp.rust_version.is_some(), "rust_version should be Some");
+        assert!(fp.cargo_version.is_some(), "cargo_version should be Some");
+    }
+
+    #[test]
+    fn environment_info_collect_all_fields_populated() {
+        let info = EnvironmentInfo::collect().expect("collect should succeed");
+        assert!(!info.os.is_empty());
+        assert!(!info.arch.is_empty());
+        assert!(!info.rust_version.is_empty());
+        assert!(!info.cargo_version.is_empty());
+        assert!(info.collected_at <= Utc::now());
+    }
+
+    // ── OS/arch detection ──
+
+    #[test]
+    fn os_is_known_platform() {
+        let known = ["windows", "linux", "macos", "freebsd", "openbsd", "netbsd"];
+        let os = env::consts::OS;
+        assert!(known.contains(&os), "unexpected OS: {os}");
+    }
+
+    #[test]
+    fn arch_is_known_architecture() {
+        let known = [
+            "x86_64",
+            "x86",
+            "aarch64",
+            "arm",
+            "mips",
+            "mips64",
+            "powerpc",
+            "powerpc64",
+            "riscv64",
+            "s390x",
+        ];
+        let arch = env::consts::ARCH;
+        assert!(known.contains(&arch), "unexpected arch: {arch}");
+    }
+
+    #[test]
+    fn collect_fingerprint_os_arch_match_std() {
+        let fp = collect_environment_fingerprint();
+        assert_eq!(fp.os, env::consts::OS);
+        assert_eq!(fp.arch, env::consts::ARCH);
+    }
+
+    // ── Rust version parsing edge cases ──
+
+    #[test]
+    fn normalize_tool_version_nightly() {
+        assert_eq!(
+            normalize_tool_version("rustc 1.83.0-nightly (abc123 2024-01-01)"),
+            Some("1.83.0-nightly".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_tool_version_beta() {
+        assert_eq!(
+            normalize_tool_version("rustc 1.82.0-beta.3 (def456 2024-02-01)"),
+            Some("1.82.0-beta.3".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_tool_version_prerelease_with_hyphen() {
+        // Version strings like "0.3.0-rc.1" contain hyphens and letters
+        assert_eq!(
+            normalize_tool_version("shipper 0.3.0-rc.1"),
+            Some("0.3.0-rc.1".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_tool_version_many_tokens() {
+        assert_eq!(
+            normalize_tool_version("rustc 1.80.0 (abc 2024-01-01) extra stuff"),
+            Some("1.80.0".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_tool_version_tabs_and_extra_spaces() {
+        assert_eq!(
+            normalize_tool_version("cargo  \t  1.80.0   (hash)"),
+            Some("1.80.0".to_string())
+        );
+    }
+
+    // ── Cargo home detection ──
+
+    #[test]
+    #[serial]
+    fn collect_env_vars_does_not_capture_cargo_home() {
+        // CARGO_HOME is not in the known CI vars list
+        temp_env::with_var("CARGO_HOME", Some("/custom/cargo/home"), || {
+            let vars = collect_env_vars();
+            assert!(!vars.contains_key("CARGO_HOME"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn fingerprint_not_affected_by_cargo_home() {
+        temp_env::with_vars(ci_env(&[]), || {
+            let fp1 = get_environment_fingerprint();
+
+            temp_env::with_var("CARGO_HOME", Some("/some/other/path"), || {
+                let fp2 = get_environment_fingerprint();
+                assert_eq!(fp1, fp2, "CARGO_HOME should not affect fingerprint");
+            });
+        });
+    }
+
+    // ── Reproducibility ──
+
+    #[test]
+    fn get_environment_fingerprint_is_reproducible() {
+        let fp1 = get_environment_fingerprint();
+        let fp2 = get_environment_fingerprint();
+        assert_eq!(fp1, fp2, "same environment should produce same fingerprint");
+    }
+
+    #[test]
+    fn collect_environment_fingerprint_is_reproducible() {
+        let fp1 = collect_environment_fingerprint();
+        let fp2 = collect_environment_fingerprint();
+        assert_eq!(fp1.shipper_version, fp2.shipper_version);
+        assert_eq!(fp1.os, fp2.os);
+        assert_eq!(fp1.arch, fp2.arch);
+        assert_eq!(fp1.rust_version, fp2.rust_version);
+        assert_eq!(fp1.cargo_version, fp2.cargo_version);
+    }
+
+    #[test]
+    fn environment_info_fingerprint_is_deterministic_same_input() {
+        let info = EnvironmentInfo {
+            ci_environment: CiEnvironment::GitHubActions,
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            rust_version: "1.80.0".to_string(),
+            cargo_version: "1.80.0".to_string(),
+            env_vars: BTreeMap::new(),
+            collected_at: Utc::now(),
+        };
+        assert_eq!(info.fingerprint(), info.fingerprint());
+    }
+
+    // ── Shipper version in fingerprint ──
+
+    #[test]
+    fn shipper_version_matches_cargo_pkg_version() {
+        let fp = collect_environment_fingerprint();
+        assert_eq!(fp.shipper_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn shipper_version_handles_prerelease() {
+        // The workspace version may be "0.3.0-rc.1" — verify it parses
+        let version = env!("CARGO_PKG_VERSION");
+        // Must contain at least major.minor.patch
+        let parts: Vec<&str> = version.split('-').next().unwrap().split('.').collect();
+        assert!(
+            parts.len() >= 3,
+            "version should have major.minor.patch: {version}"
+        );
+        for part in &parts {
+            assert!(
+                part.parse::<u32>().is_ok(),
+                "non-numeric version component: {part}"
+            );
+        }
+    }
+
+    // ── Detection priority ──
+
+    #[test]
+    #[serial]
+    fn detect_environment_priority_gitlab_over_later() {
+        temp_env::with_vars(
+            ci_env(&[
+                ("GITLAB_CI", Some("true")),
+                ("CIRCLECI", Some("true")),
+                ("TRAVIS", Some("true")),
+            ]),
+            || {
+                assert_eq!(detect_environment(), CiEnvironment::GitLabCI);
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn detect_environment_priority_circleci_over_travis() {
+        temp_env::with_vars(
+            ci_env(&[("CIRCLECI", Some("true")), ("TRAVIS", Some("true"))]),
+            || {
+                assert_eq!(detect_environment(), CiEnvironment::CircleCI);
+            },
+        );
+    }
+
+    // ── collect_env_vars boundary ──
+
+    #[test]
+    #[serial]
+    fn collect_env_vars_empty_value_still_captured() {
+        temp_env::with_var("GITHUB_SHA", Some(""), || {
+            let vars = collect_env_vars();
+            assert_eq!(vars.get("GITHUB_SHA").map(String::as_str), Some(""));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn collect_env_vars_all_known_keys() {
+        let all_keys = [
+            "CI",
+            "GITHUB_REF",
+            "GITHUB_SHA",
+            "GITHUB_REPOSITORY",
+            "GITHUB_RUN_ID",
+            "GITHUB_RUN_NUMBER",
+            "GITLAB_CI_PIPELINE_ID",
+            "CIRCLE_BUILD_NUM",
+            "CIRCLE_BRANCH",
+            "TRAVIS_BUILD_NUMBER",
+            "TRAVIS_BRANCH",
+            "BUILD_BUILDID",
+            "BUILD_NUMBER",
+            "BITBUCKET_BRANCH",
+            "BITBUCKET_COMMIT",
+        ];
+        let overrides: Vec<(&str, Option<&str>)> =
+            all_keys.iter().map(|&k| (k, Some("test_val"))).collect();
+        temp_env::with_vars(overrides, || {
+            let vars = collect_env_vars();
+            for key in &all_keys {
+                assert!(vars.contains_key(*key), "expected key {key} to be captured");
+            }
+            assert_eq!(vars.len(), all_keys.len());
+        });
+    }
+
+    // ── Fingerprint format ──
+
+    #[test]
+    fn fingerprint_starts_with_ci_prefix() {
+        let info = EnvironmentInfo {
+            ci_environment: CiEnvironment::Local,
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            rust_version: "1.80.0".to_string(),
+            cargo_version: "1.80.0".to_string(),
+            env_vars: BTreeMap::new(),
+            collected_at: Utc::now(),
+        };
+        assert!(info.fingerprint().starts_with("ci:"));
+    }
+
+    #[test]
+    fn get_environment_fingerprint_segments_are_non_empty() {
+        let fp = get_environment_fingerprint();
+        for (i, segment) in fp.split('|').enumerate() {
+            assert!(!segment.is_empty(), "segment {i} should not be empty");
+        }
+    }
+
     // ── Property-based tests (proptest) ──
 
     mod proptests {
@@ -1495,6 +1777,46 @@ mod tests {
                 prop_assert!(!fp.shipper_version.is_empty());
             }
         }
+
+        // ── Arbitrary environment values produce valid fingerprints ──
+
+        proptest! {
+            #[test]
+            fn arbitrary_env_info_produces_nonempty_fingerprint(
+                ci_env in arb_ci_environment(),
+                os in "\\PC{1,20}",
+                arch in "\\PC{1,20}",
+                rust_ver in "\\PC{1,30}",
+                cargo_ver in "\\PC{1,30}",
+            ) {
+                let info = EnvironmentInfo {
+                    ci_environment: ci_env,
+                    os,
+                    arch,
+                    rust_version: rust_ver,
+                    cargo_version: cargo_ver,
+                    env_vars: BTreeMap::new(),
+                    collected_at: Utc::now(),
+                };
+                let fp = info.fingerprint();
+                prop_assert!(!fp.is_empty());
+                // Must always have at least 4 pipes (5 base components)
+                prop_assert!(fp.matches('|').count() >= 4);
+            }
+
+            #[test]
+            fn normalize_prerelease_versions(
+                major in 0u32..100,
+                minor in 0u32..100,
+                patch in 0u32..100,
+                pre in "[a-z]{1,8}\\.[0-9]{1,3}",
+            ) {
+                let ver = format!("{major}.{minor}.{patch}-{pre}");
+                let input = format!("rustc {ver}");
+                let result = normalize_tool_version(&input);
+                prop_assert_eq!(result, Some(ver));
+            }
+        }
     }
 }
 
@@ -1684,5 +2006,60 @@ mod snapshot_tests {
         };
 
         assert_yaml_snapshot!(info);
+    }
+
+    #[test]
+    fn environment_fingerprint_prerelease_version() {
+        let fp = EnvironmentFingerprint {
+            shipper_version: "0.3.0-rc.1".to_string(),
+            cargo_version: Some("1.82.0-nightly".to_string()),
+            rust_version: Some("1.82.0-beta.3".to_string()),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+
+        assert_yaml_snapshot!(fp);
+    }
+
+    #[test]
+    fn environment_info_windows_aarch64() {
+        let info = EnvironmentInfo {
+            ci_environment: CiEnvironment::AzurePipelines,
+            os: "windows".to_string(),
+            arch: "aarch64".to_string(),
+            rust_version: "1.80.0".to_string(),
+            cargo_version: "1.80.0".to_string(),
+            env_vars: BTreeMap::new(),
+            collected_at: chrono::DateTime::parse_from_rfc3339("2025-06-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        assert_yaml_snapshot!(info);
+    }
+
+    #[test]
+    fn environment_info_many_env_vars() {
+        let mut env_vars = BTreeMap::new();
+        env_vars.insert("CI".to_string(), "true".to_string());
+        env_vars.insert("GITHUB_REF".to_string(), "refs/tags/v1.0.0".to_string());
+        env_vars.insert("GITHUB_SHA".to_string(), "abcdef1234567890".to_string());
+        env_vars.insert("GITHUB_REPOSITORY".to_string(), "owner/repo".to_string());
+        env_vars.insert("GITHUB_RUN_ID".to_string(), "999".to_string());
+        env_vars.insert("GITHUB_RUN_NUMBER".to_string(), "42".to_string());
+
+        let info = EnvironmentInfo {
+            ci_environment: CiEnvironment::GitHubActions,
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            rust_version: "1.80.0".to_string(),
+            cargo_version: "1.80.0".to_string(),
+            env_vars,
+            collected_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        assert_yaml_snapshot!(info.fingerprint());
     }
 }

@@ -1497,12 +1497,13 @@ fn receipt_environment_fingerprint_roundtrips() {
 // ===========================================================================
 
 #[test]
+#[allow(unused_mut)]
 fn lock_acquire_set_plan_id_release_sequence() {
     let td = tempdir().expect("tempdir");
     let state_dir = td.path();
 
     // Acquire lock
-    let lock = shipper::lock::LockFile::acquire(state_dir, None).expect("acquire lock");
+    let mut lock = shipper::lock::LockFile::acquire(state_dir, None).expect("acquire lock");
 
     // Lock should exist
     assert!(shipper::lock::LockFile::is_locked(state_dir, None).expect("check"));
