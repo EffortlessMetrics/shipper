@@ -42,7 +42,7 @@ shipper-levels = { path = "../shipper-levels" }
 shipper-sparse-index = { path = "../shipper-sparse-index" }
 shipper-output-sanitizer = { path = "../shipper-output-sanitizer" }
 
-anyhow = "1.0.101"
+anyhow = "1.0.102"
 thiserror = "2.0.18"
 cargo_metadata = "0.23.1"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -52,7 +52,7 @@ reqwest = { version = "0.13.2", features = ["blocking", "json", "rustls"] }
 rand = { version = "0.10.0", features = ["std"] }
 chrono = { version = "0.4.43", features = ["serde"] }
 humantime = "2.3.0"
-toml = "1.0"
+toml = "1.0.3"
 hex = "0.4.3"
 gethostname = "1.1.0"
 tokio = { version = "1.42", features = ["rt", "time", "sync", "macros"] }
@@ -89,10 +89,10 @@ micro-all = ["micro-auth", "micro-git", "micro-events", "micro-lock", "micro-enc
 workspace = true
 
 [dev-dependencies]
-tempfile = "3.25.0"
+tempfile = "3.26.0"
 insta = "1.46.3"
 proptest = "1.10.0"
-serial_test = "3.3.1"
+serial_test = "3.4.0"
 tiny_http = "0.12.0"
 temp-env = "0.3"
 
