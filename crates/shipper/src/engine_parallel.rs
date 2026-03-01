@@ -1930,4 +1930,1305 @@ mod tests {
         );
         server.join();
     }
+
+    // ---------------------------------------------------------------------------
+    // New coverage tests
+    // ---------------------------------------------------------------------------
+
+    /// Verify that multiple threads can read and write the shared
+    /// Arc<Mutex<ExecutionState>> without deadlock or data corruption.
+    #[test]
+    fn test_concurrent_state_access() {
+        let st = Arc::new(Mutex::new(ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: "plan-concurrent-state".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::new(),
+        }));
+
+        // Pre-populate packages
+        {
+            let mut guard = st.lock().unwrap();
+            for i in 0..10 {
+                let key = format!("pkg-{}@0.1.0", i);
+                guard.packages.insert(
+                    key,
+                    PackageProgress {
+                        name: format!("pkg-{}", i),
+                        version: "0.1.0".to_string(),
+                        attempts: 0,
+                        state: PackageState::Pending,
+                        last_updated_at: Utc::now(),
+                    },
+                );
+            }
+        }
+
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let st_clone = Arc::clone(&st);
+            handles.push(std::thread::spawn(move || {
+                let key = format!("pkg-{}@0.1.0", i);
+                // Simulate multiple lock/unlock cycles per thread
+                for _ in 0..5 {
+                    {
+                        let mut guard = st_clone.lock().unwrap();
+                        if let Some(p) = guard.packages.get_mut(&key) {
+                            p.attempts += 1;
+                        }
+                    }
+                    std::thread::yield_now();
+                }
+                // Final state transition
+                {
+                    let mut guard = st_clone.lock().unwrap();
+                    update_state_locked(&mut guard, &key, PackageState::Published);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        let guard = st.lock().unwrap();
+        assert_eq!(guard.packages.len(), 10);
+        for (_, p) in guard.packages.iter() {
+            assert!(matches!(p.state, PackageState::Published));
+            assert_eq!(p.attempts, 5);
+        }
+    }
+
+    /// Verify that update_state_locked handles keys that do not exist
+    /// in the packages map gracefully (no-op).
+    #[test]
+    fn test_update_state_locked_missing_key() {
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: "plan-missing".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::new(),
+        };
+
+        // Should not panic on a missing key
+        update_state_locked(&mut st, "nonexistent@0.0.0", PackageState::Published);
+        assert!(st.packages.is_empty());
+    }
+
+    /// Verify that dependency ordering is respected: packages in later
+    /// levels must wait for earlier levels to complete.
+    #[test]
+    #[serial]
+    fn test_dependency_ordering_three_levels() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // Three-level dependency chain: c -> b -> a
+        // All already published for simplicity
+        let server = spawn_registry_server(
+            BTreeMap::from([
+                (
+                    "/api/v1/crates/a/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/b/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/c/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+            ]),
+            3,
+        );
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-3-levels".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: vec![
+                    PlannedPackage {
+                        name: "a".to_string(),
+                        version: "0.1.0".to_string(),
+                        manifest_path: td.path().join("a").join("Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "b".to_string(),
+                        version: "0.1.0".to_string(),
+                        manifest_path: td.path().join("b").join("Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "c".to_string(),
+                        version: "0.1.0".to_string(),
+                        manifest_path: td.path().join("c").join("Cargo.toml"),
+                    },
+                ],
+                dependencies: BTreeMap::from([
+                    ("b".to_string(), vec!["a".to_string()]),
+                    ("c".to_string(), vec!["b".to_string()]),
+                ]),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+
+        let mut packages = BTreeMap::new();
+        for p in &ws.plan.packages {
+            packages.insert(
+                pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages,
+        };
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts =
+                    run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                        .expect("parallel publish");
+
+                assert_eq!(receipts.len(), 3);
+                let names: Vec<String> = receipts.iter().map(|r| r.name.clone()).collect();
+                // a must come before b, b before c
+                let pos_a = names.iter().position(|n| n == "a").unwrap();
+                let pos_b = names.iter().position(|n| n == "b").unwrap();
+                let pos_c = names.iter().position(|n| n == "c").unwrap();
+                assert!(
+                    pos_a < pos_b && pos_b < pos_c,
+                    "expected a before b before c, got order: {:?}",
+                    names
+                );
+
+                // Verify level messages reflect 3 levels
+                let level_msgs: Vec<&String> = reporter
+                    .infos
+                    .iter()
+                    .filter(|m| m.contains("Level"))
+                    .collect();
+                assert!(
+                    level_msgs.len() >= 3,
+                    "expected at least 3 level messages, got: {:?}",
+                    level_msgs
+                );
+            },
+        );
+        server.join();
+    }
+
+    /// Verify that a permanent failure in one package of a level causes
+    /// run_publish_level to return an error.
+    #[test]
+    #[serial]
+    fn test_error_propagation_in_level() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // "good" is already published, "bad" is not published and cargo will fail permanently
+        let server = spawn_registry_server(
+            BTreeMap::from([
+                (
+                    "/api/v1/crates/good/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/bad/0.1.0".to_string(),
+                    vec![(404, "{}".to_string()), (404, "{}".to_string())],
+                ),
+            ]),
+            3,
+        );
+
+        let packages = vec![
+            PlannedPackage {
+                name: "good".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join("good").join("Cargo.toml"),
+            },
+            PlannedPackage {
+                name: "bad".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join("bad").join("Cargo.toml"),
+            },
+        ];
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-error-prop".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: packages.clone(),
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        opts.max_attempts = 1;
+
+        let mut state_packages = BTreeMap::new();
+        for p in &packages {
+            state_packages.insert(
+                pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let st = Arc::new(Mutex::new(ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: state_packages,
+        }));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        let level = PublishLevel { level: 0, packages };
+
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+                ),
+                ("SHIPPER_CARGO_EXIT", Some("1")),
+                ("SHIPPER_CARGO_STDERR", Some("permission denied")),
+            ],
+            || {
+                let result = run_publish_level(
+                    &level,
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+
+                assert!(
+                    result.is_err(),
+                    "expected error from level with failing package"
+                );
+                let err_msg = format!("{:#}", result.unwrap_err());
+                assert!(
+                    err_msg.contains("parallel publish failed"),
+                    "error should mention parallel publish failure, got: {}",
+                    err_msg
+                );
+            },
+        );
+        server.join();
+    }
+
+    /// Verify webhook delivery is triggered via the public
+    /// run_publish_parallel entry point by setting a webhook URL that
+    /// points to a local HTTP server.
+    #[test]
+    #[serial]
+    fn test_webhook_delivery_during_parallel_publish() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // Package already published → skip path
+        let registry_server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(200, "{}".to_string())],
+            )]),
+            1,
+        );
+
+        // Stand up a webhook receiver that accepts any POST
+        let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
+        let webhook_url = format!("http://{}", webhook_server.server_addr());
+        let received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let received_clone = Arc::clone(&received);
+
+        let wh_handle = std::thread::spawn(move || {
+            // We expect at least 2 webhook calls: PublishStarted + PublishCompleted
+            for _ in 0..2 {
+                if let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_secs(10)) {
+                    let mut body = String::new();
+                    req.as_reader().read_to_string(&mut body).ok();
+                    received_clone.lock().unwrap().push(body);
+                    req.respond(Response::from_string("ok")).ok();
+                }
+            }
+        });
+
+        let ws = planned_workspace(td.path(), registry_server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        opts.webhook = crate::webhook::WebhookConfig {
+            url: webhook_url,
+            ..Default::default()
+        };
+
+        let mut st = init_state_for_package(&ws.plan.plan_id, &ws.plan.registry, "demo", "0.1.0");
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts =
+                    run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                        .expect("parallel publish");
+                assert_eq!(receipts.len(), 1);
+            },
+        );
+
+        wh_handle.join().ok();
+        registry_server.join();
+
+        let bodies = received.lock().unwrap();
+        assert!(
+            bodies.len() >= 2,
+            "expected at least 2 webhook deliveries (started + completed), got {}",
+            bodies.len()
+        );
+    }
+
+    /// Verify progress tracking: after parallel publish of multiple
+    /// packages, the mutated ExecutionState is correctly propagated back.
+    #[test]
+    #[serial]
+    fn test_progress_tracking_state_propagation() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let server = spawn_registry_server(
+            BTreeMap::from([
+                (
+                    "/api/v1/crates/x/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/y/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/z/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+            ]),
+            3,
+        );
+
+        let packages = vec![
+            PlannedPackage {
+                name: "x".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join("x").join("Cargo.toml"),
+            },
+            PlannedPackage {
+                name: "y".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join("y").join("Cargo.toml"),
+            },
+            PlannedPackage {
+                name: "z".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join("z").join("Cargo.toml"),
+            },
+        ];
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-progress".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: packages.clone(),
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+
+        let mut state_packages = BTreeMap::new();
+        for p in &packages {
+            state_packages.insert(
+                pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: state_packages,
+        };
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let _ = run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                    .expect("parallel publish");
+
+                // After run_publish_parallel, the mutated state should
+                // reflect all packages as Skipped (already published).
+                for p in &packages {
+                    let key = pkg_key(&p.name, &p.version);
+                    let progress = st.packages.get(&key).expect("should exist");
+                    assert!(
+                        matches!(progress.state, PackageState::Skipped { .. }),
+                        "expected Skipped for {}, got {:?}",
+                        p.name,
+                        progress.state
+                    );
+                }
+            },
+        );
+        server.join();
+    }
+
+    /// Verify that run_publish_parallel with an empty plan (no packages)
+    /// succeeds and returns an empty receipts vector.
+    #[test]
+    #[serial]
+    fn test_parallel_publish_empty_plan() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-empty".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: "http://127.0.0.1:1".to_string(),
+                    index_base: None,
+                },
+                packages: vec![],
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::new(),
+        };
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts =
+                    run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                        .expect("empty parallel publish should succeed");
+                assert!(receipts.is_empty());
+            },
+        );
+    }
+
+    /// Verify that cargo failure followed by a registry check that finds
+    /// the version results in Published state (server-side success).
+    #[test]
+    #[serial]
+    fn test_cargo_fails_but_registry_confirms_published() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // version_exists: 404 (initial), 200 (post-failure check → found!)
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(404, "{}".to_string()), (200, "{}".to_string())],
+            )]),
+            2,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+        let st = Arc::new(Mutex::new(init_state_for_package(
+            &ws.plan.plan_id,
+            &ws.plan.registry,
+            "demo",
+            "0.1.0",
+        )));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+                ),
+                ("SHIPPER_CARGO_EXIT", Some("1")),
+                ("SHIPPER_CARGO_STDERR", Some("spurious error")),
+            ],
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+
+                let receipt = result.result.expect("should succeed (registry found it)");
+                assert!(
+                    matches!(receipt.state, PackageState::Published),
+                    "expected Published, got {:?}",
+                    receipt.state
+                );
+            },
+        );
+        server.join();
+    }
+
+    /// Verify that event log records events during publish operations.
+    #[test]
+    #[serial]
+    fn test_event_log_records_during_publish() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(200, "{}".to_string())],
+            )]),
+            1,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+        let st = Arc::new(Mutex::new(init_state_for_package(
+            &ws.plan.plan_id,
+            &ws.plan.registry,
+            "demo",
+            "0.1.0",
+        )));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let _ = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+            },
+        );
+
+        // After a skip-path publish, the events file should have been written
+        assert!(
+            events_path.exists(),
+            "events file should have been created at {:?}",
+            events_path
+        );
+        let content = fs::read_to_string(&events_path).expect("read events file");
+        assert!(
+            content.contains("demo@0.1.0"),
+            "events file should reference the package"
+        );
+
+        server.join();
+    }
+
+    /// Verify that update_state_locked correctly transitions through
+    /// multiple state changes on the same package key.
+    #[test]
+    fn test_state_transition_sequence() {
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: "plan-transitions".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::from([(
+                "demo@0.1.0".to_string(),
+                PackageProgress {
+                    name: "demo".to_string(),
+                    version: "0.1.0".to_string(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            )]),
+        };
+
+        // Pending → Uploaded
+        update_state_locked(&mut st, "demo@0.1.0", PackageState::Uploaded);
+        assert!(matches!(
+            st.packages.get("demo@0.1.0").unwrap().state,
+            PackageState::Uploaded
+        ));
+
+        // Uploaded → Published
+        update_state_locked(&mut st, "demo@0.1.0", PackageState::Published);
+        assert!(matches!(
+            st.packages.get("demo@0.1.0").unwrap().state,
+            PackageState::Published
+        ));
+    }
+
+    /// Verify that update_state_locked can set a Failed state with evidence.
+    #[test]
+    fn test_state_transition_to_failed() {
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: "plan-fail".to_string(),
+            registry: Registry::crates_io(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::from([(
+                "demo@0.1.0".to_string(),
+                PackageProgress {
+                    name: "demo".to_string(),
+                    version: "0.1.0".to_string(),
+                    attempts: 3,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            )]),
+        };
+
+        update_state_locked(
+            &mut st,
+            "demo@0.1.0",
+            PackageState::Failed {
+                class: ErrorClass::Permanent,
+                message: "auth denied".to_string(),
+            },
+        );
+
+        let p = st.packages.get("demo@0.1.0").unwrap();
+        match &p.state {
+            PackageState::Failed { class, message } => {
+                assert_eq!(*class, ErrorClass::Permanent);
+                assert_eq!(message, "auth denied");
+            }
+            other => panic!("expected Failed, got {:?}", other),
+        }
+    }
+
+    /// Verify that the collecting reporter used in run_publish_parallel
+    /// captures info/warn messages from thread workers.
+    #[test]
+    #[serial]
+    fn test_reporter_receives_thread_messages() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(200, "{}".to_string())],
+            )]),
+            1,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+        let mut st = init_state_for_package(&ws.plan.plan_id, &ws.plan.registry, "demo", "0.1.0");
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let _ = run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                    .expect("parallel publish");
+            },
+        );
+
+        // Reporter should have received messages from both the main thread
+        // (level info) and the worker thread (skip message).
+        let all_msgs: Vec<&String> = reporter.infos.iter().collect();
+        assert!(
+            !all_msgs.is_empty(),
+            "reporter should have received info messages"
+        );
+        // Expect at least the "parallel publish" overview and "Level" info
+        assert!(
+            reporter
+                .infos
+                .iter()
+                .any(|m| m.contains("parallel publish")),
+            "should see parallel publish overview, got: {:?}",
+            reporter.infos
+        );
+
+        server.join();
+    }
+
+    /// Verify that run_publish_parallel with max_concurrent=1 still
+    /// processes all packages (serialized within each level).
+    #[test]
+    #[serial]
+    fn test_parallel_max_concurrent_one() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let server = spawn_registry_server(
+            BTreeMap::from([
+                (
+                    "/api/v1/crates/p1/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/p2/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+            ]),
+            2,
+        );
+
+        let packages = vec![
+            PlannedPackage {
+                name: "p1".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join("p1").join("Cargo.toml"),
+            },
+            PlannedPackage {
+                name: "p2".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join("p2").join("Cargo.toml"),
+            },
+        ];
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-serial".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: packages.clone(),
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        opts.parallel.max_concurrent = 1;
+
+        let mut state_packages = BTreeMap::new();
+        for p in &packages {
+            state_packages.insert(
+                pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: state_packages,
+        };
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts =
+                    run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                        .expect("serial parallel publish");
+
+                assert_eq!(receipts.len(), 2);
+                for r in &receipts {
+                    assert!(matches!(r.state, PackageState::Skipped { .. }));
+                }
+            },
+        );
+        server.join();
+    }
+
+    /// Verify that resume_from skips packages before the resume point
+    /// and publishes from the specified package onwards.
+    #[test]
+    #[serial]
+    fn test_resume_from_skips_earlier_levels() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // "dep" at level 0, "app" at level 1 (depends on "dep")
+        // Resume from "app" → "dep" should be skipped.
+        // "app" is already published.
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/app/0.1.0".to_string(),
+                vec![(200, "{}".to_string())],
+            )]),
+            1,
+        );
+
+        let packages = vec![
+            PlannedPackage {
+                name: "dep".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join("dep").join("Cargo.toml"),
+            },
+            PlannedPackage {
+                name: "app".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join("app").join("Cargo.toml"),
+            },
+        ];
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-resume".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: packages.clone(),
+                dependencies: BTreeMap::from([("app".to_string(), vec!["dep".to_string()])]),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        opts.resume_from = Some("app".to_string());
+
+        let mut state_packages = BTreeMap::new();
+        // "dep" is already published in state
+        state_packages.insert(
+            pkg_key("dep", "0.1.0"),
+            PackageProgress {
+                name: "dep".to_string(),
+                version: "0.1.0".to_string(),
+                attempts: 1,
+                state: PackageState::Published,
+                last_updated_at: Utc::now(),
+            },
+        );
+        state_packages.insert(
+            pkg_key("app", "0.1.0"),
+            PackageProgress {
+                name: "app".to_string(),
+                version: "0.1.0".to_string(),
+                attempts: 0,
+                state: PackageState::Pending,
+                last_updated_at: Utc::now(),
+            },
+        );
+
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: state_packages,
+        };
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts =
+                    run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                        .expect("resume parallel publish");
+
+                // Should get receipts for both packages
+                assert_eq!(receipts.len(), 2);
+
+                // "dep" receipt should come from the skipped-level path (already done)
+                let dep_receipt = receipts.iter().find(|r| r.name == "dep").unwrap();
+                assert!(matches!(dep_receipt.state, PackageState::Published));
+
+                // "app" receipt should be Skipped (already on registry)
+                let app_receipt = receipts.iter().find(|r| r.name == "app").unwrap();
+                assert!(matches!(app_receipt.state, PackageState::Skipped { .. }));
+            },
+        );
+        server.join();
+    }
+
+    /// Verify that pkg_key produces the expected "name@version" format
+    /// used throughout the parallel engine.
+    #[test]
+    fn test_pkg_key_format() {
+        assert_eq!(pkg_key("my-crate", "1.2.3"), "my-crate@1.2.3");
+        assert_eq!(pkg_key("a", "0.0.0"), "a@0.0.0");
+    }
+
+    /// Verify that state file is persisted to disk during publish.
+    #[test]
+    #[serial]
+    fn test_state_persisted_to_disk() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(200, "{}".to_string())],
+            )]),
+            1,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+        let st = Arc::new(Mutex::new(init_state_for_package(
+            &ws.plan.plan_id,
+            &ws.plan.registry,
+            "demo",
+            "0.1.0",
+        )));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let _ = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+            },
+        );
+
+        // State should have been written to disk
+        let state_path = state_dir.join("state.json");
+        assert!(
+            state_path.exists(),
+            "state.json should have been created at {:?}",
+            state_path
+        );
+        let content = fs::read_to_string(&state_path).expect("read state file");
+        assert!(
+            content.contains("demo"),
+            "state file should reference the package"
+        );
+
+        server.join();
+    }
+
+    /// Verify that skipped receipts have zero duration_ms and no evidence.
+    #[test]
+    #[serial]
+    fn test_skipped_receipt_evidence_is_empty() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(200, "{}".to_string())],
+            )]),
+            1,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+        let st = Arc::new(Mutex::new(init_state_for_package(
+            &ws.plan.plan_id,
+            &ws.plan.registry,
+            "demo",
+            "0.1.0",
+        )));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let result = publish_package(
+                    &ws.plan.packages[0],
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+
+                let receipt = result.result.expect("should succeed");
+                assert!(matches!(receipt.state, PackageState::Skipped { .. }));
+                assert_eq!(receipt.attempts, 0);
+                assert!(
+                    receipt.evidence.attempts.is_empty(),
+                    "skipped packages should have no attempt evidence"
+                );
+                assert!(
+                    receipt.evidence.readiness_checks.is_empty(),
+                    "skipped packages should have no readiness evidence"
+                );
+            },
+        );
+        server.join();
+    }
+
+    /// Verify that run_publish_parallel with a single level containing
+    /// many independent packages processes them all.
+    #[test]
+    #[serial]
+    fn test_many_independent_packages_single_level() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let count = 6;
+        let mut routes = BTreeMap::new();
+        let mut packages = Vec::new();
+        for i in 0..count {
+            let name = format!("pkg{}", i);
+            routes.insert(
+                format!("/api/v1/crates/{}/0.1.0", name),
+                vec![(200, "{}".to_string())],
+            );
+            packages.push(PlannedPackage {
+                name: name.clone(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join(&name).join("Cargo.toml"),
+            });
+        }
+
+        let server = spawn_registry_server(routes, count);
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-many".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: packages.clone(),
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.clone()).expect("client");
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        opts.parallel.max_concurrent = 3;
+
+        let mut state_packages = BTreeMap::new();
+        for p in &packages {
+            state_packages.insert(
+                pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: state_packages,
+        };
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts =
+                    run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                        .expect("many packages");
+
+                assert_eq!(receipts.len(), count);
+                let mut names: Vec<String> = receipts.iter().map(|r| r.name.clone()).collect();
+                names.sort();
+                let expected: Vec<String> = (0..count).map(|i| format!("pkg{}", i)).collect();
+                assert_eq!(names, expected);
+            },
+        );
+        server.join();
+    }
+
+    /// Verify that update_state_locked updates the top-level updated_at
+    /// timestamp on the ExecutionState.
+    #[test]
+    fn test_update_state_locked_updates_timestamps() {
+        let initial_time = Utc::now();
+        let mut st = ExecutionState {
+            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: "plan-ts".to_string(),
+            registry: Registry::crates_io(),
+            created_at: initial_time,
+            updated_at: initial_time,
+            packages: BTreeMap::from([(
+                "foo@1.0.0".to_string(),
+                PackageProgress {
+                    name: "foo".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: initial_time,
+                },
+            )]),
+        };
+
+        std::thread::sleep(Duration::from_millis(5));
+        update_state_locked(&mut st, "foo@1.0.0", PackageState::Published);
+
+        assert!(st.updated_at > initial_time);
+        let pkg = st.packages.get("foo@1.0.0").unwrap();
+        assert!(pkg.last_updated_at > initial_time);
+    }
 }
