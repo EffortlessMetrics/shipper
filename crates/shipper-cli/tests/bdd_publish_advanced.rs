@@ -194,8 +194,13 @@ fn fake_cargo_bin_path(bin_dir: &Path) -> String {
 
 struct TestRegistry {
     base_url: String,
-    #[allow(dead_code)]
     handle: thread::JoinHandle<()>,
+}
+
+impl TestRegistry {
+    fn join(self) {
+        self.handle.join().expect("join server");
+    }
 }
 
 fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry {
@@ -282,6 +287,7 @@ mod registry_errors {
             .arg("0ms")
             .arg("--verify-poll")
             .arg("0ms")
+            .arg("--no-readiness")
             .arg("--max-attempts")
             .arg("1")
             .arg("--state-dir")
@@ -295,7 +301,7 @@ mod registry_errors {
             .failure()
             .stderr(contains("unexpected status").or(contains("401")));
 
-        drop(registry);
+        registry.join();
     }
 
     // Scenario: Registry returns 429 Too Many Requests during version check
@@ -325,6 +331,7 @@ mod registry_errors {
             .arg("0ms")
             .arg("--verify-poll")
             .arg("0ms")
+            .arg("--no-readiness")
             .arg("--max-attempts")
             .arg("1")
             .arg("--state-dir")
@@ -338,7 +345,7 @@ mod registry_errors {
             .failure()
             .stderr(contains("unexpected status").or(contains("429")));
 
-        drop(registry);
+        registry.join();
     }
 }
 
@@ -380,6 +387,7 @@ mod retry_on_failure {
             .arg("0ms")
             .arg("--verify-poll")
             .arg("0ms")
+            .arg("--no-readiness")
             .arg("--max-attempts")
             .arg("2")
             .arg("--base-delay")
@@ -412,7 +420,7 @@ mod retry_on_failure {
             "failed package should not be marked published"
         );
 
-        drop(registry);
+        registry.join();
     }
 }
 
@@ -546,6 +554,7 @@ mod already_published_skip {
             .arg("0ms")
             .arg("--verify-poll")
             .arg("0ms")
+            .arg("--no-readiness")
             .arg("--max-attempts")
             .arg("1")
             .arg("--state-dir")
@@ -583,7 +592,7 @@ mod already_published_skip {
             "output should indicate skipping or already published"
         );
 
-        drop(registry);
+        registry.join();
     }
 }
 
@@ -635,6 +644,7 @@ mod multi_crate_partial_failure {
             .arg("0ms")
             .arg("--verify-poll")
             .arg("0ms")
+            .arg("--no-readiness")
             .arg("--max-attempts")
             .arg("1")
             .arg("--base-delay")
@@ -685,6 +695,6 @@ mod multi_crate_partial_failure {
             "receipt.json should NOT be written on partial failure"
         );
 
-        drop(registry);
+        registry.join();
     }
 }
