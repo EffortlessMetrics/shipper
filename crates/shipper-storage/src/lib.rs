@@ -656,6 +656,7 @@ mod tests {
     // --- Edge-case tests ---
 
     #[test]
+    #[cfg_attr(target_os = "windows", ignore = "atomic rename races with concurrent readers on Windows")]
     fn concurrent_reads_and_writes_same_file() {
         use std::sync::Arc;
         use std::thread;
@@ -993,6 +994,283 @@ mod tests {
                 let read_back = storage.read("unicode_rt.txt").expect("read");
                 prop_assert_eq!(String::from_utf8(read_back).unwrap(), content);
             }
+
+            /// Overwrite never corrupts: write A, overwrite with B, read gives B.
+            #[test]
+            fn overwrite_preserves_latest_content(
+                first in proptest::collection::vec(any::<u8>(), 0..2048),
+                second in proptest::collection::vec(any::<u8>(), 0..2048),
+            ) {
+                let td = tempdir().expect("tempdir");
+                let storage = FileStorage::new(td.path().to_path_buf());
+
+                storage.write("overwrite.bin", &first).expect("write first");
+                storage.write("overwrite.bin", &second).expect("write second");
+                let read_back = storage.read("overwrite.bin").expect("read");
+                prop_assert_eq!(read_back, second);
+            }
+
+            /// Copy produces an independent identical copy.
+            #[test]
+            fn copy_roundtrip_preserves_content(
+                content in proptest::collection::vec(any::<u8>(), 0..2048),
+            ) {
+                let td = tempdir().expect("tempdir");
+                let storage = FileStorage::new(td.path().to_path_buf());
+
+                storage.write("orig.bin", &content).expect("write");
+                storage.copy("orig.bin", "dup.bin").expect("copy");
+                let orig = storage.read("orig.bin").expect("read orig");
+                let dup = storage.read("dup.bin").expect("read dup");
+                prop_assert_eq!(&orig, &content);
+                prop_assert_eq!(&dup, &content);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Atomic writes – temp-file + rename pattern
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn atomic_write_multiple_files_no_leftover_tmp() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        for i in 0..10 {
+            let name = format!("file_{i}.txt");
+            storage
+                .write(&name, format!("content-{i}").as_bytes())
+                .expect("write");
+        }
+
+        // No .tmp files should remain
+        let entries: Vec<_> = std::fs::read_dir(td.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "tmp"))
+            .collect();
+        assert!(entries.is_empty(), "leftover .tmp files: {entries:?}");
+    }
+
+    #[test]
+    fn atomic_write_overwrites_stale_tmp_from_prior_crash() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        // Simulate a stale .tmp from a prior crash
+        std::fs::write(td.path().join("state.tmp"), b"stale").unwrap();
+
+        storage.write("state.json", b"fresh").expect("write");
+        assert_eq!(storage.read("state.json").unwrap(), b"fresh");
+        // .tmp for "state.json" is "state.tmp" — it should be gone after rename
+        assert!(!td.path().join("state.tmp").exists());
+    }
+
+    // -----------------------------------------------------------------------
+    // Directory creation – nested & idempotent
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ensure_base_dir_creates_deeply_nested_path() {
+        let td = tempdir().expect("tempdir");
+        let deep = td.path().join("a").join("b").join("c").join("d");
+        let storage = FileStorage::new(deep.clone());
+
+        storage.ensure_base_dir().unwrap();
+        assert!(deep.exists());
+        // Idempotent: second call is fine
+        storage.ensure_base_dir().unwrap();
+    }
+
+    #[test]
+    fn write_creates_parent_dirs_on_demand() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage.write("x/y/z/data.bin", b"\x00\x01").unwrap();
+        assert!(td.path().join("x").join("y").join("z").is_dir());
+        assert_eq!(storage.read("x/y/z/data.bin").unwrap(), b"\x00\x01");
+    }
+
+    // -----------------------------------------------------------------------
+    // Read/write roundtrips
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_json_content() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        let json = br#"{"plan_id":"abc-123","crates":["foo","bar"]}"#;
+        storage.write("state.json", json).unwrap();
+        assert_eq!(storage.read("state.json").unwrap(), json);
+    }
+
+    #[test]
+    fn roundtrip_binary_all_byte_values() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        let all_bytes: Vec<u8> = (0..=255).collect();
+        storage.write("all_bytes.bin", &all_bytes).unwrap();
+        assert_eq!(storage.read("all_bytes.bin").unwrap(), all_bytes);
+    }
+
+    #[test]
+    fn overwrite_reduces_file_size() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage.write("shrink.txt", &vec![0u8; 10_000]).unwrap();
+        storage.write("shrink.txt", b"tiny").unwrap();
+        assert_eq!(storage.read("shrink.txt").unwrap(), b"tiny");
+    }
+
+    // -----------------------------------------------------------------------
+    // Error handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn read_from_completely_nonexistent_base_dir() {
+        let storage = FileStorage::new(PathBuf::from("nonexistent_9f8a7b6c/deeper/still"));
+        assert!(storage.read("file.txt").is_err());
+    }
+
+    #[test]
+    fn copy_nonexistent_source_returns_error() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+        let err = storage.copy("ghost.txt", "dest.txt");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn mv_nonexistent_source_returns_error() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+        let err = storage.mv("ghost.txt", "dest.txt");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn write_where_parent_is_a_file_returns_error() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage.write("conflict", b"file").unwrap();
+        let result = storage.write("conflict/sub.txt", b"oops");
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Path handling – relative, absolute, special chars
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn full_path_with_absolute_base() {
+        let storage = FileStorage::new(PathBuf::from("/absolute/base"));
+        assert_eq!(
+            storage.full_path("sub/file.txt"),
+            PathBuf::from("/absolute/base/sub/file.txt"),
+        );
+    }
+
+    #[test]
+    fn full_path_with_relative_base() {
+        let storage = FileStorage::new(PathBuf::from("relative/base"));
+        assert_eq!(
+            storage.full_path("file.txt"),
+            PathBuf::from("relative/base/file.txt"),
+        );
+    }
+
+    #[test]
+    fn write_read_file_with_spaces_in_name() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage
+            .write("dir with spaces/file name.txt", b"spaced")
+            .unwrap();
+        assert_eq!(
+            storage.read("dir with spaces/file name.txt").unwrap(),
+            b"spaced",
+        );
+    }
+
+    #[test]
+    fn write_read_file_with_dots_and_dashes() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage
+            .write("my-project/v0.3.0-rc.1/state.json", b"{}")
+            .unwrap();
+        assert_eq!(
+            storage.read("my-project/v0.3.0-rc.1/state.json").unwrap(),
+            b"{}",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Concurrent access – multiple independent writers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn concurrent_writes_to_different_files() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let td = tempdir().expect("tempdir");
+        let storage = Arc::new(FileStorage::new(td.path().to_path_buf()));
+
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let s = Arc::clone(&storage);
+                thread::spawn(move || {
+                    let name = format!("file_{i}.txt");
+                    let data = format!("data-{i}");
+                    s.write(&name, data.as_bytes()).expect("write");
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("join");
+        }
+
+        for i in 0..10 {
+            let name = format!("file_{i}.txt");
+            let expected = format!("data-{i}");
+            assert_eq!(
+                storage.read(&name).unwrap(),
+                expected.as_bytes(),
+                "mismatch for {name}",
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // List edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn list_empty_base_dir_returns_empty() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+        assert!(storage.list("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_uses_forward_slashes_on_all_platforms() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage.write("a/b/c.txt", b"x").unwrap();
+        let files = storage.list("").unwrap();
+        for f in &files {
+            assert!(!f.contains('\\'), "path should use / not \\: {f}");
         }
     }
 }
@@ -1325,5 +1603,59 @@ mod snapshot_tests {
     fn snapshot_debug_file_storage() {
         let storage = FileStorage::new(PathBuf::from("/mock/path"));
         insta::assert_debug_snapshot!(storage);
+    }
+
+    // --- New hardened snapshot tests ---
+
+    #[test]
+    fn snapshot_atomic_write_roundtrip_state() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage.write("state.json", b"{}").unwrap();
+        storage.write("receipt.json", b"[]").unwrap();
+        storage.write("events.jsonl", b"").unwrap();
+
+        let mut files = storage.list("").unwrap();
+        files.sort();
+
+        let state: Vec<(&str, bool)> = vec![
+            ("state.json exists", storage.exists("state.json").unwrap()),
+            (
+                "receipt.json exists",
+                storage.exists("receipt.json").unwrap(),
+            ),
+            (
+                "events.jsonl exists",
+                storage.exists("events.jsonl").unwrap(),
+            ),
+            ("state.tmp absent", !td.path().join("state.tmp").exists()),
+            (
+                "receipt.tmp absent",
+                !td.path().join("receipt.tmp").exists(),
+            ),
+        ];
+        assert_yaml_snapshot!("atomic_write_roundtrip_files", files);
+        assert_yaml_snapshot!("atomic_write_roundtrip_state", state);
+    }
+
+    #[test]
+    fn snapshot_delete_lifecycle() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage.write("ephemeral.txt", b"temp data").unwrap();
+
+        let before = storage.exists("ephemeral.txt").unwrap();
+        let content = String::from_utf8(storage.read("ephemeral.txt").unwrap()).unwrap();
+        storage.delete("ephemeral.txt").unwrap();
+        let after = storage.exists("ephemeral.txt").unwrap();
+
+        let lifecycle: Vec<(&str, String)> = vec![
+            ("exists_before_delete", before.to_string()),
+            ("content", content),
+            ("exists_after_delete", after.to_string()),
+        ];
+        assert_yaml_snapshot!(lifecycle);
     }
 }

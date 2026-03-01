@@ -994,6 +994,25 @@ mod tests {
                 }
                 // Main assertion: we got here without panicking
             }
+
+            // Arbitrary file paths never cause panic in porcelain parsing
+            #[test]
+            fn porcelain_arbitrary_path_never_panics(
+                path in "[^\0\n]{0,300}",
+            ) {
+                let line = format!("?? {}", path);
+                let parsed: String = line.chars().skip(3).collect();
+                prop_assert_eq!(parsed, path);
+            }
+
+            // Porcelain parsing handles lines shorter than 3 characters without panic
+            #[test]
+            fn porcelain_short_lines_never_panic(
+                line in ".{0,3}",
+            ) {
+                let _parsed: String = line.chars().skip(3).collect();
+                // If the line is < 3 chars, skip(3) just yields empty — no panic
+            }
         }
     }
 
@@ -1377,6 +1396,284 @@ mod tests {
             .expect("some url");
         assert!(url.contains("github.com/user/repo.git"));
     }
+
+    // ── Hardened: staged AND unstaged simultaneously ──
+
+    #[test]
+    fn status_staged_and_unstaged_same_file() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+
+        let file = td.path().join("dual.txt");
+        fs::write(&file, "v1").expect("write");
+        Command::new("git")
+            .args(["add", "dual.txt"])
+            .current_dir(td.path())
+            .output()
+            .expect("git add");
+        make_commit(td.path(), "add dual");
+
+        fs::write(&file, "v2").expect("write v2");
+        Command::new("git")
+            .args(["add", "dual.txt"])
+            .current_dir(td.path())
+            .output()
+            .expect("git add v2");
+        fs::write(&file, "v3").expect("write v3");
+
+        assert!(!is_git_clean(td.path()).unwrap());
+        let files = get_changed_files(td.path()).expect("changed files");
+        assert!(files.iter().any(|f| f.contains("dual.txt")));
+    }
+
+    // ── Hardened: renamed file detection ──
+
+    #[test]
+    fn status_renamed_file() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+
+        let file = td.path().join("old_name.txt");
+        fs::write(&file, "content").expect("write");
+        Command::new("git")
+            .args(["add", "old_name.txt"])
+            .current_dir(td.path())
+            .output()
+            .expect("git add");
+        make_commit(td.path(), "add file");
+
+        Command::new("git")
+            .args(["mv", "old_name.txt", "new_name.txt"])
+            .current_dir(td.path())
+            .output()
+            .expect("git mv");
+
+        assert!(!is_git_clean(td.path()).unwrap());
+        let files = get_changed_files(td.path()).expect("changed files");
+        assert!(!files.is_empty());
+    }
+
+    // ── Hardened: branch with dots and slashes ──
+
+    #[test]
+    fn get_branch_with_dots_and_slashes() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        Command::new("git")
+            .args(["checkout", "-b", "release/v2.0.0-rc.1"])
+            .current_dir(td.path())
+            .output()
+            .expect("git checkout");
+
+        let branch = get_branch(td.path()).expect("branch").expect("some branch");
+        assert_eq!(branch, "release/v2.0.0-rc.1");
+    }
+
+    #[test]
+    fn get_branch_deeply_nested_name() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        Command::new("git")
+            .args(["checkout", "-b", "user/jdoe/fix/issue-42"])
+            .current_dir(td.path())
+            .output()
+            .expect("git checkout");
+
+        let branch = get_branch(td.path()).expect("branch").expect("some branch");
+        assert_eq!(branch, "user/jdoe/fix/issue-42");
+        assert!(is_on_branch(td.path(), "user/jdoe/fix/issue-42"));
+        assert!(!is_on_branch(td.path(), "main"));
+    }
+
+    // ── Hardened: non-existent path ──
+
+    #[test]
+    fn is_git_clean_nonexistent_path() {
+        let result = is_git_clean(Path::new("this/path/does/not/exist/at/all"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_commit_hash_nonexistent_path() {
+        let result = get_commit_hash(Path::new("this/path/does/not/exist/at/all"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_changed_files_nonexistent_path() {
+        let result = get_changed_files(Path::new("this/path/does/not/exist/at/all"));
+        assert!(result.is_err());
+    }
+
+    // ── Hardened: clean after staging and committing ──
+
+    #[test]
+    fn is_git_clean_after_stage_and_commit() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        fs::write(td.path().join("newfile.txt"), "data").expect("write");
+        assert!(!is_git_clean(td.path()).unwrap());
+
+        Command::new("git")
+            .args(["add", "newfile.txt"])
+            .current_dir(td.path())
+            .output()
+            .expect("git add");
+        assert!(!is_git_clean(td.path()).unwrap());
+
+        make_commit(td.path(), "commit newfile");
+        assert!(is_git_clean(td.path()).unwrap());
+    }
+
+    // ── Hardened: multiple changed files parsing ──
+
+    #[test]
+    fn get_changed_files_multiple_mixed_statuses() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+
+        fs::write(td.path().join("a.txt"), "a").expect("write");
+        fs::write(td.path().join("b.txt"), "b").expect("write");
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(td.path())
+            .output()
+            .expect("git add");
+        make_commit(td.path(), "add files");
+
+        fs::write(td.path().join("a.txt"), "a-modified").expect("write");
+        fs::remove_file(td.path().join("b.txt")).expect("delete");
+        fs::write(td.path().join("c.txt"), "c-new").expect("write");
+
+        let files = get_changed_files(td.path()).expect("changed files");
+        assert!(files.len() >= 3);
+        assert!(files.iter().any(|f| f.contains("a.txt")));
+        assert!(files.iter().any(|f| f.contains("b.txt")));
+        assert!(files.iter().any(|f| f.contains("c.txt")));
+    }
+
+    // ── Hardened: context reflects correct dirty state transitions ──
+
+    #[test]
+    fn context_dirty_state_transitions() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        let ctx = get_git_context(td.path());
+        assert!(!ctx.is_dirty());
+
+        fs::write(td.path().join("file.txt"), "data").expect("write");
+        let ctx = get_git_context(td.path());
+        assert!(ctx.is_dirty());
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(td.path())
+            .output()
+            .expect("git add");
+        let ctx = get_git_context(td.path());
+        assert!(ctx.is_dirty());
+
+        make_commit(td.path(), "commit");
+        let ctx = get_git_context(td.path());
+        assert!(!ctx.is_dirty());
+    }
+
+    // ── Hardened: is_on_branch detached HEAD returns false for any name ──
+
+    #[test]
+    fn is_on_branch_false_for_detached_head() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "first");
+        let hash = get_commit_hash(td.path()).expect("hash");
+
+        Command::new("git")
+            .args(["checkout", &hash])
+            .current_dir(td.path())
+            .output()
+            .expect("detach HEAD");
+
+        assert!(!is_on_branch(td.path(), "HEAD"));
+        assert!(!is_on_branch(td.path(), "main"));
+        assert!(!is_on_branch(td.path(), "master"));
+        assert!(!is_on_branch(td.path(), ""));
+    }
+
+    // ── Hardened: has_commit and short_commit consistency ──
+
+    #[test]
+    fn short_commit_eight_chars_truncates() {
+        let ctx = GitContext {
+            commit: Some("abcdefgh".to_string()),
+            ..Default::default()
+        };
+        assert!(ctx.has_commit());
+        assert_eq!(ctx.short_commit(), Some("abcdefg"));
+    }
+
+    // ── Hardened: tag on earlier commit, branch moved ahead ──
+
+    #[test]
+    fn tag_not_visible_after_new_commit() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "tagged");
+        create_tag(td.path(), "v0.9.0");
+        assert!(has_tag_for_commit(td.path()));
+
+        make_commit(td.path(), "past tag");
+        assert!(!has_tag_for_commit(td.path()));
+
+        let ctx = get_git_context(td.path());
+        assert!(ctx.tag.is_none());
+        assert!(ctx.has_commit());
+    }
+
+    // ── Hardened: get_remote_url on non-git dir ──
+
+    #[test]
+    fn get_remote_url_non_git_dir() {
+        let td = tempdir().expect("tempdir");
+        let result = get_remote_url(td.path(), "origin");
+        assert!(result.is_err() || result.unwrap().is_none());
+    }
+
+    // ── Hardened: file with spaces in name ──
+
+    #[test]
+    fn status_with_spaces_in_filename() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        fs::write(td.path().join("my file with spaces.txt"), "data").expect("write");
+        assert!(!is_git_clean(td.path()).unwrap());
+        let files = get_changed_files(td.path()).expect("changed files");
+        assert!(!files.is_empty());
+    }
+
+    // ── Hardened: ensure_git_clean error message content ──
+
+    #[test]
+    fn ensure_git_clean_error_mentions_allow_dirty() {
+        let td = tempdir().expect("tempdir");
+        init_git_repo(td.path());
+        make_commit(td.path(), "initial");
+
+        fs::write(td.path().join("dirty.txt"), "x").expect("write");
+        let err = ensure_git_clean(td.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--allow-dirty"));
+        assert!(msg.contains("uncommitted changes"));
+    }
 }
 
 #[cfg(test)]
@@ -1749,5 +2046,50 @@ R  renamed.txt -> new_name.txt";
             .map(|line| line.chars().skip(3).collect())
             .collect();
         assert_debug_snapshot!("porcelain_empty_output", files);
+    }
+
+    // ── Hardened snapshot: porcelain with renamed entries ──
+
+    #[test]
+    fn snapshot_porcelain_renamed_and_copied() {
+        let porcelain_output = "\
+R  old.txt -> new.txt\n\
+C  original.txt -> copy.txt\n\
+?? brand_new.txt";
+
+        let files: Vec<String> = porcelain_output
+            .lines()
+            .map(|line| line.chars().skip(3).collect())
+            .collect();
+        assert_debug_snapshot!("porcelain_renamed_and_copied", files);
+    }
+
+    // ── Hardened snapshot: context on feature branch ──
+
+    #[test]
+    fn snapshot_context_feature_branch_clean() {
+        let ctx = GitContext {
+            commit: Some("aabbccddaabbccddaabbccddaabbccddaabbccdd".to_string()),
+            branch: Some("feature/add-logging".to_string()),
+            tag: None,
+            dirty: Some(false),
+        };
+        assert_debug_snapshot!("context_feature_branch_clean", ctx);
+    }
+
+    // ── Hardened snapshot: porcelain with spaces in filenames ──
+
+    #[test]
+    fn snapshot_porcelain_spaces_in_names() {
+        let porcelain_output = "\
+?? my file.txt\n\
+ M path with spaces/file.rs\n\
+A  \"quoted name.txt\"";
+
+        let files: Vec<String> = porcelain_output
+            .lines()
+            .map(|line| line.chars().skip(3).collect())
+            .collect();
+        assert_debug_snapshot!("porcelain_spaces_in_names", files);
     }
 }

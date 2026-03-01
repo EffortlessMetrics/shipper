@@ -1980,6 +1980,375 @@ mod tests {
         let loaded = EventLog::read_from_file(&path).expect("read");
         assert_eq!(loaded.len(), num_threads * events_per_thread);
     }
+
+    // -- Additional hardening tests --
+
+    #[test]
+    fn single_event_roundtrip_preserves_all_data() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let event = fixed_event(
+            EventType::PackagePublished { duration_ms: 42 },
+            "solo@1.0.0",
+        );
+        let mut log = EventLog::new();
+        log.record(event.clone());
+        log.write_to_file(&path).expect("write");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.len(), 1);
+        let loaded_event = &loaded.all_events()[0];
+        assert_eq!(loaded_event.package, "solo@1.0.0");
+        assert_eq!(loaded_event.timestamp, event.timestamp);
+        let json_orig = serde_json::to_string(&event).expect("ser");
+        let json_loaded = serde_json::to_string(loaded_event).expect("ser");
+        assert_eq!(json_orig, json_loaded);
+    }
+
+    #[test]
+    fn special_json_characters_in_payload_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let tricky = "quote: \" backslash: \\ tab: \t angle: <>";
+        let event = make_event(
+            EventType::PackageFailed {
+                class: ErrorClass::Permanent,
+                message: tricky.to_string(),
+            },
+            "tricky@1.0.0",
+        );
+        let mut log = EventLog::new();
+        log.record(event);
+        log.write_to_file(&path).expect("write");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.len(), 1);
+        match &loaded.all_events()[0].event_type {
+            EventType::PackageFailed { message, .. } => assert_eq!(message, tricky),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn events_for_package_with_mixed_event_types() {
+        let mut log = EventLog::new();
+        let pkg = "multi@1.0.0";
+        log.record(make_event(
+            EventType::PackageStarted {
+                name: "multi".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            pkg,
+        ));
+        log.record(make_event(
+            EventType::PackageAttempted {
+                attempt: 1,
+                command: "cargo publish -p multi".to_string(),
+            },
+            pkg,
+        ));
+        log.record(make_event(
+            EventType::PackagePublished { duration_ms: 500 },
+            pkg,
+        ));
+        log.record(make_event(
+            EventType::ReadinessStarted {
+                method: ReadinessMethod::Api,
+            },
+            pkg,
+        ));
+        log.record(make_event(
+            EventType::ReadinessComplete {
+                duration_ms: 2000,
+                attempts: 2,
+            },
+            pkg,
+        ));
+        log.record(make_event(
+            EventType::PackageStarted {
+                name: "other".to_string(),
+                version: "0.1.0".to_string(),
+            },
+            "other@0.1.0",
+        ));
+
+        let filtered = log.events_for_package(pkg);
+        assert_eq!(filtered.len(), 5);
+        for e in &filtered {
+            assert_eq!(e.package, pkg);
+        }
+    }
+
+    #[test]
+    fn events_path_with_various_inputs() {
+        assert_eq!(
+            events_path(Path::new(".")),
+            PathBuf::from(".").join("events.jsonl")
+        );
+        assert_eq!(
+            events_path(Path::new("a/b/c")),
+            PathBuf::from("a/b/c").join("events.jsonl")
+        );
+        assert_eq!(events_path(Path::new("")), PathBuf::from("events.jsonl"));
+    }
+
+    #[test]
+    fn clear_memory_does_not_affect_file() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let mut log = EventLog::new();
+        log.record(sample_event("first@1.0.0"));
+        log.write_to_file(&path).expect("write first");
+
+        log.clear();
+        assert!(log.is_empty());
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.len(), 1);
+
+        log.write_to_file(&path).expect("write empty");
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.len(), 1);
+    }
+
+    #[test]
+    fn zero_and_max_u64_duration_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let mut log = EventLog::new();
+        log.record(make_event(
+            EventType::PackagePublished { duration_ms: 0 },
+            "zero@1.0.0",
+        ));
+        log.record(make_event(
+            EventType::PackagePublished {
+                duration_ms: u64::MAX,
+            },
+            "max@1.0.0",
+        ));
+        log.write_to_file(&path).expect("write");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.len(), 2);
+        match &loaded.all_events()[0].event_type {
+            EventType::PackagePublished { duration_ms } => assert_eq!(*duration_ms, 0),
+            other => panic!("unexpected: {other:?}"),
+        }
+        match &loaded.all_events()[1].event_type {
+            EventType::PackagePublished { duration_ms } => assert_eq!(*duration_ms, u64::MAX),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn large_event_log_1000_events_filter_correctness() {
+        let mut log = EventLog::new();
+        for i in 0..1000 {
+            let pkg = format!("pkg-{}@1.0.0", i % 10);
+            log.record(sample_event(&pkg));
+        }
+        assert_eq!(log.len(), 1000);
+
+        for i in 0..10 {
+            let filtered = log.events_for_package(&format!("pkg-{i}@1.0.0"));
+            assert_eq!(filtered.len(), 100, "filter for pkg-{i} should return 100");
+        }
+        assert_eq!(log.events_for_package("nonexistent").len(), 0);
+    }
+
+    #[test]
+    fn empty_strings_in_all_string_fields_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let mut log = EventLog::new();
+        log.record(make_event(
+            EventType::PlanCreated {
+                plan_id: String::new(),
+                package_count: 0,
+            },
+            "",
+        ));
+        log.record(make_event(
+            EventType::PackageStarted {
+                name: String::new(),
+                version: String::new(),
+            },
+            "",
+        ));
+        log.record(make_event(
+            EventType::PackageOutput {
+                stdout_tail: String::new(),
+                stderr_tail: String::new(),
+            },
+            "",
+        ));
+        log.record(make_event(
+            EventType::PackageFailed {
+                class: ErrorClass::Permanent,
+                message: String::new(),
+            },
+            "",
+        ));
+        log.write_to_file(&path).expect("write");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.len(), 4);
+        for e in loaded.all_events() {
+            assert_eq!(e.package, "");
+        }
+    }
+
+    #[test]
+    fn timestamp_ordering_preserved_across_append_batches() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        for batch in 0..5u32 {
+            let mut log = EventLog::new();
+            for i in 0..3u32 {
+                log.record(make_event(
+                    EventType::PackagePublished {
+                        duration_ms: u64::from(batch * 10 + i),
+                    },
+                    &format!("b{batch}-p{i}@1.0.0"),
+                ));
+            }
+            log.write_to_file(&path).expect("write");
+        }
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.len(), 15);
+        let events = loaded.all_events();
+        for i in 1..events.len() {
+            assert!(
+                events[i].timestamp >= events[i - 1].timestamp,
+                "event {i} timestamp should be >= event {} timestamp",
+                i - 1
+            );
+        }
+    }
+
+    #[test]
+    fn events_for_package_distinguishes_similar_names() {
+        let mut log = EventLog::new();
+        log.record(sample_event("foo@1.0.0"));
+        log.record(sample_event("foo-bar@1.0.0"));
+        log.record(sample_event("foobar@1.0.0"));
+        log.record(sample_event("foo@1.0.0-rc.1"));
+        log.record(sample_event("foo@1.0.0"));
+
+        assert_eq!(log.events_for_package("foo@1.0.0").len(), 2);
+        assert_eq!(log.events_for_package("foo-bar@1.0.0").len(), 1);
+        assert_eq!(log.events_for_package("foobar@1.0.0").len(), 1);
+        assert_eq!(log.events_for_package("foo@1.0.0-rc.1").len(), 1);
+        assert_eq!(log.events_for_package("foo").len(), 0);
+        assert_eq!(log.events_for_package("bar").len(), 0);
+    }
+
+    #[test]
+    fn record_after_clear_appends_only_new_events() {
+        let mut log = EventLog::new();
+        log.record(sample_event("old@1.0.0"));
+        log.record(sample_event("old@2.0.0"));
+        assert_eq!(log.len(), 2);
+
+        log.clear();
+        log.record(sample_event("new@1.0.0"));
+        assert_eq!(log.len(), 1);
+        assert_eq!(log.all_events()[0].package, "new@1.0.0");
+    }
+
+    #[test]
+    fn unicode_package_filter_after_file_roundtrip() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("events.jsonl");
+
+        let mut log = EventLog::new();
+        log.record(make_event(
+            EventType::PackageStarted {
+                name: "日本語".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            "日本語@1.0.0",
+        ));
+        log.record(make_event(
+            EventType::PackageStarted {
+                name: "中文".to_string(),
+                version: "2.0.0".to_string(),
+            },
+            "中文@2.0.0",
+        ));
+        log.record(make_event(
+            EventType::PackagePublished { duration_ms: 100 },
+            "日本語@1.0.0",
+        ));
+        log.write_to_file(&path).expect("write");
+
+        let loaded = EventLog::read_from_file(&path).expect("read");
+        assert_eq!(loaded.events_for_package("日本語@1.0.0").len(), 2);
+        assert_eq!(loaded.events_for_package("中文@2.0.0").len(), 1);
+    }
+
+    // -- Additional snapshot tests --
+
+    #[test]
+    fn snapshot_package_failed_multiline_message_yaml() {
+        let event = fixed_event(
+            EventType::PackageFailed {
+                class: ErrorClass::Retryable,
+                message: "error[E0433]: failed to resolve\n  --> src/main.rs:1:5\n   |\n1  | use foo::bar;\n   |     ^^^ not found"
+                    .to_string(),
+            },
+            "broken@0.1.0",
+        );
+        insta::assert_yaml_snapshot!("package_failed_multiline_message_yaml", event);
+    }
+
+    #[test]
+    fn snapshot_readiness_lifecycle_debug() {
+        let events = vec![
+            fixed_event(
+                EventType::ReadinessStarted {
+                    method: ReadinessMethod::Both,
+                },
+                "my-lib@2.0.0",
+            ),
+            fixed_event(
+                EventType::ReadinessPoll {
+                    attempt: 1,
+                    visible: false,
+                },
+                "my-lib@2.0.0",
+            ),
+            fixed_event(
+                EventType::ReadinessPoll {
+                    attempt: 2,
+                    visible: false,
+                },
+                "my-lib@2.0.0",
+            ),
+            fixed_event(
+                EventType::ReadinessPoll {
+                    attempt: 3,
+                    visible: true,
+                },
+                "my-lib@2.0.0",
+            ),
+            fixed_event(
+                EventType::ReadinessComplete {
+                    duration_ms: 9500,
+                    attempts: 3,
+                },
+                "my-lib@2.0.0",
+            ),
+        ];
+        insta::assert_debug_snapshot!("readiness_lifecycle_debug", events);
+    }
 }
 
 #[cfg(test)]
@@ -2310,6 +2679,41 @@ mod proptests {
             for (orig_json, loaded_event) in orig_jsons.iter().zip(loaded.all_events().iter()) {
                 let loaded_json = serde_json::to_string(loaded_event).expect("re-serialize");
                 prop_assert_eq!(orig_json, &loaded_json, "File roundtrip JSON mismatch");
+            }
+        }
+
+        #[test]
+        fn any_event_json_has_required_top_level_keys(event in arb_publish_event()) {
+            let json = serde_json::to_string(&event).expect("serialize");
+            let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+            let obj = value.as_object().expect("should be JSON object");
+            prop_assert!(obj.contains_key("timestamp"), "missing timestamp key");
+            prop_assert!(obj.contains_key("event_type"), "missing event_type key");
+            prop_assert!(obj.contains_key("package"), "missing package key");
+            let et = obj.get("event_type").unwrap().as_object().expect("event_type should be object");
+            prop_assert!(et.contains_key("type"), "event_type missing type discriminator");
+        }
+
+        #[test]
+        fn filter_correctness_after_file_roundtrip(
+            events in proptest::collection::vec(arb_publish_event(), 1..15),
+        ) {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join("events.jsonl");
+
+            let mut log = EventLog::new();
+            for e in &events {
+                log.record(e.clone());
+            }
+            log.write_to_file(&path).expect("write");
+
+            let loaded = EventLog::read_from_file(&path).expect("read");
+            let packages: std::collections::HashSet<&str> =
+                events.iter().map(|e| e.package.as_str()).collect();
+            for pkg in packages {
+                let expected = events.iter().filter(|e| e.package == pkg).count();
+                let filtered = loaded.events_for_package(pkg);
+                prop_assert_eq!(filtered.len(), expected, "filter mismatch for {}", pkg);
             }
         }
     }

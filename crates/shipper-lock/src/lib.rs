@@ -1683,3 +1683,273 @@ mod proptest_edge_cases {
         }
     }
 }
+
+#[cfg(test)]
+mod hardened_tests {
+    use super::*;
+    use chrono::TimeZone;
+    use tempfile::tempdir;
+
+    // ── Lock acquisition metadata ───────────────────────────────────────
+
+    #[test]
+    fn acquire_records_current_pid() {
+        let td = tempdir().unwrap();
+        let _lock = LockFile::acquire(td.path(), None).unwrap();
+        let info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_eq!(info.pid, std::process::id());
+    }
+
+    #[test]
+    fn acquire_timestamp_is_recent() {
+        let before = Utc::now();
+        let td = tempdir().unwrap();
+        let _lock = LockFile::acquire(td.path(), None).unwrap();
+        let after = Utc::now();
+        let info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert!(info.acquired_at >= before);
+        assert!(info.acquired_at <= after);
+    }
+
+    #[test]
+    fn plan_id_is_none_immediately_after_acquire() {
+        let td = tempdir().unwrap();
+        let _lock = LockFile::acquire(td.path(), None).unwrap();
+        let info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_eq!(info.plan_id, None);
+    }
+
+    // ── Plan ID matching ────────────────────────────────────────────────
+
+    #[test]
+    fn plan_id_matches_after_set() {
+        let td = tempdir().unwrap();
+        let lock = LockFile::acquire(td.path(), None).unwrap();
+        lock.set_plan_id("abc-123").unwrap();
+        let info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_eq!(info.plan_id.as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn plan_id_does_not_match_different_value() {
+        let td = tempdir().unwrap();
+        let lock = LockFile::acquire(td.path(), None).unwrap();
+        lock.set_plan_id("plan-a").unwrap();
+        let info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_ne!(info.plan_id.as_deref(), Some("plan-b"));
+    }
+
+    #[test]
+    fn set_plan_id_with_empty_string() {
+        let td = tempdir().unwrap();
+        let lock = LockFile::acquire(td.path(), None).unwrap();
+        lock.set_plan_id("").unwrap();
+        let info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_eq!(info.plan_id, Some(String::new()));
+    }
+
+    #[test]
+    fn set_plan_id_overwrites_previous() {
+        let td = tempdir().unwrap();
+        let lock = LockFile::acquire(td.path(), None).unwrap();
+        lock.set_plan_id("first").unwrap();
+        lock.set_plan_id("second").unwrap();
+        lock.set_plan_id("third").unwrap();
+        let info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_eq!(info.plan_id.as_deref(), Some("third"));
+    }
+
+    // ── RAII drop release ───────────────────────────────────────────────
+
+    #[test]
+    fn drop_in_inner_scope_allows_reacquire() {
+        let td = tempdir().unwrap();
+        {
+            let _lock = LockFile::acquire(td.path(), None).unwrap();
+        }
+        // After drop, should be able to re-acquire
+        let lock2 = LockFile::acquire(td.path(), None).unwrap();
+        assert!(LockFile::is_locked(td.path(), None).unwrap());
+        drop(lock2);
+    }
+
+    #[test]
+    fn explicit_release_then_reacquire() {
+        let td = tempdir().unwrap();
+        let lock = LockFile::acquire(td.path(), None).unwrap();
+        lock.release().unwrap();
+        let _lock2 = LockFile::acquire(td.path(), None).unwrap();
+        assert!(LockFile::is_locked(td.path(), None).unwrap());
+    }
+
+    // ── Lock file JSON format stability ─────────────────────────────────
+
+    #[test]
+    fn lock_file_json_has_exactly_four_keys() {
+        let td = tempdir().unwrap();
+        let _lock = LockFile::acquire(td.path(), None).unwrap();
+        let lp = lock_path(td.path(), None);
+        let content = fs::read_to_string(&lp).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let obj = parsed.as_object().unwrap();
+        assert_eq!(obj.len(), 4);
+        assert!(obj.contains_key("pid"));
+        assert!(obj.contains_key("hostname"));
+        assert!(obj.contains_key("acquired_at"));
+        assert!(obj.contains_key("plan_id"));
+    }
+
+    #[test]
+    fn lock_file_json_plan_id_null_when_unset() {
+        let td = tempdir().unwrap();
+        let _lock = LockFile::acquire(td.path(), None).unwrap();
+        let lp = lock_path(td.path(), None);
+        let content = fs::read_to_string(&lp).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed["plan_id"].is_null());
+    }
+
+    #[test]
+    fn lock_file_json_plan_id_string_when_set() {
+        let td = tempdir().unwrap();
+        let lock = LockFile::acquire(td.path(), None).unwrap();
+        lock.set_plan_id("my-plan").unwrap();
+        let lp = lock_path(td.path(), None);
+        let content = fs::read_to_string(&lp).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["plan_id"].as_str(), Some("my-plan"));
+    }
+
+    // ── Stale lock: force acquisition ───────────────────────────────────
+
+    #[test]
+    fn force_acquire_via_timeout_replaces_all_metadata() {
+        let td = tempdir().unwrap();
+        let lp = lock_path(td.path(), None);
+        let old = LockInfo {
+            pid: 65432,
+            hostname: "old-machine".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::hours(3),
+            plan_id: Some("stale-run".to_string()),
+        };
+        fs::write(&lp, serde_json::to_string(&old).unwrap()).unwrap();
+
+        let _lock =
+            LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(60)).unwrap();
+        let info = LockFile::read_lock_info(td.path(), None).unwrap();
+        assert_ne!(info.pid, 65432);
+        assert_ne!(info.hostname, "old-machine");
+        assert!(info.plan_id.is_none());
+    }
+
+    // ── lock_path edge cases ────────────────────────────────────────────
+
+    #[test]
+    fn lock_path_empty_workspace_root_differs_from_none() {
+        let base = PathBuf::from("state");
+        let with_empty = lock_path(&base, Some(Path::new("")));
+        let without = lock_path(&base, None);
+        assert_ne!(with_empty, without);
+    }
+
+    #[test]
+    fn lock_path_dot_and_dotdot_roots_differ() {
+        let base = PathBuf::from("state");
+        let p1 = lock_path(&base, Some(Path::new(".")));
+        let p2 = lock_path(&base, Some(Path::new("..")));
+        assert_ne!(p1, p2);
+    }
+
+    // ── Snapshot tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_lock_info_with_empty_plan_id() {
+        let info = LockInfo {
+            pid: 42,
+            hostname: "snap-host".to_string(),
+            acquired_at: Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap(),
+            plan_id: Some(String::new()),
+        };
+        let json = serde_json::to_string_pretty(&info).unwrap();
+        insta::assert_snapshot!("lock_info_empty_plan_id", json);
+    }
+
+    #[test]
+    fn snapshot_lock_info_json_key_order() {
+        let info = LockInfo {
+            pid: 1,
+            hostname: "h".to_string(),
+            acquired_at: Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap(),
+            plan_id: Some("p".to_string()),
+        };
+        let json = serde_json::to_string_pretty(&info).unwrap();
+        // Snapshot captures the exact key order to detect accidental reordering
+        insta::assert_snapshot!("lock_info_json_key_order", json);
+    }
+
+    #[test]
+    fn snapshot_lock_file_after_set_plan_id() {
+        let info = LockInfo {
+            pid: 42,
+            hostname: "build-host".to_string(),
+            acquired_at: Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap(),
+            plan_id: Some("updated-plan-456".to_string()),
+        };
+        let json = serde_json::to_string_pretty(&info).unwrap();
+        insta::assert_snapshot!("lock_file_after_set_plan_id", json);
+    }
+}
+
+#[cfg(test)]
+mod hardened_proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use tempfile::tempdir;
+
+    proptest! {
+        #[test]
+        fn arbitrary_plan_ids_never_panic_on_set(
+            plan_id in ".*",
+        ) {
+            let td = tempdir().expect("tempdir");
+            let lock = LockFile::acquire(td.path(), None).expect("acquire");
+            // set_plan_id should never panic regardless of input
+            let _ = lock.set_plan_id(&plan_id);
+            drop(lock);
+        }
+
+        #[test]
+        fn arbitrary_paths_never_panic_on_lock_path(
+            dir in "[a-zA-Z0-9_./-]{0,128}",
+            root in proptest::option::of("[a-zA-Z0-9_./-]{0,128}"),
+        ) {
+            let base = PathBuf::from(&dir);
+            let root_path = root.as_ref().map(PathBuf::from);
+            // lock_path should never panic
+            let _ = lock_path(&base, root_path.as_deref());
+        }
+
+        #[test]
+        fn read_lock_info_on_arbitrary_content_never_panics(
+            content in ".*",
+        ) {
+            let td = tempdir().expect("tempdir");
+            let lp = lock_path(td.path(), None);
+            std::fs::write(&lp, content.as_bytes()).expect("write");
+            // Should return Err, never panic
+            let _ = LockFile::read_lock_info(td.path(), None);
+        }
+
+        #[test]
+        fn plan_id_roundtrip_matches_for_arbitrary_ids(
+            plan_id in "[^\x00]{1,256}",
+        ) {
+            let td = tempdir().expect("tempdir");
+            let lock = LockFile::acquire(td.path(), None).expect("acquire");
+            lock.set_plan_id(&plan_id).expect("set");
+            let info = LockFile::read_lock_info(td.path(), None).expect("read");
+            prop_assert_eq!(info.plan_id.as_deref(), Some(plan_id.as_str()));
+            drop(lock);
+        }
+    }
+}
