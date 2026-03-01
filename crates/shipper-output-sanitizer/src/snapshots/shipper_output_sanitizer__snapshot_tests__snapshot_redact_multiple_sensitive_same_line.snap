@@ -1,0 +1,6 @@
+---
+source: crates/shipper-output-sanitizer/src/lib.rs
+assertion_line: 440
+expression: "redact_sensitive(\"CARGO_REGISTRY_TOKEN=abc token = xyz\")"
+---
+CARGO_REGISTRY_TOKEN=[REDACTED]

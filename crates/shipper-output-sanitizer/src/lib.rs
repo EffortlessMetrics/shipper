@@ -155,6 +155,165 @@ mod tests {
         let input = "one\ntwo\nthree";
         assert_eq!(tail_lines(input, 10), input);
     }
+
+    // --- redact_sensitive edge cases ---
+
+    #[test]
+    fn redact_empty_input() {
+        assert_eq!(redact_sensitive(""), "");
+    }
+
+    #[test]
+    fn redact_very_long_token_value() {
+        let long_token = "a".repeat(2000);
+        let input = format!("CARGO_REGISTRY_TOKEN={long_token}");
+        let out = redact_sensitive(&input);
+        assert_eq!(out, "CARGO_REGISTRY_TOKEN=[REDACTED]");
+        assert!(!out.contains(&long_token));
+    }
+
+    #[test]
+    fn redact_unicode_surrounding_text() {
+        let input = "日本語 Authorization: Bearer secret_tok 中文";
+        let out = redact_sensitive(input);
+        assert_eq!(out, "日本語 Authorization: Bearer [REDACTED]");
+    }
+
+    #[test]
+    fn redact_token_at_string_start() {
+        let input = "token = abc123";
+        let out = redact_sensitive(input);
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("abc123"));
+    }
+
+    #[test]
+    fn redact_multiple_sensitive_patterns_one_line() {
+        // Both "token=" and "CARGO_REGISTRY_TOKEN=" appear; at least one is redacted.
+        let input = "CARGO_REGISTRY_TOKEN=secret1 token = secret2";
+        let out = redact_sensitive(input);
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("secret1"));
+    }
+
+    #[test]
+    fn redact_token_single_quoted() {
+        let input = "token = 'my_secret_value'";
+        let out = redact_sensitive(input);
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("my_secret_value"));
+    }
+
+    #[test]
+    fn redact_token_unquoted_value() {
+        let input = "token = plainvalue";
+        let out = redact_sensitive(input);
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("plainvalue"));
+    }
+
+    #[test]
+    fn redact_token_no_spaces_around_equals() {
+        let input = "token=nospacesecret";
+        let out = redact_sensitive(input);
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("nospacesecret"));
+    }
+
+    #[test]
+    fn redact_authorization_case_insensitive() {
+        let input = "authorization: bearer my_secret";
+        let out = redact_sensitive(input);
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("my_secret"));
+    }
+
+    #[test]
+    fn redact_preserves_trailing_newline() {
+        let input = "CARGO_REGISTRY_TOKEN=secret\n";
+        let out = redact_sensitive(input);
+        assert!(out.ends_with('\n'));
+        assert_eq!(out, "CARGO_REGISTRY_TOKEN=[REDACTED]\n");
+    }
+
+    #[test]
+    fn redact_token_with_empty_value_after_equals() {
+        // "token =" with nothing after — no redaction needed since value is empty.
+        let input = "token = ";
+        let out = redact_sensitive(input);
+        // The trimmed after-eq is empty, so no replacement occurs.
+        assert_eq!(out, "token = ");
+    }
+
+    #[test]
+    fn redact_cargo_registries_without_token_suffix_not_matched() {
+        // CARGO_REGISTRIES_FOO=bar has no _TOKEN suffix, should not be redacted.
+        let input = "CARGO_REGISTRIES_FOO=bar";
+        let out = redact_sensitive(input);
+        assert_eq!(out, "CARGO_REGISTRIES_FOO=bar");
+    }
+
+    #[test]
+    fn redact_mixed_case_authorization() {
+        let input = "AUTHORIZATION: BEARER top_secret";
+        let out = redact_sensitive(input);
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("top_secret"));
+    }
+
+    #[test]
+    fn redact_multiline_preserves_all_lines() {
+        let input = "line1\nline2\nline3";
+        let out = redact_sensitive(input);
+        assert_eq!(out.lines().count(), 3);
+    }
+
+    // --- tail_lines edge cases ---
+
+    #[test]
+    fn tail_lines_empty_input() {
+        assert_eq!(tail_lines("", 5), "");
+    }
+
+    #[test]
+    fn tail_lines_zero_lines_requested() {
+        let out = tail_lines("one\ntwo\nthree", 0);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn tail_lines_newline_only_input() {
+        let out = tail_lines("\n", 5);
+        // "\n" has one empty line via .lines(), plus trailing newline
+        assert_eq!(out, "\n");
+    }
+
+    #[test]
+    fn tail_lines_single_line_input() {
+        assert_eq!(tail_lines("hello", 1), "hello");
+    }
+
+    #[test]
+    fn tail_lines_sensitive_data_before_cutoff_excluded() {
+        let input = "CARGO_REGISTRY_TOKEN=secret\nsafe line\nanother safe";
+        let out = tail_lines(input, 2);
+        assert!(!out.contains("CARGO_REGISTRY_TOKEN"));
+        assert!(!out.contains("secret"));
+        assert_eq!(out, "safe line\nanother safe");
+    }
+
+    #[test]
+    fn tail_lines_preserves_trailing_newline_when_all_lines() {
+        let input = "one\ntwo\n";
+        let out = tail_lines(input, 10);
+        assert!(out.ends_with('\n'));
+    }
+
+    #[test]
+    fn tail_lines_exact_count_match() {
+        let input = "a\nb\nc";
+        assert_eq!(tail_lines(input, 3), "a\nb\nc");
+    }
 }
 
 #[cfg(test)]
@@ -269,5 +428,37 @@ mod snapshot_tests {
         let input =
             "Compiling foo\nAuthorization: Bearer secret123\nCARGO_REGISTRY_TOKEN=tok\nDone";
         assert_snapshot!(redact_sensitive(input));
+    }
+
+    #[test]
+    fn snapshot_redact_empty() {
+        assert_snapshot!(redact_sensitive(""));
+    }
+
+    #[test]
+    fn snapshot_redact_multiple_sensitive_same_line() {
+        assert_snapshot!(redact_sensitive(
+            "CARGO_REGISTRY_TOKEN=abc token = xyz"
+        ));
+    }
+
+    #[test]
+    fn snapshot_tail_lines_zero() {
+        assert_snapshot!(tail_lines("one\ntwo\nthree", 0));
+    }
+
+    #[test]
+    fn snapshot_redact_case_insensitive_auth() {
+        assert_snapshot!(redact_sensitive("authorization: bearer lowercasetoken"));
+    }
+
+    #[test]
+    fn snapshot_redact_single_quoted_token() {
+        assert_snapshot!(redact_sensitive("token = 'single_quoted_secret'"));
+    }
+
+    #[test]
+    fn snapshot_tail_lines_newline_only() {
+        assert_snapshot!(tail_lines("\n\n\n", 2));
     }
 }
