@@ -496,6 +496,396 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn disconnected_components_are_grouped_by_level() {
+        // Two independent subgraphs: a->b and c->d
+        let packages = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
+        let dependencies = deps(&[("a", &[]), ("b", &["a"]), ("c", &[]), ("d", &["c"])]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(
+            names(&levels),
+            vec![
+                vec!["a".to_string(), "c".to_string()],
+                vec!["b".to_string(), "d".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn disconnected_components_different_depths() {
+        // Subgraph 1: a (depth 0), Subgraph 2: x->y->z (depth 2)
+        let packages = vec![
+            "a".to_string(),
+            "x".to_string(),
+            "y".to_string(),
+            "z".to_string(),
+        ];
+        let dependencies = deps(&[("a", &[]), ("x", &[]), ("y", &["x"]), ("z", &["y"])]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        assert_eq!(levels.len(), 3);
+        assert_eq!(names(&levels)[0], vec!["a".to_string(), "x".to_string()]);
+        assert_eq!(names(&levels)[1], vec!["y".to_string()]);
+        assert_eq!(names(&levels)[2], vec!["z".to_string()]);
+    }
+
+    #[test]
+    fn two_node_cycle() {
+        let packages = vec!["a".to_string(), "b".to_string()];
+        let dependencies = deps(&[("a", &["b"]), ("b", &["a"])]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        let flat: Vec<String> = levels.iter().flat_map(|l| l.packages.clone()).collect();
+        assert_eq!(flat.len(), 2);
+        let unique: BTreeSet<String> = flat.into_iter().collect();
+        assert_eq!(unique.len(), 2);
+    }
+
+    #[test]
+    fn four_way_cycle_drains_all() {
+        let packages = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
+        let dependencies = deps(&[("a", &["d"]), ("b", &["a"]), ("c", &["b"]), ("d", &["c"])]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        let flat: Vec<String> = levels.iter().flat_map(|l| l.packages.clone()).collect();
+        assert_eq!(flat.len(), 4);
+        let unique: BTreeSet<String> = flat.into_iter().collect();
+        assert_eq!(unique.len(), 4);
+    }
+
+    #[test]
+    fn cycle_with_disconnected_acyclic_component() {
+        // a<->b (cycle), c->d (acyclic, disconnected)
+        let packages = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
+        let dependencies = deps(&[("a", &["b"]), ("b", &["a"]), ("c", &[]), ("d", &["c"])]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        let flat: Vec<String> = levels.iter().flat_map(|l| l.packages.clone()).collect();
+        assert_eq!(flat.len(), 4);
+        // c must appear before d in the flattened output
+        let pos_c = flat.iter().position(|n| n == "c").unwrap();
+        let pos_d = flat.iter().position(|n| n == "d").unwrap();
+        assert!(pos_c < pos_d);
+        let unique: BTreeSet<String> = flat.into_iter().collect();
+        assert_eq!(unique.len(), 4);
+    }
+
+    #[test]
+    fn inverted_tree_fan_in() {
+        // Multiple leaves converge on a single root
+        let packages = vec![
+            "leaf1".to_string(),
+            "leaf2".to_string(),
+            "leaf3".to_string(),
+            "trunk".to_string(),
+        ];
+        let dependencies = deps(&[
+            ("leaf1", &[]),
+            ("leaf2", &[]),
+            ("leaf3", &[]),
+            ("trunk", &["leaf1", "leaf2", "leaf3"]),
+        ]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0].packages.len(), 3);
+        assert_eq!(levels[1].packages, vec!["trunk".to_string()]);
+    }
+
+    #[test]
+    fn w_shaped_dependency() {
+        //  a   b   c
+        //   \ / \ /
+        //    d   e
+        let packages = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+        ];
+        let dependencies = deps(&[
+            ("a", &[]),
+            ("b", &[]),
+            ("c", &[]),
+            ("d", &["a", "b"]),
+            ("e", &["b", "c"]),
+        ]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(
+            names(&levels)[0],
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+        assert_eq!(names(&levels)[1], vec!["d".to_string(), "e".to_string()]);
+    }
+
+    #[test]
+    fn level_zero_packages_have_no_internal_deps() {
+        let packages = vec![
+            "core".to_string(),
+            "utils".to_string(),
+            "api".to_string(),
+            "app".to_string(),
+        ];
+        let dependencies = deps(&[
+            ("core", &[]),
+            ("utils", &["core"]),
+            ("api", &["core"]),
+            ("app", &["utils", "api"]),
+        ]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        let package_set: BTreeSet<String> = packages.iter().cloned().collect();
+        for pkg in &levels[0].packages {
+            let pkg_deps = dependencies.get(pkg).cloned().unwrap_or_default();
+            let internal_deps: Vec<_> = pkg_deps
+                .iter()
+                .filter(|d| package_set.contains(*d))
+                .collect();
+            assert!(
+                internal_deps.is_empty(),
+                "level 0 package {pkg} has internal deps: {internal_deps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn level_assignment_multi_layer_exact() {
+        //  a (0)
+        //  |
+        //  b (1)
+        //  |
+        //  c (2) depends on a and b => level 2
+        //  |
+        //  d (3)
+        let packages = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
+        let dependencies = deps(&[("a", &[]), ("b", &["a"]), ("c", &["a", "b"]), ("d", &["c"])]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        assert_eq!(levels.len(), 4);
+        assert_eq!(levels[0].packages, vec!["a".to_string()]);
+        assert_eq!(levels[0].level, 0);
+        assert_eq!(levels[1].packages, vec!["b".to_string()]);
+        assert_eq!(levels[1].level, 1);
+        assert_eq!(levels[2].packages, vec!["c".to_string()]);
+        assert_eq!(levels[2].level, 2);
+        assert_eq!(levels[3].packages, vec!["d".to_string()]);
+        assert_eq!(levels[3].level, 3);
+    }
+
+    #[test]
+    fn large_graph_50_nodes_wide() {
+        let mut packages = vec!["root".to_string()];
+        let leaves: Vec<String> = (0..50).map(|i| format!("leaf-{i}")).collect();
+        packages.extend(leaves.clone());
+
+        let mut dep_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        dep_map.insert("root".to_string(), vec![]);
+        for name in &leaves {
+            dep_map.insert(name.clone(), vec!["root".to_string()]);
+        }
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dep_map);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0].packages, vec!["root".to_string()]);
+        assert_eq!(levels[1].packages.len(), 50);
+    }
+
+    #[test]
+    fn large_graph_layered_60_nodes() {
+        // 6 layers of 10 nodes each; each layer depends on all nodes in previous layer
+        let mut packages = Vec::new();
+        let mut dep_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut prev_layer: Vec<String> = Vec::new();
+
+        for layer in 0..6 {
+            let mut current_layer = Vec::new();
+            for i in 0..10 {
+                let name = format!("l{layer}-n{i}");
+                packages.push(name.clone());
+                dep_map.insert(name.clone(), prev_layer.clone());
+                current_layer.push(name);
+            }
+            prev_layer = current_layer;
+        }
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dep_map);
+        assert_eq!(levels.len(), 6);
+        for level in &levels {
+            assert_eq!(level.packages.len(), 10);
+        }
+        let flat: Vec<String> = levels.iter().flat_map(|l| l.packages.clone()).collect();
+        assert_eq!(flat.len(), 60);
+    }
+
+    #[test]
+    fn large_linear_chain_50_nodes() {
+        let packages: Vec<String> = (0..50).map(|i| format!("pkg-{i:03}")).collect();
+        let mut dep_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        dep_map.insert(packages[0].clone(), vec![]);
+        for i in 1..50 {
+            dep_map.insert(packages[i].clone(), vec![packages[i - 1].clone()]);
+        }
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dep_map);
+        assert_eq!(levels.len(), 50);
+        for (i, level) in levels.iter().enumerate() {
+            assert_eq!(level.packages.len(), 1);
+            assert_eq!(level.level, i);
+        }
+    }
+
+    #[test]
+    fn stability_repeated_runs_produce_identical_output() {
+        let packages = vec![
+            "alpha".to_string(),
+            "beta".to_string(),
+            "gamma".to_string(),
+            "delta".to_string(),
+            "epsilon".to_string(),
+        ];
+        let dependencies = deps(&[
+            ("alpha", &[]),
+            ("beta", &["alpha"]),
+            ("gamma", &["alpha"]),
+            ("delta", &["beta", "gamma"]),
+            ("epsilon", &["delta"]),
+        ]);
+
+        let reference = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        for _ in 0..100 {
+            let result = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+            assert_eq!(result, reference, "non-deterministic output detected");
+        }
+    }
+
+    #[test]
+    fn double_diamond() {
+        //     a
+        //    / \
+        //   b   c
+        //    \ /
+        //     d
+        //    / \
+        //   e   f
+        //    \ /
+        //     g
+        let packages = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+            "f".to_string(),
+            "g".to_string(),
+        ];
+        let dependencies = deps(&[
+            ("a", &[]),
+            ("b", &["a"]),
+            ("c", &["a"]),
+            ("d", &["b", "c"]),
+            ("e", &["d"]),
+            ("f", &["d"]),
+            ("g", &["e", "f"]),
+        ]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        assert_eq!(levels.len(), 5);
+        assert_eq!(names(&levels)[0], vec!["a".to_string()]);
+        assert_eq!(names(&levels)[1], vec!["b".to_string(), "c".to_string()]);
+        assert_eq!(names(&levels)[2], vec!["d".to_string()]);
+        assert_eq!(names(&levels)[3], vec!["e".to_string(), "f".to_string()]);
+        assert_eq!(names(&levels)[4], vec!["g".to_string()]);
+    }
+
+    #[test]
+    fn package_with_empty_dep_list_in_map() {
+        let packages = vec!["a".to_string(), "b".to_string()];
+        let mut dep_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        dep_map.insert("a".to_string(), vec![]);
+        dep_map.insert("b".to_string(), vec![]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dep_map);
+        assert_eq!(levels.len(), 1);
+        assert_eq!(names(&levels), vec![vec!["a".to_string(), "b".to_string()]]);
+    }
+
+    #[test]
+    fn skip_level_impossible_with_correct_assignment() {
+        // Verify that if c depends on a (skipping b's level), c is at level 1 not 2
+        let packages = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let dependencies = deps(&[
+            ("a", &[]),
+            ("b", &["a"]),
+            ("c", &["a"]), // c depends on a directly, not b
+        ]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(names(&levels)[0], vec!["a".to_string()]);
+        // b and c should be in the same level since both only depend on a
+        assert_eq!(names(&levels)[1], vec!["b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn every_package_appears_exactly_once() {
+        let packages = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+        ];
+        let dependencies = deps(&[
+            ("a", &[]),
+            ("b", &["a"]),
+            ("c", &["a"]),
+            ("d", &["b", "c"]),
+            ("e", &["d"]),
+        ]);
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        let flat: Vec<String> = levels.iter().flat_map(|l| l.packages.clone()).collect();
+        assert_eq!(flat.len(), packages.len());
+        let unique: BTreeSet<String> = flat.into_iter().collect();
+        assert_eq!(unique.len(), packages.len());
+    }
+
+    #[test]
+    fn three_disconnected_singletons() {
+        let packages = vec!["x".to_string(), "y".to_string(), "z".to_string()];
+        let dependencies: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+        let levels = group_packages_by_levels(&packages, |name| name.as_str(), &dependencies);
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0].level, 0);
+        assert_eq!(levels[0].packages.len(), 3);
+    }
 }
 
 #[cfg(test)]
@@ -849,6 +1239,47 @@ mod proptests {
             let levels = group_packages_by_levels(&unique, |n| n.as_str(), &deps);
             prop_assert_eq!(levels.len(), 1);
         }
+
+        #[test]
+        fn dag_level_zero_has_no_internal_deps(
+            (names, deps) in dag_strategy(),
+        ) {
+            let levels = group_packages_by_levels(&names, |n| n.as_str(), &deps);
+            let name_set: BTreeSet<String> = names.iter().cloned().collect();
+            if !levels.is_empty() {
+                for pkg in &levels[0].packages {
+                    let pkg_deps = deps.get(pkg).cloned().unwrap_or_default();
+                    let internal: Vec<_> = pkg_deps.iter().filter(|d| name_set.contains(*d)).collect();
+                    prop_assert!(internal.is_empty(),
+                        "level-0 package {} has internal deps: {:?}", pkg, internal);
+                }
+            }
+        }
+
+        #[test]
+        fn dag_packages_assigned_to_minimal_possible_level(
+            (names, deps) in dag_strategy(),
+        ) {
+            let levels = group_packages_by_levels(&names, |n| n.as_str(), &deps);
+            let level_of: HashMap<String, usize> = levels
+                .iter()
+                .flat_map(|l| l.packages.iter().map(move |n| (n.clone(), l.level)))
+                .collect();
+            let name_set: BTreeSet<String> = names.iter().cloned().collect();
+            for (pkg, pkg_deps) in &deps {
+                if let Some(&pkg_lvl) = level_of.get(pkg) {
+                    let max_dep_level = pkg_deps
+                        .iter()
+                        .filter(|d| name_set.contains(*d))
+                        .filter_map(|d| level_of.get(d))
+                        .max()
+                        .copied();
+                    let expected_min = max_dep_level.map_or(0, |l| l + 1);
+                    prop_assert_eq!(pkg_lvl, expected_min,
+                        "{} at level {} but min possible is {}", pkg, pkg_lvl, expected_min);
+                }
+            }
+        }
     }
 }
 
@@ -939,6 +1370,81 @@ mod snapshot_tests {
     #[test]
     fn snapshot_empty_plan() {
         let levels = group_packages_by_levels::<String, _>(&[], |n| n.as_str(), &BTreeMap::new());
+        assert_yaml_snapshot!(level_summary(&levels));
+    }
+
+    #[test]
+    fn snapshot_disconnected_components() {
+        let packages = vec![
+            "alpha".to_string(),
+            "beta".to_string(),
+            "gamma".to_string(),
+            "delta".to_string(),
+        ];
+        let dependencies = deps(&[
+            ("alpha", &[]),
+            ("beta", &["alpha"]),
+            ("gamma", &[]),
+            ("delta", &["gamma"]),
+        ]);
+        let levels = group_packages_by_levels(&packages, |n| n.as_str(), &dependencies);
+        assert_yaml_snapshot!(level_summary(&levels));
+    }
+
+    #[test]
+    fn snapshot_deep_binary_tree() {
+        //       a
+        //      / \
+        //     b   c
+        //    / \
+        //   d   e
+        let packages = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+        ];
+        let dependencies = deps(&[
+            ("a", &[]),
+            ("b", &["a"]),
+            ("c", &["a"]),
+            ("d", &["b"]),
+            ("e", &["b"]),
+        ]);
+        let levels = group_packages_by_levels(&packages, |n| n.as_str(), &dependencies);
+        assert_yaml_snapshot!(level_summary(&levels));
+    }
+
+    #[test]
+    fn snapshot_cycle_fallback() {
+        let packages = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let dependencies = deps(&[("a", &["c"]), ("b", &["a"]), ("c", &["b"])]);
+        let levels = group_packages_by_levels(&packages, |n| n.as_str(), &dependencies);
+        assert_yaml_snapshot!(level_summary(&levels));
+    }
+
+    #[test]
+    fn snapshot_double_diamond() {
+        let packages = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+            "f".to_string(),
+            "g".to_string(),
+        ];
+        let dependencies = deps(&[
+            ("a", &[]),
+            ("b", &["a"]),
+            ("c", &["a"]),
+            ("d", &["b", "c"]),
+            ("e", &["d"]),
+            ("f", &["d"]),
+            ("g", &["e", "f"]),
+        ]);
+        let levels = group_packages_by_levels(&packages, |n| n.as_str(), &dependencies);
         assert_yaml_snapshot!(level_summary(&levels));
     }
 }

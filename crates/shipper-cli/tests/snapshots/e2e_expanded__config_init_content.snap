@@ -1,0 +1,107 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: content
+---
+# Shipper configuration file
+# This file should be placed in your workspace root as .shipper.toml
+
+# Schema version for the configuration file
+schema_version = "shipper.config.v1"
+
+[policy]
+# Publishing policy: safe (verify+strict), balanced (verify when needed), or fast (no verify)
+mode = "safe"
+
+[verify]
+# Verify mode: workspace (default, safest), package (per-crate), or none (no verify)
+mode = "workspace"
+
+[readiness]
+# Enable readiness checks (wait for registry visibility after publish)
+enabled = true
+# Method for checking version visibility: api (fast), index (slower, more accurate), both (slowest, most reliable)
+method = "api"
+# Initial delay before first poll
+initial_delay = "1s"
+# Maximum delay between polls
+max_delay = "60s"
+# Maximum total time to wait for visibility
+max_total_wait = "5m"
+# Base poll interval
+poll_interval = "2s"
+# Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
+jitter_factor = 0.5
+
+[output]
+# Number of output lines to capture for evidence
+lines = 50
+
+[lock]
+# Lock timeout duration (locks older than this are considered stale)
+timeout = "1h"
+
+[retry]
+# Retry policy: default (balanced), aggressive, conservative, or custom
+# - default: exponential backoff with 6 attempts, 2s base, 2m max
+# - aggressive: exponential backoff with 10 attempts, 500ms base, 30s max
+# - conservative: linear backoff with 3 attempts, 5s base, 60s max
+# - custom: uses explicit strategy settings below
+policy = "default"
+# Max attempts per crate publish step (used when policy is custom)
+max_attempts = 6
+# Base backoff delay
+base_delay = "2s"
+# Max backoff delay
+max_delay = "2m"
+# Strategy type: immediate, exponential, linear, constant
+strategy = "exponential"
+# Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
+jitter = 0.5
+
+# Per-error-type retry configuration (optional)
+# Uncomment and customize to override retry behavior for specific error types
+# [retry.per_error.retryable]
+# strategy = "immediate"
+# max_attempts = 10
+# base_delay = "0s"
+# max_delay = "1s"
+# jitter = 0.0
+
+# [retry.per_error.ambiguous]
+# strategy = "exponential"
+# max_attempts = 5
+# base_delay = "1s"
+# max_delay = "60s"
+# jitter = 0.3
+
+[flags]
+# Allow publishing from a dirty git working tree (not recommended)
+allow_dirty = false
+# Skip owners/permissions preflight (not recommended)
+skip_ownership_check = false
+# Fail preflight if ownership checks fail (recommended)
+strict_ownership = false
+
+[parallel]
+# Enable parallel publishing (default: false for sequential)
+enabled = false
+# Maximum number of concurrent publish operations (default: 4)
+max_concurrent = 4
+# Timeout per package publish operation (default: 30 minutes)
+per_package_timeout = "30m"
+
+# Optional: Custom registry configuration
+# [registry]
+# name = "crates-io"
+# api_base = "https://crates.io"
+
+# Optional: Webhook notifications for publish events
+# [webhook]
+# Enable webhook notifications (default: false - disabled)
+# enabled = false
+# URL to send POST requests to
+# url = "https://your-webhook-endpoint.com/webhook"
+# Optional secret for signing webhook payloads
+# secret = "your-webhook-secret"
+# Request timeout (default: 30s)
+# timeout = "30s"

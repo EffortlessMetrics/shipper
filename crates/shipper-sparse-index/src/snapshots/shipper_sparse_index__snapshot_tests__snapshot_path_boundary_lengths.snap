@@ -1,0 +1,10 @@
+---
+source: crates/shipper-sparse-index/src/lib.rs
+expression: "paths.join(\"\\n\")"
+---
+len=1 x -> 1/x
+len=2 ab -> 2/ab
+len=3 syn -> 3/s/syn
+len=4 clap -> cl/ap/clap
+len=5 tokio -> to/ki/tokio
+len=10 serde_json -> se/rd/serde_json

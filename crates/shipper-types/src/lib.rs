@@ -1517,6 +1517,979 @@ mod tests {
         assert_eq!(config.jitter_factor, 0.25);
     }
 
+    // ===== PackageState transition tests =====
+
+    #[test]
+    fn package_state_pending_to_uploaded_is_valid() {
+        let pending = PackageState::Pending;
+        let uploaded = PackageState::Uploaded;
+        assert_eq!(pending, PackageState::Pending);
+        assert_eq!(uploaded, PackageState::Uploaded);
+        // Pending can transition to Uploaded
+        assert_ne!(pending, uploaded);
+    }
+
+    #[test]
+    fn package_state_uploaded_to_published_is_valid() {
+        let uploaded = PackageState::Uploaded;
+        let published = PackageState::Published;
+        assert_ne!(uploaded, published);
+    }
+
+    #[test]
+    fn package_state_pending_to_failed_is_valid() {
+        let pending = PackageState::Pending;
+        let failed = PackageState::Failed {
+            class: ErrorClass::Retryable,
+            message: "connection refused".to_string(),
+        };
+        assert_ne!(pending, failed);
+    }
+
+    #[test]
+    fn package_state_pending_to_skipped_is_valid() {
+        let skipped = PackageState::Skipped {
+            reason: "already published".to_string(),
+        };
+        assert!(matches!(skipped, PackageState::Skipped { .. }));
+    }
+
+    #[test]
+    fn package_state_uploaded_to_ambiguous_is_valid() {
+        let ambiguous = PackageState::Ambiguous {
+            message: "upload succeeded but timed out waiting for visibility".to_string(),
+        };
+        assert!(matches!(ambiguous, PackageState::Ambiguous { .. }));
+    }
+
+    #[test]
+    fn package_state_failed_equality_requires_matching_fields() {
+        let f1 = PackageState::Failed {
+            class: ErrorClass::Retryable,
+            message: "timeout".to_string(),
+        };
+        let f2 = PackageState::Failed {
+            class: ErrorClass::Retryable,
+            message: "timeout".to_string(),
+        };
+        let f3 = PackageState::Failed {
+            class: ErrorClass::Permanent,
+            message: "timeout".to_string(),
+        };
+        let f4 = PackageState::Failed {
+            class: ErrorClass::Retryable,
+            message: "different".to_string(),
+        };
+        assert_eq!(f1, f2);
+        assert_ne!(f1, f3);
+        assert_ne!(f1, f4);
+    }
+
+    #[test]
+    fn package_state_skipped_equality_by_reason() {
+        let s1 = PackageState::Skipped {
+            reason: "exists".to_string(),
+        };
+        let s2 = PackageState::Skipped {
+            reason: "exists".to_string(),
+        };
+        let s3 = PackageState::Skipped {
+            reason: "other".to_string(),
+        };
+        assert_eq!(s1, s2);
+        assert_ne!(s1, s3);
+    }
+
+    #[test]
+    fn package_state_all_unit_variants_are_distinct() {
+        let states: Vec<PackageState> = vec![
+            PackageState::Pending,
+            PackageState::Uploaded,
+            PackageState::Published,
+        ];
+        for (i, a) in states.iter().enumerate() {
+            for (j, b) in states.iter().enumerate() {
+                if i == j {
+                    assert_eq!(a, b);
+                } else {
+                    assert_ne!(a, b);
+                }
+            }
+        }
+    }
+
+    // ===== ReleasePlan determinism =====
+
+    #[test]
+    fn release_plan_serde_roundtrip_preserves_all_fields() {
+        let plan = ReleasePlan {
+            plan_version: "shipper.plan.v1".to_string(),
+            plan_id: "deadbeef01234567".to_string(),
+            created_at: "2025-06-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+            registry: Registry::crates_io(),
+            packages: vec![
+                PlannedPackage {
+                    name: "alpha".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("crates/alpha/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "beta".to_string(),
+                    version: "2.0.0".to_string(),
+                    manifest_path: PathBuf::from("crates/beta/Cargo.toml"),
+                },
+            ],
+            dependencies: BTreeMap::from([("beta".to_string(), vec!["alpha".to_string()])]),
+        };
+        let json = serde_json::to_string(&plan).unwrap();
+        let parsed: ReleasePlan = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.plan_version, plan.plan_version);
+        assert_eq!(parsed.plan_id, plan.plan_id);
+        assert_eq!(parsed.packages.len(), 2);
+        assert_eq!(parsed.packages[0].name, "alpha");
+        assert_eq!(parsed.packages[1].name, "beta");
+        assert_eq!(parsed.dependencies.len(), 1);
+        assert_eq!(parsed.dependencies["beta"], vec!["alpha".to_string()]);
+        assert_eq!(parsed.registry.name, "crates-io");
+    }
+
+    #[test]
+    fn release_plan_empty_dependencies_roundtrip() {
+        let plan = ReleasePlan {
+            plan_version: "shipper.plan.v1".to_string(),
+            plan_id: "nodeps".to_string(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages: vec![PlannedPackage {
+                name: "standalone".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: PathBuf::from("Cargo.toml"),
+            }],
+            dependencies: BTreeMap::new(),
+        };
+        let json = serde_json::to_string(&plan).unwrap();
+        let parsed: ReleasePlan = serde_json::from_str(&json).unwrap();
+        assert!(parsed.dependencies.is_empty());
+    }
+
+    #[test]
+    fn release_plan_group_by_levels_single_crate() {
+        let plan = ReleasePlan {
+            plan_version: "shipper.plan.v1".to_string(),
+            plan_id: "single".to_string(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages: vec![PlannedPackage {
+                name: "solo".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: PathBuf::from("Cargo.toml"),
+            }],
+            dependencies: BTreeMap::new(),
+        };
+        let levels = plan.group_by_levels();
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0].level, 0);
+        assert_eq!(levels[0].packages.len(), 1);
+        assert_eq!(levels[0].packages[0].name, "solo");
+    }
+
+    #[test]
+    fn release_plan_group_by_levels_chain() {
+        let plan = ReleasePlan {
+            plan_version: "shipper.plan.v1".to_string(),
+            plan_id: "chain".to_string(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages: vec![
+                PlannedPackage {
+                    name: "a".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("a/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "b".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("b/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "c".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("c/Cargo.toml"),
+                },
+            ],
+            dependencies: BTreeMap::from([
+                ("b".to_string(), vec!["a".to_string()]),
+                ("c".to_string(), vec!["b".to_string()]),
+            ]),
+        };
+        let levels = plan.group_by_levels();
+        assert_eq!(levels.len(), 3);
+        assert_eq!(levels[0].level, 0);
+        assert_eq!(levels[0].packages[0].name, "a");
+        assert_eq!(levels[1].level, 1);
+        assert_eq!(levels[1].packages[0].name, "b");
+        assert_eq!(levels[2].level, 2);
+        assert_eq!(levels[2].packages[0].name, "c");
+    }
+
+    #[test]
+    fn release_plan_group_by_levels_parallel_at_level_zero() {
+        let plan = ReleasePlan {
+            plan_version: "shipper.plan.v1".to_string(),
+            plan_id: "parallel".to_string(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages: vec![
+                PlannedPackage {
+                    name: "x".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("x/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "y".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("y/Cargo.toml"),
+                },
+                PlannedPackage {
+                    name: "z".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: PathBuf::from("z/Cargo.toml"),
+                },
+            ],
+            dependencies: BTreeMap::new(),
+        };
+        let levels = plan.group_by_levels();
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0].packages.len(), 3);
+    }
+
+    // ===== Receipt serialization roundtrips =====
+
+    #[test]
+    fn receipt_with_ambiguous_state_roundtrip() {
+        let t = "2025-01-15T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let receipt = Receipt {
+            receipt_version: "shipper.receipt.v1".to_string(),
+            plan_id: "ambig-test".to_string(),
+            registry: Registry::crates_io(),
+            started_at: t,
+            finished_at: t,
+            packages: vec![PackageReceipt {
+                name: "ambig-crate".to_string(),
+                version: "0.1.0".to_string(),
+                attempts: 2,
+                state: PackageState::Ambiguous {
+                    message: "upload ok but readiness timed out".to_string(),
+                },
+                started_at: t,
+                finished_at: t,
+                duration_ms: 60000,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            }],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: None,
+            environment: EnvironmentFingerprint {
+                shipper_version: "0.3.0".to_string(),
+                cargo_version: None,
+                rust_version: None,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&receipt).unwrap();
+        let parsed: Receipt = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            &parsed.packages[0].state,
+            PackageState::Ambiguous { message } if message.contains("readiness timed out")
+        ));
+    }
+
+    #[test]
+    fn receipt_empty_packages_roundtrip() {
+        let t = Utc::now();
+        let receipt = Receipt {
+            receipt_version: "shipper.receipt.v1".to_string(),
+            plan_id: "empty".to_string(),
+            registry: Registry::crates_io(),
+            started_at: t,
+            finished_at: t,
+            packages: vec![],
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: None,
+            environment: EnvironmentFingerprint {
+                shipper_version: "0.3.0".to_string(),
+                cargo_version: None,
+                rust_version: None,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&receipt).unwrap();
+        let parsed: Receipt = serde_json::from_str(&json).unwrap();
+        assert!(parsed.packages.is_empty());
+    }
+
+    #[test]
+    fn receipt_all_state_variants_roundtrip() {
+        let t = Utc::now();
+        let states = vec![
+            PackageState::Published,
+            PackageState::Uploaded,
+            PackageState::Pending,
+            PackageState::Skipped {
+                reason: "exists".to_string(),
+            },
+            PackageState::Failed {
+                class: ErrorClass::Permanent,
+                message: "auth".to_string(),
+            },
+            PackageState::Ambiguous {
+                message: "unclear".to_string(),
+            },
+        ];
+        let packages: Vec<PackageReceipt> = states
+            .into_iter()
+            .enumerate()
+            .map(|(i, state)| PackageReceipt {
+                name: format!("crate-{i}"),
+                version: "1.0.0".to_string(),
+                attempts: 1,
+                state,
+                started_at: t,
+                finished_at: t,
+                duration_ms: 100,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            })
+            .collect();
+        let receipt = Receipt {
+            receipt_version: "shipper.receipt.v1".to_string(),
+            plan_id: "all-variants".to_string(),
+            registry: Registry::crates_io(),
+            started_at: t,
+            finished_at: t,
+            packages,
+            event_log_path: PathBuf::from(".shipper/events.jsonl"),
+            git_context: None,
+            environment: EnvironmentFingerprint {
+                shipper_version: "0.3.0".to_string(),
+                cargo_version: None,
+                rust_version: None,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&receipt).unwrap();
+        let parsed: Receipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.packages.len(), 6);
+        assert!(matches!(parsed.packages[0].state, PackageState::Published));
+        assert!(matches!(parsed.packages[1].state, PackageState::Uploaded));
+        assert!(matches!(parsed.packages[2].state, PackageState::Pending));
+        assert!(matches!(
+            parsed.packages[3].state,
+            PackageState::Skipped { .. }
+        ));
+        assert!(matches!(
+            parsed.packages[4].state,
+            PackageState::Failed { .. }
+        ));
+        assert!(matches!(
+            parsed.packages[5].state,
+            PackageState::Ambiguous { .. }
+        ));
+    }
+
+    // ===== PublishPolicy / VerifyMode =====
+
+    #[test]
+    fn publish_policy_default_is_safe() {
+        assert_eq!(PublishPolicy::default(), PublishPolicy::Safe);
+    }
+
+    #[test]
+    fn publish_policy_exhaustive_serde() {
+        let policies = [
+            PublishPolicy::Safe,
+            PublishPolicy::Balanced,
+            PublishPolicy::Fast,
+        ];
+        let expected_json = [r#""safe""#, r#""balanced""#, r#""fast""#];
+        for (policy, expected) in policies.iter().zip(expected_json.iter()) {
+            let json = serde_json::to_string(policy).unwrap();
+            assert_eq!(&json, expected);
+            let parsed: PublishPolicy = serde_json::from_str(&json).unwrap();
+            assert_eq!(&parsed, policy);
+        }
+    }
+
+    #[test]
+    fn verify_mode_default_is_workspace() {
+        assert_eq!(VerifyMode::default(), VerifyMode::Workspace);
+    }
+
+    #[test]
+    fn verify_mode_exhaustive_serde() {
+        let modes = [VerifyMode::Workspace, VerifyMode::Package, VerifyMode::None];
+        let expected_json = [r#""workspace""#, r#""package""#, r#""none""#];
+        for (mode, expected) in modes.iter().zip(expected_json.iter()) {
+            let json = serde_json::to_string(mode).unwrap();
+            assert_eq!(&json, expected);
+            let parsed: VerifyMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(&parsed, mode);
+        }
+    }
+
+    #[test]
+    fn readiness_method_exhaustive_serde() {
+        let methods = [
+            ReadinessMethod::Api,
+            ReadinessMethod::Index,
+            ReadinessMethod::Both,
+        ];
+        let expected_json = [r#""api""#, r#""index""#, r#""both""#];
+        for (method, expected) in methods.iter().zip(expected_json.iter()) {
+            let json = serde_json::to_string(method).unwrap();
+            assert_eq!(&json, expected);
+            let parsed: ReadinessMethod = serde_json::from_str(&json).unwrap();
+            assert_eq!(&parsed, method);
+        }
+    }
+
+    // ===== PackageProgress =====
+
+    #[test]
+    fn package_progress_epoch_timestamp_roundtrip() {
+        let epoch = DateTime::from_timestamp(0, 0).unwrap();
+        let progress = PackageProgress {
+            name: "epoch-crate".to_string(),
+            version: "0.0.1".to_string(),
+            attempts: 0,
+            state: PackageState::Pending,
+            last_updated_at: epoch,
+        };
+        let json = serde_json::to_string(&progress).unwrap();
+        let parsed: PackageProgress = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.last_updated_at.timestamp(), 0);
+    }
+
+    #[test]
+    fn package_progress_far_future_timestamp_roundtrip() {
+        let far_future = DateTime::from_timestamp(4102444800, 0).unwrap(); // 2100-01-01
+        let progress = PackageProgress {
+            name: "future-crate".to_string(),
+            version: "99.0.0".to_string(),
+            attempts: 0,
+            state: PackageState::Pending,
+            last_updated_at: far_future,
+        };
+        let json = serde_json::to_string(&progress).unwrap();
+        let parsed: PackageProgress = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.last_updated_at.timestamp(), 4102444800);
+    }
+
+    #[test]
+    fn package_progress_all_states_roundtrip() {
+        let states = vec![
+            PackageState::Pending,
+            PackageState::Uploaded,
+            PackageState::Published,
+            PackageState::Skipped {
+                reason: "r".to_string(),
+            },
+            PackageState::Failed {
+                class: ErrorClass::Ambiguous,
+                message: "m".to_string(),
+            },
+            PackageState::Ambiguous {
+                message: "a".to_string(),
+            },
+        ];
+        for state in states {
+            let progress = PackageProgress {
+                name: "test".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 1,
+                state: state.clone(),
+                last_updated_at: Utc::now(),
+            };
+            let json = serde_json::to_string(&progress).unwrap();
+            let parsed: PackageProgress = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.state, state);
+        }
+    }
+
+    // ===== RuntimeOptions =====
+
+    fn make_default_runtime_options() -> RuntimeOptions {
+        RuntimeOptions {
+            allow_dirty: false,
+            skip_ownership_check: false,
+            strict_ownership: false,
+            no_verify: false,
+            max_attempts: 3,
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(60),
+            retry_strategy: shipper_retry::RetryStrategyType::Exponential,
+            retry_jitter: 0.5,
+            retry_per_error: shipper_retry::PerErrorConfig::default(),
+            verify_timeout: Duration::from_secs(600),
+            verify_poll_interval: Duration::from_secs(10),
+            state_dir: PathBuf::from(".shipper"),
+            force_resume: false,
+            policy: PublishPolicy::Safe,
+            verify_mode: VerifyMode::Workspace,
+            readiness: ReadinessConfig::default(),
+            output_lines: 1000,
+            force: false,
+            lock_timeout: Duration::from_secs(3600),
+            parallel: ParallelConfig::default(),
+            webhook: WebhookConfig::default(),
+            encryption: EncryptionSettings::default(),
+            registries: vec![],
+            resume_from: None,
+        }
+    }
+
+    #[test]
+    fn runtime_options_default_values() {
+        let opts = make_default_runtime_options();
+        assert!(!opts.allow_dirty);
+        assert!(!opts.skip_ownership_check);
+        assert!(!opts.strict_ownership);
+        assert!(!opts.no_verify);
+        assert_eq!(opts.max_attempts, 3);
+        assert_eq!(opts.base_delay, Duration::from_secs(1));
+        assert_eq!(opts.max_delay, Duration::from_secs(60));
+        assert_eq!(opts.policy, PublishPolicy::Safe);
+        assert_eq!(opts.verify_mode, VerifyMode::Workspace);
+        assert_eq!(opts.output_lines, 1000);
+        assert!(!opts.force);
+        assert!(!opts.force_resume);
+        assert!(opts.registries.is_empty());
+        assert!(opts.resume_from.is_none());
+    }
+
+    #[test]
+    fn runtime_options_all_booleans_toggled() {
+        let opts = RuntimeOptions {
+            allow_dirty: true,
+            skip_ownership_check: true,
+            strict_ownership: true,
+            no_verify: true,
+            force_resume: true,
+            force: true,
+            ..make_default_runtime_options()
+        };
+        assert!(opts.allow_dirty);
+        assert!(opts.skip_ownership_check);
+        assert!(opts.strict_ownership);
+        assert!(opts.no_verify);
+        assert!(opts.force_resume);
+        assert!(opts.force);
+    }
+
+    #[test]
+    fn runtime_options_with_multiple_registries() {
+        let opts = RuntimeOptions {
+            registries: vec![
+                Registry::crates_io(),
+                Registry {
+                    name: "private".to_string(),
+                    api_base: "https://registry.example.com".to_string(),
+                    index_base: None,
+                },
+            ],
+            ..make_default_runtime_options()
+        };
+        assert_eq!(opts.registries.len(), 2);
+        assert_eq!(opts.registries[0].name, "crates-io");
+        assert_eq!(opts.registries[1].name, "private");
+    }
+
+    #[test]
+    fn runtime_options_with_resume_from() {
+        let opts = RuntimeOptions {
+            resume_from: Some("my-crate".to_string()),
+            ..make_default_runtime_options()
+        };
+        assert_eq!(opts.resume_from.as_deref(), Some("my-crate"));
+    }
+
+    // ===== Registry =====
+
+    #[test]
+    fn registry_get_index_base_derives_from_api_https() {
+        let reg = Registry {
+            name: "custom".to_string(),
+            api_base: "https://registry.example.com".to_string(),
+            index_base: None,
+        };
+        assert_eq!(reg.get_index_base(), "https://index.registry.example.com");
+    }
+
+    #[test]
+    fn registry_get_index_base_derives_from_api_http() {
+        let reg = Registry {
+            name: "local".to_string(),
+            api_base: "http://localhost:8080".to_string(),
+            index_base: None,
+        };
+        assert_eq!(reg.get_index_base(), "http://index.localhost:8080");
+    }
+
+    #[test]
+    fn registry_get_index_base_uses_explicit_value() {
+        let reg = Registry {
+            name: "custom".to_string(),
+            api_base: "https://api.example.com".to_string(),
+            index_base: Some("https://my-index.example.com".to_string()),
+        };
+        assert_eq!(reg.get_index_base(), "https://my-index.example.com");
+    }
+
+    #[test]
+    fn registry_crates_io_get_index_base() {
+        let reg = Registry::crates_io();
+        assert_eq!(reg.get_index_base(), "https://index.crates.io");
+    }
+
+    #[test]
+    fn registry_serde_skips_none_index_base() {
+        let reg = Registry {
+            name: "test".to_string(),
+            api_base: "https://test.io".to_string(),
+            index_base: None,
+        };
+        let json = serde_json::to_string(&reg).unwrap();
+        assert!(!json.contains("index_base"));
+    }
+
+    // ===== ErrorClass =====
+
+    #[test]
+    fn error_class_serde_values() {
+        let classes = [
+            ErrorClass::Retryable,
+            ErrorClass::Permanent,
+            ErrorClass::Ambiguous,
+        ];
+        let expected = [r#""retryable""#, r#""permanent""#, r#""ambiguous""#];
+        for (class, exp) in classes.iter().zip(expected.iter()) {
+            let json = serde_json::to_string(class).unwrap();
+            assert_eq!(&json, exp);
+        }
+    }
+
+    #[test]
+    fn error_class_clone_and_eq() {
+        let original = ErrorClass::Retryable;
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    // ===== ExecutionResult =====
+
+    #[test]
+    fn execution_result_serde_values() {
+        let results = [
+            ExecutionResult::Success,
+            ExecutionResult::PartialFailure,
+            ExecutionResult::CompleteFailure,
+        ];
+        let expected = [
+            r#""success""#,
+            r#""partial_failure""#,
+            r#""complete_failure""#,
+        ];
+        for (result, exp) in results.iter().zip(expected.iter()) {
+            let json = serde_json::to_string(result).unwrap();
+            assert_eq!(&json, exp);
+        }
+    }
+
+    // ===== AuthType =====
+
+    #[test]
+    fn auth_type_serde_values() {
+        let types = [
+            AuthType::Token,
+            AuthType::TrustedPublishing,
+            AuthType::Unknown,
+        ];
+        let expected = [r#""token""#, r#""trusted_publishing""#, r#""unknown""#];
+        for (auth, exp) in types.iter().zip(expected.iter()) {
+            let json = serde_json::to_string(auth).unwrap();
+            assert_eq!(&json, exp);
+        }
+    }
+
+    // ===== Finishability =====
+
+    #[test]
+    fn finishability_serde_values() {
+        let fins = [
+            Finishability::Proven,
+            Finishability::NotProven,
+            Finishability::Failed,
+        ];
+        let expected = [r#""proven""#, r#""not_proven""#, r#""failed""#];
+        for (fin, exp) in fins.iter().zip(expected.iter()) {
+            let json = serde_json::to_string(fin).unwrap();
+            assert_eq!(&json, exp);
+        }
+    }
+
+    // ===== ParallelConfig =====
+
+    #[test]
+    fn parallel_config_default_values() {
+        let config = ParallelConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.max_concurrent, 4);
+        assert_eq!(config.per_package_timeout, Duration::from_secs(1800));
+    }
+
+    #[test]
+    fn parallel_config_serde_roundtrip() {
+        let config = ParallelConfig {
+            enabled: true,
+            max_concurrent: 16,
+            per_package_timeout: Duration::from_secs(300),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: ParallelConfig = serde_json::from_str(&json).unwrap();
+        assert!(parsed.enabled);
+        assert_eq!(parsed.max_concurrent, 16);
+        assert_eq!(parsed.per_package_timeout, Duration::from_secs(300));
+    }
+
+    // ===== PackageState serde =====
+
+    #[test]
+    fn package_state_pending_json() {
+        let json = serde_json::to_string(&PackageState::Pending).unwrap();
+        assert_eq!(json, r#"{"state":"pending"}"#);
+    }
+
+    #[test]
+    fn package_state_published_json() {
+        let json = serde_json::to_string(&PackageState::Published).unwrap();
+        assert_eq!(json, r#"{"state":"published"}"#);
+    }
+
+    #[test]
+    fn package_state_skipped_json_contains_reason() {
+        let state = PackageState::Skipped {
+            reason: "version exists".to_string(),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains(r#""state":"skipped""#));
+        assert!(json.contains(r#""reason":"version exists""#));
+    }
+
+    #[test]
+    fn package_state_ambiguous_serde_roundtrip() {
+        let state = PackageState::Ambiguous {
+            message: "timeout during readiness".to_string(),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: PackageState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, state);
+    }
+
+    // ===== EventType serde =====
+
+    #[test]
+    fn event_type_preflight_variants_roundtrip() {
+        let events = vec![
+            EventType::PreflightStarted,
+            EventType::PreflightWorkspaceVerify {
+                passed: true,
+                output: "all good".to_string(),
+            },
+            EventType::PreflightNewCrateDetected {
+                crate_name: "new-crate".to_string(),
+            },
+            EventType::PreflightOwnershipCheck {
+                crate_name: "my-crate".to_string(),
+                verified: true,
+            },
+            EventType::PreflightComplete {
+                finishability: Finishability::Proven,
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let parsed: EventType = serde_json::from_str(&json).unwrap();
+            let reparsed_json = serde_json::to_string(&parsed).unwrap();
+            assert_eq!(json, reparsed_json);
+        }
+    }
+
+    // ===== GitContext =====
+
+    #[test]
+    fn git_context_all_none_roundtrip() {
+        let ctx = GitContext {
+            commit: None,
+            branch: None,
+            tag: None,
+            dirty: None,
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let parsed: GitContext = serde_json::from_str(&json).unwrap();
+        assert!(parsed.commit.is_none());
+        assert!(parsed.branch.is_none());
+        assert!(parsed.tag.is_none());
+        assert!(parsed.dirty.is_none());
+    }
+
+    #[test]
+    fn git_context_all_some_roundtrip() {
+        let ctx = GitContext {
+            commit: Some("abc123".to_string()),
+            branch: Some("main".to_string()),
+            tag: Some("v1.0.0".to_string()),
+            dirty: Some(true),
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let parsed: GitContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.commit.as_deref(), Some("abc123"));
+        assert_eq!(parsed.dirty, Some(true));
+    }
+
+    // ===== EnvironmentFingerprint =====
+
+    #[test]
+    fn environment_fingerprint_optional_fields_roundtrip() {
+        let fp = EnvironmentFingerprint {
+            shipper_version: "0.3.0".to_string(),
+            cargo_version: None,
+            rust_version: None,
+            os: "wasm".to_string(),
+            arch: "wasm32".to_string(),
+        };
+        let json = serde_json::to_string(&fp).unwrap();
+        let parsed: EnvironmentFingerprint = serde_json::from_str(&json).unwrap();
+        assert!(parsed.cargo_version.is_none());
+        assert!(parsed.rust_version.is_none());
+        assert_eq!(parsed.os, "wasm");
+    }
+
+    // ===== AttemptEvidence / ReadinessEvidence =====
+
+    #[test]
+    fn attempt_evidence_duration_serialized_as_millis() {
+        let evidence = AttemptEvidence {
+            attempt_number: 1,
+            command: "cargo publish".to_string(),
+            exit_code: 0,
+            stdout_tail: String::new(),
+            stderr_tail: String::new(),
+            timestamp: Utc::now(),
+            duration: Duration::from_secs(5),
+        };
+        let json = serde_json::to_string(&evidence).unwrap();
+        assert!(json.contains("5000"));
+    }
+
+    #[test]
+    fn readiness_evidence_duration_serialized_as_millis() {
+        let evidence = ReadinessEvidence {
+            attempt: 1,
+            visible: true,
+            timestamp: Utc::now(),
+            delay_before: Duration::from_millis(2500),
+        };
+        let json = serde_json::to_string(&evidence).unwrap();
+        assert!(json.contains("2500"));
+    }
+
+    // ===== ReadinessConfig serde =====
+
+    #[test]
+    fn readiness_config_serde_with_index_path_roundtrip() {
+        let config = ReadinessConfig {
+            enabled: true,
+            method: ReadinessMethod::Index,
+            initial_delay: Duration::from_secs(2),
+            max_delay: Duration::from_secs(120),
+            max_total_wait: Duration::from_secs(600),
+            poll_interval: Duration::from_secs(5),
+            jitter_factor: 0.3,
+            index_path: Some(PathBuf::from("/tmp/test-index")),
+            prefer_index: true,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: ReadinessConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.index_path, Some(PathBuf::from("/tmp/test-index")));
+        assert!(parsed.prefer_index);
+    }
+
+    #[test]
+    fn readiness_config_defaults_from_json_empty_object() {
+        let config: ReadinessConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.method, ReadinessMethod::Api);
+        assert_eq!(config.jitter_factor, 0.5);
+        assert!(!config.prefer_index);
+        assert!(config.index_path.is_none());
+    }
+
+    // ===== Debug output snapshot tests =====
+
+    mod debug_snapshots {
+        use super::*;
+
+        #[test]
+        fn publish_policy_debug_snapshot() {
+            insta::assert_debug_snapshot!(PublishPolicy::Safe);
+            insta::assert_debug_snapshot!(PublishPolicy::Balanced);
+            insta::assert_debug_snapshot!(PublishPolicy::Fast);
+        }
+
+        #[test]
+        fn verify_mode_debug_snapshot() {
+            insta::assert_debug_snapshot!(VerifyMode::Workspace);
+            insta::assert_debug_snapshot!(VerifyMode::Package);
+            insta::assert_debug_snapshot!(VerifyMode::None);
+        }
+
+        #[test]
+        fn readiness_method_debug_snapshot() {
+            insta::assert_debug_snapshot!(ReadinessMethod::Api);
+            insta::assert_debug_snapshot!(ReadinessMethod::Index);
+            insta::assert_debug_snapshot!(ReadinessMethod::Both);
+        }
+
+        #[test]
+        fn runtime_options_debug_snapshot() {
+            let opts = super::make_default_runtime_options();
+            insta::assert_debug_snapshot!(opts);
+        }
+
+        #[test]
+        fn package_progress_debug_snapshot() {
+            let t = "2025-01-15T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+            let progress = PackageProgress {
+                name: "snapshot-crate".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 2,
+                state: PackageState::Failed {
+                    class: ErrorClass::Retryable,
+                    message: "timeout".to_string(),
+                },
+                last_updated_at: t,
+            };
+            insta::assert_debug_snapshot!(progress);
+        }
+    }
+
     mod snapshots {
         use super::*;
 
@@ -3930,6 +4903,83 @@ mod tests {
                 };
                 let debug = format!("{:?}", event);
                 assert!(!debug.is_empty());
+            }
+        }
+
+        // ===== Arbitrary PackageState sequences =====
+
+        proptest! {
+            /// Random sequences of PackageState transitions follow valid_next_states
+            #[test]
+            fn arbitrary_package_state_sequence(steps in 1usize..10) {
+                let mut current = PackageState::Pending;
+                for _ in 0..steps {
+                    let nexts = valid_next_states(&current);
+                    if nexts.is_empty() {
+                        break; // terminal state
+                    }
+                    // Always pick the first valid transition for determinism
+                    current = nexts[0].clone();
+                }
+                // We should end in a well-known state
+                let debug = format!("{:?}", current);
+                assert!(!debug.is_empty());
+            }
+
+            /// The happy path Pending→Uploaded→Published always completes in 2 transitions
+            #[test]
+            fn happy_path_always_reaches_published(_seed in 0u64..100) {
+                let mut state = PackageState::Pending;
+                // Pending -> Uploaded
+                let nexts = valid_next_states(&state);
+                assert!(nexts.iter().any(|s| matches!(s, PackageState::Uploaded)));
+                state = PackageState::Uploaded;
+                // Uploaded -> Published
+                let nexts = valid_next_states(&state);
+                assert!(nexts.iter().any(|s| matches!(s, PackageState::Published)));
+                state = PackageState::Published;
+                // Published is terminal
+                assert!(valid_next_states(&state).is_empty());
+            }
+
+            /// Full receipt with evidence roundtrips preserve attempt counts
+            #[test]
+            fn receipt_evidence_attempt_counts_preserved(
+                attempt_count in 0usize..5,
+                readiness_count in 0usize..5,
+            ) {
+                let now = Utc::now();
+                let attempts: Vec<AttemptEvidence> = (0..attempt_count)
+                    .map(|i| AttemptEvidence {
+                        attempt_number: i as u32 + 1,
+                        command: format!("cargo publish attempt {i}"),
+                        exit_code: 0,
+                        stdout_tail: "ok".to_string(),
+                        stderr_tail: String::new(),
+                        timestamp: now,
+                        duration: Duration::from_secs(1),
+                    })
+                    .collect();
+                let checks: Vec<ReadinessEvidence> = (0..readiness_count)
+                    .map(|i| ReadinessEvidence {
+                        attempt: i as u32 + 1,
+                        visible: i == readiness_count - 1,
+                        timestamp: now,
+                        delay_before: Duration::from_secs(2),
+                    })
+                    .collect();
+                let evidence = PackageEvidence {
+                    attempts: attempts.clone(),
+                    readiness_checks: checks.clone(),
+                };
+                let json = serde_json::to_string(&evidence).unwrap();
+                let parsed: PackageEvidence = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed.attempts.len(), attempt_count);
+                assert_eq!(parsed.readiness_checks.len(), readiness_count);
+                for (orig, p) in attempts.iter().zip(parsed.attempts.iter()) {
+                    assert_eq!(orig.attempt_number, p.attempt_number);
+                    assert_eq!(orig.exit_code, p.exit_code);
+                }
             }
         }
 

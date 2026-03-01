@@ -1,0 +1,5 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&stdout)
+---
+State directory does not exist: <STATE_DIR>

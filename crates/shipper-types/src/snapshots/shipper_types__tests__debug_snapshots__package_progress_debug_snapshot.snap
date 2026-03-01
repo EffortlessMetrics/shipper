@@ -1,0 +1,14 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: progress
+---
+PackageProgress {
+    name: "snapshot-crate",
+    version: "1.0.0",
+    attempts: 2,
+    state: Failed {
+        class: Retryable,
+        message: "timeout",
+    },
+    last_updated_at: 2025-01-15T12:00:00Z,
+}

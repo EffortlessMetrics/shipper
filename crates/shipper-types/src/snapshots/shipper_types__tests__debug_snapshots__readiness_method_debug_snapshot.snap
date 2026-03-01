@@ -1,0 +1,5 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: "ReadinessMethod::Api"
+---
+Api

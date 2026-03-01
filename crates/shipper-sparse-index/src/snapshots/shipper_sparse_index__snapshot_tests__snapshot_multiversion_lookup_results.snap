@@ -1,0 +1,13 @@
+---
+source: crates/shipper-sparse-index/src/lib.rs
+expression: "results.join(\"\\n\")"
+---
+0.1.0 -> true
+0.2.0 -> true
+0.3.0 -> false
+1.0.0-alpha -> true
+1.0.0 -> true
+1.0.1 -> true
+1.0.2 -> false
+2.0.0 -> true
+3.0.0 -> false

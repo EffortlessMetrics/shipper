@@ -1,0 +1,10 @@
+---
+source: crates/shipper-sparse-index/src/lib.rs
+expression: "paths.join(\"\\n\")"
+---
+my-crate -> my/-c/my-crate
+my_crate -> my/_c/my_crate
+proc-macro2 -> pr/oc/proc-macro2
+rand_core -> ra/nd/rand_core
+serde_json -> se/rd/serde_json
+async-trait -> as/yn/async-trait
