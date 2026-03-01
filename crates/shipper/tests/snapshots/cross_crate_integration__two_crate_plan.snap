@@ -1,0 +1,26 @@
+---
+source: crates/shipper/tests/cross_crate_integration.rs
+assertion_line: 1613
+expression: snap
+---
+PlanSnapshot {
+    packages: [
+        (
+            "core",
+            "0.1.0",
+        ),
+        (
+            "app",
+            "0.1.0",
+        ),
+    ],
+    levels: [
+        [
+            "core",
+        ],
+        [
+            "app",
+        ],
+    ],
+    dependency_count: 1,
+}

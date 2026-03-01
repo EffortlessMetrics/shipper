@@ -1213,3 +1213,508 @@ fn state_preserves_failed_package_state() {
     assert!(matches!(lib_c.state, PackageState::Pending));
     assert_eq!(lib_c.attempts, 0);
 }
+
+// ===========================================================================
+// 21. Receipt with mixed outcomes (published + failed + skipped) through store
+// ===========================================================================
+
+#[test]
+fn receipt_mixed_outcomes_through_file_store() {
+    let td = tempdir().expect("tempdir");
+    let store = FileStore::new(td.path().to_path_buf());
+
+    let receipt = shipper::types::Receipt {
+        receipt_version: state::CURRENT_RECEIPT_VERSION.to_string(),
+        plan_id: "mixed-receipt-facade".to_string(),
+        registry: Registry::crates_io(),
+        started_at: Utc::now(),
+        finished_at: Utc::now(),
+        packages: vec![
+            PackageReceipt {
+                name: "base".to_string(),
+                version: "0.2.0".to_string(),
+                attempts: 1,
+                state: PackageState::Published,
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 800,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+            PackageReceipt {
+                name: "mid".to_string(),
+                version: "0.2.0".to_string(),
+                attempts: 3,
+                state: PackageState::Failed {
+                    class: ErrorClass::Retryable,
+                    message: "connection reset by peer".to_string(),
+                },
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 15000,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+            PackageReceipt {
+                name: "top".to_string(),
+                version: "0.2.0".to_string(),
+                attempts: 0,
+                state: PackageState::Skipped {
+                    reason: "dependency mid failed".to_string(),
+                },
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 0,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+        ],
+        event_log_path: std::path::PathBuf::from(".shipper/events.jsonl"),
+        git_context: None,
+        environment: EnvironmentFingerprint {
+            shipper_version: "0.3.0".to_string(),
+            cargo_version: Some("1.80.0".to_string()),
+            rust_version: Some("1.80.0".to_string()),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        },
+    };
+
+    store.save_receipt(&receipt).expect("save receipt");
+    let loaded = store
+        .load_receipt()
+        .expect("load receipt")
+        .expect("receipt exists");
+
+    assert_eq!(loaded.packages.len(), 3);
+
+    // Verify state of each package
+    assert!(matches!(loaded.packages[0].state, PackageState::Published));
+    assert_eq!(loaded.packages[0].name, "base");
+
+    assert!(matches!(
+        loaded.packages[1].state,
+        PackageState::Failed { .. }
+    ));
+    if let PackageState::Failed { class, message } = &loaded.packages[1].state {
+        assert_eq!(*class, ErrorClass::Retryable);
+        assert_eq!(message, "connection reset by peer");
+    }
+
+    assert!(matches!(
+        loaded.packages[2].state,
+        PackageState::Skipped { .. }
+    ));
+    if let PackageState::Skipped { reason } = &loaded.packages[2].state {
+        assert_eq!(reason, "dependency mid failed");
+    }
+}
+
+// ===========================================================================
+// 22. Environment fingerprint in receipt survives store roundtrip
+// ===========================================================================
+
+#[test]
+fn environment_fingerprint_in_receipt_through_store() {
+    let td = tempdir().expect("tempdir");
+    let store = FileStore::new(td.path().to_path_buf());
+
+    let receipt = shipper::types::Receipt {
+        receipt_version: state::CURRENT_RECEIPT_VERSION.to_string(),
+        plan_id: "env-fp-test".to_string(),
+        registry: Registry::crates_io(),
+        started_at: Utc::now(),
+        finished_at: Utc::now(),
+        packages: vec![],
+        event_log_path: std::path::PathBuf::from(".shipper/events.jsonl"),
+        git_context: None,
+        environment: EnvironmentFingerprint {
+            shipper_version: "0.3.0".to_string(),
+            cargo_version: None,
+            rust_version: None,
+            os: "windows".to_string(),
+            arch: "x86_64".to_string(),
+        },
+    };
+
+    store.save_receipt(&receipt).expect("save");
+    let loaded = store.load_receipt().expect("load").expect("exists");
+
+    assert_eq!(loaded.environment.shipper_version, "0.3.0");
+    assert!(loaded.environment.cargo_version.is_none());
+    assert!(loaded.environment.rust_version.is_none());
+    assert_eq!(loaded.environment.os, "windows");
+    assert_eq!(loaded.environment.arch, "x86_64");
+}
+
+// ===========================================================================
+// 23. Lock acquire + publish simulation + release sequence
+// ===========================================================================
+
+#[test]
+fn lock_acquire_publish_release_sequence() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+
+    // Step 1: Acquire lock
+    let lock = shipper::lock::LockFile::acquire(&state_dir, None).expect("acquire");
+    assert!(shipper::lock::LockFile::is_locked(&state_dir, None).expect("locked"));
+
+    // Step 2: Set plan_id (simulating engine linking the plan to the lock)
+    lock.set_plan_id("facade-lock-plan").expect("set plan_id");
+
+    // Step 3: Simulate publish by writing state
+    let exec_state = sample_state(
+        "facade-lock-plan",
+        &[
+            ("base", "0.2.0", PackageState::Published, 1),
+            ("mid", "0.2.0", PackageState::Published, 1),
+            ("top", "0.2.0", PackageState::Published, 1),
+        ],
+    );
+    state::save_state(&state_dir, &exec_state).expect("save state");
+
+    // Step 4: Write receipt
+    let receipt = sample_receipt("facade-lock-plan", &["base", "mid", "top"]);
+    state::write_receipt(&state_dir, &receipt).expect("write receipt");
+
+    // Step 5: Release lock
+    lock.release().expect("release");
+    assert!(!shipper::lock::LockFile::is_locked(&state_dir, None).expect("unlocked"));
+
+    // Verify state and receipt are accessible after lock release
+    let loaded_state = state::load_state(&state_dir)
+        .expect("load")
+        .expect("exists");
+    assert_eq!(loaded_state.plan_id, "facade-lock-plan");
+
+    let loaded_receipt = state::load_receipt(&state_dir)
+        .expect("load")
+        .expect("exists");
+    assert_eq!(loaded_receipt.packages.len(), 3);
+}
+
+// ===========================================================================
+// 24. Snapshot tests for three-crate plan
+// ===========================================================================
+
+/// Helper: extract stable plan info for snapshot testing
+#[derive(Debug)]
+#[allow(dead_code)] // fields used via Debug derive for insta snapshots
+struct FacadePlanSnapshot {
+    packages: Vec<(String, String)>,
+    levels: Vec<Vec<String>>,
+    skipped_count: usize,
+}
+
+fn facade_snapshot_plan(ws: &shipper::plan::PlannedWorkspace) -> FacadePlanSnapshot {
+    let packages = ws
+        .plan
+        .packages
+        .iter()
+        .map(|p| (p.name.clone(), p.version.clone()))
+        .collect();
+    let levels = ws
+        .plan
+        .group_by_levels()
+        .iter()
+        .map(|l| l.packages.iter().map(|p| p.name.clone()).collect())
+        .collect();
+    FacadePlanSnapshot {
+        packages,
+        levels,
+        skipped_count: ws.skipped.len(),
+    }
+}
+
+#[test]
+fn snapshot_three_crate_linear_plan() {
+    let td = tempdir().expect("tempdir");
+    create_three_crate_workspace(td.path());
+
+    let spec = ReleaseSpec {
+        manifest_path: td.path().join("Cargo.toml"),
+        registry: Registry::crates_io(),
+        selected_packages: None,
+    };
+    let ws = plan::build_plan(&spec).expect("build plan");
+    let snap = facade_snapshot_plan(&ws);
+
+    insta::assert_debug_snapshot!("three_crate_linear_plan", snap);
+}
+
+#[test]
+fn snapshot_mixed_publishability_plan() {
+    let td = tempdir().expect("tempdir");
+    create_mixed_publishability_workspace(td.path());
+
+    let spec = ReleaseSpec {
+        manifest_path: td.path().join("Cargo.toml"),
+        registry: Registry::crates_io(),
+        selected_packages: None,
+    };
+    let ws = plan::build_plan(&spec).expect("build plan");
+    let snap = facade_snapshot_plan(&ws);
+
+    insta::assert_debug_snapshot!("mixed_publishability_plan", snap);
+}
+
+// ===========================================================================
+// 25. Error propagation: registry server errors through the full stack
+// ===========================================================================
+
+#[test]
+fn registry_server_error_propagates_through_version_check() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("start server");
+    let addr = server.server_addr().to_ip().expect("addr");
+    let api_base = format!("http://{}:{}", addr.ip(), addr.port());
+
+    let handler = std::thread::spawn(move || {
+        if let Ok(req) = server.recv() {
+            let _ = req
+                .respond(tiny_http::Response::from_string("internal error").with_status_code(500));
+        }
+    });
+
+    let reg = Registry {
+        name: "broken-registry".to_string(),
+        api_base,
+        index_base: None,
+    };
+    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+
+    // The error should propagate through the version check
+    let err = client
+        .version_exists("some-crate", "1.0.0")
+        .expect_err("500 should error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("unexpected status"),
+        "error message should include status context: {msg}"
+    );
+
+    handler.join().expect("handler thread");
+}
+
+#[test]
+fn registry_server_error_propagates_through_crate_check() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("start server");
+    let addr = server.server_addr().to_ip().expect("addr");
+    let api_base = format!("http://{}:{}", addr.ip(), addr.port());
+
+    let handler = std::thread::spawn(move || {
+        if let Ok(req) = server.recv() {
+            let _ = req.respond(
+                tiny_http::Response::from_string("service unavailable").with_status_code(503),
+            );
+        }
+    });
+
+    let reg = Registry {
+        name: "broken-registry".to_string(),
+        api_base,
+        index_base: None,
+    };
+    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+
+    let err = client
+        .crate_exists("some-crate")
+        .expect_err("503 should error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("unexpected status"),
+        "error message should include status context: {msg}"
+    );
+
+    handler.join().expect("handler thread");
+}
+
+// ===========================================================================
+// 26. Event log generation for full publish flow with preflight and mixed outcomes
+// ===========================================================================
+
+#[test]
+fn event_log_full_publish_with_skipped_and_failed() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+
+    let events_path = shipper::events::events_path(&state_dir);
+
+    let mut log = EventLog::new();
+
+    // Preflight
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PreflightStarted,
+        package: "all".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PreflightComplete {
+            finishability: Finishability::NotProven,
+        },
+        package: "all".to_string(),
+    });
+
+    // Plan
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PlanCreated {
+            plan_id: "mixed-events-plan".to_string(),
+            package_count: 3,
+        },
+        package: "all".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ExecutionStarted,
+        package: "all".to_string(),
+    });
+
+    // base: published
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageStarted {
+            name: "base".to_string(),
+            version: "0.2.0".to_string(),
+        },
+        package: "base@0.2.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackagePublished { duration_ms: 500 },
+        package: "base@0.2.0".to_string(),
+    });
+
+    // mid: failed permanently
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageStarted {
+            name: "mid".to_string(),
+            version: "0.2.0".to_string(),
+        },
+        package: "mid@0.2.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageFailed {
+            class: ErrorClass::Permanent,
+            message: "invalid token".to_string(),
+        },
+        package: "mid@0.2.0".to_string(),
+    });
+
+    // top: skipped because mid failed
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageSkipped {
+            reason: "dependency mid failed".to_string(),
+        },
+        package: "top@0.2.0".to_string(),
+    });
+
+    // Execution finished with partial failure
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ExecutionFinished {
+            result: ExecutionResult::PartialFailure,
+        },
+        package: "all".to_string(),
+    });
+
+    log.write_to_file(&events_path).expect("write events");
+    let loaded = EventLog::read_from_file(&events_path).expect("read events");
+
+    assert_eq!(loaded.all_events().len(), 10);
+
+    // base got started + published = 2
+    let base_events = loaded.events_for_package("base@0.2.0");
+    assert_eq!(base_events.len(), 2);
+
+    // mid got started + failed = 2
+    let mid_events = loaded.events_for_package("mid@0.2.0");
+    assert_eq!(mid_events.len(), 2);
+
+    // top got skipped = 1
+    let top_events = loaded.events_for_package("top@0.2.0");
+    assert_eq!(top_events.len(), 1);
+
+    // global = preflight_started + preflight_complete + plan_created + exec_started + exec_finished = 5
+    let global = loaded.events_for_package("all");
+    assert_eq!(global.len(), 5);
+}
+
+// ===========================================================================
+// 27. State persistence: resume with skipped packages preserved
+// ===========================================================================
+
+#[test]
+fn state_resume_preserves_skipped_packages() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+
+    // Initial state: base published, mid skipped, top pending
+    let exec_state = sample_state(
+        "skip-resume-test",
+        &[
+            ("base", "0.2.0", PackageState::Published, 1),
+            (
+                "mid",
+                "0.2.0",
+                PackageState::Skipped {
+                    reason: "version already exists".to_string(),
+                },
+                0,
+            ),
+            ("top", "0.2.0", PackageState::Pending, 0),
+        ],
+    );
+    state::save_state(&state_dir, &exec_state).expect("save");
+
+    // Load and simulate resume
+    let mut loaded = state::load_state(&state_dir)
+        .expect("load")
+        .expect("exists");
+
+    // Skipped packages should remain skipped
+    let mid = loaded.packages.get("mid@0.2.0").expect("mid");
+    assert!(matches!(mid.state, PackageState::Skipped { .. }));
+
+    // Only pending packages need work
+    let actionable: Vec<&str> = loaded
+        .packages
+        .values()
+        .filter(|p| matches!(p.state, PackageState::Pending))
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(actionable, vec!["top"]);
+
+    // Publish top
+    if let Some(top) = loaded.packages.get_mut("top@0.2.0") {
+        top.state = PackageState::Published;
+        top.attempts = 1;
+        top.last_updated_at = Utc::now();
+    }
+    state::save_state(&state_dir, &loaded).expect("save resumed");
+
+    // Final verify: skipped is still skipped
+    let final_state = state::load_state(&state_dir)
+        .expect("load")
+        .expect("exists");
+    assert!(matches!(
+        final_state.packages["mid@0.2.0"].state,
+        PackageState::Skipped { .. }
+    ));
+    assert!(matches!(
+        final_state.packages["top@0.2.0"].state,
+        PackageState::Published
+    ));
+}

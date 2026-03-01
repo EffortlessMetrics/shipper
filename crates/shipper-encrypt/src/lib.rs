@@ -1038,6 +1038,162 @@ mod tests {
 
         assert!(encryption.read_file(&path).is_err());
     }
+
+    // ── Edge-case: large data >1 MB ─────────────────────────────────────
+
+    #[test]
+    fn encrypt_decrypt_data_over_1mb() {
+        // 2 MiB of pseudo-random data
+        let plaintext: Vec<u8> = (0u64..2_097_152)
+            .map(|i| (i.wrapping_mul(7) % 256) as u8)
+            .collect();
+        let passphrase = "large-2mb-passphrase";
+
+        let encrypted = encrypt(&plaintext, passphrase).expect("encryption should succeed");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decryption should succeed");
+
+        assert_eq!(plaintext, decrypted);
+    }
+
+    // ── Edge-case: key boundary values ──────────────────────────────────
+
+    #[test]
+    fn roundtrip_single_char_passphrase() {
+        let plaintext = b"single char key";
+        let passphrase = "x";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn roundtrip_whitespace_only_passphrase() {
+        let plaintext = b"whitespace key test";
+        let passphrase = "   \t\n  ";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn roundtrip_max_reasonable_passphrase() {
+        let plaintext = b"max key test";
+        // 100 KB passphrase
+        let passphrase: String = "Z".repeat(100_000);
+
+        let encrypted = encrypt(plaintext, &passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, &passphrase).expect("decrypt");
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    // ── Edge-case: nonce uniqueness at raw byte level ───────────────────
+
+    #[test]
+    fn nonce_uniqueness_raw_salt_and_nonce_differ() {
+        let plaintext = b"nonce uniqueness check";
+        let passphrase = "same-passphrase";
+
+        let enc1 = encrypt(plaintext, passphrase).expect("encrypt");
+        let enc2 = encrypt(plaintext, passphrase).expect("encrypt");
+
+        let raw1 = BASE64
+            .decode(String::from_utf8(enc1).expect("utf8"))
+            .expect("base64");
+        let raw2 = BASE64
+            .decode(String::from_utf8(enc2).expect("utf8"))
+            .expect("base64");
+
+        let salt_nonce_1 = &raw1[..SALT_SIZE + NONCE_SIZE];
+        let salt_nonce_2 = &raw2[..SALT_SIZE + NONCE_SIZE];
+
+        // Random salt+nonce must differ between encryptions
+        assert_ne!(salt_nonce_1, salt_nonce_2);
+    }
+
+    // ── Edge-case: tampered auth tag detection ──────────────────────────
+
+    #[test]
+    fn tampered_auth_tag_detected() {
+        let plaintext = b"auth tag tamper test";
+        let passphrase = "test-pass";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+
+        let mut raw = BASE64.decode(&encrypted_str).expect("base64");
+        // Flip the last byte (inside the GCM auth tag)
+        let last = raw.len() - 1;
+        raw[last] ^= 0xFF;
+        let corrupted = BASE64.encode(&raw);
+
+        assert!(decrypt(&corrupted, passphrase).is_err());
+    }
+
+    #[test]
+    fn tampered_single_bit_flip_detected() {
+        let plaintext = b"bit flip detection";
+        let passphrase = "bit-flip-pass";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+
+        let mut raw = BASE64.decode(&encrypted_str).expect("base64");
+        // Flip a single bit in the middle of the ciphertext
+        let mid = raw.len() / 2;
+        raw[mid] ^= 0x01;
+        let corrupted = BASE64.encode(&raw);
+
+        assert!(decrypt(&corrupted, passphrase).is_err());
+    }
+
+    // ── Edge-case: wrong key returns error, not garbage ─────────────────
+
+    #[test]
+    fn wrong_key_returns_error_not_garbage_data() {
+        let plaintext = b"This must not leak through wrong key";
+        let correct = "correct-key";
+        let wrong = "wrong-key";
+
+        let encrypted = encrypt(plaintext, correct).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+
+        let result = decrypt(&encrypted_str, wrong);
+        // Must be Err — AES-GCM authenticated encryption must reject wrong keys
+        assert!(
+            result.is_err(),
+            "wrong key must return Err, not Ok with garbage"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("wrong passphrase or corrupted data"),
+            "error message should indicate wrong passphrase, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn wrong_key_similar_passphrase_returns_error() {
+        let plaintext = b"subtle key difference";
+        let correct = "my-passphrase-abc";
+        let wrong = "my-passphrase-abd"; // off by one char
+
+        let encrypted = encrypt(plaintext, correct).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+
+        assert!(
+            decrypt(&encrypted_str, wrong).is_err(),
+            "even a single-char difference must cause decryption failure"
+        );
+    }
 }
 
 // ── Property-based tests ────────────────────────────────────────────────
@@ -1157,6 +1313,28 @@ mod proptests {
             let decrypted = se.decrypt(&encrypted).expect("decrypt");
             prop_assert_eq!(data, decrypted);
         }
+
+        #[test]
+        fn encryption_output_always_longer_than_input(data in proptest::collection::vec(any::<u8>(), 0..2048)) {
+            let encrypted = encrypt(&data, "length-test").expect("encrypt");
+            // Encrypted output (base64 of salt+nonce+ciphertext+tag) is always longer than plaintext
+            prop_assert!(encrypted.len() > data.len());
+        }
+
+        #[test]
+        fn tampered_ciphertext_always_fails(data in proptest::collection::vec(any::<u8>(), 1..512)) {
+            let passphrase = "tamper-prop-test";
+            let encrypted = encrypt(&data, passphrase).expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+
+            let mut raw = BASE64.decode(&encrypted_str).expect("base64");
+            // Flip a byte in the ciphertext region (after salt+nonce)
+            let idx = SALT_SIZE + NONCE_SIZE + (raw.len() - SALT_SIZE - NONCE_SIZE) / 2;
+            raw[idx] ^= 0xFF;
+            let corrupted = BASE64.encode(&raw);
+
+            prop_assert!(decrypt(&corrupted, passphrase).is_err());
+        }
     }
 }
 
@@ -1165,7 +1343,7 @@ mod proptests {
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
-    use insta::assert_snapshot;
+    use insta::{assert_debug_snapshot, assert_snapshot};
 
     // ── EncryptionConfig serialization ──────────────────────────────────
 
@@ -1319,5 +1497,77 @@ mod snapshot_tests {
     fn error_empty_input() {
         let err = decrypt("", "pass").unwrap_err();
         assert_snapshot!(err.to_string());
+    }
+
+    // ── Snapshot: error types for tampered regions ──────────────────────
+
+    #[test]
+    fn error_corrupted_salt_message() {
+        let encrypted = encrypt(b"snapshot salt", "pass").expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+        let mut raw = BASE64.decode(&encrypted_str).expect("base64");
+        raw[0] ^= 0xFF;
+        let corrupted = BASE64.encode(&raw);
+        let err = decrypt(&corrupted, "pass").unwrap_err();
+        assert_snapshot!(err.to_string());
+    }
+
+    #[test]
+    fn error_corrupted_nonce_message() {
+        let encrypted = encrypt(b"snapshot nonce", "pass").expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+        let mut raw = BASE64.decode(&encrypted_str).expect("base64");
+        raw[SALT_SIZE] ^= 0xFF;
+        let corrupted = BASE64.encode(&raw);
+        let err = decrypt(&corrupted, "pass").unwrap_err();
+        assert_snapshot!(err.to_string());
+    }
+
+    #[test]
+    fn error_corrupted_auth_tag_message() {
+        let encrypted = encrypt(b"snapshot tag", "pass").expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+        let mut raw = BASE64.decode(&encrypted_str).expect("base64");
+        let last = raw.len() - 1;
+        raw[last] ^= 0xFF;
+        let corrupted = BASE64.encode(&raw);
+        let err = decrypt(&corrupted, "pass").unwrap_err();
+        assert_snapshot!(err.to_string());
+    }
+
+    // ── Snapshot: key generation output format ──────────────────────────
+
+    #[test]
+    fn snapshot_derive_key_output_format() {
+        let key = derive_key("test-passphrase", &[0u8; SALT_SIZE]);
+        // Snapshot the hex-encoded key to verify deterministic output format
+        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        assert_snapshot!(hex);
+    }
+
+    #[test]
+    fn snapshot_derive_key_length() {
+        let key = derive_key("any-passphrase", &[42u8; SALT_SIZE]);
+        assert_debug_snapshot!(key.len());
+    }
+
+    // ── Snapshot: EncryptionConfig Debug output ─────────────────────────
+
+    #[test]
+    fn snapshot_encryption_config_debug_default() {
+        let cfg = EncryptionConfig::default();
+        assert_debug_snapshot!(cfg);
+    }
+
+    #[test]
+    fn snapshot_encryption_config_debug_with_passphrase() {
+        let cfg = EncryptionConfig::new("debug-pass".to_string());
+        assert_debug_snapshot!(cfg);
+    }
+
+    #[test]
+    fn snapshot_encryption_config_debug_from_env() {
+        let cfg = EncryptionConfig::from_env("MY_SECRET_VAR".to_string());
+        assert_debug_snapshot!(cfg);
     }
 }

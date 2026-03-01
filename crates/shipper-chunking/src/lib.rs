@@ -415,7 +415,7 @@ mod property_tests {
             let expected_count = if n == 0 {
                 0
             } else {
-                (n + max_concurrent - 1) / max_concurrent
+                n.div_ceil(max_concurrent)
             };
             prop_assert_eq!(chunks.len(), expected_count);
         }

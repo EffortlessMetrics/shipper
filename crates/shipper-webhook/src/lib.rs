@@ -1358,6 +1358,856 @@ mod tests {
                 prop_assert_eq!(encoded.len(), bytes.len() * 2);
                 prop_assert!(encoded.chars().all(|c| c.is_ascii_hexdigit()));
             }
+
+            // Webhook URL validation: arbitrary strings never panic in send_webhook
+            #[test]
+            fn url_validation_never_panics(url in ".*") {
+                let config = WebhookConfig {
+                    url,
+                    timeout_secs: 1,
+                    ..Default::default()
+                };
+                let payload = WebhookPayload {
+                    message: "test".to_string(),
+                    ..Default::default()
+                };
+                // Must not panic — error is fine
+                let _ = send_webhook(&config, &payload);
+            }
+        }
+    }
+
+    // --- Edge-case tests ---
+
+    mod edge_cases {
+        use super::*;
+
+        // -- Malformed webhook URLs --
+
+        #[test]
+        fn send_webhook_empty_url_returns_error() {
+            let config = WebhookConfig {
+                url: String::new(),
+                timeout_secs: 1,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+            assert!(send_webhook(&config, &payload).is_err());
+        }
+
+        #[test]
+        fn send_webhook_ftp_scheme_returns_error() {
+            let config = WebhookConfig {
+                url: "ftp://example.com/webhook".to_string(),
+                timeout_secs: 1,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+            assert!(send_webhook(&config, &payload).is_err());
+        }
+
+        #[test]
+        fn send_webhook_missing_host_returns_error() {
+            let config = WebhookConfig {
+                url: "http://".to_string(),
+                timeout_secs: 1,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+            assert!(send_webhook(&config, &payload).is_err());
+        }
+
+        #[test]
+        fn send_webhook_just_scheme_returns_error() {
+            let config = WebhookConfig {
+                url: "https".to_string(),
+                timeout_secs: 1,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+            assert!(send_webhook(&config, &payload).is_err());
+        }
+
+        #[test]
+        fn send_webhook_whitespace_url_returns_error() {
+            let config = WebhookConfig {
+                url: "   ".to_string(),
+                timeout_secs: 1,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+            assert!(send_webhook(&config, &payload).is_err());
+        }
+
+        #[tokio::test]
+        async fn send_webhook_async_empty_url_returns_error() {
+            let config = WebhookConfig {
+                url: String::new(),
+                timeout_secs: 1,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+            assert!(send_webhook_async(&config, &payload).await.is_err());
+        }
+
+        // -- Timeout behavior --
+
+        #[test]
+        fn send_webhook_timeout_with_slow_server() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/slow"),
+                timeout_secs: 1,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "timeout test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                // Delay longer than the client timeout
+                std::thread::sleep(Duration::from_secs(3));
+                let response = tiny_http::Response::from_string("too late");
+                let _ = req.respond(response);
+            });
+
+            let result = send_webhook(&config, &payload);
+            assert!(result.is_err());
+            let err_msg = format!("{:#}", result.unwrap_err());
+            assert!(
+                err_msg.contains("timed out")
+                    || err_msg.contains("timeout")
+                    || err_msg.contains("Timeout")
+                    || err_msg.contains("operation")
+            );
+            handle.join().unwrap();
+        }
+
+        #[tokio::test]
+        async fn send_webhook_async_timeout_with_slow_server() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/slow"),
+                timeout_secs: 1,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "async timeout test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                std::thread::sleep(Duration::from_secs(3));
+                let _ = req.respond(tiny_http::Response::from_string("too late"));
+            });
+
+            let result = send_webhook_async(&config, &payload).await;
+            assert!(result.is_err());
+            handle.join().unwrap();
+        }
+
+        // -- Large payload body (>100KB) --
+
+        #[test]
+        fn send_webhook_large_payload_body() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/large"),
+                timeout_secs: 10,
+                ..Default::default()
+            };
+
+            // Build a payload with >100KB message
+            let large_message = "x".repeat(110_000);
+            let payload = WebhookPayload {
+                message: large_message.clone(),
+                success: true,
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let mut req = server.recv().unwrap();
+                let mut body = String::new();
+                req.as_reader().read_to_string(&mut body).unwrap();
+                assert!(body.len() > 100_000);
+                let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(parsed["message"].as_str().unwrap().len(), 110_000);
+                req.respond(tiny_http::Response::from_string("ok")).unwrap();
+            });
+
+            let result = send_webhook(&config, &payload);
+            handle.join().unwrap();
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn large_payload_serializes_correctly() {
+            let large_message = "a".repeat(150_000);
+            let payload = WebhookPayload {
+                message: large_message.clone(),
+                success: true,
+                ..Default::default()
+            };
+            let json = serde_json::to_string(&payload).unwrap();
+            assert!(json.len() > 100_000);
+            let rt: WebhookPayload = serde_json::from_str(&json).unwrap();
+            assert_eq!(rt.message.len(), 150_000);
+        }
+
+        // -- Unicode in webhook event data --
+
+        #[test]
+        fn payload_with_unicode_message() {
+            let payload = WebhookPayload {
+                message: "パッケージ公開成功 🎉".to_string(),
+                title: Some("リリース通知".to_string()),
+                success: true,
+                package: Some("日本語パッケージ".to_string()),
+                version: Some("1.0.0".to_string()),
+                ..Default::default()
+            };
+            let json = serde_json::to_string(&payload).unwrap();
+            let rt: WebhookPayload = serde_json::from_str(&json).unwrap();
+            assert_eq!(rt.message, "パッケージ公開成功 🎉");
+            assert_eq!(rt.title.as_deref(), Some("リリース通知"));
+            assert_eq!(rt.package.as_deref(), Some("日本語パッケージ"));
+        }
+
+        #[test]
+        fn slack_payload_with_unicode() {
+            let payload = WebhookPayload {
+                message: "Émojis: 🚀🦀✅".to_string(),
+                title: Some("Ünïcödé Tïtlé".to_string()),
+                success: true,
+                package: Some("crâte-ñame".to_string()),
+                ..Default::default()
+            };
+            let json = slack_payload(&payload).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed["attachments"][0]["text"], "Émojis: 🚀🦀✅");
+            assert_eq!(parsed["attachments"][0]["title"], "Ünïcödé Tïtlé");
+        }
+
+        #[test]
+        fn discord_payload_with_unicode() {
+            let payload = WebhookPayload {
+                message: "已发布 📦".to_string(),
+                title: Some("发布通知".to_string()),
+                success: false,
+                error: Some("сетевая ошибка".to_string()),
+                ..Default::default()
+            };
+            let json = discord_payload(&payload).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed["embeds"][0]["description"], "已发布 📦");
+            assert_eq!(parsed["embeds"][0]["title"], "发布通知");
+        }
+
+        #[test]
+        fn unicode_in_webhook_to_server() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/unicode"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "🦀 Rust crate published! 日本語テスト".to_string(),
+                success: true,
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let mut req = server.recv().unwrap();
+                let mut body = String::new();
+                req.as_reader().read_to_string(&mut body).unwrap();
+                let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let msg = parsed["message"].as_str().unwrap();
+                assert!(msg.contains("🦀"));
+                assert!(msg.contains("日本語テスト"));
+                req.respond(tiny_http::Response::from_string("ok")).unwrap();
+            });
+
+            let result = send_webhook(&config, &payload);
+            handle.join().unwrap();
+            assert!(result.is_ok());
+        }
+
+        // -- Concurrent webhook sends --
+
+        #[test]
+        fn concurrent_webhook_sends() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+            let server = std::sync::Arc::new(server);
+
+            let num_requests = 5;
+
+            // Spawn server handler threads
+            let mut server_handles = vec![];
+            for _ in 0..num_requests {
+                let srv = server.clone();
+                server_handles.push(std::thread::spawn(move || {
+                    let req = srv.recv().unwrap();
+                    req.respond(tiny_http::Response::from_string("ok")).unwrap();
+                }));
+            }
+
+            // Spawn concurrent client sends
+            let mut client_handles = vec![];
+            for i in 0..num_requests {
+                let url = format!("http://{addr}/concurrent");
+                client_handles.push(std::thread::spawn(move || {
+                    let config = WebhookConfig {
+                        url,
+                        timeout_secs: 10,
+                        ..Default::default()
+                    };
+                    let payload = WebhookPayload {
+                        message: format!("concurrent message {i}"),
+                        success: true,
+                        ..Default::default()
+                    };
+                    send_webhook(&config, &payload)
+                }));
+            }
+
+            for h in client_handles {
+                let result = h.join().unwrap();
+                assert!(result.is_ok());
+            }
+            for h in server_handles {
+                h.join().unwrap();
+            }
+        }
+
+        // -- Retry behavior on connection failure --
+
+        #[test]
+        fn send_webhook_to_closed_port_fails_fast() {
+            // Use an ephemeral server, get its port, then drop it
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+            drop(server); // port is now closed
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/gone"),
+                timeout_secs: 2,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "should fail".to_string(),
+                ..Default::default()
+            };
+
+            let start = std::time::Instant::now();
+            let result = send_webhook(&config, &payload);
+            let elapsed = start.elapsed();
+
+            assert!(result.is_err());
+            // Should fail within a reasonable time, not hang
+            assert!(elapsed < Duration::from_secs(10));
+        }
+
+        #[test]
+        fn multiple_sends_to_unreachable_all_fail() {
+            let results: Vec<_> = (0..3)
+                .map(|_| {
+                    let config = WebhookConfig {
+                        url: "http://127.0.0.1:1/unreachable".to_string(),
+                        timeout_secs: 1,
+                        ..Default::default()
+                    };
+                    let payload = WebhookPayload {
+                        message: "fail".to_string(),
+                        ..Default::default()
+                    };
+                    send_webhook(&config, &payload)
+                })
+                .collect();
+
+            assert!(results.iter().all(|r| r.is_err()));
+        }
+
+        // -- HTTP status code handling --
+
+        #[test]
+        fn http_status_200_is_success() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/ok"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                req.respond(
+                    tiny_http::Response::from_string("ok")
+                        .with_status_code(tiny_http::StatusCode(200)),
+                )
+                .unwrap();
+            });
+
+            assert!(send_webhook(&config, &payload).is_ok());
+            handle.join().unwrap();
+        }
+
+        #[test]
+        fn http_status_201_is_success() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/created"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                req.respond(
+                    tiny_http::Response::from_string("created")
+                        .with_status_code(tiny_http::StatusCode(201)),
+                )
+                .unwrap();
+            });
+
+            assert!(send_webhook(&config, &payload).is_ok());
+            handle.join().unwrap();
+        }
+
+        #[test]
+        fn http_status_204_is_success() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/nocontent"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                req.respond(
+                    tiny_http::Response::from_string("")
+                        .with_status_code(tiny_http::StatusCode(204)),
+                )
+                .unwrap();
+            });
+
+            assert!(send_webhook(&config, &payload).is_ok());
+            handle.join().unwrap();
+        }
+
+        #[test]
+        fn http_status_400_is_error() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/bad"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                req.respond(
+                    tiny_http::Response::from_string("bad request")
+                        .with_status_code(tiny_http::StatusCode(400)),
+                )
+                .unwrap();
+            });
+
+            let result = send_webhook(&config, &payload);
+            handle.join().unwrap();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("400"));
+        }
+
+        #[test]
+        fn http_status_401_is_error() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/unauth"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                req.respond(
+                    tiny_http::Response::from_string("unauthorized")
+                        .with_status_code(tiny_http::StatusCode(401)),
+                )
+                .unwrap();
+            });
+
+            let result = send_webhook(&config, &payload);
+            handle.join().unwrap();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("401"));
+        }
+
+        #[test]
+        fn http_status_404_is_error() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/notfound"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                req.respond(
+                    tiny_http::Response::from_string("not found")
+                        .with_status_code(tiny_http::StatusCode(404)),
+                )
+                .unwrap();
+            });
+
+            let result = send_webhook(&config, &payload);
+            handle.join().unwrap();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("404"));
+        }
+
+        #[test]
+        fn http_status_429_is_error() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/ratelimit"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                req.respond(
+                    tiny_http::Response::from_string("rate limited")
+                        .with_status_code(tiny_http::StatusCode(429)),
+                )
+                .unwrap();
+            });
+
+            let result = send_webhook(&config, &payload);
+            handle.join().unwrap();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("429"));
+        }
+
+        #[test]
+        fn http_status_502_is_error() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/badgw"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                req.respond(
+                    tiny_http::Response::from_string("bad gateway")
+                        .with_status_code(tiny_http::StatusCode(502)),
+                )
+                .unwrap();
+            });
+
+            let result = send_webhook(&config, &payload);
+            handle.join().unwrap();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("502"));
+        }
+
+        #[test]
+        fn http_status_503_is_error() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/unavail"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                req.respond(
+                    tiny_http::Response::from_string("service unavailable")
+                        .with_status_code(tiny_http::StatusCode(503)),
+                )
+                .unwrap();
+            });
+
+            let result = send_webhook(&config, &payload);
+            handle.join().unwrap();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("503"));
+        }
+
+        #[tokio::test]
+        async fn async_http_status_4xx_is_error() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/bad"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                req.respond(
+                    tiny_http::Response::from_string("bad request")
+                        .with_status_code(tiny_http::StatusCode(422)),
+                )
+                .unwrap();
+            });
+
+            let result = send_webhook_async(&config, &payload).await;
+            handle.join().unwrap();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("422"));
+        }
+
+        #[tokio::test]
+        async fn async_http_status_5xx_is_error() {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let addr = server.server_addr().to_ip().unwrap();
+
+            let config = WebhookConfig {
+                url: format!("http://{addr}/err"),
+                timeout_secs: 5,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+
+            let handle = std::thread::spawn(move || {
+                let req = server.recv().unwrap();
+                req.respond(
+                    tiny_http::Response::from_string("error")
+                        .with_status_code(tiny_http::StatusCode(500)),
+                )
+                .unwrap();
+            });
+
+            let result = send_webhook_async(&config, &payload).await;
+            handle.join().unwrap();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("500"));
+        }
+    }
+
+    // --- Snapshot tests for WebhookConfig variants and event payloads ---
+
+    mod snapshot_edge_cases {
+        use super::*;
+
+        #[test]
+        fn config_generic_with_secret_snapshot() {
+            let config = WebhookConfig {
+                url: "https://example.com/hook".to_string(),
+                webhook_type: WebhookType::Generic,
+                secret: Some("top-secret".to_string()),
+                timeout_secs: 15,
+            };
+            insta::assert_debug_snapshot!("config_generic_with_secret", config);
+        }
+
+        #[test]
+        fn config_slack_no_secret_snapshot() {
+            let config = WebhookConfig {
+                url: "https://hooks.slack.com/services/T/B/x".to_string(),
+                webhook_type: WebhookType::Slack,
+                secret: None,
+                timeout_secs: 30,
+            };
+            insta::assert_debug_snapshot!("config_slack_no_secret", config);
+        }
+
+        #[test]
+        fn config_discord_with_secret_snapshot() {
+            let config = WebhookConfig {
+                url: "https://discord.com/api/webhooks/123/tok".to_string(),
+                webhook_type: WebhookType::Discord,
+                secret: Some("discord-secret".to_string()),
+                timeout_secs: 45,
+            };
+            insta::assert_debug_snapshot!("config_discord_with_secret", config);
+        }
+
+        #[test]
+        fn config_default_snapshot() {
+            let config = WebhookConfig::default();
+            insta::assert_debug_snapshot!("config_default_all_fields", config);
+        }
+
+        #[test]
+        fn config_minimal_timeout_snapshot() {
+            let config = WebhookConfig {
+                url: "http://localhost:8080/webhook".to_string(),
+                webhook_type: WebhookType::Generic,
+                secret: None,
+                timeout_secs: 1,
+            };
+            insta::assert_debug_snapshot!("config_minimal_timeout", config);
+        }
+
+        #[test]
+        fn payload_unicode_snapshot() {
+            let payload = WebhookPayload {
+                message: "パッケージ公開 🚀".to_string(),
+                title: Some("リリース".to_string()),
+                success: true,
+                package: Some("日本語crate".to_string()),
+                version: Some("1.0.0".to_string()),
+                ..Default::default()
+            };
+            insta::assert_debug_snapshot!("payload_unicode", payload);
+        }
+
+        #[test]
+        fn payload_error_with_details_snapshot() {
+            let payload = publish_failure_payload(
+                "my-crate",
+                "2.0.0",
+                "connection refused: server at registry.example.com:443 not reachable",
+            );
+            insta::assert_debug_snapshot!("payload_error_with_details", payload);
+        }
+
+        #[test]
+        fn payload_with_extra_fields_snapshot() {
+            let mut extra = std::collections::BTreeMap::new();
+            extra.insert("ci_provider".to_string(), serde_json::json!("github"));
+            extra.insert("run_number".to_string(), serde_json::json!(42));
+            extra.insert("branch".to_string(), serde_json::json!("main"));
+
+            let payload = WebhookPayload {
+                message: "Published with extras".to_string(),
+                title: Some("CI Publish".to_string()),
+                success: true,
+                package: Some("my-crate".to_string()),
+                version: Some("3.0.0".to_string()),
+                registry: Some("crates-io".to_string()),
+                error: None,
+                extra,
+            };
+            insta::assert_debug_snapshot!("payload_with_extra_ci_fields", payload);
+        }
+
+        #[test]
+        fn slack_unicode_payload_snapshot() {
+            let payload = WebhookPayload {
+                message: "🎉 Published crâte-ñame".to_string(),
+                success: true,
+                package: Some("crâte-ñame".to_string()),
+                version: Some("1.0.0".to_string()),
+                ..Default::default()
+            };
+            let body = slack_payload(&payload).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            insta::assert_debug_snapshot!("slack_unicode_payload", json);
+        }
+
+        #[test]
+        fn discord_unicode_payload_snapshot() {
+            let payload = WebhookPayload {
+                message: "🦀 Опубликовано".to_string(),
+                success: false,
+                error: Some("сетевая ошибка".to_string()),
+                ..Default::default()
+            };
+            let body = discord_payload(&payload).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            insta::assert_debug_snapshot!("discord_unicode_payload", json);
         }
     }
 }

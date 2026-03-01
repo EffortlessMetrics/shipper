@@ -1,0 +1,9 @@
+---
+source: crates/shipper-encrypt/src/lib.rs
+expression: cfg
+---
+EncryptionConfig {
+    enabled: false,
+    passphrase: None,
+    env_var: None,
+}

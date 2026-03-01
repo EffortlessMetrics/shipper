@@ -1,0 +1,47 @@
+---
+source: crates/shipper/tests/cross_crate_integration.rs
+assertion_line: 1581
+expression: snap
+---
+PlanSnapshot {
+    packages: [
+        (
+            "a",
+            "0.1.0",
+        ),
+        (
+            "b",
+            "0.1.0",
+        ),
+        (
+            "c",
+            "0.1.0",
+        ),
+        (
+            "d",
+            "0.1.0",
+        ),
+        (
+            "e",
+            "0.1.0",
+        ),
+    ],
+    levels: [
+        [
+            "a",
+        ],
+        [
+            "b",
+        ],
+        [
+            "c",
+        ],
+        [
+            "d",
+        ],
+        [
+            "e",
+        ],
+    ],
+    dependency_count: 4,
+}

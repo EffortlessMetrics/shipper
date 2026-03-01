@@ -725,3 +725,947 @@ fn events_persisted_via_store_readable_via_state_module() {
     let loaded = EventLog::read_from_file(&events_file).expect("read events directly");
     assert_eq!(loaded.all_events().len(), 2);
 }
+
+// ===========================================================================
+// 11. Plan creation for multi-level dependency trees (deep 5-crate chain)
+// ===========================================================================
+
+/// Five-crate linear chain: a → b → c → d → e
+fn create_deep_chain_workspace(root: &Path) {
+    write_file(
+        &root.join("Cargo.toml"),
+        r#"
+[workspace]
+members = ["a", "b", "c", "d", "e"]
+resolver = "2"
+"#,
+    );
+
+    write_file(
+        &root.join("a/Cargo.toml"),
+        r#"
+[package]
+name = "a"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    write_file(&root.join("a/src/lib.rs"), "pub fn a() {}\n");
+
+    write_file(
+        &root.join("b/Cargo.toml"),
+        r#"
+[package]
+name = "b"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+a = { path = "../a", version = "0.1.0" }
+"#,
+    );
+    write_file(&root.join("b/src/lib.rs"), "pub fn b() {}\n");
+
+    write_file(
+        &root.join("c/Cargo.toml"),
+        r#"
+[package]
+name = "c"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+b = { path = "../b", version = "0.1.0" }
+"#,
+    );
+    write_file(&root.join("c/src/lib.rs"), "pub fn c() {}\n");
+
+    write_file(
+        &root.join("d/Cargo.toml"),
+        r#"
+[package]
+name = "d"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+c = { path = "../c", version = "0.1.0" }
+"#,
+    );
+    write_file(&root.join("d/src/lib.rs"), "pub fn d() {}\n");
+
+    write_file(
+        &root.join("e/Cargo.toml"),
+        r#"
+[package]
+name = "e"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+d = { path = "../d", version = "0.1.0" }
+"#,
+    );
+    write_file(&root.join("e/src/lib.rs"), "pub fn e() {}\n");
+}
+
+/// Wide workspace: four independent crates with no inter-dependencies.
+fn create_wide_workspace(root: &Path) {
+    write_file(
+        &root.join("Cargo.toml"),
+        r#"
+[workspace]
+members = ["alpha", "beta", "gamma", "delta"]
+resolver = "2"
+"#,
+    );
+
+    for name in &["alpha", "beta", "gamma", "delta"] {
+        write_file(
+            &root.join(format!("{name}/Cargo.toml")),
+            &format!(
+                r#"
+[package]
+name = "{name}"
+version = "1.0.0"
+edition = "2021"
+"#
+            ),
+        );
+        write_file(&root.join(format!("{name}/src/lib.rs")), "");
+    }
+}
+
+#[test]
+fn deep_chain_plan_respects_linear_dependency_order() {
+    let td = tempdir().expect("tempdir");
+    create_deep_chain_workspace(td.path());
+
+    let spec = ReleaseSpec {
+        manifest_path: td.path().join("Cargo.toml"),
+        registry: Registry::crates_io(),
+        selected_packages: None,
+    };
+    let ws = plan::build_plan(&spec).expect("build plan");
+
+    let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names.len(), 5);
+    assert_eq!(names, vec!["a", "b", "c", "d", "e"]);
+
+    // Verify dependency map
+    let a_deps = ws.plan.dependencies.get("a").expect("a deps");
+    assert!(a_deps.is_empty());
+    let e_deps = ws.plan.dependencies.get("e").expect("e deps");
+    assert!(e_deps.contains(&"d".to_string()));
+}
+
+#[test]
+fn deep_chain_levels_are_all_singletons() {
+    let td = tempdir().expect("tempdir");
+    create_deep_chain_workspace(td.path());
+
+    let spec = ReleaseSpec {
+        manifest_path: td.path().join("Cargo.toml"),
+        registry: Registry::crates_io(),
+        selected_packages: None,
+    };
+    let ws = plan::build_plan(&spec).expect("build plan");
+    let levels = ws.plan.group_by_levels();
+
+    // A linear chain produces one package per level
+    assert_eq!(levels.len(), 5);
+    for (i, level) in levels.iter().enumerate() {
+        assert_eq!(level.packages.len(), 1, "level {i} should have 1 package");
+    }
+}
+
+// ===========================================================================
+// 12. Preflight mock: registry returns various HTTP error statuses
+// ===========================================================================
+
+#[test]
+fn registry_version_check_errors_on_500() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("start server");
+    let addr = server.server_addr().to_ip().expect("addr");
+    let api_base = format!("http://{}:{}", addr.ip(), addr.port());
+
+    let handler = std::thread::spawn(move || {
+        if let Ok(req) = server.recv() {
+            let _ = req
+                .respond(tiny_http::Response::from_string("internal error").with_status_code(500));
+        }
+    });
+
+    let reg = Registry {
+        name: "test-registry".to_string(),
+        api_base,
+        index_base: None,
+    };
+    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+
+    let err = client
+        .version_exists("some-crate", "1.0.0")
+        .expect_err("500 should produce error");
+    assert!(
+        format!("{err:#}").contains("unexpected status"),
+        "error should mention unexpected status"
+    );
+
+    handler.join().expect("handler thread");
+}
+
+#[test]
+fn registry_crate_exists_errors_on_503() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("start server");
+    let addr = server.server_addr().to_ip().expect("addr");
+    let api_base = format!("http://{}:{}", addr.ip(), addr.port());
+
+    let handler = std::thread::spawn(move || {
+        if let Ok(req) = server.recv() {
+            let _ = req.respond(
+                tiny_http::Response::from_string("service unavailable").with_status_code(503),
+            );
+        }
+    });
+
+    let reg = Registry {
+        name: "test-registry".to_string(),
+        api_base,
+        index_base: None,
+    };
+    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+
+    let err = client
+        .crate_exists("some-crate")
+        .expect_err("503 should produce error");
+    assert!(
+        format!("{err:#}").contains("unexpected status"),
+        "error should mention unexpected status"
+    );
+
+    handler.join().expect("handler thread");
+}
+
+#[test]
+fn registry_list_owners_errors_on_429() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("start server");
+    let addr = server.server_addr().to_ip().expect("addr");
+    let api_base = format!("http://{}:{}", addr.ip(), addr.port());
+
+    let handler = std::thread::spawn(move || {
+        if let Ok(req) = server.recv() {
+            let _ = req.respond(
+                tiny_http::Response::from_string("too many requests").with_status_code(429),
+            );
+        }
+    });
+
+    let reg = Registry {
+        name: "test-registry".to_string(),
+        api_base,
+        index_base: None,
+    };
+    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+
+    let err = client
+        .list_owners("some-crate", "token")
+        .expect_err("429 should produce error");
+    assert!(
+        format!("{err:#}").contains("unexpected status"),
+        "error should mention unexpected status"
+    );
+
+    handler.join().expect("handler thread");
+}
+
+// ===========================================================================
+// 13. State persistence roundtrip with all PackageState variants
+// ===========================================================================
+
+#[test]
+fn state_roundtrip_preserves_all_package_state_variants() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+
+    let mut packages = BTreeMap::new();
+    packages.insert(
+        "pending-pkg@1.0.0".to_string(),
+        PackageProgress {
+            name: "pending-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            attempts: 0,
+            state: PackageState::Pending,
+            last_updated_at: Utc::now(),
+        },
+    );
+    packages.insert(
+        "uploaded-pkg@1.0.0".to_string(),
+        PackageProgress {
+            name: "uploaded-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            attempts: 1,
+            state: PackageState::Uploaded,
+            last_updated_at: Utc::now(),
+        },
+    );
+    packages.insert(
+        "published-pkg@1.0.0".to_string(),
+        PackageProgress {
+            name: "published-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            attempts: 1,
+            state: PackageState::Published,
+            last_updated_at: Utc::now(),
+        },
+    );
+    packages.insert(
+        "skipped-pkg@1.0.0".to_string(),
+        PackageProgress {
+            name: "skipped-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            attempts: 0,
+            state: PackageState::Skipped {
+                reason: "already published".to_string(),
+            },
+            last_updated_at: Utc::now(),
+        },
+    );
+    packages.insert(
+        "failed-pkg@1.0.0".to_string(),
+        PackageProgress {
+            name: "failed-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            attempts: 3,
+            state: PackageState::Failed {
+                class: ErrorClass::Retryable,
+                message: "rate limited".to_string(),
+            },
+            last_updated_at: Utc::now(),
+        },
+    );
+    packages.insert(
+        "ambiguous-pkg@1.0.0".to_string(),
+        PackageProgress {
+            name: "ambiguous-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            attempts: 2,
+            state: PackageState::Ambiguous {
+                message: "timeout during publish".to_string(),
+            },
+            last_updated_at: Utc::now(),
+        },
+    );
+
+    let exec_state = ExecutionState {
+        state_version: state::CURRENT_STATE_VERSION.to_string(),
+        plan_id: "all-variants-test".to_string(),
+        registry: Registry::crates_io(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        packages,
+    };
+
+    state::save_state(&state_dir, &exec_state).expect("save state");
+    let loaded = state::load_state(&state_dir)
+        .expect("load state")
+        .expect("state exists");
+
+    assert_eq!(loaded.packages.len(), 6);
+
+    assert!(matches!(
+        loaded.packages["pending-pkg@1.0.0"].state,
+        PackageState::Pending
+    ));
+    assert!(matches!(
+        loaded.packages["uploaded-pkg@1.0.0"].state,
+        PackageState::Uploaded
+    ));
+    assert!(matches!(
+        loaded.packages["published-pkg@1.0.0"].state,
+        PackageState::Published
+    ));
+    assert!(matches!(
+        loaded.packages["skipped-pkg@1.0.0"].state,
+        PackageState::Skipped { .. }
+    ));
+    assert!(matches!(
+        loaded.packages["failed-pkg@1.0.0"].state,
+        PackageState::Failed { .. }
+    ));
+    assert!(matches!(
+        loaded.packages["ambiguous-pkg@1.0.0"].state,
+        PackageState::Ambiguous { .. }
+    ));
+
+    // Verify Failed details preserved
+    if let PackageState::Failed { class, message } = &loaded.packages["failed-pkg@1.0.0"].state {
+        assert_eq!(*class, ErrorClass::Retryable);
+        assert_eq!(message, "rate limited");
+    }
+
+    // Verify Skipped reason preserved
+    if let PackageState::Skipped { reason } = &loaded.packages["skipped-pkg@1.0.0"].state {
+        assert_eq!(reason, "already published");
+    }
+}
+
+// ===========================================================================
+// 14. Resume from saved state: skip published, retry failed
+// ===========================================================================
+
+#[test]
+fn resume_skips_published_and_retries_failed() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+
+    // Initial state: a published, b failed (retryable), c+d+e pending
+    let mut packages = BTreeMap::new();
+    packages.insert(
+        "a@0.1.0".to_string(),
+        PackageProgress {
+            name: "a".to_string(),
+            version: "0.1.0".to_string(),
+            attempts: 1,
+            state: PackageState::Published,
+            last_updated_at: Utc::now(),
+        },
+    );
+    packages.insert(
+        "b@0.1.0".to_string(),
+        PackageProgress {
+            name: "b".to_string(),
+            version: "0.1.0".to_string(),
+            attempts: 2,
+            state: PackageState::Failed {
+                class: ErrorClass::Retryable,
+                message: "connection reset".to_string(),
+            },
+            last_updated_at: Utc::now(),
+        },
+    );
+    packages.insert(
+        "c@0.1.0".to_string(),
+        PackageProgress {
+            name: "c".to_string(),
+            version: "0.1.0".to_string(),
+            attempts: 0,
+            state: PackageState::Pending,
+            last_updated_at: Utc::now(),
+        },
+    );
+    packages.insert(
+        "d@0.1.0".to_string(),
+        PackageProgress {
+            name: "d".to_string(),
+            version: "0.1.0".to_string(),
+            attempts: 0,
+            state: PackageState::Pending,
+            last_updated_at: Utc::now(),
+        },
+    );
+    packages.insert(
+        "e@0.1.0".to_string(),
+        PackageProgress {
+            name: "e".to_string(),
+            version: "0.1.0".to_string(),
+            attempts: 0,
+            state: PackageState::Pending,
+            last_updated_at: Utc::now(),
+        },
+    );
+
+    let exec_state = ExecutionState {
+        state_version: state::CURRENT_STATE_VERSION.to_string(),
+        plan_id: "resume-test-chain".to_string(),
+        registry: Registry::crates_io(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        packages,
+    };
+
+    state::save_state(&state_dir, &exec_state).expect("save initial state");
+    assert!(state::has_incomplete_state(&state_dir));
+
+    // Load and simulate resume: published packages should be skipped
+    let mut loaded = state::load_state(&state_dir)
+        .expect("load")
+        .expect("exists");
+
+    // Identify packages needing work
+    let published: Vec<String> = loaded
+        .packages
+        .values()
+        .filter(|p| matches!(p.state, PackageState::Published))
+        .map(|p| format!("{}@{}", p.name, p.version))
+        .collect();
+    assert_eq!(published, vec!["a@0.1.0"]);
+
+    let needs_retry: Vec<String> = loaded
+        .packages
+        .values()
+        .filter(|p| matches!(p.state, PackageState::Failed { .. }))
+        .map(|p| format!("{}@{}", p.name, p.version))
+        .collect();
+    assert_eq!(needs_retry, vec!["b@0.1.0"]);
+
+    let pending: Vec<String> = loaded
+        .packages
+        .values()
+        .filter(|p| matches!(p.state, PackageState::Pending))
+        .map(|p| format!("{}@{}", p.name, p.version))
+        .collect();
+    assert_eq!(pending.len(), 3);
+
+    // Simulate: retry b successfully, then publish c, d, e
+    for key in &["b@0.1.0", "c@0.1.0", "d@0.1.0", "e@0.1.0"] {
+        if let Some(pkg) = loaded.packages.get_mut(*key) {
+            pkg.state = PackageState::Published;
+            pkg.attempts += 1;
+            pkg.last_updated_at = Utc::now();
+        }
+    }
+    loaded.updated_at = Utc::now();
+    state::save_state(&state_dir, &loaded).expect("save resumed state");
+
+    // Verify all published
+    let final_state = state::load_state(&state_dir)
+        .expect("load")
+        .expect("exists");
+    assert!(
+        final_state
+            .packages
+            .values()
+            .all(|p| matches!(p.state, PackageState::Published))
+    );
+    // b should have 3 total attempts (2 original + 1 retry)
+    assert_eq!(final_state.packages["b@0.1.0"].attempts, 3);
+}
+
+// ===========================================================================
+// 15. Event log generation for full publish flow with 5-crate chain
+// ===========================================================================
+
+#[test]
+fn event_log_full_publish_flow_deep_chain() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+
+    let events_path = shipper::events::events_path(&state_dir);
+    let plan_id = "chain-publish-001";
+
+    let mut log = EventLog::new();
+
+    // Plan + execution start
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PlanCreated {
+            plan_id: plan_id.to_string(),
+            package_count: 5,
+        },
+        package: "all".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ExecutionStarted,
+        package: "all".to_string(),
+    });
+
+    // Publish all 5 packages: a succeeds, b succeeds, c fails then retries, d+e succeed
+    for (name, attempt_count) in &[("a", 1), ("b", 1), ("d", 1), ("e", 1)] {
+        log.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::PackageStarted {
+                name: name.to_string(),
+                version: "0.1.0".to_string(),
+            },
+            package: format!("{name}@0.1.0"),
+        });
+        log.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::PackageAttempted {
+                attempt: *attempt_count,
+                command: format!("cargo publish -p {name}"),
+            },
+            package: format!("{name}@0.1.0"),
+        });
+        log.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::PackagePublished { duration_ms: 500 },
+            package: format!("{name}@0.1.0"),
+        });
+    }
+
+    // Package c: fails first, then retries successfully
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageStarted {
+            name: "c".to_string(),
+            version: "0.1.0".to_string(),
+        },
+        package: "c@0.1.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageFailed {
+            class: ErrorClass::Retryable,
+            message: "registry timeout".to_string(),
+        },
+        package: "c@0.1.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackageAttempted {
+            attempt: 2,
+            command: "cargo publish -p c".to_string(),
+        },
+        package: "c@0.1.0".to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PackagePublished { duration_ms: 800 },
+        package: "c@0.1.0".to_string(),
+    });
+
+    // Execution finished
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ExecutionFinished {
+            result: ExecutionResult::Success,
+        },
+        package: "all".to_string(),
+    });
+
+    // Write and reload
+    log.write_to_file(&events_path).expect("write events");
+    let loaded = EventLog::read_from_file(&events_path).expect("read events");
+
+    // 2 global + 4×3 simple + 4 for c (started+failed+attempted+published) = 2 + 12 + 4 + 1 = 19
+    assert_eq!(loaded.all_events().len(), 19);
+
+    // c had a failure + retry
+    let c_events = loaded.events_for_package("c@0.1.0");
+    assert_eq!(c_events.len(), 4);
+
+    // Global events
+    let global = loaded.events_for_package("all");
+    assert_eq!(global.len(), 3); // plan_created + exec_started + exec_finished
+}
+
+// ===========================================================================
+// 16. Receipt generation with mixed outcomes (published + failed + skipped)
+// ===========================================================================
+
+#[test]
+fn receipt_with_mixed_outcomes_roundtrips() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+
+    let receipt = shipper::types::Receipt {
+        receipt_version: state::CURRENT_RECEIPT_VERSION.to_string(),
+        plan_id: "mixed-outcomes-plan".to_string(),
+        registry: Registry::crates_io(),
+        started_at: Utc::now(),
+        finished_at: Utc::now(),
+        packages: vec![
+            PackageReceipt {
+                name: "a".to_string(),
+                version: "0.1.0".to_string(),
+                attempts: 1,
+                state: PackageState::Published,
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 1200,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+            PackageReceipt {
+                name: "b".to_string(),
+                version: "0.1.0".to_string(),
+                attempts: 3,
+                state: PackageState::Failed {
+                    class: ErrorClass::Permanent,
+                    message: "auth failure".to_string(),
+                },
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 5000,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+            PackageReceipt {
+                name: "c".to_string(),
+                version: "0.1.0".to_string(),
+                attempts: 0,
+                state: PackageState::Skipped {
+                    reason: "version already exists".to_string(),
+                },
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 0,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+        ],
+        event_log_path: PathBuf::from(".shipper/events.jsonl"),
+        git_context: None,
+        environment: EnvironmentFingerprint {
+            shipper_version: "0.3.0".to_string(),
+            cargo_version: Some("1.80.0".to_string()),
+            rust_version: Some("1.80.0".to_string()),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        },
+    };
+
+    state::write_receipt(&state_dir, &receipt).expect("write receipt");
+    let loaded = state::load_receipt(&state_dir)
+        .expect("load receipt")
+        .expect("receipt exists");
+
+    assert_eq!(loaded.packages.len(), 3);
+    assert!(matches!(loaded.packages[0].state, PackageState::Published));
+    assert!(matches!(
+        loaded.packages[1].state,
+        PackageState::Failed { .. }
+    ));
+    assert!(matches!(
+        loaded.packages[2].state,
+        PackageState::Skipped { .. }
+    ));
+
+    // Verify specific failed details roundtrip
+    if let PackageState::Failed { class, message } = &loaded.packages[1].state {
+        assert_eq!(*class, ErrorClass::Permanent);
+        assert_eq!(message, "auth failure");
+    }
+}
+
+// ===========================================================================
+// 17. Environment fingerprint in receipt roundtrip
+// ===========================================================================
+
+#[test]
+fn receipt_environment_fingerprint_roundtrips() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+
+    let receipt = shipper::types::Receipt {
+        receipt_version: state::CURRENT_RECEIPT_VERSION.to_string(),
+        plan_id: "env-fingerprint-test".to_string(),
+        registry: Registry::crates_io(),
+        started_at: Utc::now(),
+        finished_at: Utc::now(),
+        packages: vec![],
+        event_log_path: PathBuf::from(".shipper/events.jsonl"),
+        git_context: None,
+        environment: EnvironmentFingerprint {
+            shipper_version: "0.3.0-rc.1".to_string(),
+            cargo_version: Some("1.82.0-nightly".to_string()),
+            rust_version: Some("1.82.0-nightly".to_string()),
+            os: "macos".to_string(),
+            arch: "aarch64".to_string(),
+        },
+    };
+
+    state::write_receipt(&state_dir, &receipt).expect("write receipt");
+    let loaded = state::load_receipt(&state_dir)
+        .expect("load receipt")
+        .expect("receipt exists");
+
+    assert_eq!(loaded.environment.shipper_version, "0.3.0-rc.1");
+    assert_eq!(
+        loaded.environment.cargo_version.as_deref(),
+        Some("1.82.0-nightly")
+    );
+    assert_eq!(
+        loaded.environment.rust_version.as_deref(),
+        Some("1.82.0-nightly")
+    );
+    assert_eq!(loaded.environment.os, "macos");
+    assert_eq!(loaded.environment.arch, "aarch64");
+}
+
+// ===========================================================================
+// 18. Lock acquire + set plan_id + release sequence
+// ===========================================================================
+
+#[test]
+fn lock_acquire_set_plan_id_release_sequence() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path();
+
+    // Acquire lock
+    let lock = shipper::lock::LockFile::acquire(state_dir, None).expect("acquire lock");
+
+    // Lock should exist
+    assert!(shipper::lock::LockFile::is_locked(state_dir, None).expect("check"));
+
+    // Read lock info
+    let info = shipper::lock::LockFile::read_lock_info(state_dir, None).expect("read info");
+    assert_eq!(info.pid, std::process::id());
+    assert!(info.plan_id.is_none());
+
+    // Update plan_id
+    lock.set_plan_id("lock-test-plan-123").expect("set plan_id");
+    let updated_info =
+        shipper::lock::LockFile::read_lock_info(state_dir, None).expect("read updated");
+    assert_eq!(updated_info.plan_id.as_deref(), Some("lock-test-plan-123"));
+
+    // Second acquire should fail
+    let err =
+        shipper::lock::LockFile::acquire(state_dir, None).expect_err("double acquire should fail");
+    assert!(err.to_string().contains("lock already held"));
+
+    // Release lock
+    lock.release().expect("release lock");
+    assert!(!shipper::lock::LockFile::is_locked(state_dir, None).expect("check after release"));
+
+    // Re-acquire should succeed after release
+    let _lock2 =
+        shipper::lock::LockFile::acquire(state_dir, None).expect("re-acquire after release");
+}
+
+// ===========================================================================
+// 19. Snapshot tests for plan output with various topologies
+// ===========================================================================
+
+/// Helper: extract stable plan representation (names + versions in order)
+#[derive(Debug)]
+#[allow(dead_code)] // fields used via Debug derive for insta snapshots
+struct PlanSnapshot {
+    packages: Vec<(String, String)>,
+    levels: Vec<Vec<String>>,
+    dependency_count: usize,
+}
+
+fn snapshot_plan(ws: &shipper::plan::PlannedWorkspace) -> PlanSnapshot {
+    let packages = ws
+        .plan
+        .packages
+        .iter()
+        .map(|p| (p.name.clone(), p.version.clone()))
+        .collect();
+    let levels = ws
+        .plan
+        .group_by_levels()
+        .iter()
+        .map(|l| l.packages.iter().map(|p| p.name.clone()).collect())
+        .collect();
+    let dependency_count = ws.plan.dependencies.values().map(|v| v.len()).sum();
+    PlanSnapshot {
+        packages,
+        levels,
+        dependency_count,
+    }
+}
+
+#[test]
+fn snapshot_deep_chain_plan() {
+    let td = tempdir().expect("tempdir");
+    create_deep_chain_workspace(td.path());
+
+    let spec = ReleaseSpec {
+        manifest_path: td.path().join("Cargo.toml"),
+        registry: Registry::crates_io(),
+        selected_packages: None,
+    };
+    let ws = plan::build_plan(&spec).expect("build plan");
+    let snap = snapshot_plan(&ws);
+
+    insta::assert_debug_snapshot!("deep_chain_plan", snap);
+}
+
+#[test]
+fn snapshot_wide_workspace_plan() {
+    let td = tempdir().expect("tempdir");
+    create_wide_workspace(td.path());
+
+    let spec = ReleaseSpec {
+        manifest_path: td.path().join("Cargo.toml"),
+        registry: Registry::crates_io(),
+        selected_packages: None,
+    };
+    let ws = plan::build_plan(&spec).expect("build plan");
+    let snap = snapshot_plan(&ws);
+
+    insta::assert_debug_snapshot!("wide_workspace_plan", snap);
+}
+
+#[test]
+fn snapshot_two_crate_plan() {
+    let td = tempdir().expect("tempdir");
+    create_two_crate_workspace(td.path());
+
+    let spec = ReleaseSpec {
+        manifest_path: td.path().join("Cargo.toml"),
+        registry: Registry::crates_io(),
+        selected_packages: None,
+    };
+    let ws = plan::build_plan(&spec).expect("build plan");
+    let snap = snapshot_plan(&ws);
+
+    insta::assert_debug_snapshot!("two_crate_plan", snap);
+}
+
+// ===========================================================================
+// 20. Error propagation: registry error surfaces through version check
+// ===========================================================================
+
+#[test]
+fn registry_error_propagates_with_context() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("start server");
+    let addr = server.server_addr().to_ip().expect("addr");
+    let api_base = format!("http://{}:{}", addr.ip(), addr.port());
+
+    // Server returns 500 for version check, 503 for crate check
+    let handler = std::thread::spawn(move || {
+        for _ in 0..2 {
+            if let Ok(req) = server.recv() {
+                let url = req.url().to_string();
+                if url.contains("/api/v1/crates/") && url.contains("/1.0.0") {
+                    let _ = req.respond(
+                        tiny_http::Response::from_string("internal error").with_status_code(500),
+                    );
+                } else {
+                    let _ = req.respond(
+                        tiny_http::Response::from_string("unavailable").with_status_code(503),
+                    );
+                }
+            }
+        }
+    });
+
+    let reg = Registry {
+        name: "error-registry".to_string(),
+        api_base,
+        index_base: None,
+    };
+    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+
+    // version_exists should error
+    let ver_err = client
+        .version_exists("test-crate", "1.0.0")
+        .expect_err("should error");
+    let ver_msg = format!("{ver_err:#}");
+    assert!(
+        ver_msg.contains("unexpected status"),
+        "version error: {ver_msg}"
+    );
+
+    // crate_exists should also error
+    let crate_err = client.crate_exists("test-crate").expect_err("should error");
+    let crate_msg = format!("{crate_err:#}");
+    assert!(
+        crate_msg.contains("unexpected status"),
+        "crate error: {crate_msg}"
+    );
+
+    handler.join().expect("handler thread");
+}

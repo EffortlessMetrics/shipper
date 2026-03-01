@@ -867,8 +867,8 @@ mod tests {
             let base = Duration::from_millis(100);
             let max = Duration::from_millis(500);
             let d = backoff_delay(base, max, attempt, shipper_retry::RetryStrategyType::Exponential, jitter);
-            // With jitter up to 1.0, max theoretical is max + max*jitter
-            let upper = max + max.mul_f64(jitter);
+            // With jitter up to 1.0, max theoretical is max + max*jitter + epsilon for fp rounding
+            let upper = max + max.mul_f64(jitter) + Duration::from_millis(1);
             prop_assert!(d <= upper, "delay {:?} exceeded upper bound {:?}", d, upper);
         }
 
@@ -1039,7 +1039,7 @@ mod tests {
             let base = Duration::from_millis(base_ms);
             let max = Duration::from_millis(base_ms.saturating_sub(delta).max(1));
             let d = backoff_delay(base, max, attempt, shipper_retry::RetryStrategyType::Exponential, jitter);
-            let upper = max + max.mul_f64(jitter);
+            let upper = max + max.mul_f64(jitter) + Duration::from_millis(1);
             prop_assert!(d <= upper, "delay {d:?} exceeded upper bound {upper:?} when base > max");
         }
 
@@ -1368,6 +1368,675 @@ mod tests {
             );
             stabilize_timestamps(&mut st);
             insta::assert_yaml_snapshot!(st);
+        }
+
+        // --- 5. ExecutionState variant snapshots ---
+
+        #[test]
+        fn snapshot_execution_state_empty_packages() {
+            let st = fixed_state(&[]);
+            insta::assert_debug_snapshot!(st);
+        }
+
+        #[test]
+        fn snapshot_execution_state_single_pending() {
+            let st = fixed_state(&[("a@1.0.0", "a", "1.0.0", PackageState::Pending)]);
+            insta::assert_debug_snapshot!(st);
+        }
+
+        #[test]
+        fn snapshot_execution_state_single_uploaded() {
+            let st = fixed_state(&[("a@1.0.0", "a", "1.0.0", PackageState::Uploaded)]);
+            insta::assert_debug_snapshot!(st);
+        }
+
+        #[test]
+        fn snapshot_execution_state_single_published() {
+            let st = fixed_state(&[("a@1.0.0", "a", "1.0.0", PackageState::Published)]);
+            insta::assert_debug_snapshot!(st);
+        }
+
+        #[test]
+        fn snapshot_execution_state_single_skipped() {
+            let st = fixed_state(&[(
+                "a@1.0.0",
+                "a",
+                "1.0.0",
+                PackageState::Skipped {
+                    reason: "already on registry".into(),
+                },
+            )]);
+            insta::assert_debug_snapshot!(st);
+        }
+
+        #[test]
+        fn snapshot_execution_state_single_failed() {
+            let st = fixed_state(&[(
+                "a@1.0.0",
+                "a",
+                "1.0.0",
+                PackageState::Failed {
+                    class: ErrorClass::Permanent,
+                    message: "denied".into(),
+                },
+            )]);
+            insta::assert_debug_snapshot!(st);
+        }
+
+        #[test]
+        fn snapshot_execution_state_single_ambiguous() {
+            let st = fixed_state(&[(
+                "a@1.0.0",
+                "a",
+                "1.0.0",
+                PackageState::Ambiguous {
+                    message: "timeout".into(),
+                },
+            )]);
+            insta::assert_debug_snapshot!(st);
+        }
+
+        // --- 6. State transition sequence snapshots ---
+
+        #[test]
+        fn snapshot_transition_pending_to_uploaded_to_published() {
+            let key = "pkg@1.0.0";
+            let mut st = fixed_state(&[(key, "pkg", "1.0.0", PackageState::Pending)]);
+            let mut steps: Vec<String> = vec![format!("initial: {:?}", st.packages[key].state)];
+            update_state_locked(&mut st, key, PackageState::Uploaded);
+            steps.push(format!("after upload: {:?}", st.packages[key].state));
+            update_state_locked(&mut st, key, PackageState::Published);
+            steps.push(format!("after publish: {:?}", st.packages[key].state));
+            insta::assert_debug_snapshot!(steps);
+        }
+
+        #[test]
+        fn snapshot_transition_pending_to_failed_retry_to_published() {
+            let key = "pkg@1.0.0";
+            let mut st = fixed_state(&[(key, "pkg", "1.0.0", PackageState::Pending)]);
+            let mut steps: Vec<String> = vec![format!("initial: {:?}", st.packages[key].state)];
+            update_state_locked(
+                &mut st,
+                key,
+                PackageState::Failed {
+                    class: ErrorClass::Retryable,
+                    message: "rate limited".into(),
+                },
+            );
+            steps.push(format!("after failure: {:?}", st.packages[key].state));
+            update_state_locked(&mut st, key, PackageState::Pending);
+            steps.push(format!("after retry reset: {:?}", st.packages[key].state));
+            update_state_locked(&mut st, key, PackageState::Uploaded);
+            steps.push(format!("after upload: {:?}", st.packages[key].state));
+            update_state_locked(&mut st, key, PackageState::Published);
+            steps.push(format!("after publish: {:?}", st.packages[key].state));
+            insta::assert_debug_snapshot!(steps);
+        }
+
+        #[test]
+        fn snapshot_transition_ambiguous_to_published() {
+            let key = "pkg@1.0.0";
+            let mut st = fixed_state(&[(
+                key,
+                "pkg",
+                "1.0.0",
+                PackageState::Ambiguous {
+                    message: "upload timeout".into(),
+                },
+            )]);
+            let mut steps: Vec<String> = vec![format!("initial: {:?}", st.packages[key].state)];
+            update_state_locked(&mut st, key, PackageState::Published);
+            steps.push(format!("after verification: {:?}", st.packages[key].state));
+            insta::assert_debug_snapshot!(steps);
+        }
+
+        #[test]
+        fn snapshot_transition_all_skipped_plan() {
+            let mut st = fixed_state(&[
+                ("a@1.0.0", "a", "1.0.0", PackageState::Pending),
+                ("b@1.0.0", "b", "1.0.0", PackageState::Pending),
+            ]);
+            update_state_locked(
+                &mut st,
+                "a@1.0.0",
+                PackageState::Skipped {
+                    reason: "already published".into(),
+                },
+            );
+            update_state_locked(
+                &mut st,
+                "b@1.0.0",
+                PackageState::Skipped {
+                    reason: "already published".into(),
+                },
+            );
+            stabilize_timestamps(&mut st);
+            insta::assert_debug_snapshot!(st);
+        }
+    }
+
+    // -- 1. State machine transitions: all valid transitions --
+
+    #[test]
+    fn transition_pending_to_uploaded() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(key, PackageState::Pending);
+        update_state_locked(&mut st, key, PackageState::Uploaded);
+        assert_eq!(st.packages[key].state, PackageState::Uploaded);
+    }
+
+    #[test]
+    fn transition_pending_to_skipped() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(key, PackageState::Pending);
+        update_state_locked(
+            &mut st,
+            key,
+            PackageState::Skipped {
+                reason: "pre-existing".into(),
+            },
+        );
+        assert!(matches!(
+            st.packages[key].state,
+            PackageState::Skipped { .. }
+        ));
+    }
+
+    #[test]
+    fn transition_pending_to_failed() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(key, PackageState::Pending);
+        update_state_locked(
+            &mut st,
+            key,
+            PackageState::Failed {
+                class: ErrorClass::Permanent,
+                message: "auth".into(),
+            },
+        );
+        assert!(matches!(
+            st.packages[key].state,
+            PackageState::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn transition_pending_to_ambiguous() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(key, PackageState::Pending);
+        update_state_locked(
+            &mut st,
+            key,
+            PackageState::Ambiguous {
+                message: "timeout".into(),
+            },
+        );
+        assert!(matches!(
+            st.packages[key].state,
+            PackageState::Ambiguous { .. }
+        ));
+    }
+
+    #[test]
+    fn transition_uploaded_to_published() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(key, PackageState::Uploaded);
+        update_state_locked(&mut st, key, PackageState::Published);
+        assert_eq!(st.packages[key].state, PackageState::Published);
+    }
+
+    #[test]
+    fn transition_uploaded_to_failed() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(key, PackageState::Uploaded);
+        update_state_locked(
+            &mut st,
+            key,
+            PackageState::Failed {
+                class: ErrorClass::Retryable,
+                message: "verify timeout".into(),
+            },
+        );
+        assert!(matches!(
+            st.packages[key].state,
+            PackageState::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn transition_uploaded_to_ambiguous() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(key, PackageState::Uploaded);
+        update_state_locked(
+            &mut st,
+            key,
+            PackageState::Ambiguous {
+                message: "verify timeout".into(),
+            },
+        );
+        assert!(matches!(
+            st.packages[key].state,
+            PackageState::Ambiguous { .. }
+        ));
+    }
+
+    #[test]
+    fn transition_ambiguous_to_published() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(
+            key,
+            PackageState::Ambiguous {
+                message: "timeout".into(),
+            },
+        );
+        update_state_locked(&mut st, key, PackageState::Published);
+        assert_eq!(st.packages[key].state, PackageState::Published);
+    }
+
+    #[test]
+    fn transition_ambiguous_to_failed() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(
+            key,
+            PackageState::Ambiguous {
+                message: "timeout".into(),
+            },
+        );
+        update_state_locked(
+            &mut st,
+            key,
+            PackageState::Failed {
+                class: ErrorClass::Permanent,
+                message: "confirmed not on registry".into(),
+            },
+        );
+        assert!(matches!(
+            st.packages[key].state,
+            PackageState::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn transition_failed_retryable_back_to_pending() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(
+            key,
+            PackageState::Failed {
+                class: ErrorClass::Retryable,
+                message: "rate limit".into(),
+            },
+        );
+        update_state_locked(&mut st, key, PackageState::Pending);
+        assert_eq!(st.packages[key].state, PackageState::Pending);
+    }
+
+    // -- 2. Invalid / unusual transitions (the API is permissive, verify it accepts them) --
+
+    #[test]
+    fn transition_published_to_pending_is_accepted() {
+        // update_state_locked is a raw setter — it does not enforce a state machine
+        let key = "a@1.0.0";
+        let mut st = sample_state(key, PackageState::Published);
+        update_state_locked(&mut st, key, PackageState::Pending);
+        assert_eq!(st.packages[key].state, PackageState::Pending);
+    }
+
+    #[test]
+    fn transition_skipped_to_published_is_accepted() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(
+            key,
+            PackageState::Skipped {
+                reason: "skip".into(),
+            },
+        );
+        update_state_locked(&mut st, key, PackageState::Published);
+        assert_eq!(st.packages[key].state, PackageState::Published);
+    }
+
+    #[test]
+    fn transition_published_to_failed_is_accepted() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(key, PackageState::Published);
+        update_state_locked(
+            &mut st,
+            key,
+            PackageState::Failed {
+                class: ErrorClass::Ambiguous,
+                message: "weird".into(),
+            },
+        );
+        assert!(matches!(
+            st.packages[key].state,
+            PackageState::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn update_state_rejects_missing_key() {
+        let mut st = sample_state("a@1.0.0", PackageState::Pending);
+        let td = tempdir().expect("tempdir");
+        let err = update_state(
+            &mut st,
+            td.path(),
+            "nonexistent@0.0.0",
+            PackageState::Published,
+        );
+        assert!(err.is_err());
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("missing package in state")
+        );
+    }
+
+    // -- 3. Concurrent state updates (sequential simulation) --
+
+    #[test]
+    fn concurrent_updates_to_different_packages_are_independent() {
+        let mut st = multi_state(&[
+            ("a@1.0.0", PackageState::Pending),
+            ("b@1.0.0", PackageState::Pending),
+            ("c@1.0.0", PackageState::Pending),
+        ]);
+        // Simulate concurrent workers updating different keys
+        update_state_locked(&mut st, "a@1.0.0", PackageState::Uploaded);
+        update_state_locked(&mut st, "b@1.0.0", PackageState::Published);
+        update_state_locked(
+            &mut st,
+            "c@1.0.0",
+            PackageState::Failed {
+                class: ErrorClass::Retryable,
+                message: "rate limited".into(),
+            },
+        );
+        assert_eq!(st.packages["a@1.0.0"].state, PackageState::Uploaded);
+        assert_eq!(st.packages["b@1.0.0"].state, PackageState::Published);
+        assert!(matches!(
+            st.packages["c@1.0.0"].state,
+            PackageState::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn rapid_sequential_updates_same_key() {
+        let key = "a@1.0.0";
+        let mut st = sample_state(key, PackageState::Pending);
+        // Rapid-fire transitions on the same key
+        let states = [
+            PackageState::Uploaded,
+            PackageState::Ambiguous {
+                message: "check".into(),
+            },
+            PackageState::Published,
+        ];
+        for s in &states {
+            update_state_locked(&mut st, key, s.clone());
+        }
+        assert_eq!(st.packages[key].state, PackageState::Published);
+    }
+
+    #[test]
+    fn concurrent_persist_updates_are_consistent() {
+        let td = tempdir().expect("tempdir");
+        let mut st = multi_state(&[
+            ("a@1.0.0", PackageState::Pending),
+            ("b@1.0.0", PackageState::Pending),
+        ]);
+        update_state(&mut st, td.path(), "a@1.0.0", PackageState::Uploaded).unwrap();
+        update_state(&mut st, td.path(), "b@1.0.0", PackageState::Published).unwrap();
+        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        assert_eq!(loaded.packages["a@1.0.0"].state, PackageState::Uploaded);
+        assert_eq!(loaded.packages["b@1.0.0"].state, PackageState::Published);
+    }
+
+    // -- 4. Empty execution plan --
+
+    #[test]
+    fn empty_plan_state_has_no_packages() {
+        let st = multi_state(&[]);
+        assert!(st.packages.is_empty());
+    }
+
+    #[test]
+    fn empty_plan_update_locked_is_noop() {
+        let mut st = multi_state(&[]);
+        update_state_locked(&mut st, "nonexistent@1.0.0", PackageState::Published);
+        assert!(st.packages.is_empty());
+    }
+
+    #[test]
+    fn empty_plan_update_state_errors() {
+        let mut st = multi_state(&[]);
+        let td = tempdir().expect("tempdir");
+        assert!(update_state(&mut st, td.path(), "any@1.0.0", PackageState::Published).is_err());
+    }
+
+    #[test]
+    fn empty_plan_persist_and_reload() {
+        let td = tempdir().expect("tempdir");
+        let st = multi_state(&[]);
+        shipper_state::save_state(td.path(), &st).unwrap();
+        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        assert!(loaded.packages.is_empty());
+        assert_eq!(loaded.plan_id, "plan-multi");
+    }
+
+    // -- 5. Single-package execution --
+
+    #[test]
+    fn single_package_full_lifecycle() {
+        let key = "solo@0.1.0";
+        let td = tempdir().expect("tempdir");
+        let mut st = sample_state(key, PackageState::Pending);
+        update_state(&mut st, td.path(), key, PackageState::Uploaded).unwrap();
+        assert_eq!(st.packages[key].state, PackageState::Uploaded);
+        update_state(&mut st, td.path(), key, PackageState::Published).unwrap();
+        assert_eq!(st.packages[key].state, PackageState::Published);
+        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        assert_eq!(loaded.packages[key].state, PackageState::Published);
+    }
+
+    #[test]
+    fn single_package_skip_lifecycle() {
+        let key = "solo@0.1.0";
+        let td = tempdir().expect("tempdir");
+        let mut st = sample_state(key, PackageState::Pending);
+        update_state(
+            &mut st,
+            td.path(),
+            key,
+            PackageState::Skipped {
+                reason: "already exists".into(),
+            },
+        )
+        .unwrap();
+        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        assert!(matches!(
+            loaded.packages[key].state,
+            PackageState::Skipped { .. }
+        ));
+    }
+
+    #[test]
+    fn single_package_failure_lifecycle() {
+        let key = "solo@0.1.0";
+        let td = tempdir().expect("tempdir");
+        let mut st = sample_state(key, PackageState::Pending);
+        update_state(
+            &mut st,
+            td.path(),
+            key,
+            PackageState::Failed {
+                class: ErrorClass::Permanent,
+                message: "auth denied".into(),
+            },
+        )
+        .unwrap();
+        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        match &loaded.packages[key].state {
+            PackageState::Failed { class, message } => {
+                assert_eq!(*class, ErrorClass::Permanent);
+                assert_eq!(message, "auth denied");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    // -- 6. All packages already published (skip everything) --
+
+    #[test]
+    fn all_packages_skipped_preserves_reasons() {
+        let mut st = multi_state(&[
+            ("a@1.0.0", PackageState::Pending),
+            ("b@2.0.0", PackageState::Pending),
+            ("c@3.0.0", PackageState::Pending),
+        ]);
+        let reasons = ["version exists", "yanked version", "no changes"];
+        for (i, (key, _)) in st.packages.clone().iter().enumerate() {
+            update_state_locked(
+                &mut st,
+                key,
+                PackageState::Skipped {
+                    reason: reasons[i].into(),
+                },
+            );
+        }
+        for pkg in st.packages.values() {
+            assert!(
+                matches!(&pkg.state, PackageState::Skipped { .. }),
+                "all should be skipped"
+            );
+        }
+    }
+
+    #[test]
+    fn all_packages_already_published_remain_published() {
+        let st = multi_state(&[
+            ("a@1.0.0", PackageState::Published),
+            ("b@2.0.0", PackageState::Published),
+        ]);
+        let published_count = st
+            .packages
+            .values()
+            .filter(|p| matches!(p.state, PackageState::Published))
+            .count();
+        assert_eq!(published_count, 2);
+    }
+
+    #[test]
+    fn all_skipped_persist_round_trip() {
+        let td = tempdir().expect("tempdir");
+        let mut st = multi_state(&[
+            ("a@1.0.0", PackageState::Pending),
+            ("b@2.0.0", PackageState::Pending),
+        ]);
+        update_state(
+            &mut st,
+            td.path(),
+            "a@1.0.0",
+            PackageState::Skipped {
+                reason: "exists".into(),
+            },
+        )
+        .unwrap();
+        update_state(
+            &mut st,
+            td.path(),
+            "b@2.0.0",
+            PackageState::Skipped {
+                reason: "exists".into(),
+            },
+        )
+        .unwrap();
+        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        assert!(
+            loaded
+                .packages
+                .values()
+                .all(|p| matches!(p.state, PackageState::Skipped { .. }))
+        );
+    }
+
+    // -- 10. Error propagation from callbacks --
+
+    #[test]
+    fn update_state_propagates_save_error_on_invalid_dir() {
+        let mut st = sample_state("a@1.0.0", PackageState::Pending);
+        // Use a nonexistent directory that cannot be created
+        let bad_dir = PathBuf::from(if cfg!(windows) {
+            r"Z:\nonexistent\deep\path\state"
+        } else {
+            "/nonexistent/deep/path/state"
+        });
+        let result = update_state(&mut st, &bad_dir, "a@1.0.0", PackageState::Published);
+        assert!(result.is_err(), "should propagate IO error from save_state");
+    }
+
+    #[test]
+    fn update_state_error_does_not_corrupt_in_memory_state() {
+        let mut st = sample_state("a@1.0.0", PackageState::Pending);
+        let bad_dir = PathBuf::from(if cfg!(windows) {
+            r"Z:\nonexistent\path"
+        } else {
+            "/nonexistent/path"
+        });
+        // The update modifies in-memory state, then fails on persist.
+        // Even on error, the in-memory mutation has occurred (this is the current behavior).
+        let _ = update_state(&mut st, &bad_dir, "a@1.0.0", PackageState::Published);
+        // The in-memory state was already mutated before the persist call
+        assert_eq!(st.packages["a@1.0.0"].state, PackageState::Published);
+    }
+
+    #[test]
+    fn update_state_missing_key_error_message_is_descriptive() {
+        let mut st = sample_state("a@1.0.0", PackageState::Pending);
+        let td = tempdir().expect("tempdir");
+        let err = update_state(&mut st, td.path(), "z@9.9.9", PackageState::Published).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("missing package"),
+            "error should mention missing package: {msg}"
+        );
+    }
+
+    // -- 9. Property test: state transitions are deterministic --
+
+    proptest! {
+        #[test]
+        fn state_transitions_are_deterministic(
+            initial in arb_package_state(),
+            target in arb_package_state(),
+        ) {
+            let key = "d@1.0.0";
+            let mut st1 = sample_state(key, initial.clone());
+            let mut st2 = sample_state(key, initial);
+            update_state_locked(&mut st1, key, target.clone());
+            update_state_locked(&mut st2, key, target);
+            prop_assert_eq!(&st1.packages[key].state, &st2.packages[key].state);
+        }
+
+        #[test]
+        fn multi_step_transitions_preserve_package_count(
+            s1 in arb_package_state(),
+            s2 in arb_package_state(),
+        ) {
+            let mut st = multi_state(&[
+                ("x@1.0.0", PackageState::Pending),
+                ("y@1.0.0", PackageState::Pending),
+            ]);
+            update_state_locked(&mut st, "x@1.0.0", s1);
+            update_state_locked(&mut st, "y@1.0.0", s2);
+            prop_assert_eq!(st.packages.len(), 2);
+        }
+
+        #[test]
+        fn update_state_locked_idempotent_for_same_state(state in arb_package_state()) {
+            let key = "i@1.0.0";
+            let mut st = sample_state(key, state.clone());
+            update_state_locked(&mut st, key, state.clone());
+            update_state_locked(&mut st, key, state.clone());
+            prop_assert_eq!(&st.packages[key].state, &state);
         }
     }
 }

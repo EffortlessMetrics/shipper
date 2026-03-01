@@ -1291,7 +1291,7 @@ mod edge_case_tests {
     fn corrupt_lock_binary_content() {
         let td = tempdir().expect("tempdir");
         let lp = lock_path(td.path(), None);
-        fs::write(&lp, &[0xFF, 0xFE, 0x00, 0x01, 0x80]).unwrap();
+        fs::write(&lp, [0xFF, 0xFE, 0x00, 0x01, 0x80]).unwrap();
 
         let err = LockFile::acquire(td.path(), None).unwrap_err();
         assert!(

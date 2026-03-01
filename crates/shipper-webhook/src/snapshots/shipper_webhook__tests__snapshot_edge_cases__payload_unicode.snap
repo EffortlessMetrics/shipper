@@ -1,0 +1,21 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+assertion_line: 2154
+expression: payload
+---
+WebhookPayload {
+    message: "パッケージ公開 🚀",
+    title: Some(
+        "リリース",
+    ),
+    success: true,
+    package: Some(
+        "日本語crate",
+    ),
+    version: Some(
+        "1.0.0",
+    ),
+    registry: None,
+    error: None,
+    extra: {},
+}

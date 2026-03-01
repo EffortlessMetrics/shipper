@@ -1,0 +1,79 @@
+---
+source: crates/shipper-config/src/lib.rs
+expression: config
+---
+ShipperConfig {
+    schema_version: "shipper.config.v1",
+    policy: PolicyConfig {
+        mode: Safe,
+    },
+    verify: VerifyConfig {
+        mode: Workspace,
+    },
+    readiness: ReadinessConfig {
+        enabled: true,
+        method: Api,
+        initial_delay: 1s,
+        max_delay: 60s,
+        max_total_wait: 300s,
+        poll_interval: 2s,
+        jitter_factor: 0.5,
+        index_path: None,
+        prefer_index: false,
+    },
+    output: OutputConfig {
+        lines: 50,
+    },
+    lock: LockConfig {
+        timeout: 3600s,
+    },
+    retry: RetryConfig {
+        policy: Default,
+        max_attempts: 6,
+        base_delay: 2s,
+        max_delay: 120s,
+        strategy: Exponential,
+        jitter: 0.5,
+        per_error: PerErrorConfig {
+            retryable: None,
+            ambiguous: None,
+            permanent: None,
+        },
+    },
+    flags: FlagsConfig {
+        allow_dirty: false,
+        skip_ownership_check: false,
+        strict_ownership: false,
+    },
+    parallel: ParallelConfig {
+        enabled: false,
+        max_concurrent: 4,
+        per_package_timeout: 1800s,
+    },
+    state_dir: None,
+    registry: None,
+    registries: MultiRegistryConfig {
+        registries: [],
+        default_registries: [],
+    },
+    webhook: WebhookConfig {
+        url: "",
+        webhook_type: Generic,
+        secret: None,
+        timeout_secs: 30,
+    },
+    encryption: EncryptionConfigInner {
+        enabled: false,
+        passphrase: None,
+        env_key: None,
+    },
+    storage: StorageConfigInner {
+        storage_type: File,
+        bucket: None,
+        region: None,
+        base_path: None,
+        endpoint: None,
+        access_key_id: None,
+        secret_access_key: None,
+    },
+}
