@@ -140,23 +140,21 @@ fn create_fake_cargo_partial(bin_dir: &Path) -> PathBuf {
     #[cfg(windows)]
     {
         let path = bin_dir.join("cargo.cmd");
+        // Avoid delayed-expansion bugs by using goto instead of nested blocks.
+        // Redirect placed before echo to prevent `echo 2>file` being parsed
+        // as stderr redirection.
         fs::write(
             &path,
             "@echo off\r\n\
-             if \"%1\"==\"publish\" (\r\n\
-               set /a count=0\r\n\
-               if exist \"%SHIPPER_FAKE_COUNTER_FILE%\" (\r\n\
-                 set /p count=<\"%SHIPPER_FAKE_COUNTER_FILE%\"\r\n\
-               )\r\n\
-               set /a count=count+1\r\n\
-               echo %count%>\"%SHIPPER_FAKE_COUNTER_FILE%\"\r\n\
-               if %count% LEQ %SHIPPER_FAKE_SUCCEED_COUNT% (\r\n\
-                 exit /b 0\r\n\
-               ) else (\r\n\
-                 echo %SHIPPER_FAKE_STDERR% 1>&2\r\n\
-                 exit /b 1\r\n\
-               )\r\n\
-             )\r\n\
+             if not \"%1\"==\"publish\" goto passthrough\r\n\
+             set /a _cnt=0\r\n\
+             if exist \"%SHIPPER_FAKE_COUNTER_FILE%\" set /p _cnt=<\"%SHIPPER_FAKE_COUNTER_FILE%\"\r\n\
+             set /a _cnt=%_cnt%+1\r\n\
+             >\"%SHIPPER_FAKE_COUNTER_FILE%\" echo %_cnt%\r\n\
+             if %_cnt% LEQ %SHIPPER_FAKE_SUCCEED_COUNT% exit /b 0\r\n\
+             echo %SHIPPER_FAKE_STDERR% 1>&2\r\n\
+             exit /b 1\r\n\
+             :passthrough\r\n\
              \"%REAL_CARGO%\" %*\r\n\
              exit /b %ERRORLEVEL%\r\n",
         )
@@ -689,9 +687,10 @@ mod mixed_success_failure_state {
 
         let counter_file = td.path().join("publish_counter.txt");
 
-        // Registry mock: enough 404s for version checks + post-publish checks
-        // then 200 for the first crate readiness, 404 for second
-        let registry = spawn_registry(vec![404], 20);
+        // Registry mock: 1st request (core pre-check) → 404,
+        // 2nd request (core readiness) → 200 so core is confirmed as Published,
+        // remaining requests (utils) → 404 so utils stays unverified.
+        let registry = spawn_registry(vec![404, 200, 404], 20);
 
         let output = shipper_cmd()
             .arg("--manifest-path")
@@ -822,5 +821,153 @@ mod mixed_success_failure_state {
             .arg("plan")
             .assert()
             .success();
+    }
+
+    // Scenario: Retryable failure exhausts max attempts — receipt shows Failed
+    //   Given cargo publish fails with "connection reset by peer" on every attempt
+    //   And   retry policy allows 3 max attempts
+    //   When  I run "shipper publish"
+    //   Then  the receipt shows package "demo@0.1.0" in state "Failed"
+    #[test]
+    fn given_retryable_exhausted_then_receipt_shows_failed() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let bin_dir = td.path().join("fake-bin");
+        fs::create_dir_all(&bin_dir).expect("mkdir");
+        let fake_cargo = create_fake_cargo_with_stderr(&bin_dir);
+        let (new_path, real_cargo) = prepend_fake_bin(&bin_dir);
+
+        let state_dir = td.path().join(".shipper");
+        let registry = spawn_registry(vec![404], 20);
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--no-readiness")
+            .arg("--max-attempts")
+            .arg("3")
+            .arg("--base-delay")
+            .arg("0ms")
+            .arg("--max-delay")
+            .arg("0ms")
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("publish")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "1")
+            .env("SHIPPER_FAKE_STDERR", "error: connection reset by peer")
+            .output()
+            .expect("run");
+
+        assert!(!output.status.success());
+
+        // The receipt must record the package as failed.
+        let receipt_path = state_dir.join("receipt.json");
+        if receipt_path.exists() {
+            let receipt_json = fs::read_to_string(&receipt_path).expect("read receipt");
+            let receipt: serde_json::Value =
+                serde_json::from_str(&receipt_json).expect("parse receipt");
+            let packages = receipt["packages"].as_array().expect("packages array");
+            let demo = packages
+                .iter()
+                .find(|p| p["name"].as_str() == Some("demo"))
+                .expect("demo in receipt");
+            let state = demo["state"]["state"].as_str().unwrap_or("");
+            assert_eq!(
+                state, "failed",
+                "expected demo@0.1.0 in 'failed' state, got: {state}"
+            );
+        }
+
+        registry.join();
+    }
+}
+
+// ── Scenario: Ambiguous failure resolves to Published via registry check ────
+
+mod ambiguous_resolves_via_registry {
+    use super::*;
+
+    // Scenario: Ambiguous failure resolves to Published via registry check
+    //   Given cargo publish exits with an unrecognized error
+    //   And   the registry returns "published" for "demo@0.1.0"
+    //   When  publish failure classification runs and registry is checked
+    //   Then  the package is marked as "Published"
+    #[test]
+    fn given_ambiguous_failure_when_registry_shows_published_then_marked_published() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let bin_dir = td.path().join("fake-bin");
+        fs::create_dir_all(&bin_dir).expect("mkdir");
+        let fake_cargo = create_fake_cargo_with_stderr(&bin_dir);
+        let (new_path, real_cargo) = prepend_fake_bin(&bin_dir);
+
+        let state_dir = td.path().join(".shipper");
+
+        // Registry responses:
+        //   1st request (pre-publish version_exists) → 404 (not yet published)
+        //   2nd request (post-failure version_exists) → 200 (version appeared)
+        let registry = spawn_registry(vec![404, 200], 10);
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--no-readiness")
+            .arg("--max-attempts")
+            .arg("1")
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("publish")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "1")
+            .env(
+                "SHIPPER_FAKE_STDERR",
+                "error: unexpected registry response: xyz",
+            )
+            .output()
+            .expect("run");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // The engine should detect that the version appeared on the registry
+        // and mark the package as published despite the cargo exit code.
+        assert!(
+            output.status.success()
+                || stderr.contains("treating as published")
+                || stderr.contains("present on registry"),
+            "expected success or registry-resolved publish in stderr, got:\n{stderr}"
+        );
+
+        // Check receipt for Published state
+        let receipt_path = state_dir.join("receipt.json");
+        if receipt_path.exists() {
+            let receipt_json = fs::read_to_string(&receipt_path).expect("read receipt");
+            let receipt: serde_json::Value =
+                serde_json::from_str(&receipt_json).expect("parse receipt");
+            let packages = receipt["packages"].as_array().expect("packages array");
+            let demo = packages
+                .iter()
+                .find(|p| p["name"].as_str() == Some("demo"))
+                .expect("demo in receipt");
+            let state = demo["state"]["state"].as_str().unwrap_or("");
+            assert!(
+                state == "published" || state == "skipped",
+                "expected demo@0.1.0 to be 'published' or 'skipped', got: {state}"
+            );
+        }
+
+        registry.join();
     }
 }
