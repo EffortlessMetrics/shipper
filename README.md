@@ -129,6 +129,8 @@ Use `--state-dir <path>` to redirect these elsewhere (for example, a CI artifact
 - `--api-base <url>` — Registry API base URL (default: https://crates.io)
 - `--package <name>` — Restrict to specific packages (repeatable)
 - `--format <format>` — Output format: text (default) or json
+- `--verbose` — Show detailed output (e.g., dependency analysis for plan)
+- `-q` / `--quiet` — Suppress informational output
 
 ### State options
 
@@ -160,6 +162,8 @@ Use `--state-dir <path>` to redirect these elsewhere (for example, a CI artifact
 - `--max-attempts <number>` — Max attempts per crate publish step (default: 6)
 - `--base-delay <duration>` — Base backoff delay (default: 2s)
 - `--max-delay <duration>` — Max backoff delay (default: 2m)
+- `--retry-strategy <strategy>` — Retry strategy: immediate, exponential (default), linear, constant
+- `--retry-jitter <factor>` — Jitter factor for retry delays (0.0 = no jitter, 1.0 = full jitter; default: 0.5)
 - `--verify-timeout <duration>` — How long to wait for registry visibility after a successful publish (default: 2m)
 - `--verify-poll <duration>` — Poll interval for checking registry visibility (default: 5s)
 

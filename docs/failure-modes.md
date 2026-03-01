@@ -31,7 +31,9 @@ Matched case-insensitively in cargo output:
 ### Permanent patterns
 
 `failed to parse manifest`, `invalid`, `missing`, `license`, `description`,
-`could not compile`, `package is not allowed to be published`,
+`readme`, `repository`, `could not compile`, `compilation failed`,
+`failed to verify`, `package is not allowed to be published`,
+`publish is disabled`, `yanked`,
 `forbidden`, `permission denied`, `not authorized`, `unauthorized`,
 `version already exists`, `is already uploaded`, `token is invalid`,
 `invalid credentials`, `checksum mismatch`
@@ -87,8 +89,6 @@ In `.shipper.toml` you can set different retry parameters for each error class:
 ```toml
 [retry]
 policy = "custom"
-
-[retry.strategy]
 strategy = "exponential"
 max_attempts = 8
 base_delay = "3s"

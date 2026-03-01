@@ -13,7 +13,7 @@ jobs:
   check:
     executor:
       name: rust/default
-      tag: 1.75.0
+      tag: "latest"
     resource_class: medium
     steps:
       - checkout
@@ -66,7 +66,7 @@ jobs:
   publish:
     executor:
       name: rust/default
-      tag: 1.75.0
+      tag: "latest"
     resource_class: medium
     steps:
       - checkout
@@ -83,7 +83,7 @@ jobs:
 
       - run:
           name: Install Shipper
-          command: cargo install shipper-cli
+          command: cargo install shipper-cli --locked
 
       - run:
           name: Run shipper doctor
