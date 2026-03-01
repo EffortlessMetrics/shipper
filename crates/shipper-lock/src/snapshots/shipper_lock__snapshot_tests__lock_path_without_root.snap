@@ -1,0 +1,5 @@
+---
+source: crates/shipper-lock/src/lib.rs
+expression: "p.to_string_lossy().replace('\\\\', \"/\")"
+---
+.shipper/lock

@@ -628,3 +628,226 @@ mod property_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn dag_strategy() -> impl Strategy<Value = (Vec<String>, BTreeMap<String, Vec<String>>)> {
+        (1usize..12).prop_flat_map(|n| {
+            prop::collection::vec(any::<bool>(), n * n).prop_map(move |bits| {
+                let names: Vec<String> = (0..n).map(|i| format!("crate-{i}")).collect();
+                let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for i in 0..n {
+                    let mut d = Vec::new();
+                    for j in 0..i {
+                        if bits[i * n + j] {
+                            d.push(names[j].clone());
+                        }
+                    }
+                    deps.insert(names[i].clone(), d);
+                }
+                (names, deps)
+            })
+        })
+    }
+
+    fn cyclic_strategy() -> impl Strategy<Value = (Vec<String>, BTreeMap<String, Vec<String>>)> {
+        (2usize..10).prop_flat_map(|n| {
+            prop::collection::vec(any::<bool>(), n * n).prop_map(move |bits| {
+                let names: Vec<String> = (0..n).map(|i| format!("crate-{i}")).collect();
+                let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for i in 0..n {
+                    let mut d = Vec::new();
+                    for j in 0..n {
+                        if i != j && bits[i * n + j] {
+                            d.push(names[j].clone());
+                        }
+                    }
+                    deps.insert(names[i].clone(), d);
+                }
+                (names, deps)
+            })
+        })
+    }
+
+    fn dag_with_duplicates() -> impl Strategy<Value = (Vec<String>, BTreeMap<String, Vec<String>>)>
+    {
+        dag_strategy().prop_flat_map(|(names, deps)| {
+            let n = names.len();
+            prop::collection::vec(0..n, 0..n).prop_map(move |extra_indices| {
+                let mut extended = names.clone();
+                for idx in extra_indices {
+                    extended.push(names[idx].clone());
+                }
+                (extended, deps.clone())
+            })
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn level_count_bounded_by_package_count(
+            (names, deps) in dag_strategy(),
+        ) {
+            let levels = group_packages_by_levels(&names, |n| n.as_str(), &deps);
+            prop_assert!(levels.len() <= names.len());
+        }
+
+        #[test]
+        fn within_level_order_preserves_input_order(
+            (names, deps) in dag_strategy(),
+        ) {
+            let levels = group_packages_by_levels(&names, |n| n.as_str(), &deps);
+            let position: HashMap<String, usize> = names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.clone(), i))
+                .collect();
+            for level in &levels {
+                for pair in level.packages.windows(2) {
+                    let pos_a = position.get(&pair[0]).unwrap();
+                    let pos_b = position.get(&pair[1]).unwrap();
+                    prop_assert!(pos_a < pos_b,
+                        "within-level order violated: {} (pos {}) before {} (pos {})",
+                        pair[0], pos_a, pair[1], pos_b);
+                }
+            }
+        }
+
+        #[test]
+        fn all_independent_packages_land_at_level_zero(
+            names in prop::collection::vec("[a-z]{1,8}", 1..10),
+        ) {
+            let unique: Vec<String> = {
+                let mut seen = BTreeSet::new();
+                names.into_iter().filter(|n| seen.insert(n.clone())).collect()
+            };
+            let deps: BTreeMap<String, Vec<String>> = unique
+                .iter()
+                .map(|n| (n.clone(), Vec::new()))
+                .collect();
+            let levels = group_packages_by_levels(&unique, |n| n.as_str(), &deps);
+            prop_assert_eq!(levels.len(), 1);
+            prop_assert_eq!(levels[0].level, 0);
+            prop_assert_eq!(levels[0].packages.len(), unique.len());
+        }
+
+        #[test]
+        fn transitive_dependency_ordering(
+            (names, deps) in dag_strategy(),
+        ) {
+            let levels = group_packages_by_levels(&names, |n| n.as_str(), &deps);
+            let level_of: HashMap<String, usize> = levels
+                .iter()
+                .flat_map(|l| l.packages.iter().map(move |n| (n.clone(), l.level)))
+                .collect();
+            for (pkg, dep_list) in &deps {
+                if let Some(&pkg_lvl) = level_of.get(pkg) {
+                    for dep in dep_list {
+                        if let Some(&dep_lvl) = level_of.get(dep) {
+                            prop_assert!(dep_lvl < pkg_lvl,
+                                "{} (level {}) depends on {} (level {})",
+                                pkg, pkg_lvl, dep, dep_lvl);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn duplicates_in_input_still_produce_unique_output(
+            (names, deps) in dag_with_duplicates(),
+        ) {
+            let levels = group_packages_by_levels(&names, |n| n.as_str(), &deps);
+            let flat: Vec<String> = levels.iter().flat_map(|l| l.packages.clone()).collect();
+            let unique: BTreeSet<String> = names.iter().cloned().collect();
+            prop_assert_eq!(flat.len(), unique.len());
+            let flat_set: BTreeSet<String> = flat.into_iter().collect();
+            prop_assert_eq!(flat_set, unique);
+        }
+
+        #[test]
+        fn publish_level_clone_equals_original(
+            (names, deps) in dag_strategy(),
+        ) {
+            let levels = group_packages_by_levels(&names, |n| n.as_str(), &deps);
+            let cloned = levels.clone();
+            prop_assert_eq!(&levels, &cloned);
+        }
+
+        #[test]
+        fn cyclic_graphs_still_emit_all_packages_uniquely(
+            (names, deps) in cyclic_strategy(),
+        ) {
+            let levels = group_packages_by_levels(&names, |n| n.as_str(), &deps);
+            let flat: Vec<String> = levels.iter().flat_map(|l| l.packages.clone()).collect();
+            prop_assert_eq!(flat.len(), names.len());
+            let unique: BTreeSet<String> = flat.into_iter().collect();
+            prop_assert_eq!(unique.len(), names.len());
+        }
+
+        #[test]
+        fn removing_leaf_preserves_earlier_levels(
+            (names, deps) in dag_strategy(),
+        ) {
+            let depended_on: BTreeSet<String> = deps
+                .values()
+                .flat_map(|v| v.iter().cloned())
+                .collect();
+            let leaves: Vec<String> = names
+                .iter()
+                .filter(|n| !depended_on.contains(*n))
+                .cloned()
+                .collect();
+            if let Some(leaf) = leaves.last() {
+                let reduced_names: Vec<String> =
+                    names.iter().filter(|n| *n != leaf).cloned().collect();
+                let reduced_deps: BTreeMap<String, Vec<String>> = deps
+                    .iter()
+                    .filter(|(k, _)| *k != leaf)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let full_levels = group_packages_by_levels(&names, |n| n.as_str(), &deps);
+                let reduced_levels =
+                    group_packages_by_levels(&reduced_names, |n| n.as_str(), &reduced_deps);
+
+                let full_map: HashMap<String, usize> = full_levels
+                    .iter()
+                    .flat_map(|l| l.packages.iter().map(move |n| (n.clone(), l.level)))
+                    .collect();
+                let reduced_map: HashMap<String, usize> = reduced_levels
+                    .iter()
+                    .flat_map(|l| l.packages.iter().map(move |n| (n.clone(), l.level)))
+                    .collect();
+
+                for (pkg, &lvl) in &reduced_map {
+                    let &orig_lvl = full_map.get(pkg).unwrap();
+                    prop_assert_eq!(lvl, orig_lvl,
+                        "level of {} changed from {} to {} after removing leaf {}",
+                        pkg, orig_lvl, lvl, leaf);
+                }
+            }
+        }
+
+        #[test]
+        fn external_only_deps_yield_single_level(
+            names in prop::collection::vec("[a-z]{1,6}", 1..8),
+        ) {
+            let unique: Vec<String> = {
+                let mut seen = BTreeSet::new();
+                names.into_iter().filter(|n| seen.insert(n.clone())).collect()
+            };
+            let deps: BTreeMap<String, Vec<String>> = unique
+                .iter()
+                .map(|n| (n.clone(), vec!["external-dep".to_string()]))
+                .collect();
+            let levels = group_packages_by_levels(&unique, |n| n.as_str(), &deps);
+            prop_assert_eq!(levels.len(), 1);
+        }
+    }
+}

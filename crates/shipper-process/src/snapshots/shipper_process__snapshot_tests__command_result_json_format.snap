@@ -1,0 +1,9 @@
+---
+source: crates/shipper-process/src/lib.rs
+expression: json
+---
+duration_ms: 100
+exit_code: 0
+stderr: ""
+stdout: ok
+success: true

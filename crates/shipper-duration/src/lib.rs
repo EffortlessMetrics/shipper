@@ -112,3 +112,96 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    struct DurationHolder {
+        #[serde(
+            deserialize_with = "deserialize_duration",
+            serialize_with = "serialize_duration"
+        )]
+        value: Duration,
+    }
+
+    proptest! {
+        /// Human-readable formatting always produces a non-empty string.
+        #[test]
+        fn format_is_never_empty(ms in 0u64..10_000_000_000u64) {
+            let d = Duration::from_millis(ms);
+            let formatted = humantime::format_duration(d).to_string();
+            prop_assert!(!formatted.is_empty(), "formatted duration was empty for {ms}ms");
+        }
+
+        /// Formatting the same duration twice always yields the same string.
+        #[test]
+        fn format_consistency(ms in 0u64..10_000_000_000u64) {
+            let d = Duration::from_millis(ms);
+            let first = humantime::format_duration(d).to_string();
+            let second = humantime::format_duration(d).to_string();
+            prop_assert_eq!(first, second);
+        }
+
+        /// format → parse round-trip preserves the original duration.
+        #[test]
+        fn parse_format_roundtrip(ms in 0u64..10_000_000u64) {
+            let d = Duration::from_millis(ms);
+            let formatted = humantime::format_duration(d).to_string();
+            let parsed = parse_duration(&formatted).expect("should parse formatted duration");
+            prop_assert_eq!(parsed, d);
+        }
+
+        /// Sub-second durations mention "ms" in the formatted output.
+        #[test]
+        fn millisecond_range_contains_ms(ms in 1u64..1000u64) {
+            let d = Duration::from_millis(ms);
+            let formatted = humantime::format_duration(d).to_string();
+            prop_assert!(formatted.contains("ms"), "expected 'ms' in \"{formatted}\"");
+        }
+
+        /// Whole-second durations (< 1 min) mention "s" in the formatted output.
+        #[test]
+        fn seconds_range_contains_s(secs in 1u64..60u64) {
+            let d = Duration::from_secs(secs);
+            let formatted = humantime::format_duration(d).to_string();
+            prop_assert!(formatted.contains('s'), "expected 's' in \"{formatted}\"");
+        }
+
+        /// Whole-minute durations mention "m" in the formatted output.
+        #[test]
+        fn minutes_range_contains_m(mins in 1u64..60u64) {
+            let d = Duration::from_secs(mins * 60);
+            let formatted = humantime::format_duration(d).to_string();
+            prop_assert!(formatted.contains('m'), "expected 'm' in \"{formatted}\"");
+        }
+
+        /// Whole-hour durations mention "h" in the formatted output.
+        #[test]
+        fn hours_range_contains_h(hours in 1u64..24u64) {
+            let d = Duration::from_secs(hours * 3600);
+            let formatted = humantime::format_duration(d).to_string();
+            prop_assert!(formatted.contains('h'), "expected 'h' in \"{formatted}\"");
+        }
+
+        /// Serde JSON round-trip via integer millisecond representation.
+        #[test]
+        fn serde_json_u64_roundtrip(ms in 0u64..10_000_000_000u64) {
+            let json = format!(r#"{{"value":{ms}}}"#);
+            let holder: DurationHolder = serde_json::from_str(&json).expect("deserialize");
+            prop_assert_eq!(holder.value, Duration::from_millis(ms));
+        }
+
+        /// Serde TOML round-trip via human-readable string representation.
+        #[test]
+        fn serde_toml_string_roundtrip(ms in 1u64..10_000_000u64) {
+            let d = Duration::from_millis(ms);
+            let formatted = humantime::format_duration(d).to_string();
+            let toml_str = format!("value = \"{formatted}\"");
+            let holder: DurationHolder = toml::from_str(&toml_str).expect("toml deserialize");
+            prop_assert_eq!(holder.value, d);
+        }
+    }
+}

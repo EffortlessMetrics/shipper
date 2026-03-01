@@ -1,0 +1,5 @@
+---
+source: crates/shipper-store/src/lib.rs
+expression: err
+---
+invalid schema version format: 

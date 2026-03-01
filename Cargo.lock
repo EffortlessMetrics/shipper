@@ -2422,6 +2422,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "insta",
  "proptest",
  "serde",
  "serde_json",
@@ -2464,6 +2465,7 @@ name = "shipper-git"
 version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
+ "insta",
  "proptest",
  "serde",
  "serde_json",
@@ -2484,6 +2486,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "gethostname",
+ "insta",
  "proptest",
  "serde",
  "serde_json",
@@ -2530,6 +2533,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "humantime",
+ "insta",
  "proptest",
  "serde",
  "serde_json",
@@ -2610,6 +2614,7 @@ name = "shipper-storage"
 version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
+ "insta",
  "proptest",
  "serde",
  "serde_json",
@@ -2622,6 +2627,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "insta",
  "proptest",
  "serde",
  "serde_json",
@@ -2655,6 +2661,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "hmac",
+ "insta",
  "proptest",
  "reqwest",
  "serde",

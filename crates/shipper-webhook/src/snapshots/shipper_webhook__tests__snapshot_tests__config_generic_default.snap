@@ -1,0 +1,7 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+expression: json
+---
+timeout_secs: 30
+url: "https://example.com/webhook"
+webhook_type: Generic

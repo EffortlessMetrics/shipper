@@ -23,6 +23,7 @@ shipper-schema = { path = "../shipper-schema" }
 [dev-dependencies]
 tempfile = "3"
 proptest.workspace = true
+insta = { workspace = true }
 
 [lints]
 workspace = true

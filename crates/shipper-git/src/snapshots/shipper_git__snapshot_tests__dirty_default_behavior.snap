@@ -1,0 +1,6 @@
+---
+source: crates/shipper-git/src/lib.rs
+expression: result
+---
+dirty_field: ~
+is_dirty_result: true

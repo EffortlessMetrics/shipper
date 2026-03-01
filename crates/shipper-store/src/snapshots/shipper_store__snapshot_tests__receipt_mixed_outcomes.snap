@@ -1,0 +1,74 @@
+---
+source: crates/shipper-store/src/lib.rs
+expression: json
+---
+{
+  "receipt_version": "shipper.receipt.v2",
+  "plan_id": "plan-mixed",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io",
+    "index_base": "https://index.crates.io"
+  },
+  "started_at": "2025-01-15T12:00:00Z",
+  "finished_at": "2025-01-15T12:00:00Z",
+  "packages": [
+    {
+      "name": "core",
+      "version": "1.0.0",
+      "attempts": 1,
+      "state": {
+        "state": "published"
+      },
+      "started_at": "2025-01-15T12:00:00Z",
+      "finished_at": "2025-01-15T12:00:00Z",
+      "duration_ms": 2000,
+      "evidence": {
+        "attempts": [],
+        "readiness_checks": []
+      }
+    },
+    {
+      "name": "utils",
+      "version": "1.0.0",
+      "attempts": 0,
+      "state": {
+        "state": "skipped",
+        "reason": "already published"
+      },
+      "started_at": "2025-01-15T12:00:00Z",
+      "finished_at": "2025-01-15T12:00:00Z",
+      "duration_ms": 0,
+      "evidence": {
+        "attempts": [],
+        "readiness_checks": []
+      }
+    },
+    {
+      "name": "cli",
+      "version": "1.0.0",
+      "attempts": 3,
+      "state": {
+        "state": "failed",
+        "class": "retryable",
+        "message": "registry timeout after 3 attempts"
+      },
+      "started_at": "2025-01-15T12:00:00Z",
+      "finished_at": "2025-01-15T12:00:00Z",
+      "duration_ms": 45000,
+      "evidence": {
+        "attempts": [],
+        "readiness_checks": []
+      }
+    }
+  ],
+  "event_log_path": ".shipper/events.jsonl",
+  "git_context": null,
+  "environment": {
+    "shipper_version": "0.3.0",
+    "cargo_version": null,
+    "rust_version": null,
+    "os": "macos",
+    "arch": "aarch64"
+  }
+}

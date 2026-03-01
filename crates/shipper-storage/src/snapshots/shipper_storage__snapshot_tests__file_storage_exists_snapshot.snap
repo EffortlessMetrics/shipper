@@ -1,0 +1,8 @@
+---
+source: crates/shipper-storage/src/lib.rs
+expression: results
+---
+- - present.txt
+  - true
+- - absent.txt
+  - false

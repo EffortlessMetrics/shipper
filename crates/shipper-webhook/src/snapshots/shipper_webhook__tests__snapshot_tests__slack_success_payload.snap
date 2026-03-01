@@ -1,0 +1,18 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+expression: json
+---
+attachments:
+  - color: good
+    fields:
+      - short: true
+        title: Package
+        value: my-crate
+      - short: true
+        title: Version
+        value: 1.2.3
+      - short: true
+        title: Registry
+        value: crates-io
+    text: Successfully published my-crate@1.2.3
+    title: Package Published

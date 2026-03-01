@@ -1437,6 +1437,89 @@ per_package_timeout = "15m"
             let template = ShipperConfig::default_toml_template();
             insta::assert_snapshot!("default_toml_template", template);
         }
+
+        #[test]
+        fn snapshot_validation_error_zero_lock_timeout() {
+            let mut config = ShipperConfig::default();
+            config.lock.timeout = Duration::ZERO;
+            let err = config.validate().unwrap_err();
+            insta::assert_yaml_snapshot!("validation_error_zero_lock_timeout", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_validation_error_zero_per_package_timeout() {
+            let mut config = ShipperConfig::default();
+            config.parallel.per_package_timeout = Duration::ZERO;
+            let err = config.validate().unwrap_err();
+            insta::assert_yaml_snapshot!(
+                "validation_error_zero_per_package_timeout",
+                err.to_string()
+            );
+        }
+
+        #[test]
+        fn snapshot_validation_error_zero_readiness_timeout() {
+            let mut config = ShipperConfig::default();
+            config.readiness.max_total_wait = Duration::ZERO;
+            let err = config.validate().unwrap_err();
+            insta::assert_yaml_snapshot!(
+                "validation_error_zero_readiness_timeout",
+                err.to_string()
+            );
+        }
+
+        #[test]
+        fn snapshot_validation_error_zero_readiness_poll_interval() {
+            let mut config = ShipperConfig::default();
+            config.readiness.poll_interval = Duration::ZERO;
+            let err = config.validate().unwrap_err();
+            insta::assert_yaml_snapshot!(
+                "validation_error_zero_readiness_poll_interval",
+                err.to_string()
+            );
+        }
+
+        #[test]
+        fn snapshot_merge_cli_overrides_file_values() {
+            let config = ShipperConfig {
+                policy: PolicyConfig {
+                    mode: PublishPolicy::Safe,
+                },
+                retry: RetryConfig {
+                    policy: RetryPolicy::Custom,
+                    max_attempts: 3,
+                    base_delay: Duration::from_secs(2),
+                    max_delay: Duration::from_secs(60),
+                    strategy: RetryStrategyType::Exponential,
+                    jitter: 0.1,
+                    per_error: PerErrorConfig::default(),
+                },
+                output: OutputConfig { lines: 50 },
+                lock: LockConfig {
+                    timeout: Duration::from_secs(1800),
+                },
+                parallel: ParallelConfig {
+                    enabled: false,
+                    max_concurrent: 4,
+                    per_package_timeout: Duration::from_secs(600),
+                },
+                ..ShipperConfig::default()
+            };
+
+            let cli = CliOverrides {
+                policy: Some(PublishPolicy::Fast),
+                max_attempts: Some(10),
+                output_lines: Some(200),
+                lock_timeout: Some(Duration::from_secs(7200)),
+                parallel_enabled: true,
+                max_concurrent: Some(8),
+                allow_dirty: true,
+                ..CliOverrides::default()
+            };
+
+            let merged = config.build_runtime_options(cli);
+            insta::assert_debug_snapshot!("merge_cli_overrides_file_values", merged);
+        }
     }
 
     #[cfg(test)]

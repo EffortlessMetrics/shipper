@@ -1011,6 +1011,183 @@ mod tests {
         assert!(err_msg.contains("403"));
     }
 
+    // --- Snapshot tests (insta) ---
+
+    mod snapshot_tests {
+        use super::*;
+
+        // -- Webhook payload JSON structure for different event types --
+
+        #[test]
+        fn generic_success_payload_json() {
+            let payload = publish_success_payload("my-crate", "1.2.3", "crates-io");
+            let json: serde_json::Value = serde_json::to_value(&payload).unwrap();
+            insta::assert_yaml_snapshot!("generic_success_payload", json);
+        }
+
+        #[test]
+        fn generic_failure_payload_json() {
+            let payload =
+                publish_failure_payload("my-crate", "1.2.3", "timeout waiting for registry");
+            let json: serde_json::Value = serde_json::to_value(&payload).unwrap();
+            insta::assert_yaml_snapshot!("generic_failure_payload", json);
+        }
+
+        #[test]
+        fn slack_success_payload_json() {
+            let payload = publish_success_payload("my-crate", "1.2.3", "crates-io");
+            let body = slack_payload(&payload).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            insta::assert_yaml_snapshot!("slack_success_payload", json);
+        }
+
+        #[test]
+        fn slack_failure_payload_json() {
+            let payload = publish_failure_payload("my-crate", "1.2.3", "network error");
+            let body = slack_payload(&payload).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            insta::assert_yaml_snapshot!("slack_failure_payload", json);
+        }
+
+        #[test]
+        fn discord_success_payload_json() {
+            let payload = publish_success_payload("my-crate", "1.2.3", "crates-io");
+            let body = discord_payload(&payload).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            insta::assert_yaml_snapshot!("discord_success_payload", json);
+        }
+
+        #[test]
+        fn discord_failure_payload_json() {
+            let payload = publish_failure_payload("my-crate", "1.2.3", "network error");
+            let body = discord_payload(&payload).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            insta::assert_yaml_snapshot!("discord_failure_payload", json);
+        }
+
+        #[test]
+        fn generic_minimal_payload_json() {
+            let payload = WebhookPayload {
+                message: "hello".to_string(),
+                success: true,
+                ..Default::default()
+            };
+            let json: serde_json::Value = serde_json::to_value(&payload).unwrap();
+            insta::assert_yaml_snapshot!("generic_minimal_payload", json);
+        }
+
+        #[test]
+        fn generic_payload_with_extra_fields() {
+            let mut extra = std::collections::BTreeMap::new();
+            extra.insert("ci".to_string(), serde_json::json!("github-actions"));
+            extra.insert("run_id".to_string(), serde_json::json!(42));
+            let payload = WebhookPayload {
+                message: "deployed".to_string(),
+                title: Some("Deploy".to_string()),
+                success: true,
+                package: Some("my-crate".to_string()),
+                version: Some("1.0.0".to_string()),
+                registry: Some("crates-io".to_string()),
+                error: None,
+                extra,
+            };
+            let json: serde_json::Value = serde_json::to_value(&payload).unwrap();
+            insta::assert_yaml_snapshot!("generic_payload_with_extras", json);
+        }
+
+        // -- Webhook configuration serialization --
+
+        #[test]
+        fn config_generic_default() {
+            let config = WebhookConfig {
+                url: "https://example.com/webhook".to_string(),
+                ..Default::default()
+            };
+            let json: serde_json::Value = serde_json::to_value(&config).unwrap();
+            insta::assert_yaml_snapshot!("config_generic_default", json);
+        }
+
+        #[test]
+        fn config_slack_with_secret() {
+            let config = WebhookConfig {
+                url: "https://hooks.slack.com/services/T00/B00/xxx".to_string(),
+                webhook_type: WebhookType::Slack,
+                secret: Some("s3cret-key".to_string()),
+                timeout_secs: 10,
+            };
+            let json: serde_json::Value = serde_json::to_value(&config).unwrap();
+            insta::assert_yaml_snapshot!("config_slack_with_secret", json);
+        }
+
+        #[test]
+        fn config_discord_no_secret() {
+            let config = WebhookConfig {
+                url: "https://discord.com/api/webhooks/123/abc".to_string(),
+                webhook_type: WebhookType::Discord,
+                secret: None,
+                timeout_secs: 60,
+            };
+            let json: serde_json::Value = serde_json::to_value(&config).unwrap();
+            insta::assert_yaml_snapshot!("config_discord_no_secret", json);
+        }
+
+        // -- Error message formatting for delivery failures --
+
+        #[test]
+        fn error_webhook_status_500() {
+            let err = anyhow::anyhow!(
+                "webhook request failed with status 500 Internal Server Error: internal error"
+            );
+            insta::assert_snapshot!("error_status_500", err.to_string());
+        }
+
+        #[test]
+        fn error_webhook_status_403() {
+            let err = anyhow::anyhow!("webhook request failed with status 403 Forbidden: bad");
+            insta::assert_snapshot!("error_status_403", err.to_string());
+        }
+
+        #[test]
+        fn error_send_failure() {
+            let inner =
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused");
+            let err = anyhow::Error::new(inner).context("failed to send webhook request");
+            insta::assert_snapshot!("error_send_failure", err.to_string());
+        }
+
+        // -- URL validation error messages --
+
+        #[test]
+        fn error_invalid_url() {
+            let config = WebhookConfig {
+                url: "not-a-url".to_string(),
+                timeout_secs: 1,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+            let err = send_webhook(&config, &payload).unwrap_err();
+            insta::assert_snapshot!("error_invalid_url", err.to_string());
+        }
+
+        #[test]
+        fn error_connection_refused() {
+            let config = WebhookConfig {
+                url: "http://127.0.0.1:1/webhook".to_string(),
+                timeout_secs: 1,
+                ..Default::default()
+            };
+            let payload = WebhookPayload {
+                message: "test".to_string(),
+                ..Default::default()
+            };
+            let err = send_webhook(&config, &payload).unwrap_err();
+            insta::assert_snapshot!("error_connection_refused", err.to_string());
+        }
+    }
+
     // --- Property-based tests (proptest) ---
 
     mod prop {

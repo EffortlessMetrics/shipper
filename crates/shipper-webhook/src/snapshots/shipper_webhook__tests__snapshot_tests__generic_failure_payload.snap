@@ -1,0 +1,10 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+expression: json
+---
+error: timeout waiting for registry
+message: Failed to publish my-crate@1.2.3
+package: my-crate
+success: false
+title: Publish Failed
+version: 1.2.3

@@ -1,0 +1,5 @@
+---
+source: crates/shipper-lock/src/lib.rs
+expression: "\"lock file does not exist\""
+---
+lock file does not exist

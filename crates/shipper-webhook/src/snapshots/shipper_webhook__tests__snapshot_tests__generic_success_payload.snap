@@ -1,0 +1,10 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+expression: json
+---
+message: Successfully published my-crate@1.2.3
+package: my-crate
+registry: crates-io
+success: true
+title: Package Published
+version: 1.2.3

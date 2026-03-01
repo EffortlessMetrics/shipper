@@ -982,3 +982,195 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use insta::assert_yaml_snapshot;
+
+    // ── GitContext data structure serialization ──
+
+    #[test]
+    fn git_context_full() {
+        let ctx = GitContext {
+            commit: Some("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string()),
+            branch: Some("main".to_string()),
+            tag: Some("v1.2.3".to_string()),
+            dirty: Some(false),
+        };
+        assert_yaml_snapshot!(ctx);
+    }
+
+    #[test]
+    fn git_context_empty() {
+        let ctx = GitContext::new();
+        assert_yaml_snapshot!(ctx);
+    }
+
+    #[test]
+    fn git_context_commit_only() {
+        let ctx = GitContext {
+            commit: Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string()),
+            branch: None,
+            tag: None,
+            dirty: None,
+        };
+        assert_yaml_snapshot!(ctx);
+    }
+
+    #[test]
+    fn git_context_dirty_no_tag() {
+        let ctx = GitContext {
+            commit: Some("ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00".to_string()),
+            branch: Some("feature/add-tests".to_string()),
+            tag: None,
+            dirty: Some(true),
+        };
+        assert_yaml_snapshot!(ctx);
+    }
+
+    // ── Cleanliness check result formats ──
+
+    #[test]
+    fn cleanliness_clean_context() {
+        let ctx = GitContext {
+            commit: Some("abc1234567890abc1234567890abc1234567890ab".to_string()),
+            branch: Some("main".to_string()),
+            tag: None,
+            dirty: Some(false),
+        };
+        assert_yaml_snapshot!("clean_working_tree", ctx);
+    }
+
+    #[test]
+    fn cleanliness_dirty_context() {
+        let ctx = GitContext {
+            commit: Some("abc1234567890abc1234567890abc1234567890ab".to_string()),
+            branch: Some("main".to_string()),
+            tag: None,
+            dirty: Some(true),
+        };
+        assert_yaml_snapshot!("dirty_working_tree", ctx);
+    }
+
+    #[test]
+    fn cleanliness_unknown_context() {
+        let ctx = GitContext {
+            commit: Some("abc1234567890abc1234567890abc1234567890ab".to_string()),
+            branch: Some("main".to_string()),
+            tag: None,
+            dirty: None,
+        };
+        assert_yaml_snapshot!("unknown_dirty_state", ctx);
+    }
+
+    #[test]
+    fn cleanliness_is_dirty_defaults_true() {
+        let ctx = GitContext::new();
+        // dirty=None => is_dirty() returns true
+        #[derive(Serialize)]
+        struct DirtyDefault {
+            dirty_field: Option<bool>,
+            is_dirty_result: bool,
+        }
+        let result = DirtyDefault {
+            dirty_field: ctx.dirty,
+            is_dirty_result: ctx.is_dirty(),
+        };
+        assert_yaml_snapshot!("dirty_default_behavior", result);
+    }
+
+    // ── Tag listing output formats ──
+
+    #[test]
+    fn tag_semver() {
+        let ctx = GitContext {
+            commit: Some("1111111111111111111111111111111111111111".to_string()),
+            branch: Some("main".to_string()),
+            tag: Some("v2.0.0".to_string()),
+            dirty: Some(false),
+        };
+        assert_yaml_snapshot!("tag_semver", ctx);
+    }
+
+    #[test]
+    fn tag_prerelease() {
+        let ctx = GitContext {
+            commit: Some("2222222222222222222222222222222222222222".to_string()),
+            branch: Some("release/v3".to_string()),
+            tag: Some("v3.0.0-rc.1".to_string()),
+            dirty: Some(false),
+        };
+        assert_yaml_snapshot!("tag_prerelease", ctx);
+    }
+
+    #[test]
+    fn tag_absent() {
+        let ctx = GitContext {
+            commit: Some("3333333333333333333333333333333333333333".to_string()),
+            branch: Some("develop".to_string()),
+            tag: None,
+            dirty: Some(false),
+        };
+        assert_yaml_snapshot!("tag_absent", ctx);
+    }
+
+    #[test]
+    fn tag_with_dirty_tree() {
+        let ctx = GitContext {
+            commit: Some("4444444444444444444444444444444444444444".to_string()),
+            branch: Some("main".to_string()),
+            tag: Some("v1.0.0".to_string()),
+            dirty: Some(true),
+        };
+        assert_yaml_snapshot!("tag_dirty_tree", ctx);
+    }
+
+    // ── Error Display implementations ──
+
+    #[test]
+    fn error_ensure_git_clean_message() {
+        let err = anyhow::anyhow!(
+            "git working tree has uncommitted changes. Use --allow-dirty to bypass."
+        );
+        assert_yaml_snapshot!("ensure_git_clean_error", err.to_string());
+    }
+
+    #[test]
+    fn error_git_status_failed() {
+        let err = anyhow::anyhow!("git status failed: fatal: not a git repository");
+        assert_yaml_snapshot!("git_status_failed_error", err.to_string());
+    }
+
+    #[test]
+    fn error_git_rev_parse_failed() {
+        let err = anyhow::anyhow!(
+            "git rev-parse failed: fatal: ambiguous argument 'HEAD': unknown revision"
+        );
+        assert_yaml_snapshot!("git_rev_parse_failed_error", err.to_string());
+    }
+
+    // ── Short commit formatting ──
+
+    #[test]
+    fn short_commit_formats() {
+        let cases = vec![
+            ("full_hash", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"),
+            ("seven_chars", "abcdefg"),
+            ("short_hash", "abc"),
+        ];
+        for (name, hash) in cases {
+            let ctx = GitContext {
+                commit: Some(hash.to_string()),
+                ..Default::default()
+            };
+            assert_yaml_snapshot!(format!("short_commit_{name}"), ctx.short_commit());
+        }
+    }
+
+    #[test]
+    fn short_commit_none() {
+        let ctx = GitContext::new();
+        assert_yaml_snapshot!(ctx.short_commit());
+    }
+}

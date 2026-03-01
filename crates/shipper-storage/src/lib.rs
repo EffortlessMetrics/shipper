@@ -758,3 +758,299 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use insta::assert_yaml_snapshot;
+    use std::str::FromStr;
+    use tempfile::tempdir;
+
+    // --- StorageType display & serialization ---
+
+    #[test]
+    fn storage_type_display_all() {
+        let displays: Vec<String> = [
+            StorageType::File,
+            StorageType::S3,
+            StorageType::Gcs,
+            StorageType::Azure,
+        ]
+        .iter()
+        .map(|t| t.to_string())
+        .collect();
+        assert_yaml_snapshot!(displays);
+    }
+
+    #[test]
+    fn storage_type_serde_roundtrip() {
+        let types = vec![
+            StorageType::File,
+            StorageType::S3,
+            StorageType::Gcs,
+            StorageType::Azure,
+        ];
+        assert_yaml_snapshot!(types);
+    }
+
+    #[test]
+    fn storage_type_default() {
+        assert_yaml_snapshot!(StorageType::default());
+    }
+
+    #[test]
+    fn storage_type_from_str_aliases() {
+        let cases: Vec<(&str, String)> = vec!["file", "local", "s3", "gcs", "gs", "azure", "blob"]
+            .into_iter()
+            .map(|s| (s, StorageType::from_str(s).unwrap().to_string()))
+            .collect();
+        assert_yaml_snapshot!(cases);
+    }
+
+    #[test]
+    fn storage_type_from_str_error() {
+        let err = StorageType::from_str("ftp").unwrap_err();
+        assert_yaml_snapshot!(err.to_string());
+    }
+
+    // --- CloudStorageConfig serialization ---
+
+    #[test]
+    fn cloud_config_s3_full() {
+        let config = CloudStorageConfig::s3("my-releases")
+            .with_region("eu-west-1")
+            .with_base_path("shipper/state")
+            .with_endpoint("https://s3.custom.example.com")
+            .with_credentials("AKIAEXAMPLE", "secret-key")
+            .with_session_token("session-tok");
+        assert_yaml_snapshot!(config);
+    }
+
+    #[test]
+    fn cloud_config_minimal_file() {
+        let config = CloudStorageConfig::file(".shipper");
+        assert_yaml_snapshot!(config);
+    }
+
+    #[test]
+    fn cloud_config_gcs() {
+        let config = CloudStorageConfig::gcs("gcs-bucket").with_region("us-central1");
+        assert_yaml_snapshot!(config);
+    }
+
+    #[test]
+    fn cloud_config_azure() {
+        let config = CloudStorageConfig::azure("my-container").with_base_path("releases/v1");
+        assert_yaml_snapshot!(config);
+    }
+
+    #[test]
+    fn cloud_config_default() {
+        assert_yaml_snapshot!(CloudStorageConfig::default());
+    }
+
+    // --- CloudStorageConfig full_path ---
+
+    #[test]
+    fn cloud_config_full_path_variants() {
+        let results: Vec<(&str, &str, String)> = vec![
+            (
+                "prefix",
+                "state.json",
+                CloudStorageConfig::s3("b")
+                    .with_base_path("prefix")
+                    .full_path("state.json"),
+            ),
+            (
+                "prefix/",
+                "state.json",
+                CloudStorageConfig::s3("b")
+                    .with_base_path("prefix/")
+                    .full_path("state.json"),
+            ),
+            (
+                "",
+                "state.json",
+                CloudStorageConfig::s3("b").full_path("state.json"),
+            ),
+            (
+                "a/b/c",
+                "d.json",
+                CloudStorageConfig::s3("b")
+                    .with_base_path("a/b/c")
+                    .full_path("d.json"),
+            ),
+        ];
+        assert_yaml_snapshot!(results);
+    }
+
+    // --- CloudStorageConfig validation ---
+
+    #[test]
+    fn cloud_config_validate_errors() {
+        let cases: Vec<(&str, String)> = vec![
+            (
+                "s3_empty_bucket",
+                CloudStorageConfig::s3("")
+                    .validate()
+                    .unwrap_err()
+                    .to_string(),
+            ),
+            (
+                "gcs_empty_bucket",
+                CloudStorageConfig::gcs("")
+                    .validate()
+                    .unwrap_err()
+                    .to_string(),
+            ),
+            (
+                "azure_empty_bucket",
+                CloudStorageConfig::azure("")
+                    .validate()
+                    .unwrap_err()
+                    .to_string(),
+            ),
+        ];
+        assert_yaml_snapshot!(cases);
+    }
+
+    #[test]
+    fn cloud_config_validate_file_always_ok() {
+        let result = CloudStorageConfig::file("").validate().is_ok();
+        assert_yaml_snapshot!(result);
+    }
+
+    // --- build_storage_backend errors ---
+
+    #[test]
+    fn build_backend_unimplemented_errors() {
+        let s3_err = build_storage_backend(&CloudStorageConfig::s3("bucket"))
+            .err()
+            .expect("expected error")
+            .to_string();
+        let gcs_err = build_storage_backend(&CloudStorageConfig::gcs("bucket"))
+            .err()
+            .expect("expected error")
+            .to_string();
+        let azure_err = build_storage_backend(&CloudStorageConfig::azure("container"))
+            .err()
+            .expect("expected error")
+            .to_string();
+        let errors: Vec<(&str, String)> =
+            vec![("s3", s3_err), ("gcs", gcs_err), ("azure", azure_err)];
+        assert_yaml_snapshot!(errors);
+    }
+
+    #[test]
+    fn build_backend_file_type() {
+        let backend = build_storage_backend(&CloudStorageConfig::file("/tmp/test")).unwrap();
+        assert_yaml_snapshot!(backend.storage_type());
+    }
+
+    // --- FileStorage operations ---
+
+    #[test]
+    fn file_storage_read_missing_error() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+        let err = storage.read("nonexistent.txt").unwrap_err();
+        // Snapshot only the prefix to avoid platform-specific path details
+        let msg = err.to_string();
+        let stable = msg.split(':').next().unwrap_or(&msg).to_string();
+        assert_yaml_snapshot!(stable);
+    }
+
+    #[test]
+    fn file_storage_write_read_snapshot() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage.write("data.json", br#"{"key":"value"}"#).unwrap();
+        let content = String::from_utf8(storage.read("data.json").unwrap()).unwrap();
+        assert_yaml_snapshot!(content);
+    }
+
+    #[test]
+    fn file_storage_list_sorted() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        storage.write("c.txt", b"c").unwrap();
+        storage.write("a.txt", b"a").unwrap();
+        storage.write("b.txt", b"b").unwrap();
+        storage.write("sub/d.txt", b"d").unwrap();
+
+        let mut files = storage.list("").unwrap();
+        files.sort();
+        assert_yaml_snapshot!(files);
+    }
+
+    #[test]
+    fn file_storage_list_empty_dir() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+
+        let files = storage.list("nonexistent").unwrap();
+        assert_yaml_snapshot!(files);
+    }
+
+    #[test]
+    fn file_storage_exists_snapshot() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+        storage.write("present.txt", b"yes").unwrap();
+
+        let results: Vec<(&str, bool)> = vec![
+            ("present.txt", storage.exists("present.txt").unwrap()),
+            ("absent.txt", storage.exists("absent.txt").unwrap()),
+        ];
+        assert_yaml_snapshot!(results);
+    }
+
+    #[test]
+    fn file_storage_copy_and_mv() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+        storage.write("src.txt", b"payload").unwrap();
+
+        storage.copy("src.txt", "copied.txt").unwrap();
+        storage.mv("src.txt", "moved.txt").unwrap();
+
+        let state: Vec<(&str, bool)> = vec![
+            ("src.txt", storage.exists("src.txt").unwrap()),
+            ("copied.txt", storage.exists("copied.txt").unwrap()),
+            ("moved.txt", storage.exists("moved.txt").unwrap()),
+        ];
+        let copied_content = String::from_utf8(storage.read("copied.txt").unwrap()).unwrap();
+        let moved_content = String::from_utf8(storage.read("moved.txt").unwrap()).unwrap();
+
+        assert_yaml_snapshot!("file_state", state);
+        assert_yaml_snapshot!("copied_content", copied_content);
+        assert_yaml_snapshot!("moved_content", moved_content);
+    }
+
+    #[test]
+    fn file_storage_metadata() {
+        let td = tempdir().expect("tempdir");
+        let storage = FileStorage::new(td.path().to_path_buf());
+        let meta = (
+            storage.storage_type().to_string(),
+            storage.bucket().to_string(),
+        );
+        assert_yaml_snapshot!(meta);
+    }
+
+    // --- JSON roundtrip for CloudStorageConfig ---
+
+    #[test]
+    fn cloud_config_json_roundtrip() {
+        let config = CloudStorageConfig::s3("my-bucket")
+            .with_region("ap-southeast-1")
+            .with_base_path("releases");
+
+        let json = serde_json::to_string_pretty(&config).unwrap();
+        let parsed: CloudStorageConfig = serde_json::from_str(&json).unwrap();
+        assert_yaml_snapshot!("json_output", json);
+        assert_yaml_snapshot!("parsed_back", parsed);
+    }
+}

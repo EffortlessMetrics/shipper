@@ -1,0 +1,16 @@
+---
+source: crates/shipper-storage/src/lib.rs
+expression: results
+---
+- - prefix
+  - state.json
+  - prefix/state.json
+- - "prefix/"
+  - state.json
+  - prefix/state.json
+- - ""
+  - state.json
+  - state.json
+- - a/b/c
+  - d.json
+  - a/b/c/d.json

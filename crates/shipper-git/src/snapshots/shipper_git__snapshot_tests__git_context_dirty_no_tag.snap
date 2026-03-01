@@ -1,0 +1,8 @@
+---
+source: crates/shipper-git/src/lib.rs
+expression: ctx
+---
+commit: ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00
+branch: feature/add-tests
+tag: ~
+dirty: true

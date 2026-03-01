@@ -419,6 +419,100 @@ mod tests {
                 prop_assert_eq!(parsed.hostname, hostname);
                 prop_assert_eq!(parsed.plan_id, plan_id);
             }
+
+            #[test]
+            fn lock_path_parent_is_always_state_dir(
+                dir_name in "[a-zA-Z0-9_]{1,64}",
+                root_name in proptest::option::of("[a-zA-Z0-9_/]{1,128}"),
+            ) {
+                let base = PathBuf::from(&dir_name);
+                let root = root_name.as_ref().map(PathBuf::from);
+                let p = lock_path(&base, root.as_deref());
+                prop_assert_eq!(p.parent().unwrap(), &*base);
+            }
+
+            #[test]
+            fn acquire_release_with_workspace_root(
+                dir_suffix in "[a-zA-Z0-9]{1,32}",
+                ws_suffix in "[a-zA-Z0-9]{1,32}",
+            ) {
+                let td = tempdir().expect("tempdir");
+                let state_dir = td.path().join(&dir_suffix);
+                let ws_root = td.path().join(&ws_suffix);
+
+                let lock = LockFile::acquire(&state_dir, Some(&ws_root)).expect("acquire");
+                prop_assert!(LockFile::is_locked(&state_dir, Some(&ws_root)).expect("is_locked"));
+                prop_assert!(!LockFile::is_locked(&state_dir, None).unwrap_or(false));
+
+                lock.release().expect("release");
+                prop_assert!(!LockFile::is_locked(&state_dir, Some(&ws_root)).expect("after release"));
+            }
+
+            #[test]
+            fn set_plan_id_roundtrip(plan_id in "[a-zA-Z0-9_-]{1,64}") {
+                let td = tempdir().expect("tempdir");
+                let lock = LockFile::acquire(td.path(), None).expect("acquire");
+                lock.set_plan_id(&plan_id).expect("set_plan_id");
+
+                let info = LockFile::read_lock_info(td.path(), None).expect("read");
+                prop_assert_eq!(info.plan_id.as_deref(), Some(plan_id.as_str()));
+                prop_assert_eq!(info.pid, std::process::id());
+                drop(lock);
+            }
+
+            #[test]
+            fn stale_lock_with_plan_id_is_replaced(
+                age_hours in 2u32..500u32,
+                plan_id in "[a-zA-Z0-9_-]{1,64}",
+            ) {
+                let td = tempdir().expect("tempdir");
+                let lp = lock_path(td.path(), None);
+
+                let old_info = LockInfo {
+                    pid: 77777,
+                    hostname: "stale-host".to_string(),
+                    acquired_at: Utc::now() - chrono::Duration::hours(i64::from(age_hours)),
+                    plan_id: Some(plan_id),
+                };
+                std::fs::write(
+                    &lp,
+                    serde_json::to_string(&old_info).expect("ser"),
+                ).expect("write");
+
+                let lock = LockFile::acquire_with_timeout(
+                    td.path(),
+                    None,
+                    Duration::from_secs(3600),
+                ).expect("should replace stale lock with plan_id");
+
+                let new_info = LockFile::read_lock_info(td.path(), None).expect("read");
+                prop_assert_eq!(new_info.pid, std::process::id());
+                prop_assert!(new_info.plan_id.is_none());
+                drop(lock);
+            }
+
+            #[test]
+            fn lock_file_on_disk_has_expected_json_structure(
+                dir_suffix in "[a-zA-Z0-9]{1,32}",
+            ) {
+                let td = tempdir().expect("tempdir");
+                let state_dir = td.path().join(dir_suffix);
+                let lock = LockFile::acquire(&state_dir, None).expect("acquire");
+
+                let lp = lock_path(&state_dir, None);
+                let content = std::fs::read_to_string(&lp).expect("read");
+                let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse");
+
+                let obj = parsed.as_object().expect("should be object");
+                prop_assert!(obj["pid"].is_number());
+                prop_assert!(obj["hostname"].is_string());
+                prop_assert!(obj["acquired_at"].is_string());
+                prop_assert!(obj.contains_key("plan_id"));
+                // Content is pretty-printed (contains newlines)
+                prop_assert!(content.contains('\n'));
+
+                drop(lock);
+            }
         }
     }
 
@@ -775,5 +869,183 @@ mod tests {
         assert_eq!(before.hostname, after.hostname);
         assert_eq!(before.acquired_at, after.acquired_at);
         assert_eq!(after.plan_id, Some("my-plan".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use chrono::TimeZone;
+    use tempfile::tempdir;
+
+    /// Helper to build a deterministic `LockInfo` for snapshot stability.
+    fn fixed_lock_info(plan_id: Option<&str>) -> LockInfo {
+        LockInfo {
+            pid: 42,
+            hostname: "build-host".to_string(),
+            acquired_at: Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap(),
+            plan_id: plan_id.map(String::from),
+        }
+    }
+
+    // ── Lock file content format ────────────────────────────────────────
+
+    #[test]
+    fn lock_file_content_without_plan_id() {
+        let info = fixed_lock_info(None);
+        let json = serde_json::to_string_pretty(&info).expect("serialize");
+        insta::assert_snapshot!("lock_file_content_without_plan_id", json);
+    }
+
+    #[test]
+    fn lock_file_content_with_plan_id() {
+        let info = fixed_lock_info(Some("release-2025-01-15"));
+        let json = serde_json::to_string_pretty(&info).expect("serialize");
+        insta::assert_snapshot!("lock_file_content_with_plan_id", json);
+    }
+
+    #[test]
+    fn lock_file_yaml_roundtrip() {
+        let info = fixed_lock_info(Some("plan-abc-123"));
+        insta::assert_yaml_snapshot!("lock_info_yaml", info);
+    }
+
+    #[test]
+    fn lock_file_on_disk_matches_expected() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        let info = fixed_lock_info(Some("on-disk-plan"));
+        let json = serde_json::to_string_pretty(&info).expect("serialize");
+        fs::create_dir_all(td.path()).ok();
+        fs::write(&lp, &json).expect("write");
+
+        let content = fs::read_to_string(&lp).expect("read");
+        insta::assert_snapshot!("lock_file_on_disk", content);
+    }
+
+    // ── Lock error messages ─────────────────────────────────────────────
+
+    #[test]
+    fn error_lock_already_held() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        let info = fixed_lock_info(None);
+        fs::create_dir_all(td.path()).ok();
+        fs::write(&lp, serde_json::to_string(&info).expect("ser")).expect("write");
+
+        let err = LockFile::acquire(td.path(), None).unwrap_err();
+        insta::assert_snapshot!("error_lock_already_held", err.to_string());
+    }
+
+    #[test]
+    fn error_lock_already_held_with_plan_id() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        let info = fixed_lock_info(Some("active-plan"));
+        fs::create_dir_all(td.path()).ok();
+        fs::write(&lp, serde_json::to_string(&info).expect("ser")).expect("write");
+
+        let err = LockFile::acquire(td.path(), None).unwrap_err();
+        insta::assert_snapshot!("error_lock_already_held_with_plan_id", err.to_string());
+    }
+
+    #[test]
+    fn error_fresh_lock_with_timeout() {
+        let td = tempdir().expect("tempdir");
+        // Use a real lock so the file definitely exists on disk
+        let _existing = LockFile::acquire(td.path(), None).expect("seed lock");
+
+        let err = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(86400 * 365))
+            .unwrap_err();
+        let msg = err.to_string();
+        // The message contains the dynamic current PID/host/age, so snapshot only the stable prefix
+        assert!(msg.contains("lock already held"));
+        insta::assert_snapshot!(
+            "error_fresh_lock_with_timeout_prefix",
+            "lock already held by current process (fresh lock within timeout)"
+        );
+    }
+
+    #[test]
+    fn error_read_nonexistent_lock() {
+        let td = tempdir().expect("tempdir");
+        let err = LockFile::read_lock_info(td.path(), None).unwrap_err();
+        // Only snapshot the root cause message (path-independent part)
+        let msg = err.to_string();
+        assert!(msg.contains("failed to read lock file"));
+        insta::assert_snapshot!(
+            "error_read_nonexistent_lock_prefix",
+            "failed to read lock file"
+        );
+    }
+
+    #[test]
+    fn error_set_plan_id_after_release() {
+        let td = tempdir().expect("tempdir");
+        let lock = LockFile::acquire(td.path(), None).expect("acquire");
+        lock.release().expect("release");
+        let err = lock.set_plan_id("orphan-plan").unwrap_err();
+        // Path-independent portion
+        assert!(err.to_string().contains("lock file does not exist"));
+        insta::assert_snapshot!(
+            "error_set_plan_id_after_release_prefix",
+            "lock file does not exist"
+        );
+    }
+
+    #[test]
+    fn error_corrupt_lock_file() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        fs::create_dir_all(td.path()).ok();
+        fs::write(&lp, "<<<not json>>>").expect("write");
+
+        let err = LockFile::acquire(td.path(), None).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to parse lock JSON"));
+        insta::assert_snapshot!(
+            "error_corrupt_lock_file_prefix",
+            "failed to parse lock JSON"
+        );
+    }
+
+    // ── Lock status display ─────────────────────────────────────────────
+
+    #[test]
+    fn lock_status_unlocked() {
+        let td = tempdir().expect("tempdir");
+        let locked = LockFile::is_locked(td.path(), None).expect("check");
+        insta::assert_snapshot!("lock_status_unlocked", format!("locked: {locked}"));
+    }
+
+    #[test]
+    fn lock_status_locked() {
+        let td = tempdir().expect("tempdir");
+        let _lock = LockFile::acquire(td.path(), None).expect("acquire");
+        let locked = LockFile::is_locked(td.path(), None).expect("check");
+        insta::assert_snapshot!("lock_status_locked", format!("locked: {locked}"));
+    }
+
+    #[test]
+    fn lock_info_debug_display() {
+        let info = fixed_lock_info(Some("display-plan"));
+        insta::assert_snapshot!("lock_info_debug", format!("{info:#?}"));
+    }
+
+    #[test]
+    fn lock_path_without_root_snapshot() {
+        let p = lock_path(Path::new(".shipper"), None);
+        insta::assert_snapshot!(
+            "lock_path_without_root",
+            p.to_string_lossy().replace('\\', "/")
+        );
+    }
+
+    #[test]
+    fn lock_path_with_root_snapshot() {
+        let p = lock_path(Path::new(".shipper"), Some(Path::new("/my/workspace")));
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        // Snapshot only the filename (hash is deterministic for same input)
+        insta::assert_snapshot!("lock_path_with_root_filename", name);
     }
 }

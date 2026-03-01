@@ -1069,5 +1069,56 @@ mod proptests {
             let expected = SALT_SIZE + NONCE_SIZE + data.len() + 16;
             prop_assert_eq!(raw.len(), expected);
         }
+
+        #[test]
+        fn is_encrypted_true_for_encrypt_output(data in proptest::collection::vec(any::<u8>(), 0..512)) {
+            let encrypted = encrypt(&data, "test-pass").expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+            prop_assert!(is_encrypted(&encrypted_str));
+        }
+
+        #[test]
+        fn is_encrypted_never_panics(s in "\\PC{0,500}") {
+            let _ = is_encrypted(&s);
+        }
+
+        #[test]
+        fn decrypt_arbitrary_string_never_panics(s in "\\PC{0,500}") {
+            let _ = decrypt(&s, "passphrase");
+        }
+
+        #[test]
+        fn encrypt_output_is_always_utf8(
+            data in proptest::collection::vec(any::<u8>(), 0..1024),
+            passphrase in "\\PC{1,50}",
+        ) {
+            let encrypted = encrypt(&data, &passphrase).expect("encrypt");
+            prop_assert!(String::from_utf8(encrypted).is_ok());
+        }
+
+        #[test]
+        fn each_encrypt_produces_unique_ciphertext(data in proptest::collection::vec(any::<u8>(), 0..256)) {
+            let a = encrypt(&data, "same-pass").expect("encrypt");
+            let b = encrypt(&data, "same-pass").expect("encrypt");
+            prop_assert_ne!(a, b);
+        }
+
+        #[test]
+        fn encryption_config_serde_roundtrip_arbitrary(passphrase in "\\PC{1,100}") {
+            let cfg = EncryptionConfig::new(passphrase.clone());
+            let json = serde_json::to_string(&cfg).expect("serialize");
+            let de: EncryptionConfig = serde_json::from_str(&json).expect("deserialize");
+            prop_assert_eq!(de.enabled, true);
+            prop_assert_eq!(de.passphrase.as_deref(), Some(passphrase.as_str()));
+        }
+
+        #[test]
+        fn state_encryption_roundtrip_arbitrary(data in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let config = EncryptionConfig::new("state-prop-pass".to_string());
+            let se = StateEncryption::new(config).expect("create");
+            let encrypted = se.encrypt(&data).expect("encrypt");
+            let decrypted = se.decrypt(&encrypted).expect("decrypt");
+            prop_assert_eq!(data, decrypted);
+        }
     }
 }

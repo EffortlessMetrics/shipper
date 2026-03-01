@@ -1192,6 +1192,91 @@ y = { path = "../y", version = "0.1.0" }
         insta::assert_snapshot!("error_selecting_non_publishable", format!("{err:#}"));
     }
 
+    #[test]
+    fn snapshot_error_cycle_detection() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let metadata = MetadataCommand::new()
+            .manifest_path(td.path().join("Cargo.toml"))
+            .exec()
+            .expect("metadata");
+
+        let pkg_map = metadata
+            .packages
+            .iter()
+            .map(|p| (p.id.clone(), p))
+            .collect::<BTreeMap<PackageId, &cargo_metadata::Package>>();
+        let mut by_name = BTreeMap::<String, PackageId>::new();
+        for pkg in &metadata.packages {
+            by_name.insert(pkg.name.to_string(), pkg.id.clone());
+        }
+
+        let a = by_name.get("a").expect("a").clone();
+        let b = by_name.get("b").expect("b").clone();
+
+        let included = [a.clone(), b.clone()].into_iter().collect::<BTreeSet<_>>();
+        let deps_of = BTreeMap::from([
+            (a.clone(), [b.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (b.clone(), [a.clone()].into_iter().collect::<BTreeSet<_>>()),
+        ]);
+        let dependents_of = BTreeMap::from([
+            (a.clone(), [b.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (b.clone(), [a.clone()].into_iter().collect::<BTreeSet<_>>()),
+        ]);
+
+        let err = topo_sort(&included, &deps_of, &dependents_of, &pkg_map).expect_err("cycle");
+        insta::assert_snapshot!("error_cycle_detection", format!("{err:#}"));
+    }
+
+    #[test]
+    fn snapshot_plan_summary_display() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let mut summary = String::new();
+        summary.push_str(&format!("Registry: {}\n", ws.plan.registry.name));
+        summary.push_str(&format!(
+            "Packages to publish ({}):\n",
+            ws.plan.packages.len()
+        ));
+        for (i, pkg) in ws.plan.packages.iter().enumerate() {
+            let deps = ws
+                .plan
+                .dependencies
+                .get(&pkg.name)
+                .cloned()
+                .unwrap_or_default();
+            if deps.is_empty() {
+                summary.push_str(&format!("  {}. {} v{}\n", i + 1, pkg.name, pkg.version));
+            } else {
+                summary.push_str(&format!(
+                    "  {}. {} v{} (depends on: {})\n",
+                    i + 1,
+                    pkg.name,
+                    pkg.version,
+                    deps.join(", ")
+                ));
+            }
+        }
+        if !ws.skipped.is_empty() {
+            summary.push_str(&format!("Skipped ({}):\n", ws.skipped.len()));
+            for s in &ws.skipped {
+                summary.push_str(&format!("  - {} v{}: {}\n", s.name, s.version, s.reason));
+            }
+        }
+        insta::assert_snapshot!("plan_summary_display", summary);
+    }
+
+    #[test]
+    fn snapshot_skipped_packages_detail() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        insta::assert_yaml_snapshot!("skipped_packages_detail", &ws.skipped);
+    }
+
     proptest! {
         #[test]
         fn compute_plan_id_is_stable_and_hex(

@@ -1,0 +1,9 @@
+---
+source: crates/shipper-store/src/lib.rs
+expression: json
+---
+{
+  "name": "my-registry",
+  "api_base": "https://my-registry.example.com",
+  "index_base": "https://index.my-registry.example.com"
+}

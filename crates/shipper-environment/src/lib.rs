@@ -1497,3 +1497,192 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use insta::assert_yaml_snapshot;
+
+    #[test]
+    fn ci_environment_all_display_variants() {
+        let variants: Vec<String> = [
+            CiEnvironment::GitHubActions,
+            CiEnvironment::GitLabCI,
+            CiEnvironment::CircleCI,
+            CiEnvironment::TravisCI,
+            CiEnvironment::AzurePipelines,
+            CiEnvironment::Jenkins,
+            CiEnvironment::BitbucketPipelines,
+            CiEnvironment::Local,
+        ]
+        .iter()
+        .map(|v| v.to_string())
+        .collect();
+
+        assert_yaml_snapshot!(variants);
+    }
+
+    #[test]
+    fn ci_environment_all_debug_variants() {
+        let variants: Vec<String> = [
+            CiEnvironment::GitHubActions,
+            CiEnvironment::GitLabCI,
+            CiEnvironment::CircleCI,
+            CiEnvironment::TravisCI,
+            CiEnvironment::AzurePipelines,
+            CiEnvironment::Jenkins,
+            CiEnvironment::BitbucketPipelines,
+            CiEnvironment::Local,
+        ]
+        .iter()
+        .map(|v| format!("{v:?}"))
+        .collect();
+
+        assert_yaml_snapshot!(variants);
+    }
+
+    #[test]
+    fn ci_environment_serialization() {
+        let variants = [
+            CiEnvironment::GitHubActions,
+            CiEnvironment::GitLabCI,
+            CiEnvironment::CircleCI,
+            CiEnvironment::TravisCI,
+            CiEnvironment::AzurePipelines,
+            CiEnvironment::Jenkins,
+            CiEnvironment::BitbucketPipelines,
+            CiEnvironment::Local,
+        ];
+
+        let serialized: Vec<String> = variants
+            .iter()
+            .map(|v| serde_json::to_string(v).unwrap())
+            .collect();
+
+        assert_yaml_snapshot!(serialized);
+    }
+
+    #[test]
+    fn environment_info_fingerprint_local_no_vars() {
+        let info = EnvironmentInfo {
+            ci_environment: CiEnvironment::Local,
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            rust_version: "1.80.0".to_string(),
+            cargo_version: "1.80.0".to_string(),
+            env_vars: BTreeMap::new(),
+            collected_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        assert_yaml_snapshot!(info);
+    }
+
+    #[test]
+    fn environment_info_fingerprint_github_actions_with_vars() {
+        let mut env_vars = BTreeMap::new();
+        env_vars.insert("GITHUB_REF".to_string(), "refs/heads/main".to_string());
+        env_vars.insert("GITHUB_SHA".to_string(), "abc123def456789".to_string());
+        env_vars.insert("GITHUB_REPOSITORY".to_string(), "owner/repo".to_string());
+        env_vars.insert("GITHUB_RUN_ID".to_string(), "12345".to_string());
+
+        let info = EnvironmentInfo {
+            ci_environment: CiEnvironment::GitHubActions,
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            rust_version: "1.80.0".to_string(),
+            cargo_version: "1.80.0".to_string(),
+            env_vars,
+            collected_at: chrono::DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        assert_yaml_snapshot!(info);
+    }
+
+    #[test]
+    fn environment_info_fingerprint_string_local() {
+        let info = EnvironmentInfo {
+            ci_environment: CiEnvironment::Local,
+            os: "macos".to_string(),
+            arch: "aarch64".to_string(),
+            rust_version: "1.82.0".to_string(),
+            cargo_version: "1.82.0".to_string(),
+            env_vars: BTreeMap::new(),
+            collected_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        assert_yaml_snapshot!(info.fingerprint());
+    }
+
+    #[test]
+    fn environment_info_fingerprint_string_ci_with_vars() {
+        let mut env_vars = BTreeMap::new();
+        env_vars.insert("CI".to_string(), "true".to_string());
+        env_vars.insert("GITHUB_SHA".to_string(), "deadbeef".to_string());
+
+        let info = EnvironmentInfo {
+            ci_environment: CiEnvironment::GitHubActions,
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            rust_version: "1.80.0".to_string(),
+            cargo_version: "1.80.0".to_string(),
+            env_vars,
+            collected_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        assert_yaml_snapshot!(info.fingerprint());
+    }
+
+    #[test]
+    fn environment_fingerprint_structured() {
+        let fp = EnvironmentFingerprint {
+            shipper_version: "0.3.0".to_string(),
+            cargo_version: Some("1.80.0".to_string()),
+            rust_version: Some("1.80.0".to_string()),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+
+        assert_yaml_snapshot!(fp);
+    }
+
+    #[test]
+    fn environment_fingerprint_structured_unknown_versions() {
+        let fp = EnvironmentFingerprint {
+            shipper_version: "0.3.0".to_string(),
+            cargo_version: None,
+            rust_version: None,
+            os: "windows".to_string(),
+            arch: "aarch64".to_string(),
+        };
+
+        assert_yaml_snapshot!(fp);
+    }
+
+    #[test]
+    fn environment_info_gitlab_ci() {
+        let mut env_vars = BTreeMap::new();
+        env_vars.insert("GITLAB_CI_PIPELINE_ID".to_string(), "98765".to_string());
+
+        let info = EnvironmentInfo {
+            ci_environment: CiEnvironment::GitLabCI,
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            rust_version: "1.79.0".to_string(),
+            cargo_version: "1.79.0".to_string(),
+            env_vars,
+            collected_at: chrono::DateTime::parse_from_rfc3339("2025-03-15T08:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        assert_yaml_snapshot!(info);
+    }
+}

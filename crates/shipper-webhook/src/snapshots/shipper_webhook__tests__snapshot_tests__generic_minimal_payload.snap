@@ -1,0 +1,6 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+expression: json
+---
+message: hello
+success: true

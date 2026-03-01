@@ -440,7 +440,8 @@ mod resume_skips_completed_levels {
 
         let state_dir = td.path().join(".shipper");
 
-        // Publish all crates (4 crates: version check + readiness = 8 reqs)
+        // Publish all crates in parallel mode (serialized within levels via --max-concurrent 1).
+        // 4 crates × (version check + readiness) = 8 reqs
         let registry = spawn_registry(vec![404, 200, 404, 200, 404, 200, 404, 200], 8);
 
         shipper_cmd()
@@ -457,7 +458,8 @@ mod resume_skips_completed_levels {
             .arg("1")
             .arg("--state-dir")
             .arg(&state_dir)
-            .arg("--parallel")
+            .arg("--max-concurrent")
+            .arg("1")
             .arg("publish")
             .env("PATH", &new_path)
             .env("REAL_CARGO", &real_cargo)
