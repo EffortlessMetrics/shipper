@@ -1,2 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.56s
-     Running unittests src\lib.rs (target\debug\deps\shipper_config_runtime-e2047dd4a893a6b1.exe)

@@ -11,3 +11,9 @@ fuzz/Cargo.lock
 *.snap.new
 test-output.txt
 clippy-output.txt
+clippy-check.txt
+terr.txt
+tout.txt
+texitcode.txt
+test-list-progress.txt
+proptest-regressions/
