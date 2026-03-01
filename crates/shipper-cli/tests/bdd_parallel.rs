@@ -440,8 +440,8 @@ mod resume_skips_completed_levels {
 
         let state_dir = td.path().join(".shipper");
 
-        // Publish all crates first (4 crates × 1 version check = 4 reqs; readiness disabled)
-        let registry = spawn_registry(vec![404, 404, 404, 404], 4);
+        // Publish all crates (4 crates: version check + readiness = 8 reqs)
+        let registry = spawn_registry(vec![404, 200, 404, 200, 404, 200, 404, 200], 8);
 
         shipper_cmd()
             .arg("--manifest-path")
@@ -449,7 +449,6 @@ mod resume_skips_completed_levels {
             .arg("--api-base")
             .arg(&registry.base_url)
             .arg("--allow-dirty")
-            .arg("--no-readiness")
             .arg("--verify-timeout")
             .arg("0ms")
             .arg("--verify-poll")
@@ -458,6 +457,7 @@ mod resume_skips_completed_levels {
             .arg("1")
             .arg("--state-dir")
             .arg(&state_dir)
+            .arg("--parallel")
             .arg("publish")
             .env("PATH", &new_path)
             .env("REAL_CARGO", &real_cargo)
