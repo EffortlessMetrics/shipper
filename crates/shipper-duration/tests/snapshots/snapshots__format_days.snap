@@ -1,0 +1,8 @@
+---
+source: crates/shipper-duration/tests/snapshots.rs
+expression: "output.join(\"\\n\")"
+---
+1d => 1day
+7d => 7days
+30d => 30days
+365d => 11months 30days 3h 50m 24s

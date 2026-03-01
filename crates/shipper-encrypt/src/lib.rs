@@ -25,6 +25,7 @@
 //! - Random salt and nonce for each encryption operation
 //! - Encrypted data format: base64(salt || nonce || ciphertext || auth_tag)
 
+use std::fmt;
 use std::path::Path;
 
 use aes_gcm::{
@@ -90,6 +91,38 @@ impl EncryptionConfig {
         }
 
         Ok(None)
+    }
+}
+
+impl fmt::Display for EncryptionConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.enabled {
+            return write!(f, "encryption: disabled");
+        }
+        match (&self.passphrase, &self.env_var) {
+            (Some(p), _) => write!(f, "encryption: enabled (passphrase: {})", mask_passphrase(p)),
+            (None, Some(var)) => write!(f, "encryption: enabled (env: {var})"),
+            (None, None) => write!(f, "encryption: enabled (no passphrase configured)"),
+        }
+    }
+}
+
+/// Mask a passphrase for safe display, showing only the first and last
+/// characters with asterisks in between. Passphrases with fewer than 3
+/// characters are fully masked.
+pub fn mask_passphrase(passphrase: &str) -> String {
+    let chars: Vec<char> = passphrase.chars().collect();
+    if chars.len() < 3 {
+        return "*".repeat(chars.len().max(1));
+    }
+    let first = chars[0];
+    let last = chars[chars.len() - 1];
+    format!("{first}{}{last}", "*".repeat(chars.len() - 2))
+}
+
+impl fmt::Display for StateEncryption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.config)
     }
 }
 
@@ -1120,5 +1153,167 @@ mod proptests {
             let decrypted = se.decrypt(&encrypted).expect("decrypt");
             prop_assert_eq!(data, decrypted);
         }
+    }
+}
+
+// ── Snapshot tests ──────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use insta::assert_snapshot;
+
+    // ── EncryptionConfig serialization ──────────────────────────────────
+
+    #[test]
+    fn config_default_json() {
+        let cfg = EncryptionConfig::default();
+        let json = serde_json::to_string_pretty(&cfg).expect("serialize");
+        assert_snapshot!(json);
+    }
+
+    #[test]
+    fn config_with_passphrase_json() {
+        let cfg = EncryptionConfig::new("my-secret".to_string());
+        let json = serde_json::to_string_pretty(&cfg).expect("serialize");
+        assert_snapshot!(json);
+    }
+
+    #[test]
+    fn config_with_env_var_json() {
+        let cfg = EncryptionConfig::from_env("SHIPPER_ENCRYPT_KEY".to_string());
+        let json = serde_json::to_string_pretty(&cfg).expect("serialize");
+        assert_snapshot!(json);
+    }
+
+    #[test]
+    fn config_enabled_no_passphrase_json() {
+        let cfg = EncryptionConfig {
+            enabled: true,
+            passphrase: None,
+            env_var: None,
+        };
+        let json = serde_json::to_string_pretty(&cfg).expect("serialize");
+        assert_snapshot!(json);
+    }
+
+    #[test]
+    fn config_with_both_passphrase_and_env_json() {
+        let cfg = EncryptionConfig {
+            enabled: true,
+            passphrase: Some("inline-pass".to_string()),
+            env_var: Some("SHIPPER_ENCRYPT_KEY".to_string()),
+        };
+        let json = serde_json::to_string_pretty(&cfg).expect("serialize");
+        assert_snapshot!(json);
+    }
+
+    // ── Masked token format ─────────────────────────────────────────────
+
+    #[test]
+    fn mask_passphrase_normal() {
+        assert_snapshot!(mask_passphrase("my-secret-passphrase"));
+    }
+
+    #[test]
+    fn mask_passphrase_short_three_chars() {
+        assert_snapshot!(mask_passphrase("abc"));
+    }
+
+    #[test]
+    fn mask_passphrase_two_chars() {
+        assert_snapshot!(mask_passphrase("ab"));
+    }
+
+    #[test]
+    fn mask_passphrase_single_char() {
+        assert_snapshot!(mask_passphrase("x"));
+    }
+
+    #[test]
+    fn mask_passphrase_empty() {
+        assert_snapshot!(mask_passphrase(""));
+    }
+
+    #[test]
+    fn mask_passphrase_unicode() {
+        assert_snapshot!(mask_passphrase("🔑secret🔒"));
+    }
+
+    // ── StateEncryption config display ──────────────────────────────────
+
+    #[test]
+    fn display_config_disabled() {
+        let cfg = EncryptionConfig::default();
+        assert_snapshot!(cfg.to_string());
+    }
+
+    #[test]
+    fn display_config_with_passphrase() {
+        let cfg = EncryptionConfig::new("super-secret-key".to_string());
+        assert_snapshot!(cfg.to_string());
+    }
+
+    #[test]
+    fn display_config_with_env_var() {
+        let cfg = EncryptionConfig::from_env("SHIPPER_ENCRYPT_KEY".to_string());
+        assert_snapshot!(cfg.to_string());
+    }
+
+    #[test]
+    fn display_config_enabled_no_source() {
+        let cfg = EncryptionConfig {
+            enabled: true,
+            passphrase: None,
+            env_var: None,
+        };
+        assert_snapshot!(cfg.to_string());
+    }
+
+    #[test]
+    fn display_state_encryption_wrapper() {
+        let cfg = EncryptionConfig::new("my-passphrase".to_string());
+        let se = StateEncryption::new(cfg).expect("create");
+        assert_snapshot!(se.to_string());
+    }
+
+    // ── Decryption failure error messages ───────────────────────────────
+
+    #[test]
+    fn error_invalid_base64() {
+        let err = decrypt("not-valid-base64!!!", "pass").unwrap_err();
+        assert_snapshot!(err.to_string());
+    }
+
+    #[test]
+    fn error_data_too_short() {
+        let short = BASE64.encode(vec![0u8; SALT_SIZE + NONCE_SIZE + 15]);
+        let err = decrypt(&short, "pass").unwrap_err();
+        assert_snapshot!(err.to_string());
+    }
+
+    #[test]
+    fn error_wrong_passphrase() {
+        let encrypted = encrypt(b"secret data", "correct-pass").expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+        let err = decrypt(&encrypted_str, "wrong-pass").unwrap_err();
+        assert_snapshot!(err.to_string());
+    }
+
+    #[test]
+    fn error_corrupted_ciphertext() {
+        let encrypted = encrypt(b"data", "pass").expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+        let mut raw = BASE64.decode(&encrypted_str).expect("base64");
+        raw[SALT_SIZE + NONCE_SIZE + 1] ^= 0xFF;
+        let corrupted = BASE64.encode(&raw);
+        let err = decrypt(&corrupted, "pass").unwrap_err();
+        assert_snapshot!(err.to_string());
+    }
+
+    #[test]
+    fn error_empty_input() {
+        let err = decrypt("", "pass").unwrap_err();
+        assert_snapshot!(err.to_string());
     }
 }

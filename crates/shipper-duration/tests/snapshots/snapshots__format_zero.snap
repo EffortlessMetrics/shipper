@@ -1,0 +1,5 @@
+---
+source: crates/shipper-duration/tests/snapshots.rs
+expression: formatted
+---
+0s

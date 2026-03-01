@@ -1,0 +1,5 @@
+---
+source: crates/shipper-progress/tests/snapshots.rs
+expression: state_snapshot(&reporter)
+---
+total=5 current=0 name="" tty=false

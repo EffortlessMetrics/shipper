@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::process;
 use std::thread;
 
 use assert_cmd::Command;
@@ -526,6 +527,236 @@ fn preflight_reports_already_published_packages() {
 
     let stdout = String::from_utf8(out).expect("utf8");
     assert!(stdout.contains("Already published: 1"));
+
+    registry.join();
+}
+
+// ── Helper: initialise a git repo and commit everything ─────────────
+
+fn git_init_and_commit(root: &Path) {
+    let run = |args: &[&str]| {
+        let status = process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .stdout(process::Stdio::null())
+            .stderr(process::Stdio::null())
+            .status()
+            .expect("git command");
+        assert!(status.success(), "git {:?} failed", args);
+    };
+    run(&["init"]);
+    run(&["config", "user.email", "test@test.com"]);
+    run(&["config", "user.name", "Test"]);
+    run(&["add", "."]);
+    run(&["commit", "-m", "init"]);
+}
+
+// ── 1. --allow-dirty skips git cleanliness check ────────────────────
+
+#[test]
+fn preflight_allow_dirty_skips_git_check() {
+    let td = tempdir().expect("tempdir");
+    create_simple_workspace(td.path());
+    git_init_and_commit(td.path());
+
+    // Dirty the working tree after the initial commit
+    write_file(&td.path().join("alpha/src/lib.rs"), "pub fn alpha() { /* dirty */ }\n");
+
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+    let registry = spawn_registry(vec![404], 2);
+
+    // With --allow-dirty the dirty working tree is accepted
+    shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("--skip-ownership-check")
+        .arg("preflight")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .stdout(contains("Preflight Report"))
+        .stdout(contains("alpha"));
+
+    registry.join();
+}
+
+// ── 2. --skip-ownership-check skips owner verification (token present) ─
+
+#[test]
+fn preflight_skip_ownership_with_token_present() {
+    let td = tempdir().expect("tempdir");
+    create_simple_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+    // Only 2 requests expected (version_exists + check_new_crate).
+    // If ownership were checked, the mock would need a 3rd request and the
+    // thread would hang because spawn_registry only serves `expected_requests`.
+    let registry = spawn_registry(vec![404], 2);
+
+    shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("--skip-ownership-check")
+        .arg("preflight")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env("CARGO_REGISTRY_TOKEN", "fake-token-for-test")
+        .assert()
+        .success()
+        .stdout(contains("Token Detected: ✓"))
+        .stdout(contains("Ownership verified: 0"));
+
+    registry.join();
+}
+
+// ── 3. Preflight detects version already published per-package ──────
+
+#[test]
+fn preflight_detects_mixed_already_published_in_multi_crate() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    // Request order (dependency-sorted): core-lib, mid-lib, top-app
+    // Each package: version_exists then check_new_crate
+    //   core-lib: 200 (published), 200 (not new)
+    //   mid-lib:  404 (not published), 404 (new)
+    //   top-app:  404 (not published), 404 (new)
+    let registry = spawn_registry(vec![200, 200, 404, 404, 404, 404], 6);
+
+    let out = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("--skip-ownership-check")
+        .arg("preflight")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(out).expect("utf8");
+    assert!(
+        stdout.contains("Already published: 1"),
+        "expected 'Already published: 1', got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("New crates: 2"),
+        "expected 'New crates: 2', got:\n{stdout}"
+    );
+    assert!(stdout.contains("Total packages: 3"));
+
+    registry.join();
+}
+
+// ── 4. Preflight with custom registry URL ───────────────────────────
+
+#[test]
+fn preflight_custom_registry_url() {
+    let td = tempdir().expect("tempdir");
+    create_simple_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+    let registry = spawn_registry(vec![404], 2);
+
+    let out = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--registry")
+        .arg("my-private-registry")
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("--skip-ownership-check")
+        .arg("--format")
+        .arg("json")
+        .arg("preflight")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(out).expect("utf8");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    // The preflight should resolve against the custom mock successfully
+    assert!(json["plan_id"].is_string());
+    assert_eq!(json["packages"].as_array().unwrap().len(), 1);
+    assert_eq!(json["packages"][0]["name"], "alpha");
+    // Verify the mock was used (package not already published on the custom registry)
+    assert_eq!(json["packages"][0]["already_published"], false);
+    assert_eq!(json["packages"][0]["is_new_crate"], true);
+
+    registry.join();
+}
+
+// ── 5. Preflight reports multiple issues in a single run ────────────
+
+#[test]
+fn preflight_reports_multiple_issues_in_single_run() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    // core-lib: already published (200, 200)
+    // mid-lib:  not published / new (404, 404)
+    // top-app:  not published / new (404, 404)
+    let registry = spawn_registry(vec![200, 200, 404, 404, 404, 404], 6);
+
+    // No token → ownership cannot be verified for any package
+    let out = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("preflight")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(out).expect("utf8");
+    // Multiple findings are reported together in one summary
+    assert!(
+        stdout.contains("Already published: 1"),
+        "expected 'Already published: 1', got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("New crates: 2"),
+        "expected 'New crates: 2', got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Ownership verified: 0"),
+        "expected 'Ownership verified: 0', got:\n{stdout}"
+    );
+    // Dry-run failures + unverified ownership → finishability is FAILED
+    assert!(
+        stdout.contains("FAILED"),
+        "expected finishability FAILED, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Dry-run Failures:"),
+        "expected dry-run failure details, got:\n{stdout}"
+    );
 
     registry.join();
 }

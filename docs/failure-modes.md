@@ -1,425 +1,399 @@
 # Failure modes and how shipper handles them
 
-This tool treats publishing as an **irreversible, non-atomic workflow**.
+Publishing a Rust workspace is an **irreversible, non-atomic workflow**: once a
+version is uploaded to a registry it cannot be re-published. Shipper is designed
+around this constraint — every step is persisted, classified, and recoverable.
 
-## Partial publishes
+---
 
-If a workspace publish is interrupted after some crates have been uploaded, re-running `shipper publish` (or `shipper resume`) should skip already-published versions and continue with the remainder.
+## Error classification
 
-Shipper maintains a persistent state file (`.shipper/state.json`) that tracks which crates have been successfully published. When resuming, Shipper:
+When `cargo publish` fails, Shipper inspects the combined stdout/stderr output
+and classifies the error into one of three classes
+(see `crates/shipper-cargo-failure`):
 
-1. Reads the previous state
-2. Validates the state against the current workspace configuration
-3. Skips crates that were already successfully published
-4. Continues with the remaining crates
+| Class | Meaning | Action taken |
+|---|---|---|
+| **Retryable** | Transient — likely to succeed on retry | Retry with backoff |
+| **Permanent** | Requires human intervention | Stop retrying, record failure |
+| **Ambiguous** | Outcome unclear (upload may have succeeded) | Verify against registry, then retry or accept |
 
-## Ambiguous timeouts
+### Retryable patterns
 
-Cargo may fail locally even when the upload succeeded server-side. Shipper verifies the registry state (`crate@version exists`) before treating a step as failed.
+Matched case-insensitively in cargo output:
 
-### Evidence capture
+`too many requests`, `429`, `timeout`, `timed out`, `connection reset`,
+`connection refused`, `connection closed`, `dns`, `tls`,
+`temporarily unavailable`, `failed to download`, `failed to send`,
+`server error`, `500`, `502`, `503`, `504`, `broken pipe`,
+`reset by peer`, `network unreachable`
 
-When failures occur, Shipper captures detailed evidence:
+### Permanent patterns
 
-- **Stdout/stderr output** from the failed command
-- **Exit codes** for precise failure classification
-- **Timestamps** for timeline reconstruction
-- **Command arguments** that were executed
+`failed to parse manifest`, `invalid`, `missing`, `license`, `description`,
+`could not compile`, `package is not allowed to be published`,
+`forbidden`, `permission denied`, `not authorized`, `unauthorized`,
+`version already exists`, `is already uploaded`, `token is invalid`,
+`invalid credentials`, `checksum mismatch`
 
-This evidence is stored in:
-- `.shipper/events.jsonl` - Line-delimited event log
-- `.shipper/receipt.json` - Structured receipt with embedded evidence
+### Ambiguous fallback
 
-### Inspecting failures
+If **no** pattern matches, the error is classified as **Ambiguous**. Shipper
+then checks the registry to determine whether the version was actually uploaded
+before deciding to retry.
 
-Use the inspection commands to debug failures:
+---
 
-```bash
-# View the complete event log
-shipper inspect-events
+## Retry behavior
 
-# View the receipt with captured evidence
-shipper inspect-receipt
+Retries are handled by `crates/shipper-retry`. By default Shipper uses
+exponential backoff with jitter (the `Default` policy).
 
-# Get JSON output for automated analysis
-shipper inspect-receipt --format json
+### Default retry policy
+
+| Parameter | Default | Description |
+|---|---|---|
+| `strategy` | `exponential` | `base_delay × 2^(attempt-1)` |
+| `max_attempts` | **6** | Total tries (first attempt + 5 retries) |
+| `base_delay` | **2 s** | Initial delay |
+| `max_delay` | **120 s** (2 min) | Delay cap |
+| `jitter` | **0.5** | ±50 % random variation on each delay |
+
+### Predefined policies
+
+| Policy | Strategy | Max attempts | Base delay | Max delay | Jitter |
+|---|---|---|---|---|---|
+| **default** | exponential | 6 | 2 s | 120 s | 0.5 |
+| **aggressive** | exponential | 10 | 500 ms | 30 s | 0.3 |
+| **conservative** | linear | 3 | 5 s | 60 s | 0.1 |
+
+### Delay calculation example (default policy, no jitter)
+
+| Attempt | Delay |
+|---|---|
+| 1 | 2 s |
+| 2 | 4 s |
+| 3 | 8 s |
+| 4 | 16 s |
+| 5 | 32 s |
+| 6 | 64 s |
+
+With jitter of 0.5, each delay is multiplied by a random factor in `[0.5, 1.5]`.
+
+### Per-error-class overrides
+
+In `.shipper.toml` you can set different retry parameters for each error class:
+
+```toml
+[retry]
+policy = "custom"
+
+[retry.strategy]
+strategy = "exponential"
+max_attempts = 8
+base_delay = "3s"
+max_delay = "90s"
+jitter = 0.4
+
+[retry.per_error.retryable]
+max_attempts = 10
+base_delay = "1s"
+
+[retry.per_error.ambiguous]
+max_attempts = 4
+base_delay = "5s"
 ```
 
-The event log shows a chronological record of all operations, including:
-- Preflight checks and their results
-- Each publish attempt with retry details
-- Evidence captured from failed operations
-- Readiness check results
-
-## Rate limiting (HTTP 429)
-
-The registry may ask clients to slow down. Shipper retries with exponential backoff + jitter and a max wall-clock limit.
-
-### Retry behavior
-
-Shipper implements a sophisticated retry strategy:
-
-1. **Exponential backoff** - Delay increases exponentially between attempts
-2. **Jitter** - Random variation in delay to avoid thundering herd
-3. **Max attempts** - Configurable maximum number of retries (default: 6)
-4. **Max delay** - Upper bound on backoff delay (default: 2m)
-
-### Configurable retry options
+### CLI overrides
 
 ```bash
-# Adjust retry behavior
 shipper publish --max-attempts 10 --base-delay 5s --max-delay 5m
 ```
 
-## Preflight failures
+---
 
-Preflight checks run before any publishing begins to verify your workspace is ready. Failures here prevent any crates from being published.
+## State file format (`state.json`)
 
-### Preflight finishability states
+Shipper persists progress to `.shipper/state.json` after every package
+completes. This file enables `shipper resume` to skip already-published crates.
 
-Preflight produces one of three finishability states:
-
-| State | Meaning | Action |
-|-------|---------|--------|
-| **Proven** | All checks passed, ready to publish | Proceed with `shipper publish` |
-| **NotProven** | Some checks couldn't be verified (e.g., no token) | Review warnings, proceed if confident |
-| **Failed** | Critical checks failed | Fix issues before publishing |
-
-### Preflight failure modes
-
-#### Issue: Workspace verify failed
-
-**Symptoms**: Dry-run column shows `✗` in the preflight table
-
-**Cause**: The workspace dry-run check failed, indicating issues with package dependencies or metadata
-
-**Solutions**:
-1. Run `cargo publish --dry-run` manually to see the full error
-2. Check for missing dependencies or version conflicts
-3. Verify all packages have valid `Cargo.toml` metadata
-4. Ensure workspace members are properly configured
-
-#### Issue: Ownership verification failed
-
-**Symptoms**: Ownership column shows `✗` in the preflight table
-
-**Cause**: The publish token doesn't have ownership permissions for the crate
-
-**Solutions**:
-1. Verify you're listed as an owner: `cargo owner --list <crate-name>`
-2. Check your token has the correct scopes
-3. Use `--skip-ownership-check` if you're confident (not recommended)
-4. For new crates, ensure you have permissions to create new packages
-
-#### Issue: No token available for ownership check
-
-**Symptoms**: Preflight shows `Token Detected: ✗` and `NOT PROVEN` finishability
-
-**Cause**: No registry token was found for ownership verification
-
-**Solutions**:
-1. Set `CARGO_REGISTRY_TOKEN` environment variable
-2. Run `cargo login` to create credentials
-3. Use `--skip-ownership-check` if you're confident (not recommended)
-
-## Permission mismatches
-
-A common failure mode is having rights to publish some crates in a workspace but not all. Shipper can optionally preflight owners/permissions before publishing anything.
-
-### Ownership checks
-
-Shipper provides two levels of ownership verification:
-
-1. **Best-effort check** (default) - Checks ownership if a token is available
-2. **Strict check** (`--strict-ownership`) - Fails preflight if ownership checks fail or if no token is available
-
-```bash
-# Enable strict ownership checks
-shipper preflight --strict-ownership
+```json
+{
+  "state_version": "shipper.state.v1",
+  "plan_id": "a1b2c3d4",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io",
+    "index_base": "https://index.crates.io"
+  },
+  "created_at": "2025-06-01T12:00:00Z",
+  "updated_at": "2025-06-01T12:05:30Z",
+  "packages": {
+    "my-core@0.3.0": {
+      "name": "my-core",
+      "version": "0.3.0",
+      "attempts": 1,
+      "state": { "state": "published" },
+      "last_updated_at": "2025-06-01T12:02:00Z"
+    },
+    "my-cli@0.3.0": {
+      "name": "my-cli",
+      "version": "0.3.0",
+      "attempts": 0,
+      "state": { "state": "pending" },
+      "last_updated_at": "2025-06-01T12:00:00Z"
+    }
+  }
+}
 ```
 
-## CI cancellations
+### Key fields
 
-If your CI cancels a job mid-publish, you can re-run the job and Shipper will continue from the persisted state.
+| Field | Purpose |
+|---|---|
+| `state_version` | Schema version (`shipper.state.v1`); used for forward-compatibility |
+| `plan_id` | Deterministic hash of the publish plan; `shipper resume` refuses to continue if the workspace changed |
+| `registry` | Target registry name, API base URL, and optional sparse-index URL |
+| `packages` | `BTreeMap<"name@version", PackageProgress>` — one entry per planned crate |
 
-### Lock files
+### Package states
 
-Shipper uses lock files to prevent concurrent publish operations:
+Each package in the state file has one of these states:
 
-- `.shipper/lock` - Prevents multiple shipper instances from running simultaneously
-- Configurable timeout (default: 1h) for stale lock cleanup
+| State | Meaning |
+|---|---|
+| `pending` | Not yet attempted |
+| `uploaded` | `cargo publish` exited 0 but readiness not yet confirmed |
+| `published` | Confirmed visible on the registry — **terminal success** |
+| `skipped` | Intentionally skipped (e.g. already on registry), includes `reason` |
+| `failed` | Permanently failed, includes `class` (`retryable`/`permanent`/`ambiguous`) and `message` |
+| `ambiguous` | Outcome unclear, includes `message` |
+
+---
+
+## Failure mode: Partial publish
+
+**Scenario:** A workspace has crates `core`, `macros`, and `cli`. Publishing
+`core` succeeds, then the network drops during `macros`.
+
+**What happens:**
+1. `core@0.3.0` is marked `published` in `state.json`.
+2. `macros@0.3.0` fails — Shipper classifies as `Retryable`, retries up to
+   `max_attempts`. If all retries fail, the state is saved as `failed`.
+3. `cli@0.3.0` remains `pending`.
+
+**Recovery:**
+```bash
+# Fix the network, then resume from where you left off:
+shipper resume
+
+# Or equivalently, re-run publish (it detects existing state):
+shipper publish
+```
+
+Shipper reads `state.json`, confirms the `plan_id` matches the current
+workspace, skips `core` (already `published`), and retries from `macros`.
+
+---
+
+## Failure mode: Ambiguous timeout
+
+**Scenario:** `cargo publish -p macros` times out after 30 s. The upload may
+or may not have reached the registry.
+
+**What happens:**
+1. No retryable/permanent pattern matches the stderr — classified as **Ambiguous**.
+2. Shipper queries the registry API: does `macros@0.3.0` exist?
+3. **If found:** marks `published`, continues to next crate.
+4. **If not found:** retries with backoff.
+
+**Recovery:**
+```bash
+# Usually no action needed — Shipper self-heals by checking the registry.
+# If all retries are exhausted:
+shipper resume
+```
+
+**Inspect evidence:**
+```bash
+shipper inspect-events     # chronological event log
+shipper inspect-receipt    # structured receipt with attempt details
+```
+
+---
+
+## Failure mode: Rate limiting (HTTP 429)
+
+**Scenario:** crates.io returns `429 Too Many Requests` during a batch publish.
+
+**What happens:**
+1. Shipper matches `429` / `too many requests` in stderr → **Retryable**.
+2. Applies exponential backoff: 2 s → 4 s → 8 s → 16 s → 32 s → 64 s (defaults).
+3. Each retry is logged to `.shipper/events.jsonl`.
+4. After 6 attempts (default), the package is marked `failed` with class
+   `retryable` and the run continues with remaining crates.
+
+**Recovery:**
+```bash
+# Wait a few minutes for the rate limit to clear, then:
+shipper resume
+```
+
+**Tuning for large workspaces:**
+```bash
+# More retries with longer backoff
+shipper publish --max-attempts 10 --base-delay 5s --max-delay 5m
+```
+
+---
+
+## Failure mode: CI cancellation
+
+**Scenario:** A GitHub Actions job is cancelled (timeout, manual cancel, or a
+new push) after `core` and `macros` are published but before `cli`.
+
+**What happens:**
+1. The process is killed. `.shipper/state.json` reflects the last persisted
+   state (state is saved after each crate completes).
+2. `core` and `macros` show `published`; `cli` shows `pending`.
+
+**Recovery:** Re-run the CI job. Shipper detects the existing state and resumes:
+```bash
+shipper publish   # or: shipper resume
+```
+
+### Lock file safety
+
+Shipper writes `.shipper/lock` to prevent concurrent runs. If a CI runner is
+killed without cleanup, the lock may become stale. Shipper automatically
+expires stale locks (default: 1 h).
 
 ```bash
-# Force override of existing locks (use with caution)
+# Force-clear a stale lock
 shipper publish --force
 
 # Adjust lock timeout
 shipper publish --lock-timeout 30m
 ```
 
-## Dry-run failures
+---
 
-Dry-run verification checks whether packages can be successfully published without actually uploading them.
+## CI-specific guidance
 
-### Issue: Dry-run failed for workspace
+### GitHub Actions
 
-**Symptoms**: Dry-run column shows `✗` for multiple packages in the preflight table
+```yaml
+name: Publish
+on:
+  push:
+    tags: ['v*']
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install shipper-cli --locked
 
-**Cause**: The workspace dry-run check failed, indicating issues with dependencies or metadata
+      # Restore state from a previous (possibly failed) run
+      - uses: actions/download-artifact@v7
+        with:
+          name: shipper-state
+          path: .shipper
+        continue-on-error: true  # first run has no artifact
 
-**Solutions**:
-1. Run `cargo publish --dry-run` manually to see the full error
-2. Check for missing dependencies or version conflicts
-3. Verify all packages have valid `Cargo.toml` metadata
-4. Ensure workspace members are properly configured
+      - run: shipper publish --quiet
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-### Issue: Dry-run failed for specific package
-
-**Symptoms**: Dry-run column shows `✗` for a single package in the preflight table
-
-**Cause**: A specific package has issues that prevent publishing
-
-**Solutions**:
-1. Run `cargo publish -p <package-name> --dry-run` to see the full error
-2. Check package-specific dependencies
-3. Verify the package's `Cargo.toml` is valid
-4. Ensure the package version hasn't been published already
-
-## Readiness failures
-
-A crate may appear to publish successfully but not be immediately available on the registry. Shipper's readiness checks verify actual registry visibility before proceeding.
-
-### Readiness methods
-
-Shipper supports three readiness verification methods:
-
-| Method | Speed | Accuracy | Use Case |
-|--------|-------|----------|----------|
-| **API** | Fast | Good | Default choice for most users |
-| **Index** | Slower | High | When API is unreliable |
-| **Both** | Slowest | Highest | Critical production publishes |
-
-```bash
-# Use index-based readiness
-shipper publish --readiness-method index
-
-# Use both methods for maximum reliability
-shipper publish --readiness-method both
-
-# Configure timeout and poll interval
-shipper publish --readiness-timeout 10m --readiness-poll 5s
-
-# Disable readiness checks (advanced users only)
-shipper publish --no-readiness
+      # Always save state — even on failure — so the next run can resume
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: shipper-state
+          path: .shipper
 ```
 
-### Readiness timeout
+**Key patterns:**
+- `continue-on-error: true` on the download step so the first run doesn't fail.
+- `if: always()` on the upload step so state is saved even when publish fails.
+- Re-running the job automatically resumes from the saved state.
 
-If readiness checks fail, Shipper will:
+### GitLab CI
 
-1. Retry with exponential backoff
-2. Wait up to the configured timeout (default: 5m)
-3. Fail the publish if the crate doesn't become visible
+```yaml
+publish:
+  image: rust:latest
+  stage: publish
+  rules:
+    - if: $CI_COMMIT_TAG
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - .shipper/
+      - target/
+  script:
+    - cargo install shipper-cli --locked
+    - shipper publish --quiet
+  variables:
+    CARGO_REGISTRY_TOKEN: $CARGO_REGISTRY_TOKEN
+  artifacts:
+    paths:
+      - .shipper/
+    expire_in: 1 day
+    when: always  # save state on failure too
+```
 
-### Index-based readiness issues
+**Key patterns:**
+- `cache` persists `.shipper/` across pipeline retries on the same branch/tag.
+- `when: always` on artifacts ensures state survives failed jobs.
+- Click **Retry** in the GitLab UI and Shipper picks up where it left off.
 
-#### Issue: Index checks are slow
-
-**Symptoms**: Readiness checks take a long time when using `index` or `both` methods
-
-**Cause**: The sparse index is large and checking it requires downloading and parsing index files
-
-**Solutions**:
-1. Use API-based readiness for faster checks: `--readiness-method api`
-2. Increase the timeout: `--readiness-timeout 10m`
-3. Use a local index mirror for faster access
-
-#### Issue: Index shows stale data
-
-**Symptoms**: Index checks fail even though the crate was successfully published
-
-**Cause**: The sparse index hasn't been updated yet (propagation delay)
-
-**Solutions**:
-1. Use API-based readiness instead: `--readiness-method api`
-2. Use both methods: `--readiness-method both`
-3. Increase the timeout to allow index propagation
-4. Manually update the index: `cargo update`
+---
 
 ## Evidence and debugging
 
-### Event log
+### Event log (`.shipper/events.jsonl`)
 
-The event log (`.shipper/events.jsonl`) provides a complete audit trail. Each line is a JSON object representing a `PublishEvent`:
+Append-only, one JSON object per line:
 
 ```json
-{"timestamp":"2025-02-10T15:30:00Z","event_type":{"type":"preflight_started"},"package":""}
-{"timestamp":"2025-02-10T15:30:05Z","event_type":{"type":"preflight_complete","finishability":"proven"},"package":""}
-{"timestamp":"2025-02-10T15:30:10Z","event_type":{"type":"package_started","name":"my-crate","version":"0.1.0"},"package":"my-crate@0.1.0"}
-{"timestamp":"2025-02-10T15:30:12Z","event_type":{"type":"package_attempted","attempt":1,"command":"cargo publish -p my-crate"},"package":"my-crate@0.1.0"}
-{"timestamp":"2025-02-10T15:30:30Z","event_type":{"type":"package_published","duration_ms":18000},"package":"my-crate@0.1.0"}
+{"timestamp":"2025-06-01T12:00:00Z","event_type":{"type":"execution_started"},"package":""}
+{"timestamp":"2025-06-01T12:01:00Z","event_type":{"type":"package_started","name":"my-core","version":"0.3.0"},"package":"my-core@0.3.0"}
+{"timestamp":"2025-06-01T12:01:05Z","event_type":{"type":"package_attempted","attempt":1,"command":"cargo publish -p my-core"},"package":"my-core@0.3.0"}
+{"timestamp":"2025-06-01T12:01:20Z","event_type":{"type":"package_published","duration_ms":15000},"package":"my-core@0.3.0"}
 ```
 
-### Receipt format
+### Receipt (`.shipper/receipt.json`)
 
-The receipt (`.shipper/receipt.json`) contains structured audit data:
+Written after the run completes. Contains per-package evidence (every attempt's
+command, exit code, stdout/stderr tail, and timing) plus git context and
+environment fingerprint. See [the types in `crates/shipper-types`](../crates/shipper-types/src/lib.rs)
+for the full schema.
 
-```json
-{
-  "receipt_version": "shipper.receipt.v2",
-  "plan_id": "abc123",
-  "registry": {
-    "name": "crates-io",
-    "api_base": "https://crates.io",
-    "index_base": null
-  },
-  "started_at": "2025-02-10T15:30:00Z",
-  "finished_at": "2025-02-10T15:30:45Z",
-  "packages": [
-    {
-      "name": "my-crate",
-      "version": "0.1.0",
-      "attempts": 1,
-      "state": "Published",
-      "started_at": "2025-02-10T15:30:10Z",
-      "finished_at": "2025-02-10T15:30:30Z",
-      "duration_ms": 20000,
-      "evidence": {
-        "attempts": [
-          {
-            "attempt_number": 1,
-            "command": "cargo publish -p my-crate",
-            "exit_code": 0,
-            "stdout_tail": "...",
-            "stderr_tail": "...",
-            "timestamp": "2025-02-10T15:30:12Z",
-            "duration": 18000
-          }
-        ],
-        "readiness_checks": [
-          {
-            "attempt": 1,
-            "visible": true,
-            "timestamp": "2025-02-10T15:30:32Z",
-            "delay_before": 2000
-          }
-        ]
-      }
-    }
-  ],
-  "event_log_path": ".shipper/events.jsonl",
-  "git_context": {
-    "commit": "abc1234",
-    "branch": "main",
-    "tag": "v0.1.0",
-    "dirty": false
-  },
-  "environment": {
-    "shipper_version": "0.2.0",
-    "cargo_version": "cargo 1.82.0",
-    "rust_version": "rustc 1.82.0",
-    "os": "linux",
-    "arch": "x86_64"
-  }
-}
+### Inspection commands
+
+```bash
+shipper inspect-events                 # human-readable event timeline
+shipper inspect-receipt                # formatted receipt summary
+shipper inspect-receipt --format json  # machine-readable for scripts
+shipper status                         # compare local versions vs registry
+shipper doctor                         # check environment, auth, tools
 ```
 
 ### Cleaning up
 
-After successful publishes, you may want to clean up state files:
-
 ```bash
-# Clean all state files
-shipper clean
-
-# Keep the receipt for audit purposes
-shipper clean --keep-receipt
+shipper clean                 # remove all state files
+shipper clean --keep-receipt  # keep receipt.json for auditing
 ```
 
-## Common failure scenarios
-
-### Scenario 1: Network timeout during upload
-
-**Symptoms**: `cargo publish` times out, but crate appears on registry
-
-**How Shipper handles**:
-1. Captures evidence from the failed command
-2. Checks registry for crate existence
-3. If found, marks as successful and continues
-4. If not found, retries with backoff
-
-**Debug with**:
-```bash
-shipper inspect-events
-shipper inspect-receipt
-```
-
-### Scenario 2: Rate limiting (HTTP 429)
-
-**Symptoms**: Registry returns 429 Too Many Requests
-
-**How Shipper handles**:
-1. Recognizes retryable error
-2. Waits with exponential backoff + jitter
-3. Retries up to max attempts
-4. Logs all attempts in event log
-
-**Debug with**:
-```bash
-shipper inspect-events
-```
-
-### Scenario 3: CI cancellation mid-publish
-
-**Symptoms**: Some crates published, job cancelled
-
-**How Shipper handles**:
-1. State file tracks progress
-2. Resume skips published crates
-3. Continues with remaining crates
-
-**Debug with**:
-```bash
-shipper status
-shipper inspect-receipt
-```
-
-### Scenario 4: Permission denied
-
-**Symptoms**: `cargo publish` fails with permission error
-
-**How Shipper handles**:
-1. Captures detailed error evidence
-2. Logs failure in event log
-3. Continues with other crates if possible
-4. Provides clear error message
-
-**Prevent with**:
-```bash
-shipper preflight --strict-ownership
-```
-
-### Scenario 5: Registry not ready
-
-**Symptoms**: Publish succeeds but crate not immediately available
-
-**How Shipper handles**:
-1. Performs readiness checks
-2. Retries with backoff until timeout
-3. Fails if crate doesn't become visible
-4. Logs all readiness attempts
-
-**Configure with**:
-```bash
-shipper publish --readiness-method both --readiness-timeout 10m
-```
+---
 
 ## Getting help
 
-If you encounter a failure mode not covered here:
+If you encounter a failure not covered above:
 
-1. Use `shipper inspect-events` to see the complete event log
-2. Use `shipper inspect-receipt` to see captured evidence
-3. Use `shipper doctor` to check your environment and auth
-4. Run `shipper clean` to reset state if needed
-5. File an issue with the event log and receipt attached
+1. Run `shipper doctor` to check your environment.
+2. Inspect `.shipper/events.jsonl` and `.shipper/receipt.json` for evidence.
+3. File an issue with the event log and receipt attached.

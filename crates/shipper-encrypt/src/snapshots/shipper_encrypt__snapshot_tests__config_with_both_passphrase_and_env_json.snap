@@ -1,0 +1,9 @@
+---
+source: crates/shipper-encrypt/src/lib.rs
+expression: json
+---
+{
+  "enabled": true,
+  "passphrase": "inline-pass",
+  "env_var": "SHIPPER_ENCRYPT_KEY"
+}

@@ -1,0 +1,5 @@
+---
+source: crates/shipper-encrypt/src/lib.rs
+expression: cfg.to_string()
+---
+encryption: enabled (passphrase: s**************y)

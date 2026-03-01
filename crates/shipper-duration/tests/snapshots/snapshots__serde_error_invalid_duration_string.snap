@@ -1,0 +1,10 @@
+---
+source: crates/shipper-duration/tests/snapshots.rs
+expression: "output.join(\"\\n\")"
+---
+{"value":"not-a-duration"}
+  => invalid duration: expected number at 0 at line 1 column 26
+{"value":"abc"}
+  => invalid duration: expected number at 0 at line 1 column 15
+{"value":"1x"}
+  => invalid duration: unknown time unit "x", supported units: ns, us/µs, ms, sec, min, hours, days, weeks, months, years (and few variations) at line 1 column 14

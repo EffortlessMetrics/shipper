@@ -2366,6 +2366,7 @@ name = "shipper-duration"
 version = "0.3.0-rc.1"
 dependencies = [
  "humantime",
+ "insta",
  "proptest",
  "serde",
  "serde_json",
@@ -2379,6 +2380,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "base64",
+ "insta",
  "pbkdf2",
  "proptest",
  "serde",
@@ -2552,6 +2554,7 @@ version = "0.3.0-rc.1"
 dependencies = [
  "atty",
  "indicatif",
+ "insta",
  "proptest",
 ]
 

@@ -1,0 +1,6 @@
+---
+source: crates/shipper-progress/tests/snapshots.rs
+expression: "format!(\"before: {before}\\nafter:  {after}\")"
+---
+before: total=2 current=1 name="old-name@0.0.1" tty=false
+after:  total=2 current=1 name="new-name@0.0.2" tty=false

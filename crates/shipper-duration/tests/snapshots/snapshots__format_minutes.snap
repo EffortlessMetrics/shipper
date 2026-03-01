@@ -1,0 +1,9 @@
+---
+source: crates/shipper-duration/tests/snapshots.rs
+expression: "output.join(\"\\n\")"
+---
+1m => 1m
+2m => 2m
+5m => 5m
+30m => 30m
+59m => 59m

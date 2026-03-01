@@ -1,0 +1,5 @@
+---
+source: crates/shipper-progress/tests/snapshots.rs
+expression: output
+---
+[1/1] Publishing @...

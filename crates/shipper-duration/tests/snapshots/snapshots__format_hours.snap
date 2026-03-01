@@ -1,0 +1,8 @@
+---
+source: crates/shipper-duration/tests/snapshots.rs
+expression: "output.join(\"\\n\")"
+---
+1h => 1h
+2h => 2h
+12h => 12h
+23h => 23h

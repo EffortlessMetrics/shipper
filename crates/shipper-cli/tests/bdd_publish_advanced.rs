@@ -4,8 +4,9 @@
 //! behaviour on cargo-publish failures, plan-as-dry-run previews, skipping
 //! already-published crates, and partial multi-crate failures.
 //!
-//! Tests that spawn mock registries use `#[serial]` to avoid Windows-specific
-//! network contention when multiple tiny_http servers run in parallel.
+//! NOTE: On Windows, run with `--test-threads=1` if any tests fail with
+//! "failed to send request to registry" due to concurrent tiny_http
+//! servers exhausting network resources.
 
 use std::fs;
 use std::path::Path;
@@ -15,7 +16,6 @@ use std::time::Duration;
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
-use serial_test::serial;
 use tempfile::tempdir;
 use tiny_http::{Header, Response, Server, StatusCode};
 
@@ -220,6 +220,8 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
             req.respond(resp).expect("respond");
         }
     });
+    // Give the server thread a moment to enter its accept loop
+    thread::sleep(Duration::from_millis(50));
     TestRegistry { base_url, handle }
 }
 
@@ -259,7 +261,6 @@ mod registry_errors {
     // When:  Running `publish`
     // Then:  Publish fails with an error mentioning the unexpected status
     #[test]
-    #[serial]
     fn given_registry_returns_401_when_publish_then_fails_with_auth_error() {
         // Given
         let td = tempdir().expect("tempdir");
@@ -303,7 +304,6 @@ mod registry_errors {
     // When:  Running `publish`
     // Then:  Publish fails with an error mentioning the unexpected status
     #[test]
-    #[serial]
     fn given_registry_returns_429_when_publish_then_fails_with_rate_limit_error() {
         // Given
         let td = tempdir().expect("tempdir");
@@ -356,7 +356,6 @@ mod retry_on_failure {
     // When:  Running `publish` with --max-attempts 2 --base-delay 0ms
     // Then:  Publish eventually fails after retrying, and state is saved
     #[test]
-    #[serial]
     fn given_cargo_fails_when_publish_with_retries_then_exhausts_attempts_and_fails() {
         // Given
         let td = tempdir().expect("tempdir");
@@ -526,7 +525,6 @@ mod already_published_skip {
     // When:  Running `publish`
     // Then:  Publish succeeds, receipt shows the package as skipped
     #[test]
-    #[serial]
     fn given_already_published_crate_when_publish_then_skipped_in_receipt() {
         // Given
         let td = tempdir().expect("tempdir");
@@ -604,7 +602,6 @@ mod multi_crate_partial_failure {
     // Then:  Publish fails; state.json shows core as published, utils as
     //        failed, and app still pending (never attempted)
     #[test]
-    #[serial]
     fn given_middle_crate_fails_when_publish_then_later_crates_not_attempted() {
         // Given
         let td = tempdir().expect("tempdir");
