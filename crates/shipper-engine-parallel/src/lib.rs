@@ -3296,6 +3296,124 @@ mod tests {
                 .collect();
             assert_debug_snapshot!(layout);
         }
+
+        #[test]
+        fn snapshot_execution_plan_wide_fan_out() {
+            // One root with 5 leaves (wide workspace like multi-binary repos)
+            let plan = ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-snap-fan-out".to_string(),
+                created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: "https://crates.io".to_string(),
+                    index_base: None,
+                },
+                packages: vec![
+                    PlannedPackage {
+                        name: "core".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/core/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "cli".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/cli/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "web".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/web/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "api".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/api/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "worker".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/worker/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "bench".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/bench/Cargo.toml"),
+                    },
+                ],
+                dependencies: BTreeMap::from([
+                    ("cli".to_string(), vec!["core".to_string()]),
+                    ("web".to_string(), vec!["core".to_string()]),
+                    ("api".to_string(), vec!["core".to_string()]),
+                    ("worker".to_string(), vec!["core".to_string()]),
+                    ("bench".to_string(), vec!["core".to_string()]),
+                ]),
+            };
+            let levels = plan.group_by_levels();
+            let layout: Vec<(usize, Vec<&str>)> = levels
+                .iter()
+                .map(|l| {
+                    (
+                        l.level,
+                        l.packages.iter().map(|p| p.name.as_str()).collect(),
+                    )
+                })
+                .collect();
+            assert_debug_snapshot!(layout);
+        }
+
+        #[test]
+        fn snapshot_execution_plan_independent_forest() {
+            // All crates independent (common for unrelated utility crates)
+            let plan = ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-snap-forest".to_string(),
+                created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: "https://crates.io".to_string(),
+                    index_base: None,
+                },
+                packages: vec![
+                    PlannedPackage {
+                        name: "utils-a".to_string(),
+                        version: "0.1.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/utils-a/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "utils-b".to_string(),
+                        version: "0.2.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/utils-b/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "utils-c".to_string(),
+                        version: "0.3.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/utils-c/Cargo.toml"),
+                    },
+                    PlannedPackage {
+                        name: "utils-d".to_string(),
+                        version: "0.4.0".to_string(),
+                        manifest_path: PathBuf::from("/ws/utils-d/Cargo.toml"),
+                    },
+                ],
+                dependencies: BTreeMap::new(),
+            };
+            let levels = plan.group_by_levels();
+            let layout: Vec<(usize, Vec<&str>)> = levels
+                .iter()
+                .map(|l| {
+                    (
+                        l.level,
+                        l.packages.iter().map(|p| p.name.as_str()).collect(),
+                    )
+                })
+                .collect();
+            assert_debug_snapshot!(layout);
+        }
     }
 
     // ---------------------------------------------------------------------------
@@ -3669,6 +3787,867 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
+    // Empty plan: no packages → no receipts
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn test_empty_plan_produces_no_receipts() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // No packages at all
+        let server = spawn_registry_server(BTreeMap::new(), 0);
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-empty".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: vec![],
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+        let mut st = ExecutionState {
+            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: BTreeMap::new(),
+        };
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts =
+                    run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                        .expect("empty publish");
+
+                assert!(receipts.is_empty(), "empty plan should produce no receipts");
+            },
+        );
+        drop(server);
+    }
+
+    // ---------------------------------------------------------------------------
+    // All independent packages land in a single level
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_all_independent_packages_single_level() {
+        let packages: Vec<PlannedPackage> = (0..8)
+            .map(|i| PlannedPackage {
+                name: format!("pkg-{i}"),
+                version: "1.0.0".to_string(),
+                manifest_path: PathBuf::from(format!("pkg-{i}/Cargo.toml")),
+            })
+            .collect();
+
+        let plan = ReleasePlan {
+            plan_version: "1".to_string(),
+            plan_id: "plan-all-independent".to_string(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages,
+            dependencies: BTreeMap::new(),
+        };
+
+        let levels = plan.group_by_levels();
+        assert_eq!(levels.len(), 1, "all independent → exactly 1 level");
+        assert_eq!(levels[0].packages.len(), 8, "all 8 packages in level 0");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Wide fan-out: one root with many dependents → exactly 2 levels
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_wide_fan_out_two_levels() {
+        let mut packages = vec![PlannedPackage {
+            name: "root".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: PathBuf::from("root/Cargo.toml"),
+        }];
+        let mut deps = BTreeMap::new();
+        for i in 0..6 {
+            let name = format!("leaf-{i}");
+            packages.push(PlannedPackage {
+                name: name.clone(),
+                version: "1.0.0".to_string(),
+                manifest_path: PathBuf::from(format!("{name}/Cargo.toml")),
+            });
+            deps.insert(name, vec!["root".to_string()]);
+        }
+
+        let plan = ReleasePlan {
+            plan_version: "1".to_string(),
+            plan_id: "plan-fan-out".to_string(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages,
+            dependencies: deps,
+        };
+
+        let levels = plan.group_by_levels();
+        assert_eq!(levels.len(), 2, "fan-out should produce exactly 2 levels");
+        assert_eq!(levels[0].packages.len(), 1, "level 0 has root only");
+        assert_eq!(levels[1].packages.len(), 6, "level 1 has all 6 leaves");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Deep chain produces exactly N levels
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_deep_chain_produces_n_levels() {
+        let n = 7;
+        let packages: Vec<PlannedPackage> = (0..n)
+            .map(|i| PlannedPackage {
+                name: format!("c{i}"),
+                version: "1.0.0".to_string(),
+                manifest_path: PathBuf::from(format!("c{i}/Cargo.toml")),
+            })
+            .collect();
+        let mut deps = BTreeMap::new();
+        for i in 1..n {
+            deps.insert(format!("c{i}"), vec![format!("c{}", i - 1)]);
+        }
+
+        let plan = ReleasePlan {
+            plan_version: "1".to_string(),
+            plan_id: "plan-deep-chain".to_string(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages,
+            dependencies: deps,
+        };
+
+        let levels = plan.group_by_levels();
+        assert_eq!(
+            levels.len(),
+            n,
+            "chain of {n} should produce exactly {n} levels"
+        );
+        for (i, level) in levels.iter().enumerate() {
+            assert_eq!(level.packages.len(), 1);
+            assert_eq!(level.packages[0].name, format!("c{i}"));
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // max_concurrent > package count: all run in one batch
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn test_max_concurrent_exceeds_package_count() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let server = spawn_registry_server(
+            BTreeMap::from([
+                (
+                    "/api/v1/crates/p1/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/p2/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+            ]),
+            2,
+        );
+
+        let packages: Vec<PlannedPackage> = ["p1", "p2"]
+            .iter()
+            .map(|n| PlannedPackage {
+                name: n.to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join(n).join("Cargo.toml"),
+            })
+            .collect();
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-over-concurrent".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: packages.clone(),
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        opts.parallel.max_concurrent = 100; // far exceeds 2 packages
+
+        let mut state_packages = BTreeMap::new();
+        for p in &packages {
+            state_packages.insert(
+                pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let st = Arc::new(Mutex::new(ExecutionState {
+            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: state_packages,
+        }));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        let level = PublishLevel { level: 0, packages };
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts = run_publish_level(
+                    &level,
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                )
+                .expect("level publish");
+
+                assert_eq!(receipts.len(), 2, "both packages should complete");
+                for r in &receipts {
+                    assert!(matches!(r.state, PackageState::Skipped { .. }));
+                }
+            },
+        );
+        server.join();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Two independent failures in same level: error message reports both
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn test_independent_failures_both_reported() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        // Both packages not published, both will fail
+        let server = spawn_registry_server(
+            BTreeMap::from([
+                (
+                    "/api/v1/crates/fail-a/0.1.0".to_string(),
+                    vec![(404, "{}".to_string()), (404, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/fail-b/0.1.0".to_string(),
+                    vec![(404, "{}".to_string()), (404, "{}".to_string())],
+                ),
+            ]),
+            4,
+        );
+
+        let packages: Vec<PlannedPackage> = ["fail-a", "fail-b"]
+            .iter()
+            .map(|n| PlannedPackage {
+                name: n.to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join(n).join("Cargo.toml"),
+            })
+            .collect();
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-dual-fail".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: packages.clone(),
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        opts.max_attempts = 1;
+
+        let mut state_packages = BTreeMap::new();
+        for p in &packages {
+            state_packages.insert(
+                pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let st = Arc::new(Mutex::new(ExecutionState {
+            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: state_packages,
+        }));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        let level = PublishLevel { level: 0, packages };
+
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+                ),
+                ("SHIPPER_CARGO_EXIT", Some("1")),
+                ("SHIPPER_CARGO_STDERR", Some("permission denied")),
+            ],
+            || {
+                let result = run_publish_level(
+                    &level,
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                );
+
+                assert!(result.is_err());
+                let err_msg = format!("{:#}", result.unwrap_err());
+                assert!(
+                    err_msg.contains("2 package"),
+                    "error should mention 2 failed packages, got: {err_msg}"
+                );
+            },
+        );
+        server.join();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Concurrent state updates: all packages in a parallel level write state
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn test_concurrent_state_updates_consistent() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let pkg_names: Vec<&str> = vec!["s1", "s2", "s3", "s4"];
+        let mut routes = BTreeMap::new();
+        for name in &pkg_names {
+            routes.insert(
+                format!("/api/v1/crates/{name}/0.1.0"),
+                vec![(200, "{}".to_string())],
+            );
+        }
+        let server = spawn_registry_server(routes, pkg_names.len());
+
+        let packages: Vec<PlannedPackage> = pkg_names
+            .iter()
+            .map(|n| PlannedPackage {
+                name: n.to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join(n).join("Cargo.toml"),
+            })
+            .collect();
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-concurrent-state".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: packages.clone(),
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        opts.parallel.max_concurrent = 4; // all run concurrently
+
+        let mut state_packages = BTreeMap::new();
+        for p in &packages {
+            state_packages.insert(
+                pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let st = Arc::new(Mutex::new(ExecutionState {
+            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: state_packages,
+        }));
+        let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+        let events_path = events::events_path(&state_dir);
+        let reporter: Arc<Mutex<dyn Reporter + Send>> =
+            Arc::new(Mutex::new(CollectingReporter::default()));
+
+        let level = PublishLevel { level: 0, packages };
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts = run_publish_level(
+                    &level,
+                    &ws,
+                    &opts,
+                    &reg,
+                    &st,
+                    &state_dir,
+                    &event_log,
+                    &events_path,
+                    &reporter,
+                )
+                .expect("level publish");
+
+                assert_eq!(receipts.len(), 4);
+
+                // Verify state was updated for every package
+                let state = st.lock().unwrap();
+                for name in &pkg_names {
+                    let key = pkg_key(name, "0.1.0");
+                    let progress = state.packages.get(&key).expect(name);
+                    assert!(
+                        matches!(progress.state, PackageState::Skipped { .. }),
+                        "{name} state should be Skipped, got {:?}",
+                        progress.state
+                    );
+                }
+                // All keys present
+                assert_eq!(state.packages.len(), 4);
+            },
+        );
+        server.join();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Balanced policy preserves readiness
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_balanced_policy_preserves_readiness() {
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.policy = shipper_types::PublishPolicy::Balanced;
+        opts.readiness.enabled = true;
+
+        let effects = policy_effects(&opts);
+        assert!(
+            effects.readiness_enabled,
+            "Balanced policy should preserve readiness"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Execution result classification: mixed states
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_execution_result_mixed_published_and_skipped_is_success() {
+        let receipts = [
+            PackageReceipt {
+                name: "a".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 1,
+                state: PackageState::Published,
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 100,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+            PackageReceipt {
+                name: "b".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 0,
+                state: PackageState::Skipped {
+                    reason: "already published".into(),
+                },
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 0,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+            PackageReceipt {
+                name: "c".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 1,
+                state: PackageState::Uploaded,
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 50,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+        ];
+
+        let all_ok = receipts.iter().all(|r| {
+            matches!(
+                r.state,
+                PackageState::Published | PackageState::Uploaded | PackageState::Skipped { .. }
+            )
+        });
+        assert!(
+            all_ok,
+            "Published+Skipped+Uploaded mix should be classified as success"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Execution result classification: partial failure
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_execution_result_partial_failure() {
+        let receipts = [
+            PackageReceipt {
+                name: "good".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 1,
+                state: PackageState::Published,
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 100,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+            PackageReceipt {
+                name: "bad".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 3,
+                state: PackageState::Failed {
+                    class: ErrorClass::Permanent,
+                    message: "denied".into(),
+                },
+                started_at: Utc::now(),
+                finished_at: Utc::now(),
+                duration_ms: 200,
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+            },
+        ];
+
+        let success_count = receipts
+            .iter()
+            .filter(|r| matches!(r.state, PackageState::Published))
+            .count();
+        let all_ok = receipts.iter().all(|r| {
+            matches!(
+                r.state,
+                PackageState::Published | PackageState::Uploaded | PackageState::Skipped { .. }
+            )
+        });
+
+        assert!(!all_ok, "mix with Failed should not be all-ok");
+        assert!(success_count > 0, "some packages succeeded");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Execution result classification: complete failure
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_execution_result_complete_failure() {
+        let receipts = [PackageReceipt {
+            name: "only".to_string(),
+            version: "1.0.0".to_string(),
+            attempts: 2,
+            state: PackageState::Failed {
+                class: ErrorClass::Permanent,
+                message: "denied".into(),
+            },
+            started_at: Utc::now(),
+            finished_at: Utc::now(),
+            duration_ms: 300,
+            evidence: PackageEvidence {
+                attempts: vec![],
+                readiness_checks: vec![],
+            },
+        }];
+
+        let success_count = receipts
+            .iter()
+            .filter(|r| matches!(r.state, PackageState::Published))
+            .count();
+        assert_eq!(success_count, 0, "no successes → complete failure");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Level reporter message format: includes concurrent count
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn test_level_message_includes_max_concurrent() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let server = spawn_registry_server(
+            BTreeMap::from([
+                (
+                    "/api/v1/crates/m1/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/m2/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/m3/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+            ]),
+            3,
+        );
+
+        let packages: Vec<PlannedPackage> = ["m1", "m2", "m3"]
+            .iter()
+            .map(|n| PlannedPackage {
+                name: n.to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join(n).join("Cargo.toml"),
+            })
+            .collect();
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-msg-test".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: packages.clone(),
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        opts.parallel.max_concurrent = 2;
+
+        let mut state_packages = BTreeMap::new();
+        for p in &packages {
+            state_packages.insert(
+                pkg_key(&p.name, &p.version),
+                PackageProgress {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let mut st = ExecutionState {
+            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            packages: state_packages,
+        };
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let receipts =
+                    run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                        .expect("publish");
+
+                assert_eq!(receipts.len(), 3);
+
+                // Reporter infos are replayed from the internal SendReporter.
+                // The level info message format is: "Level N: publishing M packages (max concurrent: C)"
+                let level_msg = reporter
+                    .infos
+                    .iter()
+                    .find(|m| m.contains("Level 0"))
+                    .expect("should have Level 0 message");
+                assert!(
+                    level_msg.contains("max concurrent: 2"),
+                    "level message should include max concurrent, got: {level_msg}"
+                );
+                assert!(
+                    level_msg.contains("3 packages"),
+                    "level message should include package count, got: {level_msg}"
+                );
+            },
+        );
+        server.join();
+    }
+
+    // ---------------------------------------------------------------------------
+    // State persisted to disk after level completion
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn test_state_persisted_to_disk_after_level() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/saved/0.1.0".to_string(),
+                vec![(200, "{}".to_string())],
+            )]),
+            1,
+        );
+
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let ws = PlannedWorkspace {
+            plan: ReleasePlan {
+                packages: vec![PlannedPackage {
+                    name: "saved".to_string(),
+                    version: "0.1.0".to_string(),
+                    manifest_path: td.path().join("saved").join("Cargo.toml"),
+                }],
+                ..ws.plan
+            },
+            ..ws
+        };
+
+        let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+        let state_dir = td.path().join(".shipper");
+        let opts = default_opts(state_dir.clone());
+        let mut st = init_state_for_package(&ws.plan.plan_id, &ws.plan.registry, "saved", "0.1.0");
+        let mut reporter = CollectingReporter::default();
+
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            || {
+                let _ = run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                    .expect("publish");
+
+                // Verify state file was written to disk
+                let state_file = state_dir.join("state.json");
+                assert!(
+                    state_file.exists(),
+                    "state.json should be persisted to disk"
+                );
+                let contents = fs::read_to_string(&state_file).expect("read state");
+                let on_disk: ExecutionState = serde_json::from_str(&contents).expect("parse state");
+                let progress = on_disk.packages.get("saved@0.1.0").expect("pkg");
+                assert!(
+                    matches!(progress.state, PackageState::Skipped { .. }),
+                    "on-disk state should be Skipped, got {:?}",
+                    progress.state
+                );
+            },
+        );
+        server.join();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Chunking exact multiple: N items ÷ chunk_size = no remainder
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_chunking_exact_multiple_no_remainder() {
+        let items: Vec<String> = (0..12).map(|i| format!("pkg-{i}")).collect();
+        let chunks = chunk_by_max_concurrent(&items, 4);
+        assert_eq!(chunks.len(), 3, "12 / 4 = exactly 3 chunks");
+        for chunk in &chunks {
+            assert_eq!(chunk.len(), 4, "each chunk should have exactly 4 items");
+        }
+    }
+
+    // ---------------------------------------------------------------------------
     // Property tests: level count >= 1 for non-empty input
     // ---------------------------------------------------------------------------
 
@@ -3733,6 +4712,114 @@ mod tests {
                 let levels = plan.group_by_levels();
                 let total: usize = levels.iter().map(|l| l.packages.len()).sum();
                 prop_assert_eq!(total, expected_count, "every package must appear exactly once");
+            }
+
+            #[test]
+            fn dependencies_always_in_earlier_levels(
+                n in 2usize..12,
+                edge_count in 0usize..20,
+            ) {
+                // Build a random valid DAG: edges only go from higher-index to lower-index
+                let packages: Vec<PlannedPackage> = (0..n)
+                    .map(|i| PlannedPackage {
+                        name: format!("p{i}"),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from(format!("p{i}/Cargo.toml")),
+                    })
+                    .collect();
+
+                let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                // Deterministic pseudo-random edges using index arithmetic
+                for e in 0..edge_count {
+                    let dependent_idx = (e % (n - 1)) + 1; // 1..n-1
+                    let dep_idx = e % dependent_idx; // 0..dependent_idx
+                    deps.entry(format!("p{dependent_idx}"))
+                        .or_default()
+                        .push(format!("p{dep_idx}"));
+                }
+                // Deduplicate
+                for v in deps.values_mut() {
+                    v.sort();
+                    v.dedup();
+                }
+
+                let plan = ReleasePlan {
+                    plan_version: "1".to_string(),
+                    plan_id: "prop-dag".to_string(),
+                    created_at: Utc::now(),
+                    registry: Registry::crates_io(),
+                    packages,
+                    dependencies: deps.clone(),
+                };
+
+                let levels = plan.group_by_levels();
+
+                // Build level-index map
+                let mut pkg_level: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
+                for level in &levels {
+                    for p in &level.packages {
+                        pkg_level.insert(p.name.clone(), level.level);
+                    }
+                }
+
+                // Verify every dependency is in a strictly earlier level
+                for (pkg, dep_list) in &deps {
+                    if let Some(&pkg_lev) = pkg_level.get(pkg) {
+                        for dep in dep_list {
+                            if let Some(&dep_lev) = pkg_level.get(dep) {
+                                prop_assert!(
+                                    dep_lev < pkg_lev,
+                                    "dep {} (level {}) should precede {} (level {})",
+                                    dep, dep_lev, pkg, pkg_lev
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn independent_packages_all_in_single_level(
+                count in 1usize..20,
+            ) {
+                let packages: Vec<PlannedPackage> = (0..count)
+                    .map(|i| PlannedPackage {
+                        name: format!("ind{i}"),
+                        version: "1.0.0".to_string(),
+                        manifest_path: PathBuf::from(format!("ind{i}/Cargo.toml")),
+                    })
+                    .collect();
+
+                let plan = ReleasePlan {
+                    plan_version: "1".to_string(),
+                    plan_id: "prop-independent".to_string(),
+                    created_at: Utc::now(),
+                    registry: Registry::crates_io(),
+                    packages,
+                    dependencies: BTreeMap::new(),
+                };
+
+                let levels = plan.group_by_levels();
+                prop_assert_eq!(
+                    levels.len(), 1,
+                    "all independent packages must be in exactly 1 level"
+                );
+                prop_assert_eq!(levels[0].packages.len(), count);
+            }
+
+            #[test]
+            fn chunk_count_matches_ceiling_division(
+                n in 0usize..100,
+                max in 1usize..32,
+            ) {
+                let items: Vec<usize> = (0..n).collect();
+                let chunks = chunk_by_max_concurrent(&items, max);
+                let expected = if n == 0 { 0 } else { n.div_ceil(max) };
+                prop_assert_eq!(
+                    chunks.len(), expected,
+                    "chunk count mismatch"
+                );
             }
         }
     }

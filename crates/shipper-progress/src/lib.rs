@@ -787,6 +787,222 @@ mod tests {
             .collect();
         insta::assert_debug_snapshot!(formatted);
     }
+
+    // --- 11. Progress state: complete lifecycle snapshots ---
+
+    #[test]
+    fn snapshot_single_package_lifecycle() {
+        let mut reporter = ProgressReporter::silent(1);
+        let mut lines = Vec::new();
+
+        lines.push(format!(
+            "pending:     pkg={} name={:?}",
+            reporter.current_package(),
+            reporter.current_name(),
+        ));
+
+        reporter.set_package(1, "my-crate", "0.1.0");
+        lines.push(format!(
+            "in_progress: pkg={} name={:?}",
+            reporter.current_package(),
+            reporter.current_name(),
+        ));
+
+        reporter.finish_package();
+        lines.push(format!(
+            "complete:    pkg={} name={:?}",
+            reporter.current_package(),
+            reporter.current_name(),
+        ));
+
+        insta::assert_snapshot!(lines.join("\n"));
+    }
+
+    #[test]
+    fn snapshot_failed_midway_state() {
+        let mut reporter = ProgressReporter::silent(5);
+        let mut lines = Vec::new();
+
+        // Publish first two packages successfully.
+        for (i, name) in [(1, "core"), (2, "utils")] {
+            reporter.set_package(i, name, "0.1.0");
+            reporter.finish_package();
+        }
+
+        // Package 3 "fails" — we set it but never finish it.
+        reporter.set_package(3, "macros", "0.1.0");
+
+        lines.push(format!("total={}", reporter.total_packages()));
+        lines.push(format!("current_package={}", reporter.current_package()));
+        lines.push(format!("current_name={:?}", reporter.current_name()));
+        lines.push(format!(
+            "completed_pct={:.1}%",
+            (2.0 / reporter.total_packages() as f64) * 100.0
+        ));
+
+        insta::assert_snapshot!(lines.join("\n"));
+    }
+
+    // --- 12. Percentage edge cases ---
+
+    #[test]
+    fn test_percentage_one_third_precision() {
+        let total = 3_usize;
+        let current = 1_usize;
+        let pct = (current as f64 / total as f64) * 100.0;
+        assert!((pct - 33.333_333_333_333_336).abs() < 1e-10);
+        assert!((0.0..=100.0).contains(&pct));
+    }
+
+    #[test]
+    fn test_percentage_100_packages_milestones() {
+        let total = 100_usize;
+        for current in [0, 1, 10, 25, 50, 75, 99, 100] {
+            let pct = (current as f64 / total as f64) * 100.0;
+            assert!(
+                (0.0..=100.0).contains(&pct),
+                "out of range for {current}/{total}"
+            );
+            assert!(
+                (pct - current as f64).abs() < f64::EPSILON,
+                "expected {current}% but got {pct}"
+            );
+        }
+    }
+
+    // --- 13. Package tracking: non-sequential usage ---
+
+    #[test]
+    fn test_package_tracking_skip_indices() {
+        let mut reporter = ProgressReporter::silent(10);
+        reporter.set_package(1, "first", "0.1.0");
+        assert_eq!(reporter.current_package(), 1);
+        reporter.finish_package();
+
+        reporter.set_package(5, "fifth", "0.5.0");
+        assert_eq!(reporter.current_package(), 5);
+        reporter.finish_package();
+
+        reporter.set_package(10, "tenth", "1.0.0");
+        assert_eq!(reporter.current_package(), 10);
+        reporter.finish_package();
+
+        reporter.finish();
+    }
+
+    #[test]
+    fn test_package_tracking_reverse_order() {
+        let mut reporter = ProgressReporter::silent(3);
+        reporter.set_package(3, "c", "0.3.0");
+        assert_eq!(reporter.current_package(), 3);
+        reporter.set_package(2, "b", "0.2.0");
+        assert_eq!(reporter.current_package(), 2);
+        reporter.set_package(1, "a", "0.1.0");
+        assert_eq!(reporter.current_package(), 1);
+        assert_eq!(reporter.current_name(), "a@0.1.0");
+    }
+
+    // --- 14. Display formatting: unusual names ---
+
+    #[test]
+    fn test_display_format_numeric_name() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_package(1, "12345", "6.7.8");
+        assert_eq!(reporter.current_name(), "12345@6.7.8");
+    }
+
+    #[test]
+    fn test_display_format_single_char_name_and_version() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_package(1, "x", "0");
+        assert_eq!(reporter.current_name(), "x@0");
+    }
+
+    // --- 15. Single-package all operations ---
+
+    #[test]
+    fn test_single_package_all_operations() {
+        let mut reporter = ProgressReporter::silent(1);
+        assert_eq!(reporter.total_packages(), 1);
+        assert_eq!(reporter.current_package(), 0);
+        assert_eq!(reporter.current_name(), "");
+        assert!(!reporter.is_tty_mode());
+
+        reporter.set_status("Preparing");
+        reporter.set_package(1, "solo", "1.0.0");
+        assert_eq!(reporter.current_package(), 1);
+        assert_eq!(reporter.current_name(), "solo@1.0.0");
+
+        reporter.set_status("Uploading");
+        reporter.set_status("Verifying");
+        reporter.finish_package();
+
+        assert_eq!(reporter.current_package(), 1);
+        assert_eq!(reporter.current_name(), "solo@1.0.0");
+        reporter.finish();
+    }
+
+    // --- 16. Stress: many status updates ---
+
+    #[test]
+    fn test_many_status_updates_between_packages() {
+        let mut reporter = ProgressReporter::silent(2);
+        reporter.set_package(1, "pkg-a", "0.1.0");
+        for i in 0..100 {
+            reporter.set_status(&format!("Step {i}"));
+        }
+        reporter.finish_package();
+        reporter.set_package(2, "pkg-b", "0.2.0");
+        reporter.finish_package();
+        assert_eq!(reporter.current_package(), 2);
+        reporter.finish();
+    }
+
+    // --- 17. Finish without starting any package ---
+
+    #[test]
+    fn test_finish_immediately_with_packages() {
+        let reporter = ProgressReporter::silent(10);
+        assert_eq!(reporter.total_packages(), 10);
+        assert_eq!(reporter.current_package(), 0);
+        reporter.finish();
+    }
+
+    // --- 18. Multiple finish_package calls preserve name ---
+
+    #[test]
+    fn test_finish_package_preserves_current_name() {
+        let mut reporter = ProgressReporter::silent(3);
+        reporter.set_package(1, "alpha", "0.1.0");
+        reporter.finish_package();
+        assert_eq!(reporter.current_name(), "alpha@0.1.0");
+        reporter.finish_package();
+        assert_eq!(reporter.current_name(), "alpha@0.1.0");
+    }
+
+    // --- 19. State after partial publish ---
+
+    #[test]
+    fn test_state_after_partial_publish() {
+        let mut reporter = ProgressReporter::silent(5);
+        for i in 1..=3 {
+            reporter.set_package(i, &format!("crate-{i}"), "0.1.0");
+            reporter.finish_package();
+        }
+        // Simulate stopping after 3 of 5.
+        assert_eq!(reporter.current_package(), 3);
+        assert_eq!(reporter.total_packages(), 5);
+        assert_eq!(reporter.current_name(), "crate-3@0.1.0");
+    }
+
+    // --- 20. Display format with special version strings ---
+
+    #[test]
+    fn test_display_format_version_with_pre_and_build() {
+        let mut reporter = ProgressReporter::silent(1);
+        reporter.set_package(1, "crate", "1.0.0-alpha.1+build.456");
+        assert_eq!(reporter.current_name(), "crate@1.0.0-alpha.1+build.456");
+    }
 }
 
 #[cfg(test)]
@@ -945,6 +1161,46 @@ mod proptests {
             let reporter = ProgressReporter::silent(total);
             let pct = (reporter.current_package() as f64 / reporter.total_packages() as f64) * 100.0;
             prop_assert!((pct - 0.0).abs() < f64::EPSILON);
+        }
+
+        /// total_packages() is immutable: never changes after construction.
+        #[test]
+        fn total_packages_immutable(
+            total in 0usize..256,
+            ops in 0usize..64,
+            name in crate_name(),
+            version in semver_version(),
+        ) {
+            let mut reporter = ProgressReporter::silent(total);
+            for i in 1..=ops.min(total.max(1)) {
+                reporter.set_package(i, &name, &version);
+                prop_assert_eq!(reporter.total_packages(), total);
+                reporter.finish_package();
+                prop_assert_eq!(reporter.total_packages(), total);
+            }
+            reporter.set_status("done");
+            prop_assert_eq!(reporter.total_packages(), total);
+        }
+
+        /// finish_package does not alter current_name or current_package.
+        #[test]
+        fn finish_package_preserves_state(
+            total in 1usize..64,
+            index in 1usize..64,
+            name in crate_name(),
+            version in semver_version(),
+        ) {
+            let index = index.min(total);
+            let mut reporter = ProgressReporter::silent(total);
+            reporter.set_package(index, &name, &version);
+
+            let name_before = reporter.current_name().to_string();
+            let pkg_before = reporter.current_package();
+
+            reporter.finish_package();
+
+            prop_assert_eq!(reporter.current_name(), name_before.as_str());
+            prop_assert_eq!(reporter.current_package(), pkg_before);
         }
     }
 }

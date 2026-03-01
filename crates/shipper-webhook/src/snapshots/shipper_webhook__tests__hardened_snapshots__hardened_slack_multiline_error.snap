@@ -1,0 +1,18 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+expression: json
+---
+attachments:
+  - color: danger
+    fields:
+      - short: true
+        title: Package
+        value: my-crate
+      - short: true
+        title: Version
+        value: 1.0.0
+      - short: false
+        title: Error
+        value: "error[E0433]: failed to resolve\n  --> src/lib.rs:1:5\n  |\n1 | use foo::bar;\n  |     ^^^ not found"
+    text: Publish failed for my-crate@1.0.0
+    title: Publish Failed

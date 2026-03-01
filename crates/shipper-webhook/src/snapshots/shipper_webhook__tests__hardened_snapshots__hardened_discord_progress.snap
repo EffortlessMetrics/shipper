@@ -1,0 +1,9 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+expression: json
+---
+embeds:
+  - color: 65280
+    description: Publishing 3/5 crates complete
+    fields: []
+    title: Publish Progress

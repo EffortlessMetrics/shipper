@@ -1,0 +1,12 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+expression: json
+---
+commit_sha: abc123
+message: Published my-crate@2.0.0 to crates.io
+package: my-crate
+pipeline: release
+registry: crates-io
+success: true
+title: Workspace Publish Complete
+version: 2.0.0

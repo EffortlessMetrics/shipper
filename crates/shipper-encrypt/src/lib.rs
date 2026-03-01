@@ -1194,6 +1194,216 @@ mod tests {
             "even a single-char difference must cause decryption failure"
         );
     }
+
+    // ── Realistic data roundtrips ───────────────────────────────────────
+
+    #[test]
+    fn roundtrip_realistic_json_state() {
+        let state_json = br#"{
+            "plan_id": "abc123",
+            "workspace": "/home/user/project",
+            "crates": [
+                {"name": "core", "version": "0.1.0", "status": "published"},
+                {"name": "cli", "version": "0.2.0", "status": "pending"}
+            ],
+            "started_at": "2024-01-15T10:30:00Z",
+            "token": "cio_supersecrettoken1234567890"
+        }"#;
+        let passphrase = "ci-pipeline-key-2024";
+
+        let encrypted = encrypt(state_json, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+
+        assert_eq!(state_json.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn roundtrip_event_log_jsonl() {
+        let events = b"{\"event\":\"publish_start\",\"crate\":\"core\",\"ts\":1700000000}\n\
+                       {\"event\":\"publish_ok\",\"crate\":\"core\",\"ts\":1700000005}\n\
+                       {\"event\":\"publish_start\",\"crate\":\"cli\",\"ts\":1700000010}\n";
+        let passphrase = "event-log-key";
+
+        let encrypted = encrypt(events, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+
+        assert_eq!(events.to_vec(), decrypted);
+    }
+
+    // ── Key derivation edge cases ───────────────────────────────────────
+
+    #[test]
+    fn derive_key_always_produces_32_bytes() {
+        for passphrase in ["", "a", "short", &"x".repeat(10_000)] {
+            for salt in [&[0u8; 0][..], &[0u8; 1], &[0u8; SALT_SIZE], &[0xFF; 64]] {
+                let key = derive_key(passphrase, salt);
+                assert_eq!(
+                    key.len(),
+                    KEY_SIZE,
+                    "key must be {KEY_SIZE} bytes for passphrase len={}, salt len={}",
+                    passphrase.len(),
+                    salt.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn derive_key_with_empty_salt() {
+        let key1 = derive_key("passphrase", &[]);
+        let key2 = derive_key("passphrase", &[]);
+        assert_eq!(key1, key2, "empty salt should still be deterministic");
+        assert_eq!(key1.len(), KEY_SIZE);
+    }
+
+    // ── AES block boundary tests ────────────────────────────────────────
+
+    #[test]
+    fn encrypt_decrypt_exactly_aes_block_size() {
+        // AES block size is 16 bytes; GCM is a stream mode, but block boundary is interesting
+        let plaintext = [0xABu8; 16];
+        let passphrase = "block-boundary";
+
+        let encrypted = encrypt(&plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn encrypt_decrypt_multi_block_boundaries() {
+        let passphrase = "multi-block";
+        for size in [15, 16, 17, 31, 32, 33, 48, 64, 128, 255, 256, 257] {
+            let plaintext: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+            let encrypted = encrypt(&plaintext, passphrase).expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+            let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+            assert_eq!(plaintext, decrypted, "roundtrip failed for size {size}");
+        }
+    }
+
+    // ── StateEncryption error paths ─────────────────────────────────────
+
+    #[test]
+    fn state_encryption_encrypt_enabled_no_passphrase_errors() {
+        let config = EncryptionConfig {
+            enabled: true,
+            passphrase: None,
+            env_var: None,
+        };
+        let encryption = StateEncryption::new(config).expect("create");
+        assert!(!encryption.is_enabled());
+
+        let result = encryption.encrypt(b"data");
+        assert!(result.is_err(), "encrypt with no passphrase should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no passphrase"),
+            "error should mention missing passphrase, got: {err}"
+        );
+    }
+
+    #[test]
+    fn state_encryption_cross_config_decrypt_fails() {
+        let config_a = EncryptionConfig::new("key-alpha".to_string());
+        let config_b = EncryptionConfig::new("key-beta".to_string());
+        let enc_a = StateEncryption::new(config_a).expect("create");
+        let enc_b = StateEncryption::new(config_b).expect("create");
+
+        let data = b"cross-config secret";
+        let encrypted = enc_a.encrypt(data).expect("encrypt with A");
+
+        // B's decrypt should fall back to returning raw data (not the plaintext)
+        let result = enc_b.decrypt(&encrypted).expect("decrypt returns fallback");
+        assert_ne!(
+            result,
+            data.to_vec(),
+            "wrong config must not produce original plaintext"
+        );
+    }
+
+    // ── Truncation / malformed ciphertext ───────────────────────────────
+
+    #[test]
+    fn decrypt_truncated_after_header_fails() {
+        let plaintext = b"data to truncate";
+        let passphrase = "trunc-pass";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let raw = BASE64.decode(&encrypted_str).expect("base64");
+
+        // Truncate to just salt + nonce + 16 bytes (minimum that passes length check)
+        let truncated = &raw[..SALT_SIZE + NONCE_SIZE + 16];
+        let encoded = BASE64.encode(truncated);
+
+        assert!(
+            decrypt(&encoded, passphrase).is_err(),
+            "truncated ciphertext must fail decryption"
+        );
+    }
+
+    // ── is_encrypted edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn is_encrypted_accepts_exact_minimum_length() {
+        // Exactly salt(16) + nonce(12) + 16 bytes = 44 bytes of raw data
+        let data = vec![0u8; SALT_SIZE + NONCE_SIZE + 16];
+        let encoded = BASE64.encode(&data);
+        assert!(
+            is_encrypted(&encoded),
+            "minimum-length valid base64 should pass heuristic"
+        );
+    }
+
+    // ── Repeated operations ─────────────────────────────────────────────
+
+    #[test]
+    fn multiple_sequential_encrypt_decrypt_cycles() {
+        let passphrase = "cycle-test";
+        let mut data = b"initial plaintext".to_vec();
+
+        for i in 0..50 {
+            let encrypted = encrypt(&data, passphrase)
+                .unwrap_or_else(|e| panic!("encrypt failed on cycle {i}: {e}"));
+            let encrypted_str = String::from_utf8(encrypted)
+                .unwrap_or_else(|e| panic!("utf8 failed on cycle {i}: {e}"));
+            let decrypted = decrypt(&encrypted_str, passphrase)
+                .unwrap_or_else(|e| panic!("decrypt failed on cycle {i}: {e}"));
+            assert_eq!(data, decrypted, "mismatch on cycle {i}");
+            // Mutate data slightly for next cycle
+            data.push((i % 256) as u8);
+        }
+    }
+
+    // ── Null bytes and high-entropy data ────────────────────────────────
+
+    #[test]
+    fn roundtrip_null_bytes_in_plaintext() {
+        let plaintext = b"before\x00middle\x00\x00after\x00";
+        let passphrase = "null-byte-pass";
+
+        let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn roundtrip_all_0xff_bytes() {
+        let plaintext = vec![0xFFu8; 512];
+        let passphrase = "high-entropy";
+
+        let encrypted = encrypt(&plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+
+        assert_eq!(plaintext, decrypted);
+    }
 }
 
 // ── Property-based tests ────────────────────────────────────────────────
@@ -1334,6 +1544,35 @@ mod proptests {
             let corrupted = BASE64.encode(&raw);
 
             prop_assert!(decrypt(&corrupted, passphrase).is_err());
+        }
+
+        #[test]
+        fn derive_key_always_produces_32_bytes_prop(
+            passphrase in "\\PC{0,200}",
+            salt in proptest::collection::vec(any::<u8>(), 0..64),
+        ) {
+            let key = derive_key(&passphrase, &salt);
+            prop_assert_eq!(key.len(), KEY_SIZE);
+        }
+
+        #[test]
+        fn decrypt_truncated_ciphertext_always_fails_prop(
+            data in proptest::collection::vec(any::<u8>(), 1..512),
+            trim in 1usize..17,
+        ) {
+            let passphrase = "truncation-prop";
+            let encrypted = encrypt(&data, passphrase).expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+            let raw = BASE64.decode(&encrypted_str).expect("base64");
+
+            // Trim `trim` bytes off the end (corrupts auth tag or ciphertext)
+            if raw.len() > SALT_SIZE + NONCE_SIZE + 16 {
+                let truncated = &raw[..raw.len() - trim];
+                if truncated.len() >= SALT_SIZE + NONCE_SIZE + 16 {
+                    let encoded = BASE64.encode(truncated);
+                    prop_assert!(decrypt(&encoded, passphrase).is_err());
+                }
+            }
         }
     }
 }
@@ -1569,5 +1808,44 @@ mod snapshot_tests {
     fn snapshot_encryption_config_debug_from_env() {
         let cfg = EncryptionConfig::from_env("MY_SECRET_VAR".to_string());
         assert_debug_snapshot!(cfg);
+    }
+
+    // ── Snapshot: encrypted output structure ─────────────────────────────
+
+    #[test]
+    fn snapshot_encrypted_data_component_sizes() {
+        let plaintext = b"snapshot-structure-test";
+        let encrypted = encrypt(plaintext, "snap-pass").expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+        let raw = BASE64.decode(&encrypted_str).expect("base64");
+
+        let info = format!(
+            "salt_bytes={}, nonce_bytes={}, ciphertext_plus_tag_bytes={}, plaintext_len={}, overhead={}",
+            SALT_SIZE,
+            NONCE_SIZE,
+            raw.len() - SALT_SIZE - NONCE_SIZE,
+            plaintext.len(),
+            raw.len() - plaintext.len(),
+        );
+        assert_snapshot!(info);
+    }
+
+    #[test]
+    fn snapshot_derive_key_alternate_passphrase() {
+        let key = derive_key("alternate-passphrase-for-snapshot", &[0xAB; SALT_SIZE]);
+        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        assert_snapshot!(hex);
+    }
+
+    #[test]
+    fn snapshot_is_encrypted_results() {
+        let results = format!(
+            "empty={}, json={}, short_b64={}, garbage={}",
+            is_encrypted(""),
+            is_encrypted(r#"{"key":"value"}"#),
+            is_encrypted(&BASE64.encode(vec![0u8; 10])),
+            is_encrypted("!!!not-base64!!!"),
+        );
+        assert_snapshot!(results);
     }
 }

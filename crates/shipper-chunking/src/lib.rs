@@ -342,6 +342,172 @@ mod tests {
         let flattened: Vec<String> = chunks.into_iter().flatten().collect();
         assert_eq!(flattened, items);
     }
+
+    // --- Chunk sizing: correct boundaries ---
+
+    #[test]
+    fn chunk_boundaries_are_contiguous_and_non_overlapping() {
+        let items: Vec<i32> = (0..13).collect();
+        let chunks = chunk_by_max_concurrent(&items, 4);
+        // chunks: [0..4], [4..8], [8..12], [12..13]
+        assert_eq!(chunks.len(), 4);
+        assert_eq!(chunks[0], vec![0, 1, 2, 3]);
+        assert_eq!(chunks[1], vec![4, 5, 6, 7]);
+        assert_eq!(chunks[2], vec![8, 9, 10, 11]);
+        assert_eq!(chunks[3], vec![12]);
+    }
+
+    #[test]
+    fn all_full_chunks_have_exact_batch_size() {
+        let items: Vec<i32> = (0..30).collect();
+        let chunks = chunk_by_max_concurrent(&items, 7);
+        // 30 / 7 = 4 full chunks of 7 + 1 remainder of 2
+        for chunk in &chunks[..4] {
+            assert_eq!(
+                chunk.len(),
+                7,
+                "full chunks must have exactly batch_size items"
+            );
+        }
+        assert_eq!(chunks[4].len(), 2, "remainder chunk has leftover items");
+    }
+
+    // --- Remainder handling ---
+
+    #[test]
+    fn remainder_chunk_contains_correct_trailing_items() {
+        let items = vec!["a", "b", "c", "d", "e", "f", "g"];
+        let chunks = chunk_by_max_concurrent(&items, 3);
+        // 7 / 3 = 2 full + remainder of 1
+        assert_eq!(chunks.last().unwrap(), &vec!["g"]);
+    }
+
+    #[test]
+    fn no_remainder_when_evenly_divisible() {
+        let items: Vec<i32> = (0..12).collect();
+        let chunks = chunk_by_max_concurrent(&items, 4);
+        assert_eq!(chunks.len(), 3);
+        for chunk in &chunks {
+            assert_eq!(
+                chunk.len(),
+                4,
+                "all chunks should be full when evenly divisible"
+            );
+        }
+    }
+
+    #[test]
+    fn remainder_of_one_less_than_batch() {
+        let items: Vec<i32> = (0..11).collect();
+        let chunks = chunk_by_max_concurrent(&items, 4);
+        // 11 / 4 = 2 full (8 items) + 1 remainder of 3
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[2].len(), 3);
+        assert_eq!(chunks[2], vec![8, 9, 10]);
+    }
+
+    // --- Edge cases: two items ---
+
+    #[test]
+    fn two_items_chunk_size_one() {
+        let items = vec!["first", "second"];
+        let chunks = chunk_by_max_concurrent(&items, 1);
+        assert_eq!(chunks, vec![vec!["first"], vec!["second"]]);
+    }
+
+    #[test]
+    fn two_items_chunk_size_two() {
+        let items = vec!["first", "second"];
+        let chunks = chunk_by_max_concurrent(&items, 2);
+        assert_eq!(chunks, vec![vec!["first", "second"]]);
+    }
+
+    #[test]
+    fn two_items_chunk_size_three() {
+        let items = vec!["first", "second"];
+        let chunks = chunk_by_max_concurrent(&items, 3);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], vec!["first", "second"]);
+    }
+
+    // --- Determinism ---
+
+    #[test]
+    fn determinism_same_input_always_produces_same_chunks() {
+        let items: Vec<i32> = (0..23).collect();
+        let first = chunk_by_max_concurrent(&items, 5);
+        for _ in 0..50 {
+            let again = chunk_by_max_concurrent(&items, 5);
+            assert_eq!(first, again, "chunking must be deterministic");
+        }
+    }
+
+    #[test]
+    fn determinism_with_string_items() {
+        let items: Vec<String> = (0..17).map(|i| format!("pkg-{i}")).collect();
+        let first = chunk_by_max_concurrent(&items, 3);
+        for _ in 0..20 {
+            assert_eq!(
+                chunk_by_max_concurrent(&items, 3),
+                first,
+                "string chunking must be deterministic"
+            );
+        }
+    }
+
+    // --- Edge case: chunk_size equals n-1 ---
+
+    #[test]
+    fn chunk_size_one_less_than_total() {
+        let items: Vec<i32> = (0..5).collect();
+        let chunks = chunk_by_max_concurrent(&items, 4);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], vec![0, 1, 2, 3]);
+        assert_eq!(chunks[1], vec![4]);
+    }
+
+    // --- Edge case: chunk_size equals n+1 ---
+
+    #[test]
+    fn chunk_size_one_more_than_total() {
+        let items: Vec<i32> = (0..5).collect();
+        let chunks = chunk_by_max_concurrent(&items, 6);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], vec![0, 1, 2, 3, 4]);
+    }
+
+    // --- No empty chunks emitted ---
+
+    #[test]
+    fn no_empty_chunks_emitted() {
+        for n in 0..=20 {
+            for chunk_size in 0..=20 {
+                let items: Vec<i32> = (0..n).collect();
+                let chunks = chunk_by_max_concurrent(&items, chunk_size as usize);
+                for (ci, chunk) in chunks.iter().enumerate() {
+                    assert!(
+                        !chunk.is_empty(),
+                        "chunk {ci} was empty for n={n}, chunk_size={chunk_size}"
+                    );
+                }
+            }
+        }
+    }
+
+    // --- Prime-sized inputs ---
+
+    #[test]
+    fn prime_item_count_with_non_divisor_chunk_size() {
+        // 37 items chunked by 6: 6 full chunks + 1 remainder of 1
+        let items: Vec<i32> = (0..37).collect();
+        let chunks = chunk_by_max_concurrent(&items, 6);
+        assert_eq!(chunks.len(), 7);
+        for chunk in &chunks[..6] {
+            assert_eq!(chunk.len(), 6);
+        }
+        assert_eq!(chunks[6].len(), 1);
+        assert_eq!(chunks[6][0], 36);
+    }
 }
 
 #[cfg(test)]
@@ -434,6 +600,48 @@ mod property_tests {
                 offset += chunk.len();
             }
             prop_assert_eq!(offset, items.len());
+        }
+
+        #[test]
+        fn no_empty_chunks_emitted_property(
+            items in prop::collection::vec(any::<u8>(), 0..200),
+            max_concurrent in 0usize..64,
+        ) {
+            let chunks = chunk_by_max_concurrent(&items, max_concurrent);
+            for chunk in &chunks {
+                prop_assert!(!chunk.is_empty(), "chunks must never be empty");
+            }
+        }
+
+        #[test]
+        fn determinism_property(
+            items in prop::collection::vec(any::<i32>(), 0..100),
+            max_concurrent in 1usize..32,
+        ) {
+            let first = chunk_by_max_concurrent(&items, max_concurrent);
+            let second = chunk_by_max_concurrent(&items, max_concurrent);
+            prop_assert_eq!(first, second, "chunking must be deterministic");
+        }
+
+        #[test]
+        fn all_full_chunks_have_batch_size_property(
+            n in 1usize..300,
+            max_concurrent in 1usize..64,
+        ) {
+            let items: Vec<usize> = (0..n).collect();
+            let chunks = chunk_by_max_concurrent(&items, max_concurrent);
+            let effective = max_concurrent.max(1);
+            // All chunks except possibly the last must be exactly batch_size
+            if chunks.len() > 1 {
+                for chunk in &chunks[..chunks.len() - 1] {
+                    prop_assert_eq!(chunk.len(), effective,
+                        "non-last chunks must have exactly batch_size items");
+                }
+            }
+            // Last chunk must have 1..=batch_size items
+            if let Some(last) = chunks.last() {
+                prop_assert!(!last.is_empty() && last.len() <= effective);
+            }
         }
     }
 }
@@ -543,5 +751,21 @@ mod snapshot_tests {
             ("web", vec!["api", "utils"]),
         ];
         assert_debug_snapshot!(chunk_by_max_concurrent(&items, 2));
+    }
+
+    #[test]
+    fn snapshot_chunk_13_items_by_4_with_remainder() {
+        let items: Vec<&str> = vec![
+            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+        ];
+        assert_yaml_snapshot!(chunk_by_max_concurrent(&items, 4));
+    }
+
+    #[test]
+    fn snapshot_chunk_prime_37_by_6() {
+        let items: Vec<i32> = (0..37).collect();
+        let chunks = chunk_by_max_concurrent(&items, 6);
+        let lens: Vec<usize> = chunks.iter().map(|c| c.len()).collect();
+        assert_debug_snapshot!(lens);
     }
 }

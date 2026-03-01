@@ -656,7 +656,10 @@ mod tests {
     // --- Edge-case tests ---
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "atomic rename races with concurrent readers on Windows")]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "atomic rename races with concurrent readers on Windows"
+    )]
     fn concurrent_reads_and_writes_same_file() {
         use std::sync::Arc;
         use std::thread;
