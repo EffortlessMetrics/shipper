@@ -41,9 +41,11 @@ pub fn tail_lines(s: &str, n: usize) -> String {
 /// );
 /// ```
 pub fn redact_sensitive(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
+    // Normalize line endings to \n for idempotence (\r\n → \n, bare \r → \n).
+    let normalized = s.replace("\r\n", "\n").replace('\r', "\n");
+    let mut result = String::with_capacity(normalized.len());
     let mut first = true;
-    for line in s.lines() {
+    for line in normalized.lines() {
         if !first {
             result.push('\n');
         }
@@ -51,7 +53,7 @@ pub fn redact_sensitive(s: &str) -> String {
         result.push_str(&redact_line(line));
     }
     // Preserve trailing newline if present.
-    if s.ends_with('\n') {
+    if normalized.ends_with('\n') {
         result.push('\n');
     }
     result

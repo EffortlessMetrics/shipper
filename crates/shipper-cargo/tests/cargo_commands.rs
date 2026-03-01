@@ -194,25 +194,6 @@ fn publish_with_very_short_timeout_times_out() {
         "stderr should mention timeout: {}",
         result.stderr_tail
     );
-}
-
-#[test]
-fn publish_timeout_message_includes_duration_text() {
-    let tmp = tempfile::tempdir().unwrap();
-    create_minimal_crate(tmp.path());
-
-    let result = cargo_publish(
-        tmp.path(),
-        "test-crate",
-        "crates-io",
-        true,
-        true,
-        50,
-        Some(Duration::from_millis(1)),
-    )
-    .unwrap();
-
-    assert!(result.timed_out);
     assert!(
         result.stderr_tail.contains("cargo publish timed out after"),
         "expected human-readable timeout message, got: {}",
