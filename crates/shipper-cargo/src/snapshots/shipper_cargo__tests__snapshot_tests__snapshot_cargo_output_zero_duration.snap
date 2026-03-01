@@ -1,0 +1,12 @@
+---
+source: crates/shipper-cargo/src/lib.rs
+assertion_line: 1192
+expression: output
+---
+CargoOutput {
+    exit_code: 0,
+    stdout_tail: "ok",
+    stderr_tail: "",
+    duration: 0ns,
+    timed_out: false,
+}

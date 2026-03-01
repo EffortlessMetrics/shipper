@@ -23,6 +23,7 @@ tempfile = "3"
 shipper-output-sanitizer = { path = "../shipper-output-sanitizer" }
 proptest.workspace = true
 insta = { workspace = true }
+temp-env = "0.3"
 
 [lints]
 workspace = true

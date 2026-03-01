@@ -1155,5 +1155,296 @@ mod tests {
                 .collect();
             assert_debug_snapshot!(results);
         }
+
+        #[test]
+        fn snapshot_cargo_output_with_multiline_stderr() {
+            let output = CargoOutput {
+                exit_code: 1,
+                stdout_tail: String::new(),
+                stderr_tail: "warning: unused variable\nerror[E0308]: mismatched types\n  --> src/lib.rs:10:5".to_string(),
+                duration: Duration::from_millis(1500),
+                timed_out: false,
+            };
+            assert_debug_snapshot!(output);
+        }
+
+        #[test]
+        fn snapshot_package_info_prerelease_version() {
+            let info = PackageInfo {
+                name: "my-alpha-crate".to_string(),
+                version: "0.0.1-alpha.0+build.123".to_string(),
+                manifest_path: "crates/my-alpha-crate/Cargo.toml".to_string(),
+                is_workspace_member: true,
+                publish: vec![],
+            };
+            assert_yaml_snapshot!(info);
+        }
+
+        #[test]
+        fn snapshot_cargo_output_zero_duration() {
+            let output = CargoOutput {
+                exit_code: 0,
+                stdout_tail: "ok".to_string(),
+                stderr_tail: String::new(),
+                duration: Duration::ZERO,
+                timed_out: false,
+            };
+            assert_debug_snapshot!(output);
+        }
+    }
+
+    // ── cargo_program / SHIPPER_CARGO_BIN ──────────────────────────────
+
+    #[test]
+    fn cargo_program_defaults_to_cargo() {
+        temp_env::with_var("SHIPPER_CARGO_BIN", None::<&str>, || {
+            assert_eq!(cargo_program(), "cargo");
+        });
+    }
+
+    #[test]
+    fn cargo_program_respects_shipper_cargo_bin() {
+        temp_env::with_var(
+            "SHIPPER_CARGO_BIN",
+            Some("/usr/local/bin/cargo-nightly"),
+            || {
+                assert_eq!(cargo_program(), "/usr/local/bin/cargo-nightly");
+            },
+        );
+    }
+
+    #[test]
+    fn cargo_program_empty_env_returns_empty() {
+        temp_env::with_var("SHIPPER_CARGO_BIN", Some(""), || {
+            // Empty string is still a valid env var value — not unset
+            assert_eq!(cargo_program(), "");
+        });
+    }
+
+    // ── tail_lines (via shipper_output_sanitizer) ──────────────────────
+
+    #[test]
+    fn tail_lines_empty_input() {
+        let result = shipper_output_sanitizer::tail_lines("", 5);
+        assert!(result.is_empty() || result.lines().count() <= 5);
+    }
+
+    #[test]
+    fn tail_lines_single_line() {
+        let result = shipper_output_sanitizer::tail_lines("hello world", 5);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn tail_lines_exact_count() {
+        let input = "line1\nline2\nline3";
+        let result = shipper_output_sanitizer::tail_lines(input, 3);
+        assert_eq!(result, "line1\nline2\nline3");
+    }
+
+    #[test]
+    fn tail_lines_fewer_than_available() {
+        let input = "line1\nline2\nline3\nline4\nline5";
+        let result = shipper_output_sanitizer::tail_lines(input, 2);
+        assert_eq!(result, "line4\nline5");
+    }
+
+    #[test]
+    fn tail_lines_more_than_available() {
+        let input = "line1\nline2";
+        let result = shipper_output_sanitizer::tail_lines(input, 100);
+        assert_eq!(result, "line1\nline2");
+    }
+
+    #[test]
+    fn tail_lines_zero_count() {
+        let result = shipper_output_sanitizer::tail_lines("line1\nline2", 0);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn tail_lines_with_unicode() {
+        let input = "日本語\n中文\n한국어\nрусский";
+        let result = shipper_output_sanitizer::tail_lines(input, 2);
+        assert_eq!(result, "한국어\nрусский");
+    }
+
+    #[test]
+    fn tail_lines_with_crlf_line_endings() {
+        let input = "line1\r\nline2\r\nline3\r\nline4";
+        let result = shipper_output_sanitizer::tail_lines(input, 2);
+        assert_eq!(result, "line3\nline4");
+    }
+
+    #[test]
+    fn tail_lines_one_line_requested() {
+        let input = "first\nsecond\nthird";
+        let result = shipper_output_sanitizer::tail_lines(input, 1);
+        assert_eq!(result, "third");
+    }
+
+    // ── is_valid_package_name edge cases ───────────────────────────────
+
+    #[test]
+    fn is_valid_package_name_single_underscore() {
+        assert!(is_valid_package_name("_"));
+    }
+
+    #[test]
+    fn is_valid_package_name_rejects_unicode() {
+        assert!(!is_valid_package_name("my-crête"));
+        assert!(!is_valid_package_name("日本語"));
+        assert!(!is_valid_package_name("café"));
+    }
+
+    #[test]
+    fn is_valid_package_name_max_length_valid() {
+        // A very long but valid name
+        let name = "a".repeat(100);
+        assert!(is_valid_package_name(&name));
+    }
+
+    #[test]
+    fn is_valid_package_name_consecutive_hyphens() {
+        assert!(is_valid_package_name("my--crate"));
+    }
+
+    #[test]
+    fn is_valid_package_name_consecutive_underscores() {
+        assert!(is_valid_package_name("my__crate"));
+    }
+
+    // ── PackageInfo edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn package_info_with_empty_fields() {
+        let info = PackageInfo {
+            name: String::new(),
+            version: String::new(),
+            manifest_path: String::new(),
+            is_workspace_member: false,
+            publish: vec![],
+        };
+        let json = serde_json::to_string(&info).expect("serialize");
+        let back: PackageInfo = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.name, "");
+        assert_eq!(back.version, "");
+    }
+
+    #[test]
+    fn package_info_json_contains_all_fields() {
+        let info = PackageInfo {
+            name: "test-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: "/some/path/Cargo.toml".to_string(),
+            is_workspace_member: false,
+            publish: vec!["custom-registry".to_string()],
+        };
+        let json = serde_json::to_string(&info).expect("serialize");
+        assert!(json.contains("\"is_workspace_member\":false"));
+        assert!(json.contains("\"publish\":[\"custom-registry\"]"));
+    }
+
+    // ── CargoOutput edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn cargo_output_large_output_tails() {
+        let long_stdout: String = (0..1000)
+            .map(|i| format!("stdout line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let long_stderr: String = (0..1000)
+            .map(|i| format!("stderr line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let stdout_tail = shipper_output_sanitizer::tail_lines(&long_stdout, 5);
+        let stderr_tail = shipper_output_sanitizer::tail_lines(&long_stderr, 5);
+
+        let output = CargoOutput {
+            exit_code: 0,
+            stdout_tail,
+            stderr_tail,
+            duration: Duration::from_secs(1),
+            timed_out: false,
+        };
+
+        assert_eq!(output.stdout_tail.lines().count(), 5);
+        assert_eq!(output.stderr_tail.lines().count(), 5);
+        assert!(output.stdout_tail.contains("stdout line 999"));
+        assert!(output.stderr_tail.contains("stderr line 999"));
+    }
+
+    #[test]
+    fn cargo_output_max_duration() {
+        let output = CargoOutput {
+            exit_code: 0,
+            stdout_tail: String::new(),
+            stderr_tail: String::new(),
+            duration: Duration::from_secs(u64::MAX / 1_000_000_000),
+            timed_out: false,
+        };
+        assert!(output.duration.as_secs() > 0);
+    }
+
+    // ── additional proptest ────────────────────────────────────────────
+
+    mod proptests_extended {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn tail_lines_result_is_substring_of_input(
+                text in "[a-z ]{0,200}(\n[a-z ]{0,200}){0,15}",
+                n in 1usize..30,
+            ) {
+                let result = shipper_output_sanitizer::tail_lines(&text, n);
+                // Each line of the result should appear as a line in the input
+                for line in result.lines() {
+                    prop_assert!(
+                        text.lines().any(|l| l == line),
+                        "result line {:?} not found in input",
+                        line
+                    );
+                }
+            }
+
+            #[test]
+            fn tail_lines_preserves_last_line(
+                text in "[a-z]{1,20}(\n[a-z]{1,20}){1,10}",
+                n in 1usize..20,
+            ) {
+                let result = shipper_output_sanitizer::tail_lines(&text, n);
+                let input_last = text.lines().last().unwrap();
+                let result_last = result.lines().last().unwrap();
+                prop_assert_eq!(result_last, input_last);
+            }
+
+            #[test]
+            fn is_valid_package_name_rejects_any_non_ascii(
+                prefix in "[a-z_][a-z0-9_-]{0,5}",
+                ch in proptest::char::range('\u{0080}', '\u{FFFF}'),
+                suffix in "[a-z0-9_-]{0,5}",
+            ) {
+                let name = format!("{prefix}{ch}{suffix}");
+                prop_assert!(!is_valid_package_name(&name));
+            }
+
+            #[test]
+            fn package_info_json_always_contains_name(
+                name in "[a-z][a-z0-9-]{0,15}",
+            ) {
+                let info = PackageInfo {
+                    name: name.clone(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: "Cargo.toml".to_string(),
+                    is_workspace_member: true,
+                    publish: vec![],
+                };
+                let json = serde_json::to_string(&info).unwrap();
+                prop_assert!(json.contains(&name));
+            }
+        }
     }
 }

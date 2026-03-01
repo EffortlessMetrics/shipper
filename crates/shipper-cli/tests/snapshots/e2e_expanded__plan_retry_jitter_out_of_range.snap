@@ -1,0 +1,13 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: combined
+---
+exit_code: Some(0)
+--- stdout ---
+plan_id: <PLAN_ID>
+registry: crates-io (https://crates.io)
+workspace_root: <WORKSPACE_ROOT>
+
+Total packages to publish: 1
+
+  1. demo@0.1.0--- stderr ---

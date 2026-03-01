@@ -1,0 +1,12 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&normalize_stderr(&combined))
+---
+exit_code: Some(1)
+--- stdout ---
+--- stderr ---
+Error: failed to read event log from <STATE_DIR>/events.jsonl
+
+Caused by:
+    0: failed to parse event JSON from line: NOT JSON AT ALL
+    1: expected value at line 1 column 1

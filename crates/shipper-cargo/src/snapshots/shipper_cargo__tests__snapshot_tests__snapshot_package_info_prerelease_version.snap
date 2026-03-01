@@ -1,0 +1,10 @@
+---
+source: crates/shipper-cargo/src/lib.rs
+assertion_line: 1180
+expression: info
+---
+name: my-alpha-crate
+version: 0.0.1-alpha.0+build.123
+manifest_path: crates/my-alpha-crate/Cargo.toml
+is_workspace_member: true
+publish: []

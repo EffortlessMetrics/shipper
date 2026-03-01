@@ -1404,6 +1404,254 @@ mod tests {
 
         assert_eq!(plaintext, decrypted);
     }
+
+    // ── Env-var passphrase resolution (temp_env) ────────────────────────
+
+    #[test]
+    fn env_var_passphrase_resolution() {
+        let cfg = EncryptionConfig::from_env("SHIPPER_TEST_PASS_1".to_string());
+        temp_env::with_var("SHIPPER_TEST_PASS_1", Some("env-secret"), || {
+            let passphrase = cfg.get_passphrase().unwrap();
+            assert_eq!(passphrase, Some("env-secret".to_string()));
+        });
+    }
+
+    #[test]
+    fn env_var_passphrase_missing_returns_none() {
+        let cfg = EncryptionConfig::from_env("SHIPPER_TEST_MISSING_VAR".to_string());
+        temp_env::with_var("SHIPPER_TEST_MISSING_VAR", None::<&str>, || {
+            let passphrase = cfg.get_passphrase().unwrap();
+            assert_eq!(passphrase, None);
+        });
+    }
+
+    #[test]
+    fn state_encryption_from_env_var_roundtrip() {
+        let config = EncryptionConfig::from_env("SHIPPER_TEST_ENC_PASS".to_string());
+        let encryption = StateEncryption::new(config).expect("create");
+
+        temp_env::with_var("SHIPPER_TEST_ENC_PASS", Some("my-env-key"), || {
+            assert!(encryption.is_enabled());
+
+            let data = b"env-var encrypted data";
+            let encrypted = encryption.encrypt(data).expect("encrypt");
+            let decrypted = encryption.decrypt(&encrypted).expect("decrypt");
+            assert_eq!(data.to_vec(), decrypted);
+        });
+    }
+
+    #[test]
+    fn state_encryption_env_var_takes_precedence() {
+        let config = EncryptionConfig {
+            enabled: true,
+            passphrase: Some("inline-pass".to_string()),
+            env_var: Some("SHIPPER_TEST_PRIO_PASS".to_string()),
+        };
+        let encryption = StateEncryption::new(config).expect("create");
+
+        temp_env::with_var("SHIPPER_TEST_PRIO_PASS", Some("env-pass"), || {
+            // StateEncryption.get_passphrase tries env var first
+            let data = b"priority test";
+            let encrypted = encryption.encrypt(data).expect("encrypt");
+
+            // Must decrypt with "env-pass" (env takes priority in StateEncryption)
+            let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+            assert!(
+                decrypt(&encrypted_str, "env-pass").is_ok(),
+                "env var passphrase should take priority"
+            );
+        });
+    }
+
+    #[test]
+    fn state_encryption_file_roundtrip_with_env_var() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("env_enc.json");
+
+        let config = EncryptionConfig::from_env("SHIPPER_TEST_FILE_PASS".to_string());
+        let encryption = StateEncryption::new(config).expect("create");
+
+        temp_env::with_var("SHIPPER_TEST_FILE_PASS", Some("file-env-key"), || {
+            let data = br#"{"encrypted_via": "env_var"}"#;
+            encryption.write_file(&path, data).expect("write");
+            let content = encryption.read_file(&path).expect("read");
+            assert_eq!(String::from_utf8_lossy(data), content);
+        });
+    }
+
+    // ── Salt uniqueness across many encryptions ─────────────────────────
+
+    #[test]
+    fn salt_uniqueness_across_10_encryptions() {
+        let plaintext = b"salt uniqueness test";
+        let passphrase = "salt-test";
+
+        let mut salts = Vec::new();
+        for _ in 0..10 {
+            let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+            let raw = BASE64.decode(&encrypted_str).expect("base64");
+            let salt = raw[..SALT_SIZE].to_vec();
+            salts.push(salt);
+        }
+
+        // All salts must be unique
+        for i in 0..salts.len() {
+            for j in (i + 1)..salts.len() {
+                assert_ne!(salts[i], salts[j], "salt collision at indices {i} and {j}");
+            }
+        }
+    }
+
+    // ── Key derivation with special passphrases ─────────────────────────
+
+    #[test]
+    fn derive_key_unicode_passphrase_is_deterministic() {
+        let passphrase = "пароль-密码-🔑";
+        let salt = [0x42u8; SALT_SIZE];
+        let key1 = derive_key(passphrase, &salt);
+        let key2 = derive_key(passphrase, &salt);
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn derive_key_newline_passphrase_differs_from_stripped() {
+        let salt = [0u8; SALT_SIZE];
+        let key_with_newlines = derive_key("pass\nphrase\n", &salt);
+        let key_stripped = derive_key("passphrase", &salt);
+        assert_ne!(key_with_newlines, key_stripped);
+    }
+
+    // ── Double encryption ───────────────────────────────────────────────
+
+    #[test]
+    fn double_encrypt_roundtrip() {
+        let plaintext = b"double layer secret";
+        let pass1 = "outer-key";
+        let pass2 = "inner-key";
+
+        let inner = encrypt(plaintext, pass1).expect("encrypt inner");
+        let outer = encrypt(&inner, pass2).expect("encrypt outer");
+
+        let outer_str = String::from_utf8(outer).expect("utf8");
+        let decrypted_outer = decrypt(&outer_str, pass2).expect("decrypt outer");
+        let inner_str = String::from_utf8(decrypted_outer).expect("utf8");
+        let decrypted_inner = decrypt(&inner_str, pass1).expect("decrypt inner");
+
+        assert_eq!(plaintext.to_vec(), decrypted_inner);
+    }
+
+    // ── is_encrypted edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn is_encrypted_rejects_whitespace_around_base64() {
+        let data = vec![0u8; SALT_SIZE + NONCE_SIZE + 16];
+        let encoded = format!("  {}  ", BASE64.encode(&data));
+        // Leading/trailing whitespace makes it invalid base64
+        assert!(!is_encrypted(&encoded));
+    }
+
+    #[test]
+    fn is_encrypted_rejects_json_object() {
+        assert!(!is_encrypted(r#"{"plan_id":"abc","crates":[]}"#));
+    }
+
+    // ── StateEncryption fallback on malformed data ──────────────────────
+
+    #[test]
+    fn state_encryption_decrypt_returns_original_on_bad_encrypted_data() {
+        let config = EncryptionConfig::new("test-pass".to_string());
+        let encryption = StateEncryption::new(config).expect("create");
+
+        // Data that isn't valid encrypted content
+        let raw_json = b"plain JSON content";
+        let result = encryption.decrypt(raw_json).expect("should fall back");
+        assert_eq!(raw_json.to_vec(), result);
+    }
+
+    // ── File I/O with unicode content ───────────────────────────────────
+
+    #[test]
+    fn file_roundtrip_unicode_content() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("unicode.enc");
+
+        let plaintext = "Ünïcödé cöntënt: 日本語テスト 🎉";
+        write_encrypted(&path, plaintext.as_bytes(), "unicode-pass").expect("write");
+        let decrypted = read_decrypted(&path, "unicode-pass").expect("read");
+        assert_eq!(plaintext, decrypted);
+    }
+
+    // ── Encrypt/decrypt with GCM tag-sized plaintext ────────────────────
+
+    #[test]
+    fn encrypt_decrypt_exactly_gcm_tag_size() {
+        // 16 bytes, same as the GCM authentication tag size
+        let plaintext = [0xCD; 16];
+        let passphrase = "tag-size-test";
+
+        let encrypted = encrypt(&plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+        let decrypted = decrypt(&encrypted_str, passphrase).expect("decrypt");
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    // ── EncryptionConfig Display with both sources ──────────────────────
+
+    #[test]
+    fn display_config_passphrase_takes_precedence_in_display() {
+        let cfg = EncryptionConfig {
+            enabled: true,
+            passphrase: Some("my-pass".to_string()),
+            env_var: Some("MY_ENV".to_string()),
+        };
+        let display = cfg.to_string();
+        // Display shows passphrase arm (first match) when both are present
+        assert!(
+            display.contains("passphrase:"),
+            "should show passphrase branch, got: {display}"
+        );
+    }
+
+    // ── mask_passphrase additional cases ─────────────────────────────────
+
+    #[test]
+    fn mask_passphrase_four_chars() {
+        let masked = mask_passphrase("abcd");
+        assert_eq!(masked, "a**d");
+    }
+
+    #[test]
+    fn mask_passphrase_five_chars() {
+        let masked = mask_passphrase("hello");
+        assert_eq!(masked, "h***o");
+    }
+
+    #[test]
+    fn mask_passphrase_with_spaces() {
+        let masked = mask_passphrase("a b c");
+        assert_eq!(masked, "a***c");
+    }
+
+    // ── StateEncryption disabled ignores env var ────────────────────────
+
+    #[test]
+    fn state_encryption_disabled_ignores_env_var() {
+        let config = EncryptionConfig {
+            enabled: false,
+            passphrase: None,
+            env_var: Some("SHIPPER_TEST_IGNORED_VAR".to_string()),
+        };
+        let encryption = StateEncryption::new(config).expect("create");
+
+        temp_env::with_var("SHIPPER_TEST_IGNORED_VAR", Some("secret"), || {
+            assert!(!encryption.is_enabled());
+            // decrypt should pass through raw data
+            let data = b"not encrypted";
+            let result = encryption.decrypt(data).expect("passthrough");
+            assert_eq!(data.to_vec(), result);
+        });
+    }
 }
 
 // ── Property-based tests ────────────────────────────────────────────────
@@ -1573,6 +1821,40 @@ mod proptests {
                     prop_assert!(decrypt(&encoded, passphrase).is_err());
                 }
             }
+        }
+
+        #[test]
+        fn derive_key_deterministic_prop(
+            passphrase in "\\PC{0,100}",
+            salt in proptest::collection::vec(any::<u8>(), 0..32),
+        ) {
+            let key1 = derive_key(&passphrase, &salt);
+            let key2 = derive_key(&passphrase, &salt);
+            prop_assert_eq!(key1, key2, "derive_key must be deterministic");
+        }
+
+        #[test]
+        fn salt_differs_across_encryptions_prop(data in proptest::collection::vec(any::<u8>(), 0..256)) {
+            let a = encrypt(&data, "same-pass").expect("encrypt");
+            let b = encrypt(&data, "same-pass").expect("encrypt");
+            let raw_a = BASE64.decode(String::from_utf8(a).expect("utf8")).expect("base64");
+            let raw_b = BASE64.decode(String::from_utf8(b).expect("utf8")).expect("base64");
+            let salt_a = &raw_a[..SALT_SIZE];
+            let salt_b = &raw_b[..SALT_SIZE];
+            prop_assert_ne!(salt_a.to_vec(), salt_b.to_vec(), "salts must differ");
+        }
+
+        #[test]
+        fn double_encrypt_roundtrip_prop(data in proptest::collection::vec(any::<u8>(), 0..256)) {
+            let pass1 = "layer-one";
+            let pass2 = "layer-two";
+            let enc1 = encrypt(&data, pass1).expect("encrypt 1");
+            let enc2 = encrypt(&enc1, pass2).expect("encrypt 2");
+            let enc2_str = String::from_utf8(enc2).expect("utf8");
+            let dec2 = decrypt(&enc2_str, pass2).expect("decrypt 2");
+            let dec2_str = String::from_utf8(dec2).expect("utf8");
+            let dec1 = decrypt(&dec2_str, pass1).expect("decrypt 1");
+            prop_assert_eq!(data, dec1);
         }
     }
 }
@@ -1847,5 +2129,66 @@ mod snapshot_tests {
             is_encrypted("!!!not-base64!!!"),
         );
         assert_snapshot!(results);
+    }
+
+    // ── Snapshot: StateEncryption no-passphrase error ────────────────────
+
+    #[test]
+    fn snapshot_state_encryption_no_passphrase_error() {
+        let config = EncryptionConfig {
+            enabled: true,
+            passphrase: None,
+            env_var: None,
+        };
+        let encryption = StateEncryption::new(config).expect("create");
+        let err = encryption.encrypt(b"data").unwrap_err();
+        assert_snapshot!(err.to_string());
+    }
+
+    // ── Snapshot: Display with both passphrase and env_var ───────────────
+
+    #[test]
+    fn snapshot_display_config_with_both_sources() {
+        let cfg = EncryptionConfig {
+            enabled: true,
+            passphrase: Some("inline-secret".to_string()),
+            env_var: Some("SHIPPER_KEY".to_string()),
+        };
+        assert_snapshot!(cfg.to_string());
+    }
+
+    // ── Snapshot: mask_passphrase additional lengths ─────────────────────
+
+    #[test]
+    fn snapshot_mask_passphrase_four_chars() {
+        assert_snapshot!(mask_passphrase("abcd"));
+    }
+
+    #[test]
+    fn snapshot_mask_passphrase_with_spaces() {
+        assert_snapshot!(mask_passphrase("a b c d"));
+    }
+
+    #[test]
+    fn snapshot_mask_passphrase_with_newline() {
+        assert_snapshot!(mask_passphrase("pass\nword"));
+    }
+
+    // ── Snapshot: encrypted output overhead for empty plaintext ──────────
+
+    #[test]
+    fn snapshot_encrypted_empty_plaintext_structure() {
+        let encrypted = encrypt(b"", "snap-pass").expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+        let raw = BASE64.decode(&encrypted_str).expect("base64");
+
+        let info = format!(
+            "raw_len={}, salt={}, nonce={}, ciphertext_plus_tag={}, plaintext_len=0",
+            raw.len(),
+            SALT_SIZE,
+            NONCE_SIZE,
+            raw.len() - SALT_SIZE - NONCE_SIZE,
+        );
+        assert_snapshot!(info);
     }
 }

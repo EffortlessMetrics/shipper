@@ -1,0 +1,6 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&normalize_stderr(&stderr))
+---
+[info] checking git cleanliness...
+Error: git status failed: git status failed: fatal: not a git repository (or any of the parent directories): .git

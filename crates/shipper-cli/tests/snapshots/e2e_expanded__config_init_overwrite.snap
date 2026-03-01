@@ -1,0 +1,11 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: combined
+---
+exit_code: Some(0)
+--- stdout ---
+Created configuration file: <CONFIG_PATH>
+
+Edit the file to customize shipper settings for your workspace.
+Run `shipper config validate` to check the configuration.
+--- stderr ---

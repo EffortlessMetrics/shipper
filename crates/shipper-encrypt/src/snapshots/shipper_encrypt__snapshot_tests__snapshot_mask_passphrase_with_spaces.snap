@@ -1,0 +1,6 @@
+---
+source: crates/shipper-encrypt/src/lib.rs
+assertion_line: 2169
+expression: "mask_passphrase(\"a b c d\")"
+---
+a*****d

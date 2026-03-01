@@ -2107,3 +2107,848 @@ mod bdd_clean_preserves_workspace {
         );
     }
 }
+
+// ============================================================================
+// Feature: Config validation workflow — malformed configs
+// ============================================================================
+
+mod config_validate_rejects_missing_schema_version {
+    use super::*;
+
+    // Scenario: Config validate rejects a TOML file that is not valid TOML at all
+    //
+    // Given: a file containing garbage text that is not valid TOML
+    // When: I run "shipper config validate -p <path>"
+    // Then: exit code is non-zero, stderr mentions a parsing or load failure
+    #[test]
+    fn given_garbage_content_when_config_validate_then_fails_with_parse_error() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join(".shipper.toml"),
+            "this is {{not}} valid TOML !!@#$",
+        );
+
+        shipper_cmd()
+            .arg("config")
+            .arg("validate")
+            .arg("-p")
+            .arg(td.path().join(".shipper.toml"))
+            .assert()
+            .failure();
+    }
+}
+
+mod config_validate_rejects_unknown_schema_version {
+    use super::*;
+
+    // Scenario: Config validate rejects an unknown schema_version
+    //
+    // Given: a .shipper.toml with schema_version = "unknown.version.v99"
+    // When: I run "shipper config validate"
+    // Then: exit code is non-zero
+    #[test]
+    fn given_unknown_schema_version_when_config_validate_then_fails() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join(".shipper.toml"),
+            r#"
+schema_version = "unknown.version.v99"
+"#,
+        );
+
+        shipper_cmd()
+            .arg("config")
+            .arg("validate")
+            .arg("-p")
+            .arg(td.path().join(".shipper.toml"))
+            .assert()
+            .failure();
+    }
+}
+
+mod config_validate_nonexistent_file {
+    use super::*;
+
+    // Scenario: Config validate for a nonexistent file fails with clear error
+    //
+    // Given: no config file at the specified path
+    // When: I run "shipper config validate -p /nonexistent/.shipper.toml"
+    // Then: exit code is non-zero, stderr mentions "not found"
+    #[test]
+    fn given_nonexistent_path_when_config_validate_then_fails_with_not_found() {
+        let td = tempdir().expect("tempdir");
+        let missing_path = td.path().join("does-not-exist.toml");
+
+        shipper_cmd()
+            .arg("config")
+            .arg("validate")
+            .arg("-p")
+            .arg(&missing_path)
+            .assert()
+            .failure()
+            .stderr(contains("not found"));
+    }
+}
+
+// ============================================================================
+// Feature: Multi-crate publishing — dependency ordering
+// ============================================================================
+
+mod plan_multi_crate_correct_ordering {
+    use super::*;
+
+    // Scenario: Plan for a workspace with chained dependencies shows correct order
+    //
+    // Given: a workspace with core-lib → utils-lib → top-app (transitive chain)
+    // When: I run "shipper plan"
+    // Then: exit code is 0
+    // And: core-lib appears before utils-lib in the output
+    // And: utils-lib appears before top-app in the output
+    #[test]
+    fn given_chain_deps_when_plan_then_core_before_utils_before_top() {
+        let td = tempdir().expect("tempdir");
+        create_multi_crate_workspace(td.path());
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("plan")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        // All three should be present
+        assert!(stdout.contains("core-lib@0.1.0"), "missing core-lib");
+        assert!(stdout.contains("utils-lib@0.1.0"), "missing utils-lib");
+        assert!(stdout.contains("top-app@0.1.0"), "missing top-app");
+
+        // Verify ordering: core-lib before utils-lib before top-app
+        let pos_core = stdout.find("core-lib@0.1.0").expect("core-lib position");
+        let pos_utils = stdout.find("utils-lib@0.1.0").expect("utils-lib position");
+        let pos_top = stdout.find("top-app@0.1.0").expect("top-app position");
+        assert!(
+            pos_core < pos_utils,
+            "core-lib should appear before utils-lib in plan"
+        );
+        assert!(
+            pos_utils < pos_top,
+            "utils-lib should appear before top-app in plan"
+        );
+    }
+}
+
+mod plan_independent_crates_all_listed {
+    use super::*;
+
+    // Scenario: Plan for workspace with independent crates lists all of them
+    //
+    // Given: a workspace with alpha, beta, gamma (no inter-dependencies)
+    // When: I run "shipper plan"
+    // Then: exit code is 0
+    // And: all three crates appear in the output
+    // And: total packages is 3
+    #[test]
+    fn given_independent_crates_when_plan_then_all_listed() {
+        let td = tempdir().expect("tempdir");
+        create_independent_workspace(td.path());
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("plan")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        assert!(stdout.contains("alpha@0.1.0"), "missing alpha");
+        assert!(stdout.contains("beta@0.1.0"), "missing beta");
+        assert!(stdout.contains("gamma@0.1.0"), "missing gamma");
+        assert!(
+            stdout.contains("Total packages to publish: 3"),
+            "expected total 3 packages, got: {stdout}"
+        );
+    }
+}
+
+// ============================================================================
+// Feature: Preflight failure handling
+// ============================================================================
+
+mod preflight_reports_git_check_failure {
+    use super::*;
+
+    // Scenario: Preflight without --allow-dirty in non-git dir gives clear error
+    //
+    // Given: a workspace with core-lib, utils-lib, top-app NOT in a git repo
+    // When: I run "shipper preflight --skip-ownership-check --no-verify"
+    // Then: exit code is non-zero (git cleanliness check fails)
+    // And: stderr mentions git-related error
+    #[test]
+    fn given_multi_crate_non_git_when_preflight_then_fails_with_git_error() {
+        let td = tempdir().expect("tempdir");
+        create_multi_crate_workspace(td.path());
+
+        let registry = spawn_registry(vec![200, 200, 200], 3);
+
+        let assert = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--skip-ownership-check")
+            .arg("--no-verify")
+            .arg("preflight")
+            .assert()
+            .failure();
+
+        let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf8");
+        assert!(
+            stderr.to_lowercase().contains("git"),
+            "expected git-related error in stderr, got: {stderr}"
+        );
+
+        registry.join();
+    }
+}
+
+// ============================================================================
+// Feature: Resume workflow — edge cases
+// ============================================================================
+
+mod resume_with_no_state_file {
+    use super::*;
+
+    // Scenario: Resume when no state file exists fails gracefully
+    //
+    // Given: a workspace with "demo" and an empty state directory
+    // When: I run "shipper resume"
+    // Then: exit code is non-zero, error mentions missing state
+    #[test]
+    #[serial]
+    fn given_empty_state_dir_when_resume_then_fails_with_missing_state() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join(".shipper");
+        fs::create_dir_all(&state_dir).expect("mkdir");
+
+        let registry = spawn_registry(vec![200], 1);
+
+        let mut cmd = shipper_cmd();
+        fast_args(
+            &mut cmd,
+            &td.path().join("Cargo.toml"),
+            &registry.base_url,
+            &state_dir,
+        );
+        cmd.arg("resume").assert().failure();
+
+        registry.join();
+    }
+}
+
+mod resume_with_nonexistent_state_dir {
+    use super::*;
+
+    // Scenario: Resume when state directory does not exist fails gracefully
+    //
+    // Given: a workspace with "demo" and no .shipper directory at all
+    // When: I run "shipper resume"
+    // Then: exit code is non-zero
+    #[test]
+    #[serial]
+    fn given_no_state_dir_when_resume_then_fails() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join("nonexistent-state");
+
+        let registry = spawn_registry(vec![200], 1);
+
+        let mut cmd = shipper_cmd();
+        fast_args(
+            &mut cmd,
+            &td.path().join("Cargo.toml"),
+            &registry.base_url,
+            &state_dir,
+        );
+        cmd.arg("resume").assert().failure();
+
+        registry.join();
+    }
+}
+
+// ============================================================================
+// Feature: Doctor diagnostics — additional checks
+// ============================================================================
+
+mod doctor_reports_package_count {
+    use super::*;
+
+    // Scenario: Doctor reports workspace package information
+    //
+    // Given: a multi-crate workspace with core-lib, utils-lib, top-app
+    // When: I run "shipper doctor"
+    // Then: exit code is 0
+    // And: output contains the diagnostics header
+    // And: output contains workspace_root
+    #[test]
+    fn given_multi_crate_workspace_when_doctor_then_reports_workspace_info() {
+        let td = tempdir().expect("tempdir");
+        create_multi_crate_workspace(td.path());
+        fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+        let registry = spawn_doctor_registry(1);
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("doctor")
+            .env("CARGO_HOME", td.path().join("cargo-home"))
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+            .assert()
+            .success()
+            .stdout(contains("Shipper Doctor - Diagnostics Report"))
+            .stdout(contains("workspace_root:"));
+
+        registry.join();
+    }
+}
+
+mod doctor_with_token_env_var {
+    use super::*;
+
+    // Scenario: Doctor detects token when CARGO_REGISTRY_TOKEN is set
+    //
+    // Given: a workspace with "demo" and CARGO_REGISTRY_TOKEN is set
+    // When: I run "shipper doctor"
+    // Then: exit code is 0
+    // And: output contains "token (detected)" (not "NONE FOUND")
+    #[test]
+    fn given_token_set_when_doctor_then_reports_token_detected() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+        let registry = spawn_doctor_registry(1);
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("doctor")
+            .env("CARGO_HOME", td.path().join("cargo-home"))
+            .env("CARGO_REGISTRY_TOKEN", "test-token-value")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+        assert!(
+            stdout.contains("token (detected)"),
+            "expected 'token (detected)' when token is set, got: {stdout}"
+        );
+        assert!(
+            !stdout.contains("NONE FOUND"),
+            "should not report NONE FOUND when token is set, got: {stdout}"
+        );
+
+        registry.join();
+    }
+}
+
+// ============================================================================
+// Feature: Clean workflow — additional scenarios
+// ============================================================================
+
+mod clean_only_state_files_not_lock {
+    use super::*;
+
+    // Scenario: Clean removes state/events/receipt but not other files in state dir
+    //
+    // Given: a workspace with state.json, events.jsonl, and a custom file "notes.txt"
+    //        in the state directory
+    // When: I run "shipper clean"
+    // Then: exit code is 0
+    // And: state.json and events.jsonl are removed
+    // And: notes.txt still exists (clean only removes known state files)
+    #[test]
+    #[serial]
+    fn given_extra_files_in_state_dir_when_clean_then_only_state_files_removed() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join(".shipper");
+        fs::create_dir_all(&state_dir).expect("mkdir");
+
+        write_file(&state_dir.join("state.json"), r#"{"plan_id":"test"}"#);
+        write_file(&state_dir.join("events.jsonl"), "{}\n");
+        write_file(&state_dir.join("notes.txt"), "user notes\n");
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("clean")
+            .assert()
+            .success()
+            .stdout(contains("Clean complete"));
+
+        assert!(
+            !state_dir.join("state.json").exists(),
+            "state.json should be removed"
+        );
+        assert!(
+            !state_dir.join("events.jsonl").exists(),
+            "events.jsonl should be removed"
+        );
+        // Custom files should be preserved
+        assert!(
+            state_dir.join("notes.txt").exists(),
+            "notes.txt should be preserved — clean only removes known state files"
+        );
+    }
+}
+
+// ============================================================================
+// Feature: Status reporting — additional scenarios
+// ============================================================================
+
+mod status_all_missing {
+    use super::*;
+
+    // Scenario: Status reports all crates as missing when none are published
+    //
+    // Given: a workspace with core-lib, utils-lib, top-app
+    // And: registry returns 404 for all versions
+    // When: I run "shipper status"
+    // Then: exit code is 0
+    // And: output contains "missing" for all three
+    // And: output does NOT contain "published"
+    #[test]
+    fn given_all_unpublished_when_status_then_all_missing() {
+        let td = tempdir().expect("tempdir");
+        create_multi_crate_workspace(td.path());
+
+        let registry = spawn_registry(vec![404, 404, 404], 3);
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("status")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        assert!(
+            stdout.contains("missing"),
+            "expected 'missing' in status output, got: {stdout}"
+        );
+        assert!(
+            !stdout.contains("published"),
+            "expected no 'published' when all crates are unpublished, got: {stdout}"
+        );
+    }
+}
+
+mod status_shows_plan_id {
+    use super::*;
+
+    // Scenario: Status output includes the plan_id
+    //
+    // Given: a workspace with "demo"
+    // And: registry returns 404 (not published)
+    // When: I run "shipper status"
+    // Then: exit code is 0
+    // And: output contains "plan_id:"
+    #[test]
+    fn given_workspace_when_status_then_shows_plan_id() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let registry = spawn_registry(vec![404], 1);
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("status")
+            .assert()
+            .success()
+            .stdout(contains("plan_id:"));
+
+        registry.join();
+    }
+}
+
+// ============================================================================
+// Feature: Parallel publish configuration
+// ============================================================================
+
+mod parallel_plan_with_max_concurrent_flag {
+    use super::*;
+
+    // Scenario: Plan accepts --parallel and --max-concurrent flags
+    //
+    // Given: a workspace with core → {api, cli} → app
+    // When: I run "shipper plan --parallel --max-concurrent 3"
+    // Then: exit code is 0
+    // And: output contains all four crates
+    #[test]
+    fn given_parallel_workspace_when_plan_with_max_concurrent_then_succeeds() {
+        let td = tempdir().expect("tempdir");
+        create_parallel_workspace(td.path());
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--parallel")
+            .arg("--max-concurrent")
+            .arg("3")
+            .arg("plan")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        assert!(stdout.contains("core@0.1.0"), "missing core in plan");
+        assert!(stdout.contains("api@0.1.0"), "missing api in plan");
+        assert!(stdout.contains("cli@0.1.0"), "missing cli in plan");
+        assert!(stdout.contains("app@0.1.0"), "missing app in plan");
+    }
+}
+
+mod parallel_publish_with_config_file {
+    use super::*;
+
+    // Scenario: Parallel publish respects settings from .shipper.toml config
+    //
+    // Given: a workspace with independent crates alpha, beta, gamma
+    // And: a .shipper.toml with [parallel] max_concurrent = 1
+    // And: registry reports all as already published
+    // When: I run "shipper publish --parallel"
+    // Then: exit code is 0, all crates appear in receipt
+    #[test]
+    #[serial]
+    fn given_parallel_config_when_publish_then_respects_settings() {
+        let td = tempdir().expect("tempdir");
+        create_independent_workspace(td.path());
+        write_file(
+            &td.path().join(".shipper.toml"),
+            r#"
+schema_version = "shipper.config.v1"
+
+[parallel]
+max_concurrent = 1
+"#,
+        );
+        let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
+        let state_dir = td.path().join(".shipper");
+
+        let registry = spawn_registry(vec![200, 200, 200], 3);
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--config")
+            .arg(td.path().join(".shipper.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--max-attempts")
+            .arg("1")
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("--parallel")
+            .arg("publish")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+            .assert()
+            .success();
+
+        let receipt: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(state_dir.join("receipt.json")).expect("read receipt"),
+        )
+        .expect("parse receipt");
+        let packages = receipt["packages"].as_array().expect("packages array");
+        assert_eq!(packages.len(), 3, "receipt should have 3 packages");
+
+        registry.join();
+    }
+}
+
+// ============================================================================
+// Feature: Inspect commands
+// ============================================================================
+
+mod inspect_events_without_events_file {
+    use super::*;
+
+    // Scenario: inspect-events fails gracefully when no events file exists
+    //
+    // Given: a workspace with "demo" and no events.jsonl in the state directory
+    // When: I run "shipper inspect-events"
+    // Then: exit code is non-zero
+    #[test]
+    fn given_no_events_file_when_inspect_events_then_fails() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join(".shipper");
+        fs::create_dir_all(&state_dir).expect("mkdir");
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("inspect-events")
+            .assert()
+            .failure();
+    }
+}
+
+mod inspect_receipt_without_receipt_file {
+    use super::*;
+
+    // Scenario: inspect-receipt fails gracefully when no receipt file exists
+    //
+    // Given: a workspace with "demo" and no receipt.json in the state directory
+    // When: I run "shipper inspect-receipt"
+    // Then: exit code is non-zero
+    #[test]
+    fn given_no_receipt_file_when_inspect_receipt_then_fails() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join(".shipper");
+        fs::create_dir_all(&state_dir).expect("mkdir");
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("inspect-receipt")
+            .assert()
+            .failure();
+    }
+}
+
+// ============================================================================
+// Feature: CI template generation — additional platforms
+// ============================================================================
+
+mod ci_gitlab_output {
+    use super::*;
+
+    // Scenario: CI gitlab template produces valid GitLab CI YAML
+    //
+    // Given: a valid workspace with "demo"
+    // When: I run "shipper ci gitlab"
+    // Then: exit code is 0
+    // And: output contains "stage:" or "script:" (GitLab CI keywords)
+    // And: output references shipper publish
+    #[test]
+    fn given_workspace_when_ci_gitlab_then_produces_valid_yaml() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("ci")
+            .arg("gitlab")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        assert!(
+            stdout.contains("script:") || stdout.contains("stage:"),
+            "expected GitLab CI keywords, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("shipper publish"),
+            "expected 'shipper publish' in GitLab CI template, got: {stdout}"
+        );
+    }
+}
+
+mod ci_circleci_output {
+    use super::*;
+
+    // Scenario: CI circleci template produces valid CircleCI YAML
+    //
+    // Given: a valid workspace with "demo"
+    // When: I run "shipper ci circleci"
+    // Then: exit code is 0
+    // And: output references shipper publish
+    #[test]
+    fn given_workspace_when_ci_circleci_then_produces_valid_yaml() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("ci")
+            .arg("circleci")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+
+        assert!(
+            stdout.contains("shipper publish"),
+            "expected 'shipper publish' in CircleCI template, got: {stdout}"
+        );
+    }
+}
+
+// ============================================================================
+// Feature: Config init workflow
+// ============================================================================
+
+mod config_init_creates_valid_file {
+    use super::*;
+
+    // Scenario: Config init creates a .shipper.toml that passes validation
+    //
+    // Given: an empty directory
+    // When: I run "shipper config init -o <path>"
+    // And: I run "shipper config validate -p <path>"
+    // Then: both commands succeed
+    // And: the generated file contains schema_version
+    #[test]
+    fn given_empty_dir_when_config_init_then_file_validates() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join("test-config.toml");
+
+        // When: init
+        shipper_cmd()
+            .arg("config")
+            .arg("init")
+            .arg("-o")
+            .arg(&config_path)
+            .assert()
+            .success()
+            .stdout(contains("Created configuration file"));
+
+        assert!(config_path.exists(), "config file should be created");
+
+        // And: validate
+        shipper_cmd()
+            .arg("config")
+            .arg("validate")
+            .arg("-p")
+            .arg(&config_path)
+            .assert()
+            .success()
+            .stdout(contains("valid"));
+
+        // And: file contains schema_version
+        let content = fs::read_to_string(&config_path).expect("read config");
+        assert!(
+            content.contains("schema_version"),
+            "generated config should contain schema_version, got: {content}"
+        );
+    }
+}
+
+// ============================================================================
+// Feature: Quiet mode
+// ============================================================================
+
+mod plan_quiet_mode {
+    use super::*;
+
+    // Scenario: Plan with --quiet suppresses informational output
+    //
+    // Given: a workspace with "demo"
+    // When: I run "shipper plan --quiet"
+    // Then: exit code is 0
+    // And: stdout still contains the plan data
+    #[test]
+    fn given_workspace_when_plan_quiet_then_succeeds_with_minimal_output() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--quiet")
+            .arg("plan")
+            .assert()
+            .success()
+            .stdout(contains("demo@0.1.0"));
+    }
+}
+
+// ============================================================================
+// Feature: JSON output format
+// ============================================================================
+
+mod plan_json_format {
+    use super::*;
+
+    // Scenario: Plan with --format json produces valid JSON output
+    //
+    // Given: a workspace with core-lib, utils-lib, top-app
+    // When: I run "shipper plan --format json"
+    // Then: exit code is 0
+    // And: stdout is valid JSON containing package names
+    #[test]
+    fn given_multi_crate_when_plan_json_then_valid_json_output() {
+        let td = tempdir().expect("tempdir");
+        create_multi_crate_workspace(td.path());
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--format")
+            .arg("json")
+            .arg("plan")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&stdout).expect("plan --format json should produce valid JSON");
+        assert!(
+            parsed.is_object() || parsed.is_array(),
+            "JSON output should be an object or array"
+        );
+    }
+}
