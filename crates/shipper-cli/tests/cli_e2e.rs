@@ -131,7 +131,10 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
     let base_url = format!("http://{}", server.server_addr());
     let handle = thread::spawn(move || {
         for idx in 0..expected_requests {
-            let req = server.recv().expect("request");
+            let req = match server.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(Some(r)) => r,
+                _ => break,
+            };
             let status = statuses
                 .get(idx)
                 .copied()
@@ -230,16 +233,27 @@ fn doctor_command_snapshot() {
     let stdout = String::from_utf8(out).expect("utf8");
     assert_snapshot!(
         normalize_output(&stdout),
-        @r#"
-workspace_root: <WORKSPACE_ROOT>
-registry: crates-io (https://crates.io)
-token_detected: false
-auth_type: -
-state_dir: <STATE_DIR>
+        @"
+    Shipper Doctor - Diagnostics Report
+    ----------------------------------
+    workspace_root: <WORKSPACE_ROOT>
+    registry: crates-io (https://crates.io)
+    auth_type: NONE FOUND (set CARGO_REGISTRY_TOKEN)
+    state_dir: <STATE_DIR>
+    state_dir_exists: false (will be created)
 
-cargo: <CARGO_VERSION>
-git: <GIT_VERSION>
-"#
+    cargo: <CARGO_VERSION>
+    git: <GIT_VERSION>
+
+    registry_reachable: true
+    index_base: https://index.crates.io
+
+    git_commit: 279b2257070b3a506eae3b3dc0024d4d3391036c
+    git_branch: release/v0.3.0-rc.1
+    git_dirty: true
+
+    Diagnostics complete.
+    "
     );
 }
 
@@ -273,16 +287,27 @@ fn doctor_command_detects_trusted_publishing_auth() {
     let stdout = String::from_utf8(out).expect("utf8");
     assert_snapshot!(
         normalize_output(&stdout),
-        @r#"
-workspace_root: <WORKSPACE_ROOT>
-registry: crates-io (https://crates.io)
-token_detected: false
-auth_type: trusted
-state_dir: <STATE_DIR>
+        @"
+    Shipper Doctor - Diagnostics Report
+    ----------------------------------
+    workspace_root: <WORKSPACE_ROOT>
+    registry: crates-io (https://crates.io)
+    auth_type: trusted (detected)
+    state_dir: <STATE_DIR>
+    state_dir_exists: false (will be created)
 
-cargo: <CARGO_VERSION>
-git: <GIT_VERSION>
-"#
+    cargo: <CARGO_VERSION>
+    git: <GIT_VERSION>
+
+    registry_reachable: true
+    index_base: https://index.crates.io
+
+    git_commit: 279b2257070b3a506eae3b3dc0024d4d3391036c
+    git_branch: release/v0.3.0-rc.1
+    git_dirty: true
+
+    Diagnostics complete.
+    "
     );
 }
 

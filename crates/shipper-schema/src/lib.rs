@@ -510,5 +510,37 @@ mod tests {
             let pb = parse_schema_version(&format!("shipper.receipt.v{b}")).unwrap();
             prop_assert_eq!(a.cmp(&b), pa.cmp(&pb));
         }
+
+        /// Total ordering: for any two versions, exactly one of a>=b or b>a holds.
+        #[test]
+        fn version_total_ordering(a in 0u32..10_000, b in 0u32..10_000) {
+            let va = format!("shipper.state.v{a}");
+            let vb = format!("shipper.state.v{b}");
+            let a_ge_b = validate_schema_version(&va, &vb, "t").is_ok();
+            let b_ge_a = validate_schema_version(&vb, &va, "t").is_ok();
+            // At least one must hold (totality), and both hold iff equal (antisymmetry)
+            prop_assert!(a_ge_b || b_ge_a, "no ordering between v{a} and v{b}");
+            if a == b {
+                prop_assert!(a_ge_b && b_ge_a);
+            }
+        }
+
+        /// Upgrade path: any version can be "upgraded" to u32::MAX (latest possible).
+        #[test]
+        fn any_version_upgradable_to_max(v in 0u32..=u32::MAX) {
+            let version = format!("shipper.receipt.v{}", u32::MAX);
+            let minimum = format!("shipper.receipt.v{v}");
+            prop_assert!(validate_schema_version(&version, &minimum, "receipt").is_ok(),
+                "u32::MAX should satisfy any minimum v{v}");
+        }
+
+        /// Self-validation: parsing a version and validating it against itself always succeeds.
+        #[test]
+        fn parse_then_validate_self_always_succeeds(v in 0u32..100_000) {
+            let vs = format!("shipper.state.v{v}");
+            let parsed = parse_schema_version(&vs).expect("parse");
+            prop_assert_eq!(parsed, v);
+            prop_assert!(validate_schema_version(&vs, &vs, "self").is_ok());
+        }
     }
 }

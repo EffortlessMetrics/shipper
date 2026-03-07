@@ -1,0 +1,5 @@
+---
+source: crates/shipper-cargo-failure/src/lib.rs
+expression: "format!(\"[{}] {}\", format!(\"{:?}\", outcome.class), outcome.message)"
+---
+[Retryable] transient failure (retryable)

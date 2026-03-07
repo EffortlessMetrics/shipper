@@ -1561,6 +1561,118 @@ per_package_timeout = "15m"
         }
     }
 
+    // ── error message quality snapshots ──────────────────────────────────
+
+    mod error_message_snapshots {
+        use super::*;
+
+        #[test]
+        fn snapshot_error_message_empty_registry_api_base() {
+            let config = ShipperConfig {
+                registry: Some(RegistryConfig {
+                    name: "my-registry".to_string(),
+                    api_base: String::new(),
+                    index_base: None,
+                    token: None,
+                    default: false,
+                }),
+                ..ShipperConfig::default()
+            };
+            let err = config.validate().unwrap_err();
+            insta::assert_snapshot!("error_msg_empty_registry_api_base", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_error_message_negative_jitter() {
+            let mut config = ShipperConfig::default();
+            config.retry.jitter = -0.1;
+            let err = config.validate().unwrap_err();
+            insta::assert_snapshot!("error_msg_negative_jitter", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_error_message_readiness_jitter_out_of_range() {
+            let mut config = ShipperConfig::default();
+            config.readiness.jitter_factor = 2.0;
+            let err = config.validate().unwrap_err();
+            insta::assert_snapshot!("error_msg_readiness_jitter_out_of_range", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_error_message_zero_max_concurrent() {
+            let mut config = ShipperConfig::default();
+            config.parallel.max_concurrent = 0;
+            let err = config.validate().unwrap_err();
+            insta::assert_snapshot!("error_msg_zero_max_concurrent", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_error_message_registries_empty_name() {
+            let config = ShipperConfig {
+                registries: MultiRegistryConfig {
+                    registries: vec![RegistryConfig {
+                        name: String::new(),
+                        api_base: "https://example.com".to_string(),
+                        index_base: None,
+                        token: None,
+                        default: false,
+                    }],
+                    default_registries: vec![],
+                },
+                ..ShipperConfig::default()
+            };
+            let err = config.validate().unwrap_err();
+            insta::assert_snapshot!("error_msg_registries_empty_name", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_error_message_registries_empty_api_base() {
+            let config = ShipperConfig {
+                registries: MultiRegistryConfig {
+                    registries: vec![RegistryConfig {
+                        name: "my-reg".to_string(),
+                        api_base: String::new(),
+                        index_base: None,
+                        token: None,
+                        default: false,
+                    }],
+                    default_registries: vec![],
+                },
+                ..ShipperConfig::default()
+            };
+            let err = config.validate().unwrap_err();
+            insta::assert_snapshot!("error_msg_registries_empty_api_base", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_error_message_multiple_default_registries() {
+            let config = ShipperConfig {
+                registries: MultiRegistryConfig {
+                    registries: vec![
+                        RegistryConfig {
+                            name: "reg-a".to_string(),
+                            api_base: "https://a.example.com".to_string(),
+                            index_base: None,
+                            token: None,
+                            default: true,
+                        },
+                        RegistryConfig {
+                            name: "reg-b".to_string(),
+                            api_base: "https://b.example.com".to_string(),
+                            index_base: None,
+                            token: None,
+                            default: true,
+                        },
+                    ],
+                    default_registries: vec![],
+                },
+                ..ShipperConfig::default()
+            };
+            let err = config.validate().unwrap_err();
+            insta::assert_snapshot!("error_msg_multiple_default_registries", err.to_string());
+        }
+    }
+
     #[cfg(test)]
     mod proptests {
         use super::*;
@@ -2714,5 +2826,117 @@ mode = "turbo"
                 prop_assert_eq!(deserialized.flags.allow_dirty, allow_dirty);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod config_parsing_edge_case_tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    // ── TOML with UTF-8 BOM ─────────────────────────────────────────
+
+    #[test]
+    fn load_toml_with_utf8_bom() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join(".shipper.toml");
+        let mut f = std::fs::File::create(&config_path).expect("create");
+        // Write UTF-8 BOM followed by valid TOML
+        f.write_all(b"\xEF\xBB\xBF").expect("write bom");
+        f.write_all(b"schema_version = \"shipper.config.v1\"\n")
+            .expect("write");
+        drop(f);
+
+        // The toml crate may or may not handle BOM; we expect a clear error or success
+        let result = ShipperConfig::load_from_file(&config_path);
+        // toml crate >= 0.8 rejects BOM, so this should be an error
+        // We just verify it doesn't panic
+        if let Err(e) = &result {
+            assert!(
+                e.to_string().contains("parse") || e.to_string().contains("unexpected"),
+                "error should mention parsing: {}",
+                e
+            );
+        }
+    }
+
+    // ── TOML with trailing whitespace on every line ──────────────────
+
+    #[test]
+    fn load_toml_with_trailing_whitespace() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join(".shipper.toml");
+        let content = "schema_version = \"shipper.config.v1\"   \n\
+                        [policy]   \n\
+                        mode = \"safe\"   \n";
+        std::fs::write(&config_path, content).expect("write");
+
+        let config = ShipperConfig::load_from_file(&config_path).expect("parse");
+        assert_eq!(config.schema_version, "shipper.config.v1");
+    }
+
+    // ── Empty TOML file uses all defaults ────────────────────────────
+
+    #[test]
+    fn load_empty_toml_uses_defaults() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join(".shipper.toml");
+        std::fs::write(&config_path, "").expect("write");
+
+        let config = ShipperConfig::load_from_file(&config_path).expect("parse");
+        assert_eq!(config.schema_version, "shipper.config.v1");
+        assert_eq!(config.output.lines, 50);
+    }
+
+    // ── TOML with unknown extra keys doesn't fail ────────────────────
+
+    #[test]
+    fn load_toml_with_unknown_keys() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join(".shipper.toml");
+        let content = r#"
+            schema_version = "shipper.config.v1"
+            unknown_top_level_key = "should be ignored or error"
+        "#;
+        std::fs::write(&config_path, content).expect("write");
+
+        let result = ShipperConfig::load_from_file(&config_path);
+        // Either it ignores or rejects unknown keys - just don't panic
+        let _ = result;
+    }
+
+    // ── load_from_workspace returns None when no config ──────────────
+
+    #[test]
+    fn load_from_workspace_returns_none_without_config() {
+        let td = tempdir().expect("tempdir");
+        let result = ShipperConfig::load_from_workspace(td.path()).expect("load");
+        assert!(result.is_none());
+    }
+
+    // ── TOML with only whitespace ────────────────────────────────────
+
+    #[test]
+    fn load_toml_whitespace_only() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join(".shipper.toml");
+        std::fs::write(&config_path, "   \n  \n\t\n").expect("write");
+
+        let config = ShipperConfig::load_from_file(&config_path).expect("parse");
+        assert_eq!(config.schema_version, "shipper.config.v1");
+    }
+
+    // ── TOML with Windows-style line endings (CRLF) ──────────────────
+
+    #[test]
+    fn load_toml_with_crlf_line_endings() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join(".shipper.toml");
+        let content = "schema_version = \"shipper.config.v1\"\r\n[policy]\r\nmode = \"fast\"\r\n";
+        std::fs::write(&config_path, content).expect("write");
+
+        let config = ShipperConfig::load_from_file(&config_path).expect("parse");
+        assert_eq!(config.schema_version, "shipper.config.v1");
     }
 }

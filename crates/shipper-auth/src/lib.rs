@@ -1685,4 +1685,78 @@ token = "custom-registry"
             assert_debug_snapshot!((crates_io, custom));
         }
     }
+
+    // ── error message quality snapshots ──────────────────────────────────
+
+    mod error_message_snapshots {
+        use super::*;
+        use tempfile::tempdir;
+
+        #[test]
+        fn snapshot_error_missing_token_message() {
+            temp_env::with_vars(
+                [
+                    (CARGO_REGISTRY_TOKEN_ENV, None::<&str>),
+                    ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+                ],
+                || {
+                    let td = tempdir().expect("tempdir");
+                    let auth = resolve_token(CRATES_IO_REGISTRY, Some(td.path()));
+                    insta::assert_snapshot!(
+                        "error_msg_missing_token",
+                        format!(
+                            "detected={}, source={}, has_token={}",
+                            auth.detected,
+                            auth.source,
+                            auth.token.is_some()
+                        )
+                    );
+                },
+            );
+        }
+
+        #[test]
+        fn snapshot_error_credentials_file_not_found_message() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join("nonexistent_credentials.toml");
+            let err = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap_err();
+            insta::assert_snapshot!("error_msg_credentials_not_found", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_error_malformed_toml_message() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            std::fs::write(&path, "this is [[[not valid toml").expect("write");
+            let err = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap_err();
+            insta::assert_snapshot!("error_msg_malformed_toml", err.root_cause().to_string());
+        }
+
+        #[test]
+        fn snapshot_error_token_not_found_for_wrong_registry() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            std::fs::write(&path, "[registry]\ntoken = \"my-tok\"\n").expect("write");
+            let err =
+                token_from_credentials_file(&path, "nonexistent-private-registry").unwrap_err();
+            insta::assert_snapshot!("error_msg_token_wrong_registry", err.to_string());
+        }
+
+        #[test]
+        fn snapshot_error_token_source_display_none() {
+            insta::assert_snapshot!(
+                "error_msg_token_source_none",
+                format!("Token source: {}", TokenSource::None)
+            );
+        }
+
+        #[test]
+        fn snapshot_error_empty_credentials_no_token() {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join(CREDENTIALS_FILE);
+            std::fs::write(&path, "# empty credentials file\n").expect("write");
+            let err = token_from_credentials_file(&path, CRATES_IO_REGISTRY).unwrap_err();
+            insta::assert_snapshot!("error_msg_empty_credentials", err.to_string());
+        }
+    }
 }

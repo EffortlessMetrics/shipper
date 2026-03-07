@@ -1060,6 +1060,70 @@ mod tests {
             let upper = max + max.mul_f64(0.5);
             prop_assert!(d <= upper, "large attempt overflow: {d:?} > {upper:?}");
         }
+
+        /// State machine invariant: transitioning from any valid state
+        /// always produces a known/valid short_state label.
+        #[test]
+        fn state_transition_always_produces_valid_state(
+            from_state in arb_package_state(),
+            to_state in arb_package_state(),
+        ) {
+            let key = "t@1.0.0";
+            let mut st = sample_state(key, from_state);
+            update_state_locked(&mut st, key, to_state);
+            let label = short_state(&st.packages[key].state);
+            prop_assert!(
+                ["pending", "uploaded", "published", "skipped", "failed", "ambiguous"].contains(&label),
+                "invalid state label: {label}"
+            );
+        }
+
+        /// Progress invariant: the proportion of terminal packages is always
+        /// between 0.0 and 1.0 (inclusive).
+        #[test]
+        fn progress_percentage_always_bounded(
+            count in 1usize..20,
+            terminal_count in 0usize..20,
+        ) {
+            let terminal = terminal_count.min(count);
+            let mut entries: Vec<(&str, PackageState)> = Vec::new();
+            let names: Vec<String> = (0..count).map(|i| format!("p{i}@1.0.0")).collect();
+            for (i, name) in names.iter().enumerate() {
+                let state = if i < terminal {
+                    PackageState::Published
+                } else {
+                    PackageState::Pending
+                };
+                // We need to keep names alive, but multi_state takes &str
+                entries.push((name.as_str(), state));
+            }
+            let st = multi_state(&entries);
+            let total = st.packages.len() as f64;
+            let done = st.packages.values()
+                .filter(|p| matches!(p.state, PackageState::Published | PackageState::Skipped { .. }))
+                .count() as f64;
+            let progress = done / total;
+            prop_assert!((0.0..=1.0).contains(&progress),
+                "progress {progress} out of bounds");
+            prop_assert_eq!(st.packages.len(), count);
+        }
+
+        /// Package count invariant: state transitions never add or remove packages.
+        #[test]
+        fn state_transitions_preserve_package_count(
+            s1 in arb_package_state(),
+            s2 in arb_package_state(),
+        ) {
+            let mut st = multi_state(&[
+                ("x@1.0.0", PackageState::Pending),
+                ("y@2.0.0", PackageState::Pending),
+            ]);
+            let before = st.packages.len();
+            update_state_locked(&mut st, "x@1.0.0", s1);
+            update_state_locked(&mut st, "y@2.0.0", s2);
+            prop_assert_eq!(st.packages.len(), before,
+                "package count changed after transitions");
+        }
     }
 
     mod snapshots {

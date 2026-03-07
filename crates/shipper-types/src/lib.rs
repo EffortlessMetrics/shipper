@@ -5004,5 +5004,170 @@ mod tests {
             let version_part = &parts[2][1..];
             version_part.parse::<u32>().map_err(|e| e.to_string())
         }
+
+        // --- Additional invariant proptests ---
+
+        proptest! {
+            /// ReleasePlan JSON roundtrip with deps: serialize then deserialize preserves all fields.
+            #[test]
+            fn release_plan_with_deps_roundtrip(
+                pkg_count in 0usize..8,
+                plan_id in "[a-f0-9]{8}",
+            ) {
+                let packages: Vec<PlannedPackage> = (0..pkg_count)
+                    .map(|i| PlannedPackage {
+                        name: format!("crate-{i}"),
+                        version: format!("0.{i}.0"),
+                        manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                    })
+                    .collect();
+
+                let mut deps = BTreeMap::new();
+                for i in 1..pkg_count {
+                    deps.insert(
+                        format!("crate-{i}"),
+                        vec![format!("crate-{}", i - 1)],
+                    );
+                }
+
+                let plan = ReleasePlan {
+                    plan_version: "shipper.plan.v1".to_string(),
+                    plan_id: plan_id.clone(),
+                    created_at: Utc::now(),
+                    registry: Registry::crates_io(),
+                    packages: packages.clone(),
+                    dependencies: deps.clone(),
+                };
+
+                let json = serde_json::to_string(&plan).unwrap();
+                let parsed: ReleasePlan = serde_json::from_str(&json).unwrap();
+
+                prop_assert_eq!(parsed.plan_id, plan.plan_id);
+                prop_assert_eq!(parsed.packages.len(), pkg_count);
+                prop_assert_eq!(parsed.dependencies.len(), deps.len());
+                for (orig, p) in plan.packages.iter().zip(parsed.packages.iter()) {
+                    prop_assert_eq!(&p.name, &orig.name);
+                    prop_assert_eq!(&p.version, &orig.version);
+                }
+            }
+
+            /// Plan ordering: group_by_levels always places dependencies before dependents.
+            #[test]
+            fn plan_levels_respect_dependency_ordering(
+                pkg_count in 1usize..10,
+            ) {
+                let packages: Vec<PlannedPackage> = (0..pkg_count)
+                    .map(|i| PlannedPackage {
+                        name: format!("crate-{i}"),
+                        version: format!("0.{i}.0"),
+                        manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                    })
+                    .collect();
+
+                // Linear dependency chain: crate-1 depends on crate-0, crate-2 on crate-1, etc.
+                let mut deps = BTreeMap::new();
+                for i in 1..pkg_count {
+                    deps.insert(
+                        format!("crate-{i}"),
+                        vec![format!("crate-{}", i - 1)],
+                    );
+                }
+
+                let plan = ReleasePlan {
+                    plan_version: "shipper.plan.v1".to_string(),
+                    plan_id: "test-plan".to_string(),
+                    created_at: Utc::now(),
+                    registry: Registry::crates_io(),
+                    packages,
+                    dependencies: deps.clone(),
+                };
+
+                let levels = plan.group_by_levels();
+
+                // Build a map of package name -> level number
+                let mut pkg_level: BTreeMap<String, usize> = BTreeMap::new();
+                for level in &levels {
+                    for pkg in &level.packages {
+                        pkg_level.insert(pkg.name.clone(), level.level);
+                    }
+                }
+
+                // Every dependency must be at a strictly earlier level
+                for (name, dep_list) in &deps {
+                    if let Some(&my_level) = pkg_level.get(name.as_str()) {
+                        for dep in dep_list {
+                            if let Some(&dep_level) = pkg_level.get(dep.as_str()) {
+                                prop_assert!(
+                                    dep_level < my_level,
+                                    "{name} (level {my_level}) depends on {dep} (level {dep_level})"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            /// Receipt completeness: every package in the plan appears in the receipt.
+            #[test]
+            fn receipt_contains_all_plan_packages(
+                pkg_count in 1usize..8,
+            ) {
+                let now = Utc::now();
+                let packages: Vec<PlannedPackage> = (0..pkg_count)
+                    .map(|i| PlannedPackage {
+                        name: format!("crate-{i}"),
+                        version: format!("0.{i}.0"),
+                        manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                    })
+                    .collect();
+
+                let receipts: Vec<PackageReceipt> = packages
+                    .iter()
+                    .map(|pkg| PackageReceipt {
+                        name: pkg.name.clone(),
+                        version: pkg.version.clone(),
+                        attempts: 1,
+                        state: PackageState::Published,
+                        started_at: now,
+                        finished_at: now,
+                        duration_ms: 100,
+                        evidence: PackageEvidence {
+                            attempts: vec![],
+                            readiness_checks: vec![],
+                        },
+                    })
+                    .collect();
+
+                let receipt = Receipt {
+                    receipt_version: "shipper.receipt.v1".to_string(),
+                    plan_id: "plan-test".to_string(),
+                    registry: Registry::crates_io(),
+                    started_at: now,
+                    finished_at: now,
+                    packages: receipts.clone(),
+                    event_log_path: PathBuf::from(".shipper/events.jsonl"),
+                    git_context: None,
+                    environment: EnvironmentFingerprint {
+                        shipper_version: "0.1.0".to_string(),
+                        cargo_version: None,
+                        rust_version: None,
+                        os: "linux".to_string(),
+                        arch: "x86_64".to_string(),
+                    },
+                };
+
+                // Every planned package appears in the receipt
+                for pkg in &packages {
+                    let found = receipt.packages.iter().any(|r| r.name == pkg.name && r.version == pkg.version);
+                    prop_assert!(found, "package {}@{} missing from receipt", pkg.name, pkg.version);
+                }
+                prop_assert_eq!(receipt.packages.len(), packages.len());
+
+                // Roundtrip the receipt
+                let json = serde_json::to_string(&receipt).unwrap();
+                let parsed: Receipt = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(parsed.packages.len(), receipt.packages.len());
+            }
+        }
     }
 }

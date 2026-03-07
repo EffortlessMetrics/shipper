@@ -1953,3 +1953,107 @@ mod hardened_proptests {
         }
     }
 }
+
+#[cfg(test)]
+mod lock_edge_case_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    // ── Stale lock with wrong (non-existent) PID ────────────────────
+
+    #[test]
+    fn stale_lock_with_wrong_pid_replaced_by_timeout() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+
+        // Write a lock claiming PID 1 (init/system, not our process)
+        let info = LockInfo {
+            pid: 1,
+            hostname: "other-machine".to_string(),
+            acquired_at: Utc::now() - chrono::Duration::hours(3),
+            plan_id: Some("old-plan".to_string()),
+        };
+        std::fs::write(&lp, serde_json::to_string(&info).expect("ser")).expect("write");
+
+        let lock = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(3600))
+            .expect("should replace stale lock with wrong PID");
+        let new_info = LockFile::read_lock_info(td.path(), None).expect("read");
+        assert_eq!(new_info.pid, std::process::id());
+        assert!(new_info.plan_id.is_none());
+        drop(lock);
+    }
+
+    // ── Lock file with truncated JSON (corrupt) ─────────────────────
+
+    #[test]
+    fn truncated_json_lock_is_treated_as_corrupt() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        std::fs::write(&lp, r#"{"pid": 42, "hostname":"#).expect("write");
+
+        let lock = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(3600))
+            .expect("should replace corrupt lock");
+        let info = LockFile::read_lock_info(td.path(), None).expect("read");
+        assert_eq!(info.pid, std::process::id());
+        drop(lock);
+    }
+
+    // ── Lock file with empty content ────────────────────────────────
+
+    #[test]
+    fn empty_lock_file_treated_as_corrupt() {
+        let td = tempdir().expect("tempdir");
+        let lp = lock_path(td.path(), None);
+        std::fs::write(&lp, "").expect("write");
+
+        let lock = LockFile::acquire_with_timeout(td.path(), None, Duration::from_secs(3600))
+            .expect("should replace empty lock");
+        let info = LockFile::read_lock_info(td.path(), None).expect("read");
+        assert_eq!(info.pid, std::process::id());
+        drop(lock);
+    }
+
+    // ── Lock in deeply nested directory ──────────────────────────────
+
+    #[test]
+    fn lock_in_deeply_nested_directory() {
+        let td = tempdir().expect("tempdir");
+        let deep = td.path().join("a").join("b").join("c").join("d");
+        // acquire should create all intermediate dirs
+        let lock = LockFile::acquire(&deep, None).expect("acquire in deep dir");
+        assert!(LockFile::is_locked(&deep, None).expect("is_locked"));
+        drop(lock);
+    }
+
+    // ── Lock path with Unicode workspace root ───────────────────────
+
+    #[test]
+    fn lock_path_with_unicode_workspace_root() {
+        let base = std::path::PathBuf::from("state");
+        let root1 = std::path::Path::new("/ワークスペース/α");
+        let root2 = std::path::Path::new("/ワークスペース/β");
+        let p1 = lock_path(&base, Some(root1));
+        let p2 = lock_path(&base, Some(root2));
+        // Different roots should produce different paths
+        assert_ne!(p1, p2);
+        // Same root should be deterministic
+        assert_eq!(lock_path(&base, Some(root1)), p1);
+    }
+
+    // ── Acquire, set_plan_id, then re-read verifies JSON structure ──
+
+    #[test]
+    fn lock_json_structure_after_set_plan_id() {
+        let td = tempdir().expect("tempdir");
+        let lock = LockFile::acquire(td.path(), None).expect("acquire");
+        lock.set_plan_id("edge-plan-🚀").expect("set");
+
+        let lp = lock_path(td.path(), None);
+        let content = std::fs::read_to_string(&lp).expect("read");
+        let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse");
+        assert_eq!(parsed["plan_id"].as_str(), Some("edge-plan-🚀"));
+        assert!(parsed["pid"].is_number());
+        assert!(parsed["hostname"].is_string());
+        drop(lock);
+    }
+}

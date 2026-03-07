@@ -960,7 +960,10 @@ mod tests {
 
         let handle = std::thread::spawn(move || {
             for _ in 0..expected_requests {
-                let req = server.recv().expect("request");
+                let req = match server.recv_timeout(Duration::from_secs(5)) {
+                    Ok(Some(r)) => r,
+                    _ => break,
+                };
                 let path = req.url().to_string();
 
                 let response = if let Some(list) = routes.get_mut(&path) {

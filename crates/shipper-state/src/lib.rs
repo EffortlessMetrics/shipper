@@ -2490,6 +2490,76 @@ mod tests {
         insta::assert_snapshot!("state_empty_packages", json);
     }
 
+    // ── error message quality snapshots ──────────────────────────────────
+
+    fn normalize_error(err: &str, state_dir: &std::path::Path) -> String {
+        err.replace(&state_dir.display().to_string(), "<STATE_DIR>")
+    }
+
+    #[test]
+    fn snapshot_error_message_corrupted_state_json() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let state_dir = td.path();
+        std::fs::create_dir_all(state_dir).unwrap();
+        std::fs::write(state_dir.join(STATE_FILE), "{ not valid json }").unwrap();
+        let err = load_state(state_dir).unwrap_err();
+        insta::assert_snapshot!(
+            "error_msg_corrupted_state_json",
+            normalize_error(&format!("{err:#}"), state_dir)
+        );
+    }
+
+    #[test]
+    fn snapshot_error_message_truncated_state_json() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let state_dir = td.path();
+        std::fs::create_dir_all(state_dir).unwrap();
+        std::fs::write(state_dir.join(STATE_FILE), r#"{"plan_id": "abc""#).unwrap();
+        let err = load_state(state_dir).unwrap_err();
+        insta::assert_snapshot!(
+            "error_msg_truncated_state_json",
+            normalize_error(&format!("{err:#}"), state_dir)
+        );
+    }
+
+    #[test]
+    fn snapshot_error_message_empty_state_file() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let state_dir = td.path();
+        std::fs::create_dir_all(state_dir).unwrap();
+        std::fs::write(state_dir.join(STATE_FILE), "").unwrap();
+        let err = load_state(state_dir).unwrap_err();
+        insta::assert_snapshot!(
+            "error_msg_empty_state_file",
+            normalize_error(&format!("{err:#}"), state_dir)
+        );
+    }
+
+    #[test]
+    fn snapshot_error_message_receipt_version_too_old() {
+        let err = validate_receipt_version("shipper.receipt.v0").unwrap_err();
+        insta::assert_snapshot!("error_msg_receipt_version_too_old", err.to_string());
+    }
+
+    #[test]
+    fn snapshot_error_message_receipt_version_invalid_format() {
+        let err = validate_receipt_version("not-a-version").unwrap_err();
+        insta::assert_snapshot!("error_msg_receipt_version_invalid_format", err.to_string());
+    }
+
+    #[test]
+    fn snapshot_error_message_corrupted_receipt_json() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let state_dir = td.path();
+        std::fs::create_dir_all(state_dir).unwrap();
+        std::fs::write(state_dir.join(RECEIPT_FILE), "not json at all").unwrap();
+        let err = load_receipt(state_dir).unwrap_err();
+        insta::assert_snapshot!(
+            "error_msg_corrupted_receipt_json",
+            normalize_error(&format!("{err:#}"), state_dir)
+        );
+    }
+
     // ── Proptest additions ──────────────────────────────────────────
 
     mod proptests_extended {

@@ -166,7 +166,7 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
     let base_url = format!("http://{}", server.server_addr());
     let handle = thread::spawn(move || {
         for idx in 0..expected_requests {
-            let req = match server.recv_timeout(Duration::from_secs(60)) {
+            let req = match server.recv_timeout(Duration::from_secs(5)) {
                 Ok(Some(r)) => r,
                 _ => break,
             };
@@ -563,10 +563,10 @@ mod resume_plan_id_mismatch {
         let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
         let state_dir = td.path().join(".shipper");
 
-        // Use a real publish to get valid state, then tamper with plan_id.
-        // version-check 404, readiness 200 → 2 for initial.
-        // force-resume: version-check 404, readiness 200 → 2 more.
-        let registry = spawn_registry(vec![404, 200, 404, 200], 5);
+        // Initial publish fails: version-check 404, cargo exit 1,
+        // post-failure 404, final-chance 404 → 3 requests.
+        // force-resume: version-check 404, cargo succeeds, readiness 200 → 2 requests.
+        let registry = spawn_registry(vec![404, 404, 404, 404, 200], 5);
 
         shipper_cmd()
             .arg("--manifest-path")
@@ -640,13 +640,13 @@ mod resume_from_specific_package {
         let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
         let state_dir = td.path().join(".shipper");
 
-        // Initial publish: all fail.
+        // Initial publish: engine stops at first failure (core).
         // core version-check 404, cargo fails, post-failure 404, final-chance 404 → 3 requests.
-        // app version-check 404, cargo fails, post-failure 404, final-chance 404 → 3 requests.
+        // (app never reached — stays Pending)
         // Resume with --resume-from core:
         //   core version-check 404, cargo succeeds, readiness 200 → 2 requests.
         //   app version-check 404, cargo succeeds, readiness 200 → 2 requests.
-        let registry = spawn_registry(vec![404, 404, 404, 404, 404, 404, 404, 200, 404, 200], 11);
+        let registry = spawn_registry(vec![404, 404, 404, 404, 200, 404, 200], 7);
 
         shipper_cmd()
             .arg("--manifest-path")

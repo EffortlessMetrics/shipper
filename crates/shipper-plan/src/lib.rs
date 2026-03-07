@@ -3404,4 +3404,81 @@ crate-x = { path = "../crate-x", version = "0.1.0" }
         let ws = build_plan(&spec_for(td.path())).expect("plan");
         insta::assert_yaml_snapshot!("dev_dep_cycle_plan", snapshot_of(&ws));
     }
+
+    // ── error message quality snapshots ──────────────────────────────────
+
+    #[test]
+    fn snapshot_error_message_missing_manifest() {
+        let spec = ReleaseSpec {
+            manifest_path: Path::new("nonexistent-dir").join("Cargo.toml"),
+            registry: Registry::crates_io(),
+            selected_packages: None,
+        };
+        let err = build_plan(&spec).expect_err("must fail");
+        insta::assert_snapshot!("error_msg_missing_manifest", format!("{err:#}"));
+    }
+
+    #[test]
+    fn snapshot_error_message_unknown_selected_package() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["totally-unknown-crate".to_string()]);
+        let err = build_plan(&spec).expect_err("must fail");
+        insta::assert_snapshot!("error_msg_unknown_selected_package", format!("{err:#}"));
+    }
+
+    #[test]
+    fn snapshot_error_message_non_publishable_dep() {
+        let td = tempdir().expect("tempdir");
+        create_workspace_with_npdep(td.path(), true);
+        let err = build_plan(&spec_for(td.path())).expect_err("must fail");
+        insta::assert_snapshot!("error_msg_non_publishable_dep", format!("{err:#}"));
+    }
+
+    #[test]
+    fn snapshot_error_message_selecting_non_publishable() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["c".to_string()]);
+        let err = build_plan(&spec).expect_err("must fail");
+        insta::assert_snapshot!("error_msg_selecting_non_publishable", format!("{err:#}"));
+    }
+
+    #[test]
+    fn snapshot_error_message_cycle_detection() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let metadata = MetadataCommand::new()
+            .manifest_path(td.path().join("Cargo.toml"))
+            .exec()
+            .expect("metadata");
+
+        let pkg_map = metadata
+            .packages
+            .iter()
+            .map(|p| (p.id.clone(), p))
+            .collect::<BTreeMap<PackageId, &cargo_metadata::Package>>();
+        let mut by_name = BTreeMap::<String, PackageId>::new();
+        for pkg in &metadata.packages {
+            by_name.insert(pkg.name.to_string(), pkg.id.clone());
+        }
+
+        let a = by_name.get("a").expect("a").clone();
+        let b = by_name.get("b").expect("b").clone();
+
+        let included = [a.clone(), b.clone()].into_iter().collect::<BTreeSet<_>>();
+        let deps_of = BTreeMap::from([
+            (a.clone(), [b.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (b.clone(), [a.clone()].into_iter().collect::<BTreeSet<_>>()),
+        ]);
+        let dependents_of = BTreeMap::from([
+            (a.clone(), [b.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (b.clone(), [a.clone()].into_iter().collect::<BTreeSet<_>>()),
+        ]);
+
+        let err = topo_sort(&included, &deps_of, &dependents_of, &pkg_map).expect_err("cycle");
+        insta::assert_snapshot!("error_msg_cycle_detection", format!("{err:#}"));
+    }
 }

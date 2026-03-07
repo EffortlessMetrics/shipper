@@ -643,9 +643,52 @@ mod property_tests {
                 prop_assert!(!last.is_empty() && last.len() <= effective);
             }
         }
+
+        /// Chunk indices cover 0..n exactly once: no gaps, no overlaps.
+        #[test]
+        fn chunks_cover_indices_exactly_once(
+            n in 0usize..200,
+            max_concurrent in 1usize..32,
+        ) {
+            let items: Vec<usize> = (0..n).collect();
+            let chunks = chunk_by_max_concurrent(&items, max_concurrent);
+            let mut seen = std::collections::HashSet::new();
+            for chunk in &chunks {
+                for &item in chunk {
+                    prop_assert!(seen.insert(item), "duplicate index {item}");
+                }
+            }
+            prop_assert_eq!(seen.len(), n, "not all indices covered");
+        }
+
+        /// If input elements are unique, output elements are unique.
+        #[test]
+        fn unique_input_produces_unique_output(
+            items in prop::collection::vec(0u32..10_000, 0..100),
+            max_concurrent in 1usize..16,
+        ) {
+            let unique_input: std::collections::HashSet<u32> = items.iter().copied().collect();
+            let chunks = chunk_by_max_concurrent(&items, max_concurrent);
+            let flattened: Vec<u32> = chunks.into_iter().flatten().collect();
+            let unique_output: std::collections::HashSet<u32> = flattened.iter().copied().collect();
+            // If input had duplicates, output should have the same duplicates
+            prop_assert_eq!(flattened.len(), items.len());
+            prop_assert_eq!(unique_output.len(), unique_input.len());
+        }
+
+        /// Idempotency: chunking then flattening then re-chunking produces same chunks.
+        #[test]
+        fn chunking_is_idempotent_after_flatten(
+            items in prop::collection::vec(any::<i32>(), 0..100),
+            max_concurrent in 1usize..16,
+        ) {
+            let chunks1 = chunk_by_max_concurrent(&items, max_concurrent);
+            let flattened: Vec<i32> = chunks1.iter().flat_map(|c| c.iter().cloned()).collect();
+            let chunks2 = chunk_by_max_concurrent(&flattened, max_concurrent);
+            prop_assert_eq!(chunks1, chunks2, "chunking not idempotent");
+        }
     }
 }
-
 #[cfg(test)]
 mod snapshot_tests {
     use super::chunk_by_max_concurrent;

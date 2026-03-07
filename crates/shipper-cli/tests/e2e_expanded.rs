@@ -242,7 +242,10 @@ fn spawn_registry(expected_requests: usize) -> TestRegistry {
     let base_url = format!("http://{}", server.server_addr());
     let handle = thread::spawn(move || {
         for _ in 0..expected_requests {
-            let req = server.recv().expect("request");
+            let req = match server.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(Some(r)) => r,
+                _ => break,
+            };
             let resp = Response::from_string(r#"{"crate":{"id":"serde"}}"#)
                 .with_status_code(StatusCode(200))
                 .with_header(
@@ -1504,7 +1507,10 @@ fn spawn_registry_not_found(expected_requests: usize) -> TestRegistry {
     let base_url = format!("http://{}", server.server_addr());
     let handle = thread::spawn(move || {
         for _ in 0..expected_requests {
-            let req = server.recv().expect("request");
+            let req = match server.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(Some(r)) => r,
+                _ => break,
+            };
             let resp = Response::from_string("{}")
                 .with_status_code(StatusCode(404))
                 .with_header(

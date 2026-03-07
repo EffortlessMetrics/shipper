@@ -1,18 +1,26 @@
-//! Event logging for shipper publish operations.
+//! Event log storage for shipper publish operations.
 //!
-//! This crate provides an append-only JSONL event log for tracking
-//! publish operations, with support for package-level filtering.
+//! The [`EventLog`] type stores publish lifecycle events in memory and can persist
+//! them to disk as newline-delimited JSON (`.jsonl`).
 //!
-//! # Example
+//! # JSONL format
 //!
+//! Each event is serialized as one JSON object per line using
+//! [`shipper_types::PublishEvent`]. The output appends new events to existing logs.
+//!
+//! The canonical file name for the event log is [`EVENTS_FILE`], resolved from a
+//! state directory by [`events_path`].
+//!
+//! # Examples
+//!
+//! ## Append events and persist
 //! ```
-//! use shipper_events::{EventLog, events_path};
-//! use shipper_types::{PublishEvent, EventType};
 //! use chrono::Utc;
+//! use shipper_events::{EventLog, events_path};
+//! use shipper_types::{EventType, PublishEvent};
 //! use std::path::Path;
 //!
 //! let mut log = EventLog::new();
-//!
 //! let event = PublishEvent {
 //!     timestamp: Utc::now(),
 //!     event_type: EventType::PackageStarted {
@@ -23,6 +31,18 @@
 //! };
 //!
 //! log.record(event);
+//! let path = events_path(Path::new(".shipper"));
+//! log.write_to_file(&path).expect("write events");
+//! ```
+//!
+//! ## Read existing events
+//! ```
+//! use shipper_events::EventLog;
+//! use std::path::Path;
+//!
+//! let path = Path::new(".shipper/events.jsonl");
+//! let log = EventLog::read_from_file(&path).expect("read existing log");
+//! let count = log.len();
 //! ```
 
 use std::fs::{self, File, OpenOptions};
@@ -32,15 +52,19 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use shipper_types::PublishEvent;
 
-/// Default events file name
+/// Canonical event file name.
 pub const EVENTS_FILE: &str = "events.jsonl";
 
-/// Get the events file path for a state directory
+/// Get the events file path for a state directory.
+///
+/// The returned value is always `state_dir/events.jsonl`.
 pub fn events_path(state_dir: &Path) -> PathBuf {
     state_dir.join(EVENTS_FILE)
 }
 
 /// Append-only event log for publish operations.
+///
+/// Events are stored in-memory in insertion order.
 #[derive(Debug, Default)]
 pub struct EventLog {
     events: Vec<PublishEvent>,
@@ -53,13 +77,15 @@ impl EventLog {
     }
 
     /// Record a new event.
+    ///
+    /// Added events are appended and remain in order.
     pub fn record(&mut self, event: PublishEvent) {
         self.events.push(event);
     }
 
     /// Write all recorded events to a file in JSONL format.
     ///
-    /// Events are appended to the file if it already exists.
+    /// The file is opened in append mode and existing contents are preserved.
     pub fn write_to_file(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -86,6 +112,8 @@ impl EventLog {
     }
 
     /// Read all events from a JSONL file.
+    ///
+    /// Returns an empty log when the file does not exist.
     pub fn read_from_file(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::new());
@@ -110,6 +138,8 @@ impl EventLog {
     }
 
     /// Get all events for a specific package.
+    ///
+    /// Matching is exact against the `package` field.
     pub fn events_for_package(&self, package: &str) -> Vec<&PublishEvent> {
         self.events
             .iter()
@@ -2714,6 +2744,77 @@ mod proptests {
                 let expected = events.iter().filter(|e| e.package == pkg).count();
                 let filtered = loaded.events_for_package(pkg);
                 prop_assert_eq!(filtered.len(), expected, "filter mismatch for {}", pkg);
+            }
+        }
+
+        /// Double-roundtrip: write→read→write→read produces identical events.
+        #[test]
+        fn double_roundtrip_is_idempotent(events in proptest::collection::vec(arb_publish_event(), 1..10)) {
+            let td = tempdir().expect("tempdir");
+            let path1 = td.path().join("events1.jsonl");
+            let path2 = td.path().join("events2.jsonl");
+
+            let mut log1 = EventLog::new();
+            for e in &events {
+                log1.record(e.clone());
+            }
+            log1.write_to_file(&path1).expect("write1");
+
+            let loaded1 = EventLog::read_from_file(&path1).expect("read1");
+            loaded1.write_to_file(&path2).expect("write2");
+
+            let loaded2 = EventLog::read_from_file(&path2).expect("read2");
+            prop_assert_eq!(loaded1.len(), loaded2.len());
+            for (a, b) in loaded1.all_events().iter().zip(loaded2.all_events().iter()) {
+                let ja = serde_json::to_string(a).unwrap();
+                let jb = serde_json::to_string(b).unwrap();
+                prop_assert_eq!(ja, jb, "double-roundtrip mismatch");
+            }
+        }
+
+        /// Filter partition: sum of per-package filtered counts equals total event count.
+        #[test]
+        fn filter_partition_covers_all_events(events in proptest::collection::vec(arb_publish_event(), 0..20)) {
+            let mut log = EventLog::new();
+            for e in &events {
+                log.record(e.clone());
+            }
+
+            let packages: std::collections::HashSet<&str> =
+                events.iter().map(|e| e.package.as_str()).collect();
+            let total_from_filters: usize = packages
+                .iter()
+                .map(|pkg| log.events_for_package(pkg).len())
+                .sum();
+            prop_assert_eq!(total_from_filters, events.len(),
+                "sum of per-package filtered counts should equal total");
+        }
+
+        /// Timestamp ordering: events inserted with non-decreasing timestamps
+        /// retain that ordering after file roundtrip.
+        #[test]
+        fn sorted_timestamps_preserved_after_roundtrip(n in 1usize..15) {
+            let td = tempdir().expect("tempdir");
+            let path = td.path().join("events.jsonl");
+
+            let base = Utc::now();
+            let mut log = EventLog::new();
+            for i in 0..n {
+                log.record(shipper_types::PublishEvent {
+                    timestamp: base + chrono::Duration::seconds(i as i64),
+                    event_type: shipper_types::EventType::PackagePublished { duration_ms: i as u64 },
+                    package: format!("pkg-{i}"),
+                });
+            }
+            log.write_to_file(&path).expect("write");
+
+            let loaded = EventLog::read_from_file(&path).expect("read");
+            let events = loaded.all_events();
+            for i in 1..events.len() {
+                prop_assert!(
+                    events[i].timestamp >= events[i - 1].timestamp,
+                    "timestamp ordering broken at index {i}"
+                );
             }
         }
     }

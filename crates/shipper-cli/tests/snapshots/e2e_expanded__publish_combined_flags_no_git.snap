@@ -1,0 +1,17 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: combined
+---
+exit_code: Some(0)
+--- stdout ---
+plan_id: <PLAN_ID>
+registry: crates-io (https://crates.io)
+state:   <STATE_DIR>/state.json
+receipt: <STATE_DIR>/receipt.json
+events:   <STATE_DIR>/events.jsonl
+
+demo@0.1.0: Skipped { reason: "already published" } (<DURATION>)--- stderr ---
+[1/1] Publishing demo@0.1.0... (<DURATION>)
+[info] state dir: <STATE_DIR>
+[info] demo@0.1.0: already published (skipping)
+Completed 1/1 packages in 26.1257833s

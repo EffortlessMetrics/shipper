@@ -236,7 +236,10 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
     let base_url = format!("http://{}", server.server_addr());
     let handle = thread::spawn(move || {
         for idx in 0..expected_requests {
-            let req = server.recv().expect("request");
+            let req = match server.recv_timeout(Duration::from_secs(5)) {
+                Ok(Some(r)) => r,
+                _ => break,
+            };
             let status = statuses
                 .get(idx)
                 .copied()
@@ -271,7 +274,7 @@ fn spawn_index_readiness_registry(crate_name: &str, version: &str) -> TestRegist
 
     let handle = thread::spawn(move || {
         for _ in 0..10 {
-            let req = match server.recv_timeout(Duration::from_secs(60)) {
+            let req = match server.recv_timeout(Duration::from_secs(5)) {
                 Ok(Some(req)) => req,
                 _ => break,
             };

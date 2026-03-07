@@ -1464,6 +1464,62 @@ mod tests {
         let outcome = classify_publish_failure("", "Killed");
         insta::assert_debug_snapshot!("realworld_oom_killed", outcome);
     }
+
+    // ── error message quality snapshots ──────────────────────────────────
+
+    #[test]
+    fn snapshot_error_message_retryable_contains_action() {
+        let outcome = classify_publish_failure("HTTP 429 too many requests", "");
+        insta::assert_snapshot!("error_msg_retryable_action", outcome.message);
+    }
+
+    #[test]
+    fn snapshot_error_message_permanent_contains_action() {
+        let outcome = classify_publish_failure("permission denied for crate my-crate", "");
+        insta::assert_snapshot!("error_msg_permanent_action", outcome.message);
+    }
+
+    #[test]
+    fn snapshot_error_message_ambiguous_contains_context() {
+        let outcome = classify_publish_failure("unexpected EOF during upload", "");
+        insta::assert_snapshot!("error_msg_ambiguous_context", outcome.message);
+    }
+
+    #[test]
+    fn snapshot_error_message_version_already_exists() {
+        let outcome =
+            classify_publish_failure("crate version `my-crate@1.0.0` is already uploaded", "");
+        insta::assert_snapshot!(
+            "error_msg_version_already_exists",
+            format!("[{}] {}", format!("{:?}", outcome.class), outcome.message)
+        );
+    }
+
+    #[test]
+    fn snapshot_error_message_manifest_parse_failure() {
+        let outcome = classify_publish_failure(
+            "error: failed to parse manifest at `/path/to/Cargo.toml`\n\
+             Caused by:\n  missing field `name` in package",
+            "",
+        );
+        insta::assert_snapshot!(
+            "error_msg_manifest_parse_failure",
+            format!("[{}] {}", format!("{:?}", outcome.class), outcome.message)
+        );
+    }
+
+    #[test]
+    fn snapshot_error_message_network_dns_resolution() {
+        let outcome = classify_publish_failure(
+            "error: failed to publish to crates-io\n\
+             Caused by:\n  dns resolution failed: could not resolve host crates.io",
+            "",
+        );
+        insta::assert_snapshot!(
+            "error_msg_dns_resolution",
+            format!("[{}] {}", format!("{:?}", outcome.class), outcome.message)
+        );
+    }
 }
 
 #[cfg(test)]

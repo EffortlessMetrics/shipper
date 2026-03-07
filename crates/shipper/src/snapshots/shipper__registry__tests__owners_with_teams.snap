@@ -1,0 +1,23 @@
+---
+source: crates/shipper/src/registry.rs
+assertion_line: 4588
+expression: owners
+---
+OwnersResponse {
+    users: [
+        Owner {
+            id: 10,
+            login: "maintainer",
+            name: Some(
+                "Main Tainer",
+            ),
+        },
+        Owner {
+            id: 20,
+            login: "github:org:team",
+            name: Some(
+                "Org Team",
+            ),
+        },
+    ],
+}

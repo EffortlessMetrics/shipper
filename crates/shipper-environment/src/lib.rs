@@ -1322,6 +1322,7 @@ mod tests {
     // ── Reproducibility ──
 
     #[test]
+    #[serial]
     fn get_environment_fingerprint_is_reproducible() {
         let fp1 = get_environment_fingerprint();
         let fp2 = get_environment_fingerprint();
@@ -1329,6 +1330,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn collect_environment_fingerprint_is_reproducible() {
         let fp1 = collect_environment_fingerprint();
         let fp2 = collect_environment_fingerprint();
@@ -2061,5 +2063,140 @@ mod snapshot_tests {
         };
 
         assert_yaml_snapshot!(info.fingerprint());
+    }
+}
+
+#[cfg(test)]
+mod environment_edge_case_tests {
+    use super::*;
+    use serial_test::serial;
+    use std::collections::BTreeMap;
+
+    /// All CI detection variables.
+    const ALL_CI_VARS: &[&str] = &[
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "TRAVIS",
+        "TF_BUILD",
+        "JENKINS_URL",
+        "BITBUCKET_BUILD_NUMBER",
+    ];
+
+    fn ci_env<'a>(overrides: &'a [(&'a str, Option<&'a str>)]) -> Vec<(&'a str, Option<&'a str>)> {
+        let mut vars: Vec<(&str, Option<&str>)> = ALL_CI_VARS.iter().map(|&v| (v, None)).collect();
+        for &(k, v) in overrides {
+            if let Some(pos) = vars.iter().position(|(key, _)| *key == k) {
+                vars[pos] = (k, v);
+            } else {
+                vars.push((k, v));
+            }
+        }
+        vars
+    }
+
+    // ── CARGO_HOME with unusual path (spaces, unicode) ──────────────
+
+    #[test]
+    #[serial]
+    fn collect_env_vars_with_unusual_cargo_home() {
+        temp_env::with_var("CARGO_HOME", Some("/path with spaces/café/.cargo"), || {
+            // collect_env_vars doesn't include CARGO_HOME directly,
+            // but the environment should still be collectible
+            let info = EnvironmentInfo::collect();
+            assert!(info.is_ok());
+        });
+    }
+
+    // ── All CI env vars set simultaneously ───────────────────────────
+
+    #[test]
+    #[serial]
+    fn detect_environment_all_ci_vars_set_picks_github() {
+        temp_env::with_vars(
+            vec![
+                ("GITHUB_ACTIONS", Some("true")),
+                ("GITLAB_CI", Some("true")),
+                ("CIRCLECI", Some("true")),
+                ("TRAVIS", Some("true")),
+                ("TF_BUILD", Some("true")),
+                ("JENKINS_URL", Some("http://j")),
+                ("BITBUCKET_BUILD_NUMBER", Some("1")),
+            ],
+            || {
+                // GitHub has highest priority
+                assert_eq!(detect_environment(), CiEnvironment::GitHubActions);
+            },
+        );
+    }
+
+    // ── CI var set to empty string still detects ─────────────────────
+
+    #[test]
+    #[serial]
+    fn detect_github_actions_with_empty_value() {
+        temp_env::with_vars(ci_env(&[("GITHUB_ACTIONS", Some(""))]), || {
+            // env::var("GITHUB_ACTIONS").is_ok() returns true even for ""
+            assert_eq!(detect_environment(), CiEnvironment::GitHubActions);
+        });
+    }
+
+    // ── get_ci_branch returns None when local ────────────────────────
+
+    #[test]
+    #[serial]
+    fn get_ci_branch_returns_none_locally() {
+        temp_env::with_vars(ci_env(&[]), || {
+            assert!(get_ci_branch().is_none());
+        });
+    }
+
+    // ── get_ci_commit_sha returns None when local ────────────────────
+
+    #[test]
+    #[serial]
+    fn get_ci_commit_sha_returns_none_locally() {
+        temp_env::with_vars(ci_env(&[]), || {
+            assert!(get_ci_commit_sha().is_none());
+        });
+    }
+
+    // ── is_pull_request returns false when local ─────────────────────
+
+    #[test]
+    #[serial]
+    fn is_pull_request_false_locally() {
+        temp_env::with_vars(ci_env(&[]), || {
+            assert!(!is_pull_request());
+        });
+    }
+
+    // ── fingerprint with empty env_vars ──────────────────────────────
+
+    #[test]
+    fn environment_info_fingerprint_empty_env_vars() {
+        let info = EnvironmentInfo {
+            ci_environment: CiEnvironment::Local,
+            os: "test-os".to_string(),
+            arch: "test-arch".to_string(),
+            rust_version: "unknown".to_string(),
+            cargo_version: "unknown".to_string(),
+            env_vars: BTreeMap::new(),
+            collected_at: Utc::now(),
+        };
+        let fp = info.fingerprint();
+        // Should have exactly 5 pipe-separated parts and no trailing pipe
+        assert_eq!(fp.matches('|').count(), 4);
+        assert!(!fp.ends_with('|'));
+    }
+
+    // ── normalize_tool_version with nightly version string ───────────
+
+    #[test]
+    fn normalize_tool_version_nightly() {
+        assert_eq!(
+            normalize_tool_version("rustc 1.82.0-nightly (abc 2024-01-01)"),
+            Some("1.82.0-nightly".to_string())
+        );
     }
 }
