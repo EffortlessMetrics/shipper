@@ -17,19 +17,15 @@ Authentication and token resolution for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-auth
 cargo test -p shipper-auth
 cargo test -p shipper-auth --all-features
 cargo fmt -p shipper-auth
 cargo clippy -p shipper-auth --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

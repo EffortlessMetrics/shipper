@@ -17,19 +17,15 @@ Core execution helpers shared across shipper publish engines
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-execution-core
 cargo test -p shipper-execution-core
 cargo test -p shipper-execution-core --all-features
 cargo fmt -p shipper-execution-core
 cargo clippy -p shipper-execution-core --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

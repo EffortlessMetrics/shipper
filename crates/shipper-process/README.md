@@ -22,19 +22,15 @@ Process execution for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-process
 cargo test -p shipper-process
 cargo test -p shipper-process --all-features
 cargo fmt -p shipper-process
 cargo clippy -p shipper-process --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

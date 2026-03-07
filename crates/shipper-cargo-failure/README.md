@@ -17,19 +17,15 @@ Cargo publish failure classification for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-cargo-failure
 cargo test -p shipper-cargo-failure
 cargo test -p shipper-cargo-failure --all-features
 cargo fmt -p shipper-cargo-failure
 cargo clippy -p shipper-cargo-failure --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

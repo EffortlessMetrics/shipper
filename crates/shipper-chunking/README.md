@@ -17,19 +17,15 @@ Chunking helpers for bounded parallel publish execution
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-chunking
 cargo test -p shipper-chunking
 cargo test -p shipper-chunking --all-features
 cargo fmt -p shipper-chunking
 cargo clippy -p shipper-chunking --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

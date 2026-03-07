@@ -17,19 +17,15 @@ State persistence for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-state
 cargo test -p shipper-state
 cargo test -p shipper-state --all-features
 cargo fmt -p shipper-state
 cargo clippy -p shipper-state --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

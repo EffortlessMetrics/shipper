@@ -17,19 +17,15 @@ Retry strategies and backoff policies for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-retry
 cargo test -p shipper-retry
 cargo test -p shipper-retry --all-features
 cargo fmt -p shipper-retry
 cargo clippy -p shipper-retry --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

@@ -17,19 +17,15 @@ State store abstraction for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-store
 cargo test -p shipper-store
 cargo test -p shipper-store --all-features
 cargo fmt -p shipper-store
 cargo clippy -p shipper-store --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

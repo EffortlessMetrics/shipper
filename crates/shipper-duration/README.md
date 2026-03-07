@@ -17,19 +17,15 @@ Duration parsing and serde codecs for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-duration
 cargo test -p shipper-duration
 cargo test -p shipper-duration --all-features
 cargo fmt -p shipper-duration
 cargo clippy -p shipper-duration --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

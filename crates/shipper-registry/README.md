@@ -17,19 +17,15 @@ Registry API client for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-registry
 cargo test -p shipper-registry
 cargo test -p shipper-registry --all-features
 cargo fmt -p shipper-registry
 cargo clippy -p shipper-registry --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

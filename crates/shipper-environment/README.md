@@ -17,19 +17,15 @@ Environment fingerprinting for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-environment
 cargo test -p shipper-environment
 cargo test -p shipper-environment --all-features
 cargo fmt -p shipper-environment
 cargo clippy -p shipper-environment --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

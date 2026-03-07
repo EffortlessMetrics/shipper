@@ -17,19 +17,15 @@ Storage backends for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-storage
 cargo test -p shipper-storage
 cargo test -p shipper-storage --all-features
 cargo fmt -p shipper-storage
 cargo clippy -p shipper-storage --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

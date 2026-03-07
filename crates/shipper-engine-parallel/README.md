@@ -17,19 +17,15 @@ Parallel publish execution for shipper release plans
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-engine-parallel
 cargo test -p shipper-engine-parallel
 cargo test -p shipper-engine-parallel --all-features
 cargo fmt -p shipper-engine-parallel
 cargo clippy -p shipper-engine-parallel --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

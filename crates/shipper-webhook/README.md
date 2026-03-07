@@ -17,19 +17,15 @@ Webhook notifications for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-webhook
 cargo test -p shipper-webhook
 cargo test -p shipper-webhook --all-features
 cargo fmt -p shipper-webhook
 cargo clippy -p shipper-webhook --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

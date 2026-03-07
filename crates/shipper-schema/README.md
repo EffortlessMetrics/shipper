@@ -17,19 +17,15 @@ Schema version parsing and validation for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-schema
 cargo test -p shipper-schema
 cargo test -p shipper-schema --all-features
 cargo fmt -p shipper-schema
 cargo clippy -p shipper-schema --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

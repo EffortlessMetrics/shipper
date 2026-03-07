@@ -17,19 +17,15 @@ Cargo sparse-index path and version lookup helpers for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-sparse-index
 cargo test -p shipper-sparse-index
 cargo test -p shipper-sparse-index --all-features
 cargo fmt -p shipper-sparse-index
 cargo clippy -p shipper-sparse-index --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

@@ -17,19 +17,15 @@ Git operations for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-git
 cargo test -p shipper-git
 cargo test -p shipper-git --all-features
 cargo fmt -p shipper-git
 cargo clippy -p shipper-git --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

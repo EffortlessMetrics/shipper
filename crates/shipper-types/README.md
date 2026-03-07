@@ -17,19 +17,15 @@ Core types for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-types
 cargo test -p shipper-types
 cargo test -p shipper-types --all-features
 cargo fmt -p shipper-types
 cargo clippy -p shipper-types --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

@@ -17,19 +17,15 @@ Sanitize cargo command output before persistence and logging
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-output-sanitizer
 cargo test -p shipper-output-sanitizer
 cargo test -p shipper-output-sanitizer --all-features
 cargo fmt -p shipper-output-sanitizer
 cargo clippy -p shipper-output-sanitizer --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 

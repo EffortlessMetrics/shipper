@@ -17,19 +17,15 @@ Dependency level grouping for parallel shipper publish plans
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
-## Source entry point
-
-- Main entry: $entryPoint
-
 ## Development commands
 
-`ash
+```bash
 cargo check -p shipper-levels
 cargo test -p shipper-levels
 cargo test -p shipper-levels --all-features
 cargo fmt -p shipper-levels
 cargo clippy -p shipper-levels --all-targets --all-features -- -D warnings
-`
+```
 
 ## Contributing
 
