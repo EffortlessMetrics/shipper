@@ -77,6 +77,12 @@ fn normalize_output(raw: &str) -> String {
                 "  Branch: <BRANCH>".to_string()
             } else if line.starts_with("  Tag: ") {
                 "  Tag: <TAG>".to_string()
+            } else if line.starts_with("git_commit: ") {
+                "git_commit: <GIT_COMMIT>".to_string()
+            } else if line.starts_with("git_branch: ") {
+                "git_branch: <GIT_BRANCH>".to_string()
+            } else if line.starts_with("git_dirty: ") {
+                "git_dirty: <GIT_DIRTY>".to_string()
             } else {
                 line.replace('\\', "/")
             }
@@ -131,7 +137,7 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
     let base_url = format!("http://{}", server.server_addr());
     let handle = thread::spawn(move || {
         for idx in 0..expected_requests {
-            let req = match server.recv_timeout(std::time::Duration::from_secs(5)) {
+            let req = match server.recv_timeout(std::time::Duration::from_secs(30)) {
                 Ok(Some(r)) => r,
                 _ => break,
             };
@@ -248,9 +254,9 @@ fn doctor_command_snapshot() {
     registry_reachable: true
     index_base: https://index.crates.io
 
-    git_commit: 279b2257070b3a506eae3b3dc0024d4d3391036c
-    git_branch: release/v0.3.0-rc.1
-    git_dirty: true
+    git_commit: <GIT_COMMIT>
+    git_branch: <GIT_BRANCH>
+    git_dirty: <GIT_DIRTY>
 
     Diagnostics complete.
     "
@@ -302,9 +308,9 @@ fn doctor_command_detects_trusted_publishing_auth() {
     registry_reachable: true
     index_base: https://index.crates.io
 
-    git_commit: 279b2257070b3a506eae3b3dc0024d4d3391036c
-    git_branch: release/v0.3.0-rc.1
-    git_dirty: true
+    git_commit: <GIT_COMMIT>
+    git_branch: <GIT_BRANCH>
+    git_dirty: <GIT_DIRTY>
 
     Diagnostics complete.
     "

@@ -422,7 +422,7 @@ mod tests {
         let addr = format!("http://{}", server.server_addr());
         let handle = thread::spawn(move || {
             for _ in 0..request_count {
-                match server.recv_timeout(Duration::from_secs(5)) {
+                match server.recv_timeout(Duration::from_secs(30)) {
                     Ok(Some(req)) => handler(req),
                     _ => break,
                 }

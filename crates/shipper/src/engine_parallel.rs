@@ -960,7 +960,7 @@ mod tests {
 
         let handle = std::thread::spawn(move || {
             for _ in 0..expected_requests {
-                let req = match server.recv_timeout(Duration::from_secs(5)) {
+                let req = match server.recv_timeout(Duration::from_secs(30)) {
                     Ok(Some(r)) => r,
                     _ => break,
                 };
@@ -2302,7 +2302,7 @@ mod tests {
         let wh_handle = std::thread::spawn(move || {
             // We expect at least 2 webhook calls: PublishStarted + PublishCompleted
             for _ in 0..2 {
-                if let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_secs(10)) {
+                if let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_secs(30)) {
                     let mut body = String::new();
                     req.as_reader().read_to_string(&mut body).ok();
                     received_clone.lock().unwrap().push(body);

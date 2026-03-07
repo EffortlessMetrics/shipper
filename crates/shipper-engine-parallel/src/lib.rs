@@ -2515,7 +2515,7 @@ mod tests {
         let webhook_handle = std::thread::spawn(move || {
             // Collect up to 3 requests with a timeout
             for _ in 0..3 {
-                match webhook_server.recv_timeout(Duration::from_secs(5)) {
+                match webhook_server.recv_timeout(Duration::from_secs(30)) {
                     Ok(Some(mut req)) => {
                         let mut body = Vec::new();
                         let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);

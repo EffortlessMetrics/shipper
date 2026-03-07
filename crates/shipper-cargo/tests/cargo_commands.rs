@@ -6,9 +6,10 @@
 //! `cargo` binary.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serial_test::serial;
 use shipper_cargo::{
     WorkspaceMetadata, cargo_publish, cargo_publish_dry_run_package,
     cargo_publish_dry_run_workspace, load_metadata,
@@ -170,35 +171,64 @@ fn dry_run_workspace_timed_out_always_false() {
 
 // ── cargo_publish: timeout handling ────────────────────────────────────
 
+/// Create a fake cargo binary that sleeps for ~1 second, guaranteeing
+/// that a short timeout will fire reliably (unlike real cargo which can
+/// exit before 1ms under `cargo llvm-cov`).
+fn create_slow_fake_cargo(dir: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let path = dir.join("cargo.cmd");
+        fs::write(&path, "@echo off\r\nping -n 2 127.0.0.1 >nul\r\nexit /b 0\r\n")
+            .expect("write fake cargo");
+        path
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("cargo");
+        fs::write(&path, "#!/usr/bin/env sh\nsleep 1\nexit 0\n").expect("write fake cargo");
+        let mut perms = fs::metadata(&path).expect("meta").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms).expect("chmod");
+        path
+    }
+}
+
 #[test]
+#[serial]
 fn publish_with_very_short_timeout_times_out() {
     let tmp = tempfile::tempdir().unwrap();
     create_minimal_crate(tmp.path());
 
-    // 1ms is far too short for cargo to do anything → guaranteed timeout
-    let result = cargo_publish(
-        tmp.path(),
-        "test-crate",
-        "crates-io",
-        true,
-        true,
-        50,
-        Some(Duration::from_millis(1)),
-    )
-    .unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let shim_path = create_slow_fake_cargo(bin_dir.path());
 
-    assert!(result.timed_out, "1ms should be too short for cargo");
-    assert_eq!(result.exit_code, -1);
-    assert!(
-        result.stderr_tail.contains("timed out"),
-        "stderr should mention timeout: {}",
-        result.stderr_tail
-    );
-    assert!(
-        result.stderr_tail.contains("cargo publish timed out after"),
-        "expected human-readable timeout message, got: {}",
-        result.stderr_tail
-    );
+    // The fake cargo sleeps ~1s; a 10ms timeout will always fire first.
+    temp_env::with_var("SHIPPER_CARGO_BIN", Some(shim_path.to_str().unwrap()), || {
+        let result = cargo_publish(
+            tmp.path(),
+            "test-crate",
+            "crates-io",
+            true,
+            true,
+            50,
+            Some(Duration::from_millis(10)),
+        )
+        .unwrap();
+
+        assert!(result.timed_out, "10ms should be too short for 1s sleep shim");
+        assert_eq!(result.exit_code, -1);
+        assert!(
+            result.stderr_tail.contains("timed out"),
+            "stderr should mention timeout: {}",
+            result.stderr_tail
+        );
+        assert!(
+            result.stderr_tail.contains("cargo publish timed out after"),
+            "expected human-readable timeout message, got: {}",
+            result.stderr_tail
+        );
+    });
 }
 
 // ── cargo_publish: failure handling ────────────────────────────────────

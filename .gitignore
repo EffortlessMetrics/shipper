@@ -17,4 +17,4 @@ tout.txt
 texitcode.txt
 test-list-progress.txt
 proptest-regressions/
-*.log
+test_full.log

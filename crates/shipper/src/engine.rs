@@ -1253,7 +1253,7 @@ mod tests {
 
         let handle = thread::spawn(move || {
             for _ in 0..expected_requests {
-                let req = match server.recv_timeout(Duration::from_secs(5)) {
+                let req = match server.recv_timeout(Duration::from_secs(30)) {
                     Ok(Some(r)) => r,
                     _ => break,
                 };

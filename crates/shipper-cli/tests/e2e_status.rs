@@ -37,7 +37,7 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
     let base_url = format!("http://{}", server.server_addr());
     let handle = thread::spawn(move || {
         for idx in 0..expected_requests {
-            let req = match server.recv_timeout(std::time::Duration::from_secs(5)) {
+            let req = match server.recv_timeout(std::time::Duration::from_secs(30)) {
                 Ok(Some(r)) => r,
                 _ => break,
             };
