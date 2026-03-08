@@ -12,7 +12,7 @@ categories = ["development-tools"]
 
 [dependencies]
 anyhow = "1.0.101"
-chrono = { version = "0.4.43", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 shipper-cargo-failure = { path = "../shipper-cargo-failure" }
 shipper-retry = { path = "../shipper-retry" }
 shipper-state = { path = "../shipper-state" }
