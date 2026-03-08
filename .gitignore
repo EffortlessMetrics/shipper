@@ -18,3 +18,4 @@ texitcode.txt
 test-list-progress.txt
 proptest-regressions/
 test_full.log
+lcov.info
