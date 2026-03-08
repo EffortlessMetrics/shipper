@@ -321,30 +321,6 @@ fn compute_plan_id(registry_api_base: &str, packages: &[PlannedPackage]) -> Stri
     hex::encode(digest)
 }
 
-#[cfg(not(feature = "micro-types"))]
-impl ReleasePlan {
-    /// Group packages by dependency level for parallel publishing.
-    ///
-    /// Packages at the same level have no dependencies on each other and can be
-    /// published in parallel. Level 0 packages have no dependencies on other packages
-    /// in the plan. Level N packages depend only on packages in levels < N.
-    ///
-    /// This method uses the `dependencies` field of the ReleasePlan to determine levels.
-    pub fn group_by_levels(&self) -> Vec<crate::types::PublishLevel> {
-        shipper_levels::group_packages_by_levels(
-            &self.packages,
-            |pkg| pkg.name.as_str(),
-            &self.dependencies,
-        )
-        .into_iter()
-        .map(|level| crate::types::PublishLevel {
-            level: level.level,
-            packages: level.packages,
-        })
-        .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -682,5 +658,927 @@ c = { path = "../c", version = "0.1.0" }
             prop_assert_eq!(id1.len(), 64);
             prop_assert!(id1.chars().all(|c| c.is_ascii_hexdigit()));
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: create a diamond workspace (base → left+right → apex)
+    // -----------------------------------------------------------------------
+    fn create_diamond_workspace(root: &Path) {
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["base", "left", "right", "apex"]
+resolver = "2"
+"#,
+        );
+
+        write_file(
+            &root.join("base/Cargo.toml"),
+            r#"
+[package]
+name = "base"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("base/src/lib.rs"), "pub fn base() {}\n");
+
+        write_file(
+            &root.join("left/Cargo.toml"),
+            r#"
+[package]
+name = "left"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base = { path = "../base", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("left/src/lib.rs"), "pub fn left() {}\n");
+
+        write_file(
+            &root.join("right/Cargo.toml"),
+            r#"
+[package]
+name = "right"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base = { path = "../base", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("right/src/lib.rs"), "pub fn right() {}\n");
+
+        write_file(
+            &root.join("apex/Cargo.toml"),
+            r#"
+[package]
+name = "apex"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+left = { path = "../left", version = "0.1.0" }
+right = { path = "../right", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("apex/src/lib.rs"), "pub fn apex() {}\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: create a deep chain workspace (l0 → l1 → l2 → l3 → l4)
+    // -----------------------------------------------------------------------
+    fn create_deep_chain_workspace(root: &Path) {
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["l0", "l1", "l2", "l3", "l4"]
+resolver = "2"
+"#,
+        );
+
+        write_file(
+            &root.join("l0/Cargo.toml"),
+            r#"
+[package]
+name = "l0"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("l0/src/lib.rs"), "pub fn l0() {}\n");
+
+        for i in 1..=4 {
+            let name = format!("l{i}");
+            let dep_name = format!("l{}", i - 1);
+            write_file(
+                &root.join(format!("{name}/Cargo.toml")),
+                &format!(
+                    r#"
+[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+{dep_name} = {{ path = "../{dep_name}", version = "0.1.0" }}
+"#
+                ),
+            );
+            write_file(
+                &root.join(format!("{name}/src/lib.rs")),
+                &format!("pub fn {name}() {{}}\n"),
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: single-package workspace
+    // -----------------------------------------------------------------------
+    fn create_single_package_workspace(root: &Path) {
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["only"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("only/Cargo.toml"),
+            r#"
+[package]
+name = "only"
+version = "1.0.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("only/src/lib.rs"), "pub fn only() {}\n");
+    }
+
+    // =======================================================================
+    // Diamond dependency graph tests
+    // =======================================================================
+
+    #[test]
+    fn diamond_dependency_ordering_is_correct() {
+        let td = tempdir().expect("tempdir");
+        create_diamond_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names.len(), 4);
+
+        let pos = |n: &str| names.iter().position(|x| *x == n).unwrap();
+        // base before left and right
+        assert!(pos("base") < pos("left"));
+        assert!(pos("base") < pos("right"));
+        // left and right before apex
+        assert!(pos("left") < pos("apex"));
+        assert!(pos("right") < pos("apex"));
+        // alphabetical among peers
+        assert!(pos("left") < pos("right"));
+    }
+
+    #[test]
+    fn diamond_dependency_map_is_correct() {
+        let td = tempdir().expect("tempdir");
+        create_diamond_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let deps = &ws.plan.dependencies;
+
+        assert!(deps.get("base").unwrap().is_empty());
+        assert_eq!(deps.get("left").unwrap(), &vec!["base".to_string()]);
+        assert_eq!(deps.get("right").unwrap(), &vec!["base".to_string()]);
+
+        let apex_deps = deps.get("apex").unwrap();
+        assert!(apex_deps.contains(&"left".to_string()));
+        assert!(apex_deps.contains(&"right".to_string()));
+        assert_eq!(apex_deps.len(), 2);
+    }
+
+    // =======================================================================
+    // Deep chain tests
+    // =======================================================================
+
+    #[test]
+    fn deep_chain_preserves_linear_order() {
+        let td = tempdir().expect("tempdir");
+        create_deep_chain_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["l0", "l1", "l2", "l3", "l4"]);
+    }
+
+    #[test]
+    fn deep_chain_selecting_tip_pulls_entire_chain() {
+        let td = tempdir().expect("tempdir");
+        create_deep_chain_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["l4".to_string()]);
+
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["l0", "l1", "l2", "l3", "l4"]);
+    }
+
+    #[test]
+    fn deep_chain_selecting_middle_pulls_prefix_only() {
+        let td = tempdir().expect("tempdir");
+        create_deep_chain_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["l2".to_string()]);
+
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["l0", "l1", "l2"]);
+    }
+
+    // =======================================================================
+    // Cycle detection (unit-level via topo_sort)
+    // =======================================================================
+
+    #[test]
+    fn topo_sort_detects_three_node_cycle() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        let manifest = td.path().join("Cargo.toml");
+        let metadata = MetadataCommand::new()
+            .manifest_path(&manifest)
+            .exec()
+            .expect("metadata");
+
+        let pkg_map: BTreeMap<PackageId, &cargo_metadata::Package> = metadata
+            .packages
+            .iter()
+            .map(|p| (p.id.clone(), p))
+            .collect();
+        let mut by_name = BTreeMap::<String, PackageId>::new();
+        for pkg in &metadata.packages {
+            by_name.insert(pkg.name.to_string(), pkg.id.clone());
+        }
+
+        let a = by_name["a"].clone();
+        let b = by_name["b"].clone();
+        let z = by_name["zeta"].clone();
+
+        // a→b→z→a
+        let included = [a.clone(), b.clone(), z.clone()]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let deps_of = BTreeMap::from([
+            (a.clone(), [b.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (b.clone(), [z.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (z.clone(), [a.clone()].into_iter().collect::<BTreeSet<_>>()),
+        ]);
+        let dependents_of = BTreeMap::from([
+            (b.clone(), [a.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (z.clone(), [b.clone()].into_iter().collect::<BTreeSet<_>>()),
+            (a.clone(), [z.clone()].into_iter().collect::<BTreeSet<_>>()),
+        ]);
+
+        let err = topo_sort(&included, &deps_of, &dependents_of, &pkg_map).expect_err("cycle");
+        assert!(format!("{err:#}").contains("dependency cycle detected"));
+    }
+
+    #[test]
+    fn topo_sort_succeeds_for_empty_set() {
+        let included = BTreeSet::new();
+        let deps_of = BTreeMap::new();
+        let dependents_of = BTreeMap::new();
+        let pkg_map = BTreeMap::new();
+
+        let result = topo_sort(&included, &deps_of, &dependents_of, &pkg_map).expect("empty ok");
+        assert!(result.is_empty());
+    }
+
+    // =======================================================================
+    // Single-package workspace
+    // =======================================================================
+
+    #[test]
+    fn single_package_workspace_produces_one_entry_plan() {
+        let td = tempdir().expect("tempdir");
+        create_single_package_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws.plan.packages.len(), 1);
+        assert_eq!(ws.plan.packages[0].name, "only");
+        assert_eq!(ws.plan.packages[0].version, "1.0.0");
+        assert!(ws.skipped.is_empty());
+    }
+
+    #[test]
+    fn single_package_workspace_dependencies_map_is_empty_vec() {
+        let td = tempdir().expect("tempdir");
+        create_single_package_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let deps = ws.plan.dependencies.get("only").expect("only in deps map");
+        assert!(deps.is_empty());
+    }
+
+    // =======================================================================
+    // All-independent packages (no inter-workspace deps)
+    // =======================================================================
+
+    #[test]
+    fn all_independent_packages_sorted_alphabetically() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path();
+
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["charlie", "alpha", "bravo"]
+resolver = "2"
+"#,
+        );
+
+        for name in &["charlie", "alpha", "bravo"] {
+            write_file(
+                &root.join(format!("{name}/Cargo.toml")),
+                &format!(
+                    r#"
+[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2021"
+"#
+                ),
+            );
+            write_file(
+                &root.join(format!("{name}/src/lib.rs")),
+                &format!("pub fn {name}() {{}}\n"),
+            );
+        }
+
+        let ws = build_plan(&spec_for(root)).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "bravo", "charlie"]);
+    }
+
+    // =======================================================================
+    // Plan determinism
+    // =======================================================================
+
+    #[test]
+    fn plan_is_deterministic_across_multiple_invocations() {
+        let td = tempdir().expect("tempdir");
+        create_diamond_workspace(td.path());
+        let spec = spec_for(td.path());
+
+        let plans: Vec<_> = (0..5).map(|_| build_plan(&spec).expect("plan")).collect();
+
+        let first_names: Vec<&str> = plans[0]
+            .plan
+            .packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        for (i, p) in plans.iter().enumerate().skip(1) {
+            let names: Vec<&str> = p.plan.packages.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(first_names, names, "plan order differs at invocation {i}");
+        }
+    }
+
+    // =======================================================================
+    // Plan ID / hash stability
+    // =======================================================================
+
+    #[test]
+    fn plan_id_changes_when_version_changes() {
+        let pkgs_v1 = vec![PlannedPackage {
+            name: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: Path::new("x").join("foo.toml"),
+        }];
+        let pkgs_v2 = vec![PlannedPackage {
+            name: "foo".to_string(),
+            version: "2.0.0".to_string(),
+            manifest_path: Path::new("x").join("foo.toml"),
+        }];
+
+        let id1 = compute_plan_id("https://crates.io", &pkgs_v1);
+        let id2 = compute_plan_id("https://crates.io", &pkgs_v2);
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn plan_id_changes_when_package_added() {
+        let pkgs_one = vec![PlannedPackage {
+            name: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: Path::new("x").join("foo.toml"),
+        }];
+        let pkgs_two = vec![
+            PlannedPackage {
+                name: "foo".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: Path::new("x").join("foo.toml"),
+            },
+            PlannedPackage {
+                name: "bar".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: Path::new("x").join("bar.toml"),
+            },
+        ];
+
+        let id1 = compute_plan_id("https://crates.io", &pkgs_one);
+        let id2 = compute_plan_id("https://crates.io", &pkgs_two);
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn plan_id_changes_when_registry_differs() {
+        let pkgs = vec![PlannedPackage {
+            name: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: Path::new("x").join("foo.toml"),
+        }];
+
+        let id1 = compute_plan_id("https://crates.io", &pkgs);
+        let id2 = compute_plan_id("https://my-registry.example.com", &pkgs);
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn plan_id_is_insensitive_to_manifest_path() {
+        let pkgs_a = vec![PlannedPackage {
+            name: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: Path::new("/path/a").join("foo.toml"),
+        }];
+        let pkgs_b = vec![PlannedPackage {
+            name: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: Path::new("/completely/different").join("foo.toml"),
+        }];
+
+        let id1 = compute_plan_id("https://crates.io", &pkgs_a);
+        let id2 = compute_plan_id("https://crates.io", &pkgs_b);
+        assert_eq!(id1, id2, "plan_id should not depend on manifest_path");
+    }
+
+    #[test]
+    fn plan_id_depends_on_package_order() {
+        let pkgs_ab = vec![
+            PlannedPackage {
+                name: "a".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: Path::new("x").join("a.toml"),
+            },
+            PlannedPackage {
+                name: "b".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: Path::new("x").join("b.toml"),
+            },
+        ];
+        let pkgs_ba = vec![
+            PlannedPackage {
+                name: "b".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: Path::new("x").join("b.toml"),
+            },
+            PlannedPackage {
+                name: "a".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: Path::new("x").join("a.toml"),
+            },
+        ];
+
+        let id_ab = compute_plan_id("https://crates.io", &pkgs_ab);
+        let id_ba = compute_plan_id("https://crates.io", &pkgs_ba);
+        assert_ne!(id_ab, id_ba, "reordering packages should change plan_id");
+    }
+
+    #[test]
+    fn plan_id_for_empty_packages_is_valid_hex() {
+        let id = compute_plan_id("https://crates.io", &[]);
+        assert_eq!(id.len(), 64);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // =======================================================================
+    // Package filtering edge cases
+    // =======================================================================
+
+    #[test]
+    fn selecting_multiple_packages_unions_their_transitive_deps() {
+        let td = tempdir().expect("tempdir");
+        create_diamond_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        spec.selected_packages = Some(vec!["left".to_string(), "right".to_string()]);
+
+        let ws = build_plan(&spec).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        // Both left and right depend on base; apex is NOT included
+        assert_eq!(names, vec!["base", "left", "right"]);
+    }
+
+    #[test]
+    fn selecting_non_publishable_package_errors() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let mut spec = spec_for(td.path());
+        // "c" has publish = false
+        spec.selected_packages = Some(vec!["c".to_string()]);
+
+        let err = build_plan(&spec).expect_err("must fail");
+        assert!(
+            format!("{err:#}").contains("selected package not found or not publishable"),
+            "error: {err:#}"
+        );
+    }
+
+    // =======================================================================
+    // Skipped packages tracking
+    // =======================================================================
+
+    #[test]
+    fn skipped_packages_includes_publish_false() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let skipped_names: Vec<&str> = ws.skipped.iter().map(|s| s.name.as_str()).collect();
+        assert!(skipped_names.contains(&"c"), "c has publish=false");
+        assert!(
+            skipped_names.contains(&"d"),
+            "d has publish=[private-reg] which excludes crates-io"
+        );
+    }
+
+    #[test]
+    fn skipped_packages_reason_for_publish_false() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let c_skip = ws
+            .skipped
+            .iter()
+            .find(|s| s.name == "c")
+            .expect("c skipped");
+        assert!(
+            c_skip.reason.contains("publish = false"),
+            "reason: {}",
+            c_skip.reason
+        );
+    }
+
+    #[test]
+    fn skipped_packages_reason_for_registry_mismatch() {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let d_skip = ws
+            .skipped
+            .iter()
+            .find(|s| s.name == "d")
+            .expect("d skipped");
+        assert!(
+            d_skip.reason.contains("registry not in list"),
+            "reason: {}",
+            d_skip.reason
+        );
+    }
+
+    // =======================================================================
+    // publish_allowed unit tests
+    // =======================================================================
+
+    #[test]
+    fn publish_allowed_with_matching_registry() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path();
+
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["pkg"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("pkg/Cargo.toml"),
+            r#"
+[package]
+name = "pkg"
+version = "0.1.0"
+edition = "2021"
+publish = ["private-reg"]
+"#,
+        );
+        write_file(&root.join("pkg/src/lib.rs"), "pub fn pkg() {}\n");
+
+        let mut spec = spec_for(root);
+        spec.registry = Registry {
+            name: "private-reg".to_string(),
+            api_base: "https://private.example.com".to_string(),
+            index_base: None,
+        };
+
+        let ws = build_plan(&spec).expect("plan");
+        assert_eq!(ws.plan.packages.len(), 1);
+        assert_eq!(ws.plan.packages[0].name, "pkg");
+        assert!(ws.skipped.is_empty());
+    }
+
+    #[test]
+    fn publish_allowed_with_non_matching_registry_skips() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path();
+
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["pkg"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("pkg/Cargo.toml"),
+            r#"
+[package]
+name = "pkg"
+version = "0.1.0"
+edition = "2021"
+publish = ["some-other-registry"]
+"#,
+        );
+        write_file(&root.join("pkg/src/lib.rs"), "pub fn pkg() {}\n");
+
+        let ws = build_plan(&spec_for(root)).expect("plan");
+        assert!(ws.plan.packages.is_empty());
+        assert_eq!(ws.skipped.len(), 1);
+        assert_eq!(ws.skipped[0].name, "pkg");
+    }
+
+    // =======================================================================
+    // Build-dependency handling
+    // =======================================================================
+
+    #[test]
+    fn build_dependency_is_included_in_plan_order() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path();
+
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["codegen", "consumer"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("codegen/Cargo.toml"),
+            r#"
+[package]
+name = "codegen"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("codegen/src/lib.rs"), "pub fn codegen() {}\n");
+
+        write_file(
+            &root.join("consumer/Cargo.toml"),
+            r#"
+[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+codegen = { path = "../codegen", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("consumer/src/lib.rs"), "pub fn consumer() {}\n");
+        write_file(&root.join("consumer/build.rs"), "fn main() {}\n");
+
+        let ws = build_plan(&spec_for(root)).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["codegen", "consumer"]);
+
+        let consumer_deps = ws.plan.dependencies.get("consumer").unwrap();
+        assert!(consumer_deps.contains(&"codegen".to_string()));
+    }
+
+    // =======================================================================
+    // Dev-dependency is NOT an ordering constraint
+    // =======================================================================
+
+    #[test]
+    fn dev_dependency_does_not_create_ordering_constraint() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path();
+
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["helper", "main-lib"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("helper/Cargo.toml"),
+            r#"
+[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("helper/src/lib.rs"), "pub fn helper() {}\n");
+
+        write_file(
+            &root.join("main-lib/Cargo.toml"),
+            r#"
+[package]
+name = "main-lib"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+helper = { path = "../helper", version = "0.1.0" }
+"#,
+        );
+        write_file(&root.join("main-lib/src/lib.rs"), "pub fn main_lib() {}\n");
+
+        let ws = build_plan(&spec_for(root)).expect("plan");
+        let names: Vec<&str> = ws.plan.packages.iter().map(|p| p.name.as_str()).collect();
+        // Both packages should appear, sorted alphabetically since no normal/build dep edge
+        assert_eq!(names, vec!["helper", "main-lib"]);
+
+        // main-lib should have no plan-level dependencies on helper
+        let main_deps = ws.plan.dependencies.get("main-lib").unwrap();
+        assert!(
+            !main_deps.contains(&"helper".to_string()),
+            "dev-dep should not appear in plan dependencies"
+        );
+    }
+
+    // =======================================================================
+    // Invalid manifest handling
+    // =======================================================================
+
+    #[test]
+    fn build_plan_errors_for_malformed_manifest() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path();
+
+        write_file(&root.join("Cargo.toml"), "this is not valid TOML {{{{");
+
+        let err = build_plan(&spec_for(root)).expect_err("must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("failed to execute cargo metadata") || msg.contains("could not parse"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_plan_errors_for_nonexistent_workspace_member() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path();
+
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["ghost"]
+resolver = "2"
+"#,
+        );
+        // Don't create the "ghost" directory/manifest at all
+
+        let err = build_plan(&spec_for(root)).expect_err("must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("failed to execute cargo metadata") || msg.contains("failed to read"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    // =======================================================================
+    // Workspace where ALL packages are non-publishable
+    // =======================================================================
+
+    #[test]
+    fn all_packages_non_publishable_produces_empty_plan() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path();
+
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["x", "y"]
+resolver = "2"
+"#,
+        );
+
+        for name in &["x", "y"] {
+            write_file(
+                &root.join(format!("{name}/Cargo.toml")),
+                &format!(
+                    r#"
+[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#
+                ),
+            );
+            write_file(
+                &root.join(format!("{name}/src/lib.rs")),
+                &format!("pub fn {name}() {{}}\n"),
+            );
+        }
+
+        let ws = build_plan(&spec_for(root)).expect("plan");
+        assert!(ws.plan.packages.is_empty());
+        assert_eq!(ws.skipped.len(), 2);
+    }
+
+    // =======================================================================
+    // Mixed versions in the plan
+    // =======================================================================
+
+    #[test]
+    fn packages_with_different_versions_appear_correctly() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path();
+
+        write_file(
+            &root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["core-lib", "ext-lib"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &root.join("core-lib/Cargo.toml"),
+            r#"
+[package]
+name = "core-lib"
+version = "3.2.1"
+edition = "2021"
+"#,
+        );
+        write_file(&root.join("core-lib/src/lib.rs"), "pub fn core_lib() {}\n");
+
+        write_file(
+            &root.join("ext-lib/Cargo.toml"),
+            r#"
+[package]
+name = "ext-lib"
+version = "0.0.1-alpha"
+edition = "2021"
+
+[dependencies]
+core-lib = { path = "../core-lib", version = "3.2.1" }
+"#,
+        );
+        write_file(&root.join("ext-lib/src/lib.rs"), "pub fn ext_lib() {}\n");
+
+        let ws = build_plan(&spec_for(root)).expect("plan");
+        assert_eq!(ws.plan.packages.len(), 2);
+        assert_eq!(ws.plan.packages[0].name, "core-lib");
+        assert_eq!(ws.plan.packages[0].version, "3.2.1");
+        assert_eq!(ws.plan.packages[1].name, "ext-lib");
+        assert_eq!(ws.plan.packages[1].version, "0.0.1-alpha");
+    }
+
+    // =======================================================================
+    // Plan version field
+    // =======================================================================
+
+    #[test]
+    fn plan_version_is_set_correctly() {
+        let td = tempdir().expect("tempdir");
+        create_single_package_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        assert_eq!(ws.plan.plan_version, crate::state::CURRENT_PLAN_VERSION,);
+    }
+
+    // =======================================================================
+    // workspace_root is set correctly
+    // =======================================================================
+
+    #[test]
+    fn workspace_root_matches_manifest_directory() {
+        let td = tempdir().expect("tempdir");
+        create_single_package_workspace(td.path());
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        // workspace_root should be the canonical path of the tempdir
+        assert!(
+            ws.workspace_root.ends_with(td.path().file_name().unwrap())
+                || ws.workspace_root == td.path().canonicalize().unwrap_or_default(),
+            "workspace_root {:?} should correspond to {:?}",
+            ws.workspace_root,
+            td.path()
+        );
     }
 }

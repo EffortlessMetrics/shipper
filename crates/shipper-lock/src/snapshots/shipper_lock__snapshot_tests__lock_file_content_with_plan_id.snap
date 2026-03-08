@@ -1,0 +1,10 @@
+---
+source: crates/shipper-lock/src/lib.rs
+expression: json
+---
+{
+  "pid": 42,
+  "hostname": "build-host",
+  "acquired_at": "2025-01-15T12:00:00Z",
+  "plan_id": "release-2025-01-15"
+}

@@ -1,0 +1,26 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+assertion_line: 2198
+expression: json
+---
+Object {
+    "attachments": Array [
+        Object {
+            "color": String("good"),
+            "fields": Array [
+                Object {
+                    "short": Bool(true),
+                    "title": String("Package"),
+                    "value": String("crâte-ñame"),
+                },
+                Object {
+                    "short": Bool(true),
+                    "title": String("Version"),
+                    "value": String("1.0.0"),
+                },
+            ],
+            "text": String("🎉 Published crâte-ñame"),
+            "title": String("Shipper Notification"),
+        },
+    ],
+}

@@ -1,0 +1,26 @@
+---
+source: crates/shipper/tests/facade_integration.rs
+assertion_line: 1465
+expression: snap
+---
+FacadePlanSnapshot {
+    packages: [
+        (
+            "pub_a",
+            "1.0.0",
+        ),
+        (
+            "pub_b",
+            "1.0.0",
+        ),
+    ],
+    levels: [
+        [
+            "pub_a",
+        ],
+        [
+            "pub_b",
+        ],
+    ],
+    skipped_count: 1,
+}

@@ -1,0 +1,5 @@
+---
+source: crates/shipper-config/src/lib.rs
+expression: err.to_string()
+---
+registry.api_base cannot be empty

@@ -1,0 +1,12 @@
+---
+source: crates/shipper-environment/src/lib.rs
+expression: info
+---
+ci_environment: GitLabCI
+os: linux
+arch: x86_64
+rust_version: 1.79.0
+cargo_version: 1.79.0
+env_vars:
+  GITLAB_CI_PIPELINE_ID: "98765"
+collected_at: "2025-03-15T08:30:00Z"

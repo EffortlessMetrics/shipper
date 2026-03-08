@@ -1,0 +1,5 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: "sparse_index_path(\"a\")"
+---
+1/a

@@ -1,0 +1,12 @@
+---
+source: crates/shipper-events/src/lib.rs
+expression: event
+---
+PublishEvent {
+    timestamp: 2025-01-15T12:00:00Z,
+    event_type: PackageFailed {
+        class: Permanent,
+        message: "crate name is reserved",
+    },
+    package: "reserved@1.0.0",
+}

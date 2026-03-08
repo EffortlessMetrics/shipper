@@ -1,0 +1,39 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&stdout)
+---
+# Azure DevOps pipeline snippet for Shipper
+# Add this to your azure-pipelines.yml
+
+trigger:
+  - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  CARGO_HOME: $(Pipeline.Workspace)/.cargo
+
+steps:
+  - task: Cache@2
+    displayName: 'Cache Cargo and Shipper State'
+    inputs:
+      key: 'shipper | "$(Agent.OS)" | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        shipper | "$(Agent.OS)"
+        shipper
+      path: $(CARGO_HOME)
+      cacheHitVar: CACHE_RESTORED
+
+  - script: cargo install shipper-cli --locked
+    displayName: 'Install Shipper'
+
+  - script: shipper publish --quiet
+    displayName: 'Publish Crates'
+    env:
+      CARGO_REGISTRY_TOKEN: $(CARGO_REGISTRY_TOKEN)
+
+  - publish: <STATE_DIR>
+    displayName: 'Publish Shipper State Artifact'
+    condition: succeededOrFailed()
+    artifact: 'shipper-state'

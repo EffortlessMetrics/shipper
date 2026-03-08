@@ -2,6 +2,14 @@
 
 Shipper supports project-specific configuration via a `.shipper.toml` file in your workspace root. This allows you to define publishing policies, readiness settings, and other options without passing CLI flags every time.
 
+## Schema Versioning
+
+Configuration files include a `schema_version` field to ensure compatibility with future versions of Shipper. The current version is `shipper.config.v1`.
+
+```toml
+schema_version = "shipper.config.v1"
+```
+
 ## Creating a Configuration File
 
 Generate a default configuration file by running:
@@ -136,19 +144,28 @@ Shipper uses a lock file to prevent concurrent publish operations. If a lock is 
 
 ```toml
 [retry]
+# Retry policy preset: default, aggressive, conservative, or custom
+policy = "default"
+# Retry strategy: immediate, exponential (default), linear, constant
+strategy = "exponential"
 # Max attempts per crate publish step
 max_attempts = 6
 # Base backoff delay
 base_delay = "2s"
 # Max backoff delay
 max_delay = "2m"
+# Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
+jitter = 0.5
 ```
 
 Controls retry behavior for failed publish operations.
 
+- **policy**: Retry policy preset (default: `default`). Options: `default`, `aggressive`, `conservative`, `custom`
+- **strategy**: Retry strategy (default: `exponential`). Options: `immediate`, `exponential`, `linear`, `constant`
 - **max_attempts**: Maximum number of retry attempts per package (default: `6`)
 - **base_delay**: Starting delay for exponential backoff (default: `2s`)
 - **max_delay**: Maximum delay between retries (default: `2m`)
+- **jitter**: Jitter factor for randomized delays (default: `0.5`)
 
 ### Flags
 
@@ -216,6 +233,9 @@ The `--policy fast` flag will override the config file and use `fast` mode.
 # Shipper configuration file
 # This file should be placed in your workspace root as .shipper.toml
 
+# Schema version
+schema_version = "shipper.config.v1"
+
 [policy]
 # Publishing policy: safe (verify+strict), balanced (verify when needed), or fast (no verify)
 mode = "safe"
@@ -249,12 +269,18 @@ lines = 50
 timeout = "1h"
 
 [retry]
+# Retry policy preset: default, aggressive, conservative, or custom
+policy = "default"
+# Retry strategy: immediate, exponential (default), linear, constant
+strategy = "exponential"
 # Max attempts per crate publish step
 max_attempts = 6
 # Base backoff delay
 base_delay = "2s"
 # Max backoff delay
 max_delay = "2m"
+# Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
+jitter = 0.5
 
 [flags]
 # Allow publishing from a dirty git working tree (not recommended)

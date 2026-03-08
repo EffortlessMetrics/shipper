@@ -1,0 +1,37 @@
+---
+source: crates/shipper-state/src/lib.rs
+expression: json
+---
+{
+  "state_version": "shipper.state.v1",
+  "plan_id": "plan-abc123",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io",
+    "index_base": "https://index.crates.io"
+  },
+  "created_at": "2025-01-15T12:00:00Z",
+  "updated_at": "2025-01-15T12:00:00Z",
+  "packages": {
+    "alpha@0.1.0": {
+      "name": "alpha",
+      "version": "0.1.0",
+      "attempts": 1,
+      "state": {
+        "state": "failed",
+        "class": "permanent",
+        "message": "crate name is reserved"
+      },
+      "last_updated_at": "2025-01-15T12:00:00Z"
+    },
+    "beta@0.2.0": {
+      "name": "beta",
+      "version": "0.2.0",
+      "attempts": 1,
+      "state": {
+        "state": "published"
+      },
+      "last_updated_at": "2025-01-15T12:00:00Z"
+    }
+  }
+}

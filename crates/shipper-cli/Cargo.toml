@@ -17,21 +17,20 @@ name = "shipper"
 path = "src/main.rs"
 
 [dependencies]
-shipper = { path = "../shipper", version = "0.2.0" }
+shipper = { path = "../shipper", version = "0.3.0-rc.1" }
 shipper-duration = { path = "../shipper-duration" }
+shipper-progress = { path = "../shipper-progress", version = "0.3.0-rc.1" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
-atty = "0.2"
-indicatif = "0.17"
 
 [lints]
 workspace = true
 
 [features]
-default = []
+default = ["micro-all"]
 micro-auth = ["shipper/micro-auth"]
 micro-git = ["shipper/micro-git"]
 micro-events = ["shipper/micro-events"]
@@ -43,6 +42,7 @@ micro-cargo = ["shipper/micro-cargo"]
 micro-plan = ["shipper/micro-plan"]
 micro-registry = ["shipper/micro-registry"]
 micro-process = ["shipper/micro-process"]
+micro-policy = ["shipper/micro-policy"]
 micro-webhook = ["shipper/micro-webhook"]
 micro-types = ["shipper/micro-types"]
 micro-config = ["shipper/micro-config"]

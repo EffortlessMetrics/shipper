@@ -1,0 +1,5 @@
+---
+source: crates/shipper-environment/src/lib.rs
+expression: info.fingerprint()
+---
+"ci:GitHub Actions|os:linux|arch:x86_64|rust:1.80.0|cargo:1.80.0|CI:true|GITHUB_REF:refs/tags/v1.0.0|GITHUB_REPOSITORY:owner/repo|GITHUB_RUN_ID:999|GITHUB_RUN_NUMBER:42|GITHUB_SHA:abcdef1234567890"

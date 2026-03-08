@@ -1,0 +1,7 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: output.status.code()
+---
+Some(
+    2,
+)

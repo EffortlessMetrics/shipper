@@ -1,0 +1,16 @@
+# cargo-mutants configuration
+# https://mutants.rs/config.html
+
+# Per-mutant timeout (seconds). Generous to avoid flaky kills on CI.
+timeout = 120
+
+# Minimum test timeout even for fast baselines
+minimum_test_timeout = 30
+
+# Exclude test modules — mutating test helpers is not useful
+exclude_globs = [
+    "**/tests/**",
+    "**/test_*",
+    "**/tests.rs",
+    "crates/shipper-cli/**",
+]

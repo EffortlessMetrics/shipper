@@ -1,0 +1,11 @@
+---
+source: crates/shipper-process/src/lib.rs
+expression: output
+---
+exit_code: 0
+stdout: "cargo 1.80.0\n"
+stderr: ""
+timed_out: false
+duration:
+  secs: 0
+  nanos: 150000000

@@ -1,0 +1,6 @@
+---
+source: crates/shipper-output-sanitizer/src/lib.rs
+assertion_line: 244
+expression: "redact_sensitive(r#\"token = \"cio_mysecrettoken\"\"#)"
+---
+token = "[REDACTED]"

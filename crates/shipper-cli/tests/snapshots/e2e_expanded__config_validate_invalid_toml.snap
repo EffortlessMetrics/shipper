@@ -1,0 +1,13 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalized
+---
+Error: Failed to load config file: <CONFIG_PATH>
+
+Caused by:
+    0: Failed to parse config file: <CONFIG_PATH>
+    1: TOML parse error at line 1, column 6
+         |
+       1 | this is {{ not valid toml
+         |      ^
+       key with no value, expected `=`

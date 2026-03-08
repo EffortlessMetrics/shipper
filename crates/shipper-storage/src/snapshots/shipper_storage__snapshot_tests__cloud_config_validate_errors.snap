@@ -1,0 +1,10 @@
+---
+source: crates/shipper-storage/src/lib.rs
+expression: cases
+---
+- - s3_empty_bucket
+  - bucket/container name is required for cloud storage
+- - gcs_empty_bucket
+  - bucket/container name is required for cloud storage
+- - azure_empty_bucket
+  - bucket/container name is required for cloud storage

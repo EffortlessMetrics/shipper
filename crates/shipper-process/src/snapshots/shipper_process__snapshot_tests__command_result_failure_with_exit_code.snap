@@ -1,0 +1,9 @@
+---
+source: crates/shipper-process/src/lib.rs
+expression: result
+---
+success: false
+exit_code: 1
+stdout: ""
+stderr: "error: could not compile `foo`\n"
+duration_ms: 1500

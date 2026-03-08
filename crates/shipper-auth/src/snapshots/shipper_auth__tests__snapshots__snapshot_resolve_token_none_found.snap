@@ -1,0 +1,9 @@
+---
+source: crates/shipper-auth/src/lib.rs
+expression: auth
+---
+AuthInfo {
+    token: None,
+    source: None,
+    detected: false,
+}

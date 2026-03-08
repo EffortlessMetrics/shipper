@@ -1,0 +1,22 @@
+---
+source: crates/shipper-engine-parallel/src/lib.rs
+expression: layout
+---
+[
+    (
+        0,
+        [
+            "core",
+        ],
+    ),
+    (
+        1,
+        [
+            "cli",
+            "web",
+            "api",
+            "worker",
+            "bench",
+        ],
+    ),
+]

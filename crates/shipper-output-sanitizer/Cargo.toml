@@ -1,0 +1,20 @@
+[package]
+name = "shipper-output-sanitizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Sanitize cargo command output before persistence and logging"
+repository = "https://github.com/EffortlessMetrics/shipper"
+documentation = "https://docs.rs/shipper-output-sanitizer"
+keywords = ["cargo", "sanitize", "secrets", "output", "logging"]
+categories = ["development-tools", "authentication", "web-programming"]
+
+[dependencies]
+
+[dev-dependencies]
+proptest.workspace = true
+insta = { workspace = true }
+
+[lints]
+workspace = true

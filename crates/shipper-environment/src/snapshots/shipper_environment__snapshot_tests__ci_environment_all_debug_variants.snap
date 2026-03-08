@@ -1,0 +1,12 @@
+---
+source: crates/shipper-environment/src/lib.rs
+expression: variants
+---
+- GitHubActions
+- GitLabCI
+- CircleCI
+- TravisCI
+- AzurePipelines
+- Jenkins
+- BitbucketPipelines
+- Local

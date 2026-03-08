@@ -1,0 +1,27 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+assertion_line: 2184
+expression: payload
+---
+WebhookPayload {
+    message: "Published with extras",
+    title: Some(
+        "CI Publish",
+    ),
+    success: true,
+    package: Some(
+        "my-crate",
+    ),
+    version: Some(
+        "3.0.0",
+    ),
+    registry: Some(
+        "crates-io",
+    ),
+    error: None,
+    extra: {
+        "branch": String("main"),
+        "ci_provider": String("github"),
+        "run_number": Number(42),
+    },
+}

@@ -1,1221 +1,1286 @@
-//! Configuration file support for Shipper (.shipper.toml)
-//!
-//! This module provides support for project-specific configuration via a
-//! `.shipper.toml` file in the workspace root.
+pub use shipper_config::*;
+pub use shipper_config_runtime::*;
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shipper_retry::{PerErrorConfig, RetryPolicy, RetryStrategyType};
+    use std::path::PathBuf;
+    use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+    // ── TOML parsing edge cases ─────────────────────────────────────
 
-use crate::types::{
-    ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, Registry, RuntimeOptions,
-    VerifyMode, deserialize_duration, serialize_duration,
-};
-
-use crate::encryption::EncryptionConfig as EncryptionSettings;
-use crate::retry::{PerErrorConfig, RetryPolicy, RetryStrategyType};
-use crate::storage::{CloudStorageConfig, StorageType};
-use crate::webhook::WebhookConfig;
-
-/// Nested policy configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PolicyConfig {
-    /// Publishing policy: safe, balanced, or fast
-    #[serde(default)]
-    pub mode: PublishPolicy,
-}
-
-/// Nested verify configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct VerifyConfig {
-    /// Verify mode: workspace, package, or none
-    #[serde(default)]
-    pub mode: VerifyMode,
-}
-
-/// Nested retry configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RetryConfig {
-    /// Retry policy preset: default, aggressive, conservative, or custom
-    #[serde(default)]
-    pub policy: RetryPolicy,
-
-    /// Max attempts per crate publish step (used when policy is custom or as fallback)
-    #[serde(default = "default_max_attempts")]
-    pub max_attempts: u32,
-
-    /// Base backoff delay
-    #[serde(
-        deserialize_with = "deserialize_duration",
-        serialize_with = "serialize_duration"
-    )]
-    #[serde(default = "default_base_delay")]
-    pub base_delay: Duration,
-
-    /// Max backoff delay
-    #[serde(
-        deserialize_with = "deserialize_duration",
-        serialize_with = "serialize_duration"
-    )]
-    #[serde(default = "default_max_delay")]
-    pub max_delay: Duration,
-
-    /// Strategy type: immediate, exponential, linear, constant
-    #[serde(default)]
-    pub strategy: RetryStrategyType,
-
-    /// Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
-    #[serde(default = "default_jitter")]
-    pub jitter: f64,
-
-    /// Per-error-type retry configuration
-    #[serde(default)]
-    pub per_error: PerErrorConfig,
-}
-
-/// Nested output configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutputConfig {
-    /// Number of output lines to capture for evidence
-    #[serde(default = "default_output_lines")]
-    pub lines: usize,
-}
-
-/// Nested lock configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LockConfig {
-    /// Lock timeout duration
-    #[serde(
-        deserialize_with = "deserialize_duration",
-        serialize_with = "serialize_duration"
-    )]
-    #[serde(default = "default_lock_timeout")]
-    pub timeout: Duration,
-}
-
-impl Default for RetryConfig {
-    fn default() -> Self {
-        Self {
-            policy: RetryPolicy::Default,
-            max_attempts: default_max_attempts(),
-            base_delay: default_base_delay(),
-            max_delay: default_max_delay(),
-            strategy: RetryStrategyType::Exponential,
-            jitter: 0.5,
-            per_error: PerErrorConfig::default(),
-        }
-    }
-}
-
-fn default_jitter() -> f64 {
-    0.5
-}
-
-impl Default for OutputConfig {
-    fn default() -> Self {
-        Self {
-            lines: default_output_lines(),
-        }
-    }
-}
-
-impl Default for LockConfig {
-    fn default() -> Self {
-        Self {
-            timeout: default_lock_timeout(),
-        }
-    }
-}
-
-/// Nested encryption configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct EncryptionConfigInner {
-    /// Enable encryption for state files
-    #[serde(default)]
-    pub enabled: bool,
-    /// Passphrase for encryption/decryption (can also be set via SHIPPER_ENCRYPT_KEY env var)
-    #[serde(default)]
-    pub passphrase: Option<String>,
-    /// Environment variable to read passphrase from (default: SHIPPER_ENCRYPT_KEY)
-    #[serde(default)]
-    pub env_key: Option<String>,
-}
-
-/// Nested storage configuration for cloud storage backends
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct StorageConfigInner {
-    /// Storage type: file, s3, gcs, or azure
-    #[serde(default)]
-    pub storage_type: StorageType,
-    /// Bucket/container name
-    #[serde(default)]
-    pub bucket: Option<String>,
-    /// Region (for S3) or project ID (for GCS)
-    #[serde(default)]
-    pub region: Option<String>,
-    /// Base path within the bucket
-    #[serde(default)]
-    pub base_path: Option<String>,
-    /// Custom endpoint for S3-compatible services (MinIO, DigitalOcean Spaces, etc.)
-    #[serde(default)]
-    pub endpoint: Option<String>,
-    /// Access key ID
-    #[serde(default)]
-    pub access_key_id: Option<String>,
-    /// Secret access key
-    #[serde(default)]
-    pub secret_access_key: Option<String>,
-}
-
-impl StorageConfigInner {
-    /// Build CloudStorageConfig from this configuration
-    ///
-    /// Returns None if storage is not configured (i.e., using local file storage)
-    pub fn to_cloud_config(&self) -> Option<CloudStorageConfig> {
-        // Only build cloud config if bucket is specified
-        let bucket = self.bucket.as_ref()?;
-
-        let mut config = CloudStorageConfig::new(self.storage_type.clone(), bucket.clone());
-
-        if let Some(ref region) = self.region {
-            config.region = Some(region.clone());
-        }
-        if let Some(ref base_path) = self.base_path {
-            config.base_path = base_path.clone();
-        }
-        if let Some(ref endpoint) = self.endpoint {
-            config.endpoint = Some(endpoint.clone());
-        }
-        if let Some(ref access_key_id) = self.access_key_id {
-            config.access_key_id = Some(access_key_id.clone());
-        }
-        if let Some(ref secret_access_key) = self.secret_access_key {
-            config.secret_access_key = Some(secret_access_key.clone());
-        }
-
-        // Check for environment variable overrides
-        config.access_key_id = config
-            .access_key_id
-            .clone()
-            .or_else(|| std::env::var("SHIPPER_STORAGE_ACCESS_KEY_ID").ok());
-        config.secret_access_key = config
-            .secret_access_key
-            .clone()
-            .or_else(|| std::env::var("SHIPPER_STORAGE_SECRET_ACCESS_KEY").ok());
-        config.region = config
-            .region
-            .clone()
-            .or_else(|| std::env::var("SHIPPER_STORAGE_REGION").ok());
-
-        Some(config)
+    #[test]
+    fn comments_only_toml_parses_to_defaults() {
+        let toml_str = r#"
+# This file has only comments
+# [policy]
+# mode = "fast"
+# No actual keys or sections
+"#;
+        let config: ShipperConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.policy.mode, PublishPolicy::Safe);
+        assert_eq!(config.verify.mode, VerifyMode::Workspace);
+        assert_eq!(config.output.lines, 50);
+        assert!(config.validate().is_ok());
     }
 
-    /// Check if cloud storage is configured
-    pub fn is_configured(&self) -> bool {
-        self.bucket.is_some() && self.storage_type != StorageType::File
-    }
-}
+    #[test]
+    fn empty_sections_parse_to_section_defaults() {
+        let toml_str = r#"
+[policy]
 
-/// Nested flags configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FlagsConfig {
-    /// Allow publishing from a dirty git working tree
-    #[serde(default)]
-    pub allow_dirty: bool,
+[verify]
 
-    /// Skip owners/permissions preflight
-    #[serde(default)]
-    pub skip_ownership_check: bool,
+[readiness]
 
-    /// Fail preflight if ownership checks fail
-    #[serde(default)]
-    pub strict_ownership: bool,
-}
+[output]
 
-/// Configuration loaded from .shipper.toml
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShipperConfig {
-    /// Publish policy configuration
-    #[serde(default)]
-    pub policy: PolicyConfig,
+[lock]
 
-    /// Verify mode configuration
-    #[serde(default)]
-    pub verify: VerifyConfig,
+[retry]
 
-    /// Readiness check configuration
-    #[serde(default)]
-    pub readiness: ReadinessConfig,
+[flags]
 
-    /// Output configuration
-    #[serde(default)]
-    pub output: OutputConfig,
-
-    /// Lock configuration
-    #[serde(default)]
-    pub lock: LockConfig,
-
-    /// Retry configuration
-    #[serde(default)]
-    pub retry: RetryConfig,
-
-    /// Flags configuration
-    #[serde(default)]
-    pub flags: FlagsConfig,
-
-    /// Parallel publishing configuration
-    #[serde(default)]
-    pub parallel: ParallelConfig,
-
-    /// Optional custom state directory
-    #[serde(default)]
-    pub state_dir: Option<PathBuf>,
-
-    /// Optional custom registry configuration (single registry)
-    #[serde(default)]
-    pub registry: Option<RegistryConfig>,
-
-    /// Multiple registry configuration for multi-registry publishing
-    #[serde(default)]
-    pub registries: MultiRegistryConfig,
-
-    /// Webhook configuration for publish notifications
-    #[serde(default)]
-    pub webhook: WebhookConfig,
-
-    /// Encryption configuration for state files
-    #[serde(default)]
-    pub encryption: EncryptionConfigInner,
-
-    /// Storage configuration for cloud storage backends
-    #[serde(default)]
-    pub storage: StorageConfigInner,
-}
-
-/// Registry configuration - supports both single registry and multiple registries
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistryConfig {
-    /// Cargo registry name (e.g., crates-io)
-    pub name: String,
-
-    /// Base URL for registry web API (e.g., <https://crates.io>)
-    pub api_base: String,
-
-    /// Base URL for the sparse index (optional, derived from api_base if not set)
-    #[serde(default)]
-    pub index_base: Option<String>,
-
-    /// Registry token (can also be set via environment variable)
-    /// Supported formats:
-    /// - "env:VAR_NAME" - read token from environment variable
-    /// - "file:/path/to/token" - read token from file
-    /// - Raw token string (not recommended for production)
-    #[serde(default)]
-    pub token: Option<String>,
-
-    /// Whether this is the default registry (used when publishing to all registries)
-    #[serde(default)]
-    pub default: bool,
-}
-
-/// Multiple registry configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MultiRegistryConfig {
-    /// List of registries to publish to
-    #[serde(default)]
-    pub registries: Vec<RegistryConfig>,
-
-    /// Default registries to publish to if none specified (default: ["crates-io"])
-    #[serde(default)]
-    pub default_registries: Vec<String>,
-}
-
-impl MultiRegistryConfig {
-    /// Get all registries, with crates-io as default if none configured
-    pub fn get_registries(&self) -> Vec<RegistryConfig> {
-        if self.registries.is_empty() {
-            // Return default crates-io registry
-            vec![RegistryConfig {
-                name: "crates-io".to_string(),
-                api_base: "https://crates.io".to_string(),
-                index_base: Some("https://index.crates.io".to_string()),
-                token: None,
-                default: true,
-            }]
-        } else {
-            self.registries.clone()
-        }
+[parallel]
+"#;
+        let config: ShipperConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.policy.mode, PublishPolicy::Safe);
+        assert_eq!(config.verify.mode, VerifyMode::Workspace);
+        assert!(config.readiness.enabled);
+        assert_eq!(config.output.lines, 50);
+        assert_eq!(config.lock.timeout, Duration::from_secs(3600));
+        assert_eq!(config.retry.max_attempts, 6);
+        assert!(!config.flags.allow_dirty);
+        assert!(!config.parallel.enabled);
+        assert!(config.validate().is_ok());
     }
 
-    /// Get the default registry (first one marked as default, or first one, or crates-io)
-    pub fn get_default(&self) -> RegistryConfig {
-        self.registries
-            .iter()
-            .find(|r| r.default)
-            .or(self.registries.first())
-            .cloned()
-            .unwrap_or_else(|| RegistryConfig {
-                name: "crates-io".to_string(),
-                api_base: "https://crates.io".to_string(),
-                index_base: Some("https://index.crates.io".to_string()),
-                token: None,
-                default: true,
-            })
+    #[test]
+    fn whitespace_only_toml_parses_to_defaults() {
+        let config: ShipperConfig = toml::from_str("   \n\n  \t  \n").unwrap();
+        assert_eq!(config.policy.mode, PublishPolicy::Safe);
+        assert!(config.validate().is_ok());
     }
 
-    /// Find a registry by name
-    pub fn find_by_name(&self, name: &str) -> Option<RegistryConfig> {
-        self.registries.iter().find(|r| r.name == name).cloned()
+    #[test]
+    fn inline_comments_after_values_are_handled() {
+        let toml_str = r#"
+[policy]
+mode = "fast" # override to fast
+
+[output]
+lines = 200 # more lines for CI
+"#;
+        let config: ShipperConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.policy.mode, PublishPolicy::Fast);
+        assert_eq!(config.output.lines, 200);
     }
-}
 
-/// CLI overrides for merging with config file values.
-///
-/// `Option` fields mean "user did not pass this flag" when `None`.
-/// `bool` fields mean "user explicitly enabled this" when `true`.
-#[derive(Debug, Default)]
-pub struct CliOverrides {
-    pub policy: Option<PublishPolicy>,
-    pub verify_mode: Option<VerifyMode>,
-    pub max_attempts: Option<u32>,
-    pub base_delay: Option<Duration>,
-    pub max_delay: Option<Duration>,
-    pub retry_strategy: Option<RetryStrategyType>,
-    pub retry_jitter: Option<f64>,
-    pub verify_timeout: Option<Duration>,
-    pub verify_poll_interval: Option<Duration>,
-    pub output_lines: Option<usize>,
-    pub lock_timeout: Option<Duration>,
-    pub state_dir: Option<PathBuf>,
-    pub readiness_method: Option<ReadinessMethod>,
-    pub readiness_timeout: Option<Duration>,
-    pub readiness_poll: Option<Duration>,
-    pub allow_dirty: bool,
-    pub skip_ownership_check: bool,
-    pub strict_ownership: bool,
-    pub no_verify: bool,
-    pub no_readiness: bool,
-    pub force: bool,
-    pub force_resume: bool,
-    pub parallel_enabled: bool,
-    pub max_concurrent: Option<usize>,
-    pub per_package_timeout: Option<Duration>,
-    pub webhook_url: Option<String>,
-    pub webhook_secret: Option<String>,
-    pub encrypt: bool,
-    pub encrypt_passphrase: Option<String>,
-    /// Target registries for multi-registry publishing (comma-separated list)
-    pub registries: Option<Vec<String>>,
-    /// Publish to all configured registries
-    pub all_registries: bool,
-}
+    // ── Invalid typed values ────────────────────────────────────────
 
-impl Default for ShipperConfig {
-    fn default() -> Self {
-        Self {
+    #[test]
+    fn string_for_integer_field_is_rejected() {
+        let toml_str = r#"
+[output]
+lines = "not_a_number"
+"#;
+        let result: Result<ShipperConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn integer_for_string_field_is_rejected() {
+        let toml_str = r#"
+[policy]
+mode = 42
+"#;
+        let result: Result<ShipperConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn boolean_for_string_field_is_rejected() {
+        let toml_str = r#"
+[policy]
+mode = true
+"#;
+        let result: Result<ShipperConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_duration_format_is_rejected() {
+        let toml_str = r#"
+[lock]
+timeout = "not_a_duration"
+"#;
+        let result: Result<ShipperConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn negative_integer_for_unsigned_field_is_rejected() {
+        let toml_str = r#"
+[retry]
+max_attempts = -1
+"#;
+        let result: Result<ShipperConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn float_for_integer_field_is_rejected() {
+        let toml_str = r#"
+[output]
+lines = 3.14
+"#;
+        let result: Result<ShipperConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_verify_mode_is_rejected() {
+        let toml_str = r#"
+[verify]
+mode = "ultra"
+"#;
+        let result: Result<ShipperConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_readiness_method_is_rejected() {
+        let toml_str = r#"
+[readiness]
+method = "magic"
+"#;
+        let result: Result<ShipperConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_retry_strategy_is_rejected() {
+        let toml_str = r#"
+[retry]
+strategy = "fibonacci"
+"#;
+        let result: Result<ShipperConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_retry_policy_is_rejected() {
+        let toml_str = r#"
+[retry]
+policy = "insane"
+"#;
+        let result: Result<ShipperConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    // ── Config file not found / load graceful defaults ──────────────
+
+    #[test]
+    fn load_from_workspace_no_config_returns_none() {
+        let td = tempfile::tempdir().unwrap();
+        let result = ShipperConfig::load_from_workspace(td.path()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_from_file_nonexistent_returns_error() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("nonexistent.toml");
+        let result = ShipperConfig::load_from_file(&path);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Failed to read config file"),
+            "unexpected error: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn load_from_workspace_with_empty_file_returns_defaults() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join(".shipper.toml");
+        std::fs::write(&path, "").unwrap();
+        let config = ShipperConfig::load_from_workspace(td.path())
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.policy.mode, PublishPolicy::Safe);
+        assert_eq!(config.output.lines, 50);
+    }
+
+    #[test]
+    fn load_from_file_with_valid_content_succeeds() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("custom.toml");
+        std::fs::write(
+            &path,
+            r#"
+[policy]
+mode = "fast"
+
+[output]
+lines = 123
+"#,
+        )
+        .unwrap();
+        let config = ShipperConfig::load_from_file(&path).unwrap();
+        assert_eq!(config.policy.mode, PublishPolicy::Fast);
+        assert_eq!(config.output.lines, 123);
+    }
+
+    #[test]
+    fn load_from_file_with_invalid_schema_version_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("bad_schema.toml");
+        std::fs::write(&path, r#"schema_version = "not.a.valid.schema""#).unwrap();
+        let result = ShipperConfig::load_from_file(&path);
+        assert!(result.is_err());
+    }
+
+    // ── CLI flag override precedence ────────────────────────────────
+
+    #[test]
+    fn cli_overrides_all_option_fields() {
+        let config = ShipperConfig {
             policy: PolicyConfig {
-                mode: PublishPolicy::default(),
+                mode: PublishPolicy::Safe,
             },
             verify: VerifyConfig {
-                mode: VerifyMode::default(),
-            },
-            readiness: ReadinessConfig::default(),
-            output: OutputConfig {
-                lines: default_output_lines(),
-            },
-            lock: LockConfig {
-                timeout: default_lock_timeout(),
+                mode: VerifyMode::Workspace,
             },
             retry: RetryConfig {
+                policy: RetryPolicy::Custom,
+                max_attempts: 3,
+                base_delay: Duration::from_secs(1),
+                max_delay: Duration::from_secs(60),
+                strategy: RetryStrategyType::Linear,
+                jitter: 0.2,
+                per_error: PerErrorConfig::default(),
+            },
+            output: OutputConfig { lines: 25 },
+            lock: LockConfig {
+                timeout: Duration::from_secs(600),
+            },
+            readiness: ReadinessConfig {
+                method: ReadinessMethod::Api,
+                ..ReadinessConfig::default()
+            },
+            state_dir: Some(PathBuf::from("config-state")),
+            ..ShipperConfig::default()
+        };
+
+        let cli = CliOverrides {
+            policy: Some(PublishPolicy::Fast),
+            verify_mode: Some(VerifyMode::None),
+            max_attempts: Some(99),
+            base_delay: Some(Duration::from_millis(100)),
+            max_delay: Some(Duration::from_secs(10)),
+            retry_strategy: Some(RetryStrategyType::Constant),
+            retry_jitter: Some(0.9),
+            output_lines: Some(500),
+            lock_timeout: Some(Duration::from_secs(7200)),
+            state_dir: Some(PathBuf::from("cli-state")),
+            readiness_method: Some(ReadinessMethod::Both),
+            readiness_timeout: Some(Duration::from_secs(999)),
+            readiness_poll: Some(Duration::from_secs(15)),
+            ..Default::default()
+        };
+
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.policy, PublishPolicy::Fast);
+        assert_eq!(opts.verify_mode, VerifyMode::None);
+        assert_eq!(opts.max_attempts, 99);
+        assert_eq!(opts.base_delay, Duration::from_millis(100));
+        assert_eq!(opts.max_delay, Duration::from_secs(10));
+        assert_eq!(opts.retry_strategy, RetryStrategyType::Constant);
+        assert!((opts.retry_jitter - 0.9).abs() < f64::EPSILON);
+        assert_eq!(opts.output_lines, 500);
+        assert_eq!(opts.lock_timeout, Duration::from_secs(7200));
+        assert_eq!(opts.state_dir, PathBuf::from("cli-state"));
+        assert_eq!(opts.readiness.method, ReadinessMethod::Both);
+        assert_eq!(opts.readiness.max_total_wait, Duration::from_secs(999));
+        assert_eq!(opts.readiness.poll_interval, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn state_dir_precedence_cli_over_config_over_default() {
+        // Default: no state_dir in config, no CLI → ".shipper"
+        let config_none = ShipperConfig::default();
+        let opts = config_none.build_runtime_options(CliOverrides::default());
+        assert_eq!(opts.state_dir, PathBuf::from(".shipper"));
+
+        // Config provides state_dir, CLI doesn't → config value
+        let config_some = ShipperConfig {
+            state_dir: Some(PathBuf::from("my-state")),
+            ..ShipperConfig::default()
+        };
+        let opts = config_some.build_runtime_options(CliOverrides::default());
+        assert_eq!(opts.state_dir, PathBuf::from("my-state"));
+
+        // CLI overrides config state_dir
+        let cli = CliOverrides {
+            state_dir: Some(PathBuf::from("cli-dir")),
+            ..Default::default()
+        };
+        let opts = config_some.build_runtime_options(cli);
+        assert_eq!(opts.state_dir, PathBuf::from("cli-dir"));
+    }
+
+    // ── Retry policy preset vs custom ───────────────────────────────
+
+    #[test]
+    fn non_custom_retry_policy_ignores_config_retry_values() {
+        let config = ShipperConfig {
+            retry: RetryConfig {
                 policy: RetryPolicy::Default,
-                max_attempts: default_max_attempts(),
-                base_delay: default_base_delay(),
-                max_delay: default_max_delay(),
-                strategy: RetryStrategyType::Exponential,
-                jitter: 0.5,
+                // These should be ignored because policy != Custom
+                max_attempts: 999,
+                base_delay: Duration::from_secs(999),
+                max_delay: Duration::from_secs(9999),
+                strategy: RetryStrategyType::Constant,
+                jitter: 0.99,
+                per_error: PerErrorConfig::default(),
+            },
+            ..ShipperConfig::default()
+        };
+
+        let opts = config.build_runtime_options(CliOverrides::default());
+        // Should use the "default" policy effective values, not the raw config values
+        let effective = RetryPolicy::Default.to_config();
+        assert_eq!(opts.max_attempts, effective.max_attempts);
+        assert_eq!(opts.base_delay, effective.base_delay);
+        assert_eq!(opts.max_delay, effective.max_delay);
+        assert_eq!(opts.retry_strategy, effective.strategy);
+    }
+
+    #[test]
+    fn custom_retry_policy_uses_config_values() {
+        let config = ShipperConfig {
+            retry: RetryConfig {
+                policy: RetryPolicy::Custom,
+                max_attempts: 42,
+                base_delay: Duration::from_millis(750),
+                max_delay: Duration::from_secs(45),
+                strategy: RetryStrategyType::Linear,
+                jitter: 0.3,
+                per_error: PerErrorConfig::default(),
+            },
+            ..ShipperConfig::default()
+        };
+
+        let opts = config.build_runtime_options(CliOverrides::default());
+        assert_eq!(opts.max_attempts, 42);
+        assert_eq!(opts.base_delay, Duration::from_millis(750));
+        assert_eq!(opts.max_delay, Duration::from_secs(45));
+        assert_eq!(opts.retry_strategy, RetryStrategyType::Linear);
+        assert!((opts.retry_jitter - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cli_overrides_win_over_non_custom_policy_effective_values() {
+        let config = ShipperConfig {
+            retry: RetryConfig {
+                policy: RetryPolicy::Aggressive,
+                ..RetryConfig::default()
+            },
+            ..ShipperConfig::default()
+        };
+
+        let cli = CliOverrides {
+            max_attempts: Some(1),
+            base_delay: Some(Duration::from_millis(50)),
+            ..Default::default()
+        };
+
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.max_attempts, 1);
+        assert_eq!(opts.base_delay, Duration::from_millis(50));
+    }
+
+    // ── Boolean OR semantics ────────────────────────────────────────
+
+    #[test]
+    fn boolean_flags_or_semantics_all_combinations() {
+        for (cfg_dirty, cli_dirty) in [(false, false), (false, true), (true, false), (true, true)] {
+            let config = ShipperConfig {
+                flags: FlagsConfig {
+                    allow_dirty: cfg_dirty,
+                    ..Default::default()
+                },
+                ..ShipperConfig::default()
+            };
+            let cli = CliOverrides {
+                allow_dirty: cli_dirty,
+                ..Default::default()
+            };
+            let opts = config.build_runtime_options(cli);
+            assert_eq!(
+                opts.allow_dirty,
+                cfg_dirty || cli_dirty,
+                "cfg={cfg_dirty}, cli={cli_dirty}"
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_enabled_or_semantics() {
+        let config = ShipperConfig {
+            parallel: ParallelConfig {
+                enabled: true,
+                ..ParallelConfig::default()
+            },
+            ..ShipperConfig::default()
+        };
+        // CLI doesn't enable parallel, but config does → enabled
+        let opts = config.build_runtime_options(CliOverrides::default());
+        assert!(opts.parallel.enabled);
+
+        // CLI enables parallel, config doesn't
+        let config2 = ShipperConfig::default();
+        let cli = CliOverrides {
+            parallel_enabled: true,
+            ..Default::default()
+        };
+        let opts2 = config2.build_runtime_options(cli);
+        assert!(opts2.parallel.enabled);
+    }
+
+    #[test]
+    fn encryption_enabled_or_semantics() {
+        // Config enables, CLI doesn't
+        let config = ShipperConfig {
+            encryption: EncryptionConfigInner {
+                enabled: true,
+                passphrase: Some("cfg-pass".to_string()),
+                env_key: None,
+            },
+            ..ShipperConfig::default()
+        };
+        let opts = config.build_runtime_options(CliOverrides::default());
+        assert!(opts.encryption.enabled);
+        assert_eq!(opts.encryption.passphrase.as_deref(), Some("cfg-pass"));
+
+        // CLI enables, config doesn't
+        let config2 = ShipperConfig::default();
+        let cli = CliOverrides {
+            encrypt: true,
+            encrypt_passphrase: Some("cli-pass".to_string()),
+            ..Default::default()
+        };
+        let opts2 = config2.build_runtime_options(cli);
+        assert!(opts2.encryption.enabled);
+        assert_eq!(opts2.encryption.passphrase.as_deref(), Some("cli-pass"));
+    }
+
+    // ── Readiness CLI overrides ─────────────────────────────────────
+
+    #[test]
+    fn no_readiness_cli_flag_disables_even_if_config_enables() {
+        let config = ShipperConfig {
+            readiness: ReadinessConfig {
+                enabled: true,
+                ..ReadinessConfig::default()
+            },
+            ..ShipperConfig::default()
+        };
+        let cli = CliOverrides {
+            no_readiness: true,
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert!(!opts.readiness.enabled);
+    }
+
+    #[test]
+    fn readiness_config_only_fields_passthrough() {
+        let config = ShipperConfig {
+            readiness: ReadinessConfig {
+                enabled: true,
+                initial_delay: Duration::from_secs(10),
+                max_delay: Duration::from_secs(120),
+                jitter_factor: 0.75,
+                index_path: Some(PathBuf::from("/custom/index")),
+                prefer_index: true,
+                ..ReadinessConfig::default()
+            },
+            ..ShipperConfig::default()
+        };
+        let opts = config.build_runtime_options(CliOverrides::default());
+        // These fields are config-only (no CLI override)
+        assert_eq!(opts.readiness.initial_delay, Duration::from_secs(10));
+        assert_eq!(opts.readiness.max_delay, Duration::from_secs(120));
+        assert!((opts.readiness.jitter_factor - 0.75).abs() < f64::EPSILON);
+        assert_eq!(
+            opts.readiness.index_path,
+            Some(PathBuf::from("/custom/index"))
+        );
+        assert!(opts.readiness.prefer_index);
+    }
+
+    // ── Webhook CLI overrides ───────────────────────────────────────
+
+    #[test]
+    fn webhook_cli_overrides_url_and_secret() {
+        let config = ShipperConfig {
+            webhook: WebhookConfig {
+                url: "https://config-url.example.com".to_string(),
+                secret: Some("config-secret".to_string()),
+                ..WebhookConfig::default()
+            },
+            ..ShipperConfig::default()
+        };
+        let cli = CliOverrides {
+            webhook_url: Some("https://cli-url.example.com".to_string()),
+            webhook_secret: Some("cli-secret".to_string()),
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.webhook.url, "https://cli-url.example.com");
+        assert_eq!(opts.webhook.secret.as_deref(), Some("cli-secret"));
+    }
+
+    #[test]
+    fn webhook_cli_partial_override_only_url() {
+        let config = ShipperConfig {
+            webhook: WebhookConfig {
+                url: "https://config-url.example.com".to_string(),
+                secret: Some("config-secret".to_string()),
+                ..WebhookConfig::default()
+            },
+            ..ShipperConfig::default()
+        };
+        let cli = CliOverrides {
+            webhook_url: Some("https://cli-url.example.com".to_string()),
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.webhook.url, "https://cli-url.example.com");
+        // Secret from config is preserved
+        assert_eq!(opts.webhook.secret.as_deref(), Some("config-secret"));
+    }
+
+    // ── Registry CLI merging ────────────────────────────────────────
+
+    #[test]
+    fn all_registries_cli_flag_selects_all_configured() {
+        let config = ShipperConfig {
+            registries: MultiRegistryConfig {
+                registries: vec![
+                    RegistryConfig {
+                        name: "reg-a".to_string(),
+                        api_base: "https://a.example.com".to_string(),
+                        index_base: None,
+                        token: None,
+                        default: true,
+                    },
+                    RegistryConfig {
+                        name: "reg-b".to_string(),
+                        api_base: "https://b.example.com".to_string(),
+                        index_base: None,
+                        token: None,
+                        default: false,
+                    },
+                ],
+                default_registries: vec![],
+            },
+            ..ShipperConfig::default()
+        };
+        let cli = CliOverrides {
+            all_registries: true,
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.registries.len(), 2);
+        assert_eq!(opts.registries[0].name, "reg-a");
+        assert_eq!(opts.registries[1].name, "reg-b");
+    }
+
+    #[test]
+    fn specific_registries_cli_flag_selects_named() {
+        let config = ShipperConfig {
+            registries: MultiRegistryConfig {
+                registries: vec![
+                    RegistryConfig {
+                        name: "reg-a".to_string(),
+                        api_base: "https://a.example.com".to_string(),
+                        index_base: Some("https://index.a.example.com".to_string()),
+                        token: None,
+                        default: true,
+                    },
+                    RegistryConfig {
+                        name: "reg-b".to_string(),
+                        api_base: "https://b.example.com".to_string(),
+                        index_base: None,
+                        token: None,
+                        default: false,
+                    },
+                ],
+                default_registries: vec![],
+            },
+            ..ShipperConfig::default()
+        };
+        let cli = CliOverrides {
+            registries: Some(vec!["reg-b".to_string()]),
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.registries.len(), 1);
+        assert_eq!(opts.registries[0].name, "reg-b");
+        assert_eq!(opts.registries[0].api_base, "https://b.example.com");
+    }
+
+    #[test]
+    fn unknown_registry_name_in_cli_gets_default_url() {
+        let config = ShipperConfig::default();
+        let cli = CliOverrides {
+            registries: Some(vec!["crates-io".to_string()]),
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.registries.len(), 1);
+        assert_eq!(opts.registries[0].name, "crates-io");
+        assert_eq!(opts.registries[0].api_base, "https://crates.io");
+    }
+
+    #[test]
+    fn unknown_non_crates_io_registry_in_cli_gets_synthesized_url() {
+        let config = ShipperConfig::default();
+        let cli = CliOverrides {
+            registries: Some(vec!["custom-mirror".to_string()]),
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.registries.len(), 1);
+        assert_eq!(opts.registries[0].name, "custom-mirror");
+        // Synthesized URL pattern
+        assert!(opts.registries[0].api_base.contains("custom-mirror"));
+    }
+
+    #[test]
+    fn no_registry_cli_flags_yields_empty_registries() {
+        let config = ShipperConfig::default();
+        let cli = CliOverrides::default();
+        let opts = config.build_runtime_options(cli);
+        assert!(opts.registries.is_empty());
+    }
+
+    // ── Force / no_verify / resume_from CLI flags ───────────────────
+
+    #[test]
+    fn force_and_force_resume_passthrough() {
+        let config = ShipperConfig::default();
+        let cli = CliOverrides {
+            force: true,
+            force_resume: true,
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert!(opts.force);
+        assert!(opts.force_resume);
+    }
+
+    #[test]
+    fn no_verify_passthrough() {
+        let config = ShipperConfig::default();
+        let cli = CliOverrides {
+            no_verify: true,
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert!(opts.no_verify);
+    }
+
+    #[test]
+    fn resume_from_passthrough() {
+        let config = ShipperConfig::default();
+        let cli = CliOverrides {
+            resume_from: Some("my-crate".to_string()),
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.resume_from.as_deref(), Some("my-crate"));
+    }
+
+    #[test]
+    fn resume_from_none_by_default() {
+        let config = ShipperConfig::default();
+        let opts = config.build_runtime_options(CliOverrides::default());
+        assert!(opts.resume_from.is_none());
+    }
+
+    // ── Parallel CLI overrides ──────────────────────────────────────
+
+    #[test]
+    fn per_package_timeout_cli_override() {
+        let config = ShipperConfig {
+            parallel: ParallelConfig {
+                enabled: true,
+                max_concurrent: 4,
+                per_package_timeout: Duration::from_secs(1800),
+            },
+            ..ShipperConfig::default()
+        };
+        let cli = CliOverrides {
+            per_package_timeout: Some(Duration::from_secs(60)),
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.parallel.per_package_timeout, Duration::from_secs(60));
+    }
+
+    // ── Encryption env_key passthrough ──────────────────────────────
+
+    #[test]
+    fn encryption_custom_env_key_from_config() {
+        let config = ShipperConfig {
+            encryption: EncryptionConfigInner {
+                enabled: true,
+                passphrase: None,
+                env_key: Some("CUSTOM_KEY_VAR".to_string()),
+            },
+            ..ShipperConfig::default()
+        };
+        let opts = config.build_runtime_options(CliOverrides::default());
+        assert!(opts.encryption.enabled);
+        assert_eq!(opts.encryption.env_var.as_deref(), Some("CUSTOM_KEY_VAR"));
+    }
+
+    #[test]
+    fn encryption_disabled_by_default() {
+        let config = ShipperConfig::default();
+        let opts = config.build_runtime_options(CliOverrides::default());
+        assert!(!opts.encryption.enabled);
+    }
+
+    // ── TOML parsing: all sections with full content ────────────────
+
+    #[test]
+    fn parse_all_sections_simultaneously() {
+        let toml_str = r#"
+schema_version = "shipper.config.v1"
+
+[policy]
+mode = "balanced"
+
+[verify]
+mode = "package"
+
+[readiness]
+enabled = true
+method = "both"
+initial_delay = "3s"
+max_delay = "90s"
+max_total_wait = "10m"
+poll_interval = "5s"
+jitter_factor = 0.3
+
+[output]
+lines = 75
+
+[lock]
+timeout = "2h"
+
+[retry]
+policy = "custom"
+max_attempts = 8
+base_delay = "3s"
+max_delay = "90s"
+strategy = "exponential"
+jitter = 0.4
+
+[flags]
+allow_dirty = true
+skip_ownership_check = false
+strict_ownership = true
+
+[parallel]
+enabled = true
+max_concurrent = 6
+per_package_timeout = "45m"
+
+[registry]
+name = "my-reg"
+api_base = "https://my-reg.example.com"
+index_base = "https://index.my-reg.example.com"
+
+[encryption]
+enabled = true
+passphrase = "my-pass"
+env_key = "MY_KEY"
+
+[storage]
+storage_type = "S3"
+bucket = "releases"
+region = "eu-west-1"
+base_path = "artifacts/"
+"#;
+        let config: ShipperConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.schema_version, "shipper.config.v1");
+        assert_eq!(config.policy.mode, PublishPolicy::Balanced);
+        assert_eq!(config.verify.mode, VerifyMode::Package);
+        assert!(config.readiness.enabled);
+        assert_eq!(config.readiness.method, ReadinessMethod::Both);
+        assert_eq!(config.readiness.initial_delay, Duration::from_secs(3));
+        assert_eq!(config.readiness.max_delay, Duration::from_secs(90));
+        assert_eq!(config.readiness.max_total_wait, Duration::from_secs(600));
+        assert_eq!(config.readiness.poll_interval, Duration::from_secs(5));
+        assert!((config.readiness.jitter_factor - 0.3).abs() < f64::EPSILON);
+        assert_eq!(config.output.lines, 75);
+        assert_eq!(config.lock.timeout, Duration::from_secs(7200));
+        assert_eq!(config.retry.policy, RetryPolicy::Custom);
+        assert_eq!(config.retry.max_attempts, 8);
+        assert_eq!(config.retry.base_delay, Duration::from_secs(3));
+        assert_eq!(config.retry.max_delay, Duration::from_secs(90));
+        assert_eq!(config.retry.strategy, RetryStrategyType::Exponential);
+        assert!((config.retry.jitter - 0.4).abs() < f64::EPSILON);
+        assert!(config.flags.allow_dirty);
+        assert!(!config.flags.skip_ownership_check);
+        assert!(config.flags.strict_ownership);
+        assert!(config.parallel.enabled);
+        assert_eq!(config.parallel.max_concurrent, 6);
+        assert_eq!(
+            config.parallel.per_package_timeout,
+            Duration::from_secs(2700)
+        );
+        let reg = config.registry.as_ref().unwrap();
+        assert_eq!(reg.name, "my-reg");
+        assert_eq!(reg.api_base, "https://my-reg.example.com");
+        assert_eq!(
+            reg.index_base.as_deref(),
+            Some("https://index.my-reg.example.com")
+        );
+        assert!(config.encryption.enabled);
+        assert_eq!(config.encryption.passphrase.as_deref(), Some("my-pass"));
+        assert_eq!(config.encryption.env_key.as_deref(), Some("MY_KEY"));
+        assert_eq!(config.storage.bucket.as_deref(), Some("releases"));
+        assert_eq!(config.storage.region.as_deref(), Some("eu-west-1"));
+        assert_eq!(config.storage.base_path.as_deref(), Some("artifacts/"));
+        assert!(config.validate().is_ok());
+    }
+
+    // ── Multi-registry TOML parsing ─────────────────────────────────
+
+    #[test]
+    fn parse_registries_section_toml() {
+        let toml_str = r#"
+[[registries.registries]]
+name = "primary"
+api_base = "https://primary.example.com"
+default = true
+
+[[registries.registries]]
+name = "mirror"
+api_base = "https://mirror.example.com"
+index_base = "https://index.mirror.example.com"
+"#;
+        let config: ShipperConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.registries.registries.len(), 2);
+        assert_eq!(config.registries.registries[0].name, "primary");
+        assert!(config.registries.registries[0].default);
+        assert_eq!(config.registries.registries[1].name, "mirror");
+        assert!(!config.registries.registries[1].default);
+        assert!(config.validate().is_ok());
+    }
+
+    // ── Webhook TOML parsing ────────────────────────────────────────
+
+    #[test]
+    fn parse_webhook_section_toml() {
+        let toml_str = r#"
+[webhook]
+url = "https://hooks.example.com/notify"
+secret = "webhook-secret"
+timeout_secs = 15
+"#;
+        let config: ShipperConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.webhook.url, "https://hooks.example.com/notify");
+        assert_eq!(config.webhook.secret.as_deref(), Some("webhook-secret"));
+        assert_eq!(config.webhook.timeout_secs, 15);
+    }
+
+    // ── Verify / verify_timeout / verify_poll defaults ──────────────
+
+    #[test]
+    fn verify_timeout_defaults_when_not_set() {
+        let config = ShipperConfig::default();
+        let opts = config.build_runtime_options(CliOverrides::default());
+        assert_eq!(opts.verify_timeout, Duration::from_secs(120));
+        assert_eq!(opts.verify_poll_interval, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn verify_timeout_cli_override() {
+        let config = ShipperConfig::default();
+        let cli = CliOverrides {
+            verify_timeout: Some(Duration::from_secs(300)),
+            verify_poll_interval: Some(Duration::from_secs(10)),
+            ..Default::default()
+        };
+        let opts = config.build_runtime_options(cli);
+        assert_eq!(opts.verify_timeout, Duration::from_secs(300));
+        assert_eq!(opts.verify_poll_interval, Duration::from_secs(10));
+    }
+
+    // ── Validation combinatorics ────────────────────────────────────
+
+    #[test]
+    fn validate_passes_with_jitter_at_exact_boundaries() {
+        let mut config = ShipperConfig::default();
+        config.retry.jitter = 0.0;
+        config.readiness.jitter_factor = 0.0;
+        assert!(config.validate().is_ok());
+
+        config.retry.jitter = 1.0;
+        config.readiness.jitter_factor = 1.0;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_zero_lock_timeout() {
+        let mut config = ShipperConfig::default();
+        config.lock.timeout = Duration::ZERO;
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("lock.timeout"));
+    }
+
+    #[test]
+    fn validate_rejects_equal_base_and_max_delay_only_when_base_exceeds() {
+        let mut config = ShipperConfig::default();
+        // base == max is OK
+        config.retry.base_delay = Duration::from_secs(10);
+        config.retry.max_delay = Duration::from_secs(10);
+        assert!(config.validate().is_ok());
+
+        // base > max is NOT OK
+        config.retry.base_delay = Duration::from_secs(11);
+        assert!(config.validate().is_err());
+    }
+
+    // ── Default TOML template ───────────────────────────────────────
+
+    #[test]
+    fn default_toml_template_roundtrips() {
+        let template = ShipperConfig::default_toml_template();
+        // Template should be parseable
+        let parsed: ShipperConfig = toml::from_str(&template).unwrap();
+        assert!(parsed.validate().is_ok());
+    }
+
+    // ── Serialization roundtrip ─────────────────────────────────────
+
+    #[test]
+    fn serialize_deserialize_roundtrip_preserves_all_fields() {
+        let config = ShipperConfig {
+            schema_version: "shipper.config.v1".to_string(),
+            policy: PolicyConfig {
+                mode: PublishPolicy::Fast,
+            },
+            verify: VerifyConfig {
+                mode: VerifyMode::None,
+            },
+            readiness: ReadinessConfig {
+                enabled: false,
+                method: ReadinessMethod::Index,
+                initial_delay: Duration::from_secs(7),
+                max_delay: Duration::from_secs(45),
+                max_total_wait: Duration::from_secs(180),
+                poll_interval: Duration::from_secs(3),
+                jitter_factor: 0.8,
+                index_path: None,
+                prefer_index: false,
+            },
+            output: OutputConfig { lines: 42 },
+            lock: LockConfig {
+                timeout: Duration::from_secs(900),
+            },
+            retry: RetryConfig {
+                policy: RetryPolicy::Conservative,
+                max_attempts: 2,
+                base_delay: Duration::from_secs(5),
+                max_delay: Duration::from_secs(60),
+                strategy: RetryStrategyType::Linear,
+                jitter: 0.15,
                 per_error: PerErrorConfig::default(),
             },
             flags: FlagsConfig {
-                allow_dirty: false,
-                skip_ownership_check: false,
+                allow_dirty: true,
+                skip_ownership_check: true,
                 strict_ownership: false,
             },
-            parallel: ParallelConfig::default(),
-            state_dir: None,
+            parallel: ParallelConfig {
+                enabled: true,
+                max_concurrent: 12,
+                per_package_timeout: Duration::from_secs(600),
+            },
+            state_dir: Some(PathBuf::from("custom-state")),
             registry: None,
             registries: MultiRegistryConfig::default(),
             webhook: WebhookConfig::default(),
             encryption: EncryptionConfigInner::default(),
             storage: StorageConfigInner::default(),
-        }
-    }
-}
+        };
 
-fn default_output_lines() -> usize {
-    50
-}
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: ShipperConfig = toml::from_str(&serialized).unwrap();
 
-fn default_lock_timeout() -> Duration {
-    Duration::from_secs(3600) // 1 hour
-}
-
-fn default_max_attempts() -> u32 {
-    6
-}
-
-fn default_base_delay() -> Duration {
-    Duration::from_secs(2)
-}
-
-fn default_max_delay() -> Duration {
-    Duration::from_secs(120) // 2 minutes
-}
-
-impl ShipperConfig {
-    /// Load configuration from workspace root by searching for .shipper.toml
-    ///
-    /// Returns `Ok(None)` if no config file exists.
-    pub fn load_from_workspace(workspace_root: &Path) -> Result<Option<Self>> {
-        let config_path = workspace_root.join(".shipper.toml");
-        if !config_path.exists() {
-            return Ok(None);
-        }
-        Self::load_from_file(&config_path).map(Some)
+        assert_eq!(deserialized.policy.mode, PublishPolicy::Fast);
+        assert_eq!(deserialized.verify.mode, VerifyMode::None);
+        assert!(!deserialized.readiness.enabled);
+        assert_eq!(deserialized.readiness.method, ReadinessMethod::Index);
+        assert_eq!(deserialized.output.lines, 42);
+        assert_eq!(deserialized.lock.timeout, Duration::from_secs(900));
+        assert_eq!(deserialized.retry.policy, RetryPolicy::Conservative);
+        assert_eq!(deserialized.retry.max_attempts, 2);
+        assert!(deserialized.flags.allow_dirty);
+        assert!(deserialized.flags.skip_ownership_check);
+        assert!(deserialized.parallel.enabled);
+        assert_eq!(deserialized.parallel.max_concurrent, 12);
+        assert_eq!(
+            deserialized.state_dir.as_ref().unwrap(),
+            &PathBuf::from("custom-state")
+        );
     }
 
-    /// Load configuration from a specific file path
-    pub fn load_from_file(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-
-        let config: ShipperConfig = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
-
-        Ok(config)
-    }
-
-    /// Validate the configuration
-    pub fn validate(&self) -> Result<()> {
-        // Validate output_lines
-        if self.output.lines == 0 {
-            bail!("output.lines must be greater than 0");
-        }
-
-        // Validate max_attempts
-        if self.retry.max_attempts == 0 {
-            bail!("retry.max_attempts must be greater than 0");
-        }
-
-        // Validate delays
-        if self.retry.base_delay.is_zero() {
-            bail!("retry.base_delay must be greater than 0");
-        }
-
-        if self.retry.max_delay < self.retry.base_delay {
-            bail!("retry.max_delay must be greater than or equal to retry.base_delay");
-        }
-
-        // Validate jitter
-        if self.retry.jitter < 0.0 || self.retry.jitter > 1.0 {
-            bail!("retry.jitter must be between 0.0 and 1.0");
-        }
-
-        // Validate lock_timeout
-        if self.lock.timeout.is_zero() {
-            bail!("lock.timeout must be greater than 0");
-        }
-
-        // Validate readiness config
-        if self.readiness.max_total_wait.is_zero() {
-            bail!("readiness.max_total_wait must be greater than 0");
-        }
-
-        if self.readiness.poll_interval.is_zero() {
-            bail!("readiness.poll_interval must be greater than 0");
-        }
-
-        if self.readiness.jitter_factor < 0.0 || self.readiness.jitter_factor > 1.0 {
-            bail!("readiness.jitter_factor must be between 0.0 and 1.0");
-        }
-
-        // Validate parallel config
-        if self.parallel.max_concurrent == 0 {
-            bail!("parallel.max_concurrent must be greater than 0");
-        }
-
-        if self.parallel.per_package_timeout.is_zero() {
-            bail!("parallel.per_package_timeout must be greater than 0");
-        }
-
-        // Validate registry if present
-        if let Some(ref registry) = self.registry {
-            if registry.name.is_empty() {
-                bail!("registry.name cannot be empty");
-            }
-            if registry.api_base.is_empty() {
-                bail!("registry.api_base cannot be empty");
-            }
-        }
-
-        // Validate multiple registries if present
-        for reg in &self.registries.registries {
-            if reg.name.is_empty() {
-                bail!("registries[].name cannot be empty");
-            }
-            if reg.api_base.is_empty() {
-                bail!("registries[].api_base cannot be empty");
-            }
-        }
-
-        // Ensure only one default registry
-        let default_count = self
-            .registries
-            .registries
-            .iter()
-            .filter(|r| r.default)
-            .count();
-        if default_count > 1 {
-            bail!("only one registry can be marked as default");
-        }
-
-        Ok(())
-    }
-
-    /// Build `RuntimeOptions` by merging CLI overrides with config file values.
-    ///
-    /// For `Option` fields: CLI value takes precedence; falls back to config.
-    /// For `bool` flags: `true` if either CLI or config enables it (OR).
-    pub fn build_runtime_options(&self, cli: CliOverrides) -> RuntimeOptions {
-        // Determine effective retry config based on policy
-        let effective_retry = self.retry.policy.to_config();
-
-        RuntimeOptions {
-            allow_dirty: cli.allow_dirty || self.flags.allow_dirty,
-            skip_ownership_check: cli.skip_ownership_check || self.flags.skip_ownership_check,
-            strict_ownership: cli.strict_ownership || self.flags.strict_ownership,
-            no_verify: cli.no_verify,
-            max_attempts: cli
-                .max_attempts
-                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                    self.retry.max_attempts
-                } else {
-                    effective_retry.max_attempts
-                }),
-            base_delay: cli
-                .base_delay
-                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                    self.retry.base_delay
-                } else {
-                    effective_retry.base_delay
-                }),
-            max_delay: cli
-                .max_delay
-                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                    self.retry.max_delay
-                } else {
-                    effective_retry.max_delay
-                }),
-            retry_strategy: cli.retry_strategy.unwrap_or(
-                if self.retry.policy == RetryPolicy::Custom {
-                    self.retry.strategy
-                } else {
-                    effective_retry.strategy
-                },
-            ),
-            retry_jitter: cli
-                .retry_jitter
-                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                    self.retry.jitter
-                } else {
-                    effective_retry.jitter
-                }),
-            retry_per_error: self.retry.per_error.clone(),
-            verify_timeout: cli.verify_timeout.unwrap_or(Duration::from_secs(120)),
-            verify_poll_interval: cli.verify_poll_interval.unwrap_or(Duration::from_secs(5)),
-            state_dir: cli.state_dir.unwrap_or_else(|| {
-                self.state_dir
-                    .clone()
-                    .unwrap_or_else(|| PathBuf::from(".shipper"))
-            }),
-            force_resume: cli.force_resume,
-            force: cli.force,
-            lock_timeout: cli.lock_timeout.unwrap_or(self.lock.timeout),
-            policy: cli.policy.unwrap_or(self.policy.mode),
-            verify_mode: cli.verify_mode.unwrap_or(self.verify.mode),
-            readiness: ReadinessConfig {
-                enabled: !cli.no_readiness && self.readiness.enabled,
-                method: cli.readiness_method.unwrap_or(self.readiness.method),
-                initial_delay: self.readiness.initial_delay,
-                max_delay: self.readiness.max_delay,
-                max_total_wait: cli
-                    .readiness_timeout
-                    .unwrap_or(self.readiness.max_total_wait),
-                poll_interval: cli.readiness_poll.unwrap_or(self.readiness.poll_interval),
-                jitter_factor: self.readiness.jitter_factor,
-                index_path: self.readiness.index_path.clone(),
-                prefer_index: self.readiness.prefer_index,
-            },
-            output_lines: cli.output_lines.unwrap_or(self.output.lines),
-            parallel: ParallelConfig {
-                enabled: cli.parallel_enabled || self.parallel.enabled,
-                max_concurrent: cli.max_concurrent.unwrap_or(self.parallel.max_concurrent),
-                per_package_timeout: cli
-                    .per_package_timeout
-                    .unwrap_or(self.parallel.per_package_timeout),
-            },
-            webhook: {
-                let mut cfg = self.webhook.clone();
-                // CLI can override webhook settings
-                if let Some(url) = cli.webhook_url {
-                    #[cfg(feature = "micro-webhook")]
-                    {
-                        cfg.url = url;
-                    }
-                    #[cfg(not(feature = "micro-webhook"))]
-                    {
-                        cfg.url = Some(url);
-                        cfg.enabled = true;
-                    }
-                }
-                if let Some(secret) = cli.webhook_secret {
-                    cfg.secret = Some(secret);
-                }
-                cfg
-            },
-            encryption: {
-                let mut cfg = EncryptionSettings::default();
-                // Enable encryption if CLI flag is set or config enables it
-                if cli.encrypt || self.encryption.enabled {
-                    cfg.enabled = true;
-                }
-                // CLI passphrase takes precedence over config
-                if let Some(passphrase) = cli.encrypt_passphrase {
-                    cfg.passphrase = Some(passphrase);
-                } else if let Some(passphrase) = &self.encryption.passphrase {
-                    cfg.passphrase = Some(passphrase.clone());
-                }
-                // Use env_key from config if set
-                if let Some(ref env_key) = self.encryption.env_key {
-                    cfg.env_var = Some(env_key.clone());
-                } else if cfg.enabled && cfg.passphrase.is_none() {
-                    // Default to SHIPPER_ENCRYPT_KEY if enabled but no passphrase
-                    cfg.env_var = Some("SHIPPER_ENCRYPT_KEY".to_string());
-                }
-                cfg
-            },
-            registries: {
-                // Determine target registries based on CLI overrides and config
-                if cli.all_registries {
-                    // Publish to all configured registries
-                    self.registries
-                        .get_registries()
-                        .into_iter()
-                        .map(|r| Registry {
-                            name: r.name,
-                            api_base: r.api_base,
-                            index_base: r.index_base,
-                        })
-                        .collect()
-                } else if let Some(ref reg_names) = cli.registries {
-                    // Publish to specifically requested registries
-                    reg_names
-                        .iter()
-                        .map(|name| {
-                            // Try to find in config, otherwise use defaults
-                            self.registries
-                                .find_by_name(name)
-                                .map(|r| Registry {
-                                    name: r.name,
-                                    api_base: r.api_base,
-                                    index_base: r.index_base,
-                                })
-                                .unwrap_or_else(|| {
-                                    // Default to crates-io if not found
-                                    if name == "crates-io" {
-                                        Registry::crates_io()
-                                    } else {
-                                        Registry {
-                                            name: name.clone(),
-                                            api_base: format!("https://{}.crates.io", name),
-                                            index_base: None,
-                                        }
-                                    }
-                                })
-                        })
-                        .collect()
-                } else {
-                    // Default: single registry from the plan
-                    vec![]
-                }
-            },
-        }
-    }
-
-    /// Generate a default configuration file content as TOML string
-    pub fn default_toml_template() -> String {
-        r#"# Shipper configuration file
-# This file should be placed in your workspace root as .shipper.toml
-
-[policy]
-# Publishing policy: safe (verify+strict), balanced (verify when needed), or fast (no verify)
-mode = "safe"
-
-[verify]
-# Verify mode: workspace (default, safest), package (per-crate), or none (no verify)
-mode = "workspace"
-
-[readiness]
-# Enable readiness checks (wait for registry visibility after publish)
-enabled = true
-# Method for checking version visibility: api (fast), index (slower, more accurate), both (slowest, most reliable)
-method = "api"
-# Initial delay before first poll
-initial_delay = "1s"
-# Maximum delay between polls
-max_delay = "60s"
-# Maximum total time to wait for visibility
-max_total_wait = "5m"
-# Base poll interval
-poll_interval = "2s"
-# Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
-jitter_factor = 0.5
-
-[output]
-# Number of output lines to capture for evidence
-lines = 50
-
-[lock]
-# Lock timeout duration (locks older than this are considered stale)
-timeout = "1h"
-
-[retry]
-# Retry policy: default (balanced), aggressive, conservative, or custom
-# - default: exponential backoff with 6 attempts, 2s base, 2m max
-# - aggressive: exponential backoff with 10 attempts, 500ms base, 30s max
-# - conservative: linear backoff with 3 attempts, 5s base, 60s max
-# - custom: uses explicit strategy settings below
-policy = "default"
-# Max attempts per crate publish step (used when policy is custom)
-max_attempts = 6
-# Base backoff delay
-base_delay = "2s"
-# Max backoff delay
-max_delay = "2m"
-# Strategy type: immediate, exponential, linear, constant
-strategy = "exponential"
-# Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
-jitter = 0.5
-
-# Per-error-type retry configuration (optional)
-# Uncomment and customize to override retry behavior for specific error types
-# [retry.per_error.retryable]
-# strategy = "immediate"
-# max_attempts = 10
-# base_delay = "0s"
-# max_delay = "1s"
-# jitter = 0.0
-
-# [retry.per_error.ambiguous]
-# strategy = "exponential"
-# max_attempts = 5
-# base_delay = "1s"
-# max_delay = "60s"
-# jitter = 0.3
-
-[flags]
-# Allow publishing from a dirty git working tree (not recommended)
-allow_dirty = false
-# Skip owners/permissions preflight (not recommended)
-skip_ownership_check = false
-# Fail preflight if ownership checks fail (recommended)
-strict_ownership = false
-
-[parallel]
-# Enable parallel publishing (default: false for sequential)
-enabled = false
-# Maximum number of concurrent publish operations (default: 4)
-max_concurrent = 4
-# Timeout per package publish operation (default: 30 minutes)
-per_package_timeout = "30m"
-
-# Optional: Custom registry configuration
-# [registry]
-# name = "crates-io"
-# api_base = "https://crates.io"
-
-# Optional: Webhook notifications for publish events
-# [webhook]
-# Enable webhook notifications (default: false - disabled)
-# enabled = false
-# URL to send POST requests to
-# url = "https://your-webhook-endpoint.com/webhook"
-# Optional secret for signing webhook payloads
-# secret = "your-webhook-secret"
-# Request timeout (default: 30s)
-# timeout = "30s"
-"#.to_string()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
+    // ── Duration parsing edge cases ─────────────────────────────────
 
     #[test]
-    fn test_default_config() {
-        let config = ShipperConfig::default();
-        assert_eq!(config.policy.mode, PublishPolicy::Safe);
+    fn duration_various_formats() {
+        let toml_str = r#"
+[lock]
+timeout = "500ms"
+"#;
+        let config: ShipperConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.lock.timeout, Duration::from_millis(500));
+
+        let toml_str2 = r#"
+[retry]
+base_delay = "100ms"
+max_delay = "1h"
+"#;
+        let config2: ShipperConfig = toml::from_str(toml_str2).unwrap();
+        assert_eq!(config2.retry.base_delay, Duration::from_millis(100));
+        assert_eq!(config2.retry.max_delay, Duration::from_secs(3600));
+    }
+
+    // ── Verify mode all variants via TOML ───────────────────────────
+
+    #[test]
+    fn verify_mode_workspace() {
+        let config: ShipperConfig = toml::from_str("[verify]\nmode = \"workspace\"").unwrap();
         assert_eq!(config.verify.mode, VerifyMode::Workspace);
-        assert_eq!(config.output.lines, 50);
-        assert_eq!(config.retry.max_attempts, 6);
-        assert!(!config.flags.allow_dirty);
-        assert!(config.validate().is_ok());
     }
 
     #[test]
-    fn test_validate_invalid_output_lines() {
-        let mut config = ShipperConfig::default();
-        config.output.lines = 0;
-        assert!(config.validate().is_err());
+    fn verify_mode_package() {
+        let config: ShipperConfig = toml::from_str("[verify]\nmode = \"package\"").unwrap();
+        assert_eq!(config.verify.mode, VerifyMode::Package);
     }
 
     #[test]
-    fn test_validate_invalid_max_attempts() {
-        let mut config = ShipperConfig::default();
-        config.retry.max_attempts = 0;
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn test_validate_invalid_delays() {
-        let mut config = ShipperConfig::default();
-        config.retry.base_delay = Duration::ZERO;
-        assert!(config.validate().is_err());
-
-        config.retry.base_delay = Duration::from_secs(1);
-        config.retry.max_delay = Duration::from_millis(500);
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn test_validate_invalid_jitter_factor() {
-        let mut config = ShipperConfig::default();
-        config.readiness.jitter_factor = 1.5;
-        assert!(config.validate().is_err());
-
-        config.readiness.jitter_factor = -0.1;
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn test_validate_invalid_registry() {
-        let mut config = ShipperConfig {
-            registry: Some(RegistryConfig {
-                name: String::new(),
-                api_base: "https://crates.io".to_string(),
-                index_base: None,
-                token: None,
-                default: false,
-            }),
-            ..Default::default()
-        };
-        assert!(config.validate().is_err());
-
-        config.registry = Some(RegistryConfig {
-            name: "crates-io".to_string(),
-            api_base: String::new(),
-            index_base: None,
-            token: None,
-            default: false,
-        });
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn test_parse_toml_config() {
-        let toml = r#"
-[policy]
-mode = "fast"
-
-[verify]
-mode = "none"
-
-[readiness]
-enabled = false
-method = "api"
-initial_delay = "1s"
-max_delay = "60s"
-max_total_wait = "5m"
-poll_interval = "2s"
-jitter_factor = 0.5
-
-[output]
-lines = 100
-
-[lock]
-timeout = "30m"
-
-[retry]
-max_attempts = 3
-base_delay = "1s"
-max_delay = "30s"
-
-[flags]
-allow_dirty = true
-skip_ownership_check = true
-"#;
-
-        let config: ShipperConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.policy.mode, PublishPolicy::Fast);
+    fn verify_mode_none() {
+        let config: ShipperConfig = toml::from_str("[verify]\nmode = \"none\"").unwrap();
         assert_eq!(config.verify.mode, VerifyMode::None);
-        assert!(!config.readiness.enabled);
-        assert_eq!(config.output.lines, 100);
-        assert_eq!(config.lock.timeout, Duration::from_secs(1800));
-        assert_eq!(config.retry.max_attempts, 3);
-        assert!(config.flags.allow_dirty);
-        assert!(config.flags.skip_ownership_check);
+    }
+
+    // ── Retry strategy all variants via TOML ────────────────────────
+
+    #[test]
+    fn retry_strategy_immediate() {
+        let config: ShipperConfig = toml::from_str("[retry]\nstrategy = \"immediate\"").unwrap();
+        assert_eq!(config.retry.strategy, RetryStrategyType::Immediate);
     }
 
     #[test]
-    fn test_parse_toml_with_registry() {
-        let toml = r#"
-[registry]
-name = "my-registry"
-api_base = "https://my-registry.example.com"
-"#;
-
-        let config: ShipperConfig = toml::from_str(toml).unwrap();
-        assert!(config.registry.is_some());
-        let registry = config.registry.unwrap();
-        assert_eq!(registry.name, "my-registry");
-        assert_eq!(registry.api_base, "https://my-registry.example.com");
+    fn retry_strategy_exponential() {
+        let config: ShipperConfig = toml::from_str("[retry]\nstrategy = \"exponential\"").unwrap();
+        assert_eq!(config.retry.strategy, RetryStrategyType::Exponential);
     }
 
     #[test]
-    fn test_parse_toml_with_parallel() {
-        let toml = r#"
-[parallel]
-enabled = true
-max_concurrent = 8
-per_package_timeout = "1h"
-"#;
-
-        let config: ShipperConfig = toml::from_str(toml).unwrap();
-        assert!(config.parallel.enabled);
-        assert_eq!(config.parallel.max_concurrent, 8);
-        assert_eq!(
-            config.parallel.per_package_timeout,
-            Duration::from_secs(3600)
-        );
+    fn retry_strategy_linear() {
+        let config: ShipperConfig = toml::from_str("[retry]\nstrategy = \"linear\"").unwrap();
+        assert_eq!(config.retry.strategy, RetryStrategyType::Linear);
     }
 
     #[test]
-    fn test_parse_toml_with_partial_readiness_uses_defaults() {
-        let toml = r#"
-[readiness]
-method = "both"
-"#;
+    fn retry_strategy_constant() {
+        let config: ShipperConfig = toml::from_str("[retry]\nstrategy = \"constant\"").unwrap();
+        assert_eq!(config.retry.strategy, RetryStrategyType::Constant);
+    }
 
-        let config: ShipperConfig = toml::from_str(toml).unwrap();
+    // ── Readiness method all variants via TOML ──────────────────────
+
+    #[test]
+    fn readiness_method_api() {
+        let config: ShipperConfig = toml::from_str("[readiness]\nmethod = \"api\"").unwrap();
+        assert_eq!(config.readiness.method, ReadinessMethod::Api);
+    }
+
+    #[test]
+    fn readiness_method_index() {
+        let config: ShipperConfig = toml::from_str("[readiness]\nmethod = \"index\"").unwrap();
+        assert_eq!(config.readiness.method, ReadinessMethod::Index);
+    }
+
+    #[test]
+    fn readiness_method_both() {
+        let config: ShipperConfig = toml::from_str("[readiness]\nmethod = \"both\"").unwrap();
         assert_eq!(config.readiness.method, ReadinessMethod::Both);
-        assert!(config.readiness.enabled);
-        assert_eq!(config.readiness.initial_delay, Duration::from_secs(1));
-        assert_eq!(config.readiness.max_delay, Duration::from_secs(60));
-        assert_eq!(config.readiness.max_total_wait, Duration::from_secs(300));
-        assert_eq!(config.readiness.poll_interval, Duration::from_secs(2));
-        assert_eq!(config.readiness.jitter_factor, 0.5);
     }
 
+    // ── StorageConfigInner edge cases ───────────────────────────────
+
     #[test]
-    fn test_parse_toml_with_partial_parallel_uses_defaults() {
-        let toml = r#"
-[parallel]
-enabled = true
+    fn storage_to_cloud_config_includes_all_optional_fields() {
+        let toml_str = r#"
+[storage]
+storage_type = "S3"
+bucket = "my-bucket"
+region = "us-west-2"
+base_path = "releases/v1/"
+endpoint = "https://minio.local:9000"
+access_key_id = "AKID"
+secret_access_key = "SECRET"
 "#;
-
-        let config: ShipperConfig = toml::from_str(toml).unwrap();
-        assert!(config.parallel.enabled);
-        assert_eq!(config.parallel.max_concurrent, 4);
-        assert_eq!(
-            config.parallel.per_package_timeout,
-            Duration::from_secs(1800)
-        );
+        let config: ShipperConfig = toml::from_str(toml_str).unwrap();
+        let cloud = config.storage.to_cloud_config().unwrap();
+        assert_eq!(cloud.bucket, "my-bucket");
+        assert_eq!(cloud.region.as_deref(), Some("us-west-2"));
+        assert_eq!(cloud.base_path, "releases/v1/");
+        assert_eq!(cloud.endpoint.as_deref(), Some("https://minio.local:9000"));
+        assert_eq!(cloud.access_key_id.as_deref(), Some("AKID"));
+        assert_eq!(cloud.secret_access_key.as_deref(), Some("SECRET"));
     }
 
     #[test]
-    fn test_parse_toml_with_partial_sections_remains_valid() {
-        let toml = r#"
-[readiness]
-method = "both"
+    fn storage_to_cloud_config_returns_none_without_bucket() {
+        // Default storage has no bucket
+        let config = ShipperConfig::default();
+        assert!(config.storage.to_cloud_config().is_none());
+    }
 
-[parallel]
-enabled = true
+    #[test]
+    fn storage_file_type_with_bucket_returns_cloud_config_but_not_configured() {
+        let toml_str = r#"
+[storage]
+storage_type = "File"
+bucket = "bucket"
 "#;
+        let config: ShipperConfig = toml::from_str(toml_str).unwrap();
+        // is_configured checks both bucket.is_some() AND storage_type != File
+        assert!(!config.storage.is_configured());
+        // But to_cloud_config only checks bucket presence
+        assert!(config.storage.to_cloud_config().is_some());
+    }
 
-        let config: ShipperConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.output.lines, 50);
-        assert_eq!(config.retry.max_attempts, 6);
-        assert_eq!(config.lock.timeout, Duration::from_secs(3600));
-        assert!(config.validate().is_ok());
+    // ── MultiRegistryConfig edge cases ──────────────────────────────
+
+    #[test]
+    fn multi_registry_get_default_with_no_explicit_default_uses_first() {
+        let cfg = MultiRegistryConfig {
+            registries: vec![
+                RegistryConfig {
+                    name: "alpha".to_string(),
+                    api_base: "https://alpha.example.com".to_string(),
+                    index_base: None,
+                    token: None,
+                    default: false,
+                },
+                RegistryConfig {
+                    name: "beta".to_string(),
+                    api_base: "https://beta.example.com".to_string(),
+                    index_base: None,
+                    token: None,
+                    default: false,
+                },
+            ],
+            default_registries: vec![],
+        };
+        let default = cfg.get_default();
+        assert_eq!(default.name, "alpha");
     }
 
     #[test]
-    fn test_build_runtime_options_cli_overrides_config() {
-        let config = ShipperConfig {
-            retry: RetryConfig {
-                policy: RetryPolicy::Custom,
-                max_attempts: 10,
-                base_delay: Duration::from_secs(5),
-                max_delay: Duration::from_secs(300),
-                strategy: RetryStrategyType::Exponential,
-                jitter: 0.5,
-                per_error: PerErrorConfig::default(),
-            },
-            output: OutputConfig { lines: 100 },
-            policy: PolicyConfig {
-                mode: PublishPolicy::Balanced,
-            },
-            ..Default::default()
-        };
-
-        let cli = CliOverrides {
-            max_attempts: Some(3),
-            policy: Some(PublishPolicy::Fast),
-            output_lines: Some(25),
-            ..Default::default()
-        };
-
-        let opts = config.build_runtime_options(cli);
-        assert_eq!(opts.max_attempts, 3, "CLI max_attempts should win");
-        assert_eq!(opts.policy, PublishPolicy::Fast, "CLI policy should win");
-        assert_eq!(opts.output_lines, 25, "CLI output_lines should win");
+    fn multi_registry_get_default_empty_returns_crates_io() {
+        let cfg = MultiRegistryConfig::default();
+        let default = cfg.get_default();
+        assert_eq!(default.name, "crates-io");
+        assert_eq!(default.api_base, "https://crates.io");
     }
 
+    // ── Config merging with partial overrides ───────────────────────
+
     #[test]
-    fn test_build_runtime_options_config_used_when_cli_none() {
+    fn partial_cli_overrides_preserve_remaining_config_values() {
         let config = ShipperConfig {
-            retry: RetryConfig {
-                policy: RetryPolicy::Custom,
-                max_attempts: 10,
-                base_delay: Duration::from_secs(5),
-                max_delay: Duration::from_secs(300),
-                strategy: RetryStrategyType::Exponential,
-                jitter: 0.5,
-                per_error: PerErrorConfig::default(),
-            },
-            output: OutputConfig { lines: 100 },
             policy: PolicyConfig {
                 mode: PublishPolicy::Balanced,
             },
             verify: VerifyConfig {
                 mode: VerifyMode::Package,
             },
+            retry: RetryConfig {
+                policy: RetryPolicy::Custom,
+                max_attempts: 15,
+                base_delay: Duration::from_secs(3),
+                max_delay: Duration::from_secs(180),
+                strategy: RetryStrategyType::Exponential,
+                jitter: 0.6,
+                per_error: PerErrorConfig::default(),
+            },
+            output: OutputConfig { lines: 200 },
             lock: LockConfig {
                 timeout: Duration::from_secs(1800),
             },
-            state_dir: Some(PathBuf::from("custom-state")),
-            ..Default::default()
-        };
-
-        let cli = CliOverrides::default();
-
-        let opts = config.build_runtime_options(cli);
-        assert_eq!(opts.max_attempts, 10, "config max_attempts should apply");
-        assert_eq!(opts.base_delay, Duration::from_secs(5));
-        assert_eq!(opts.max_delay, Duration::from_secs(300));
-        assert_eq!(opts.output_lines, 100);
-        assert_eq!(opts.policy, PublishPolicy::Balanced);
-        assert_eq!(opts.verify_mode, VerifyMode::Package);
-        assert_eq!(opts.lock_timeout, Duration::from_secs(1800));
-        assert_eq!(opts.state_dir, PathBuf::from("custom-state"));
-    }
-
-    #[test]
-    fn test_build_runtime_options_booleans_are_ored() {
-        // Config sets allow_dirty, CLI doesn't
-        let config = ShipperConfig {
             flags: FlagsConfig {
                 allow_dirty: true,
                 skip_ownership_check: false,
                 strict_ownership: true,
             },
-            ..Default::default()
+            ..ShipperConfig::default()
         };
 
+        // Only override policy and max_attempts
         let cli = CliOverrides {
-            skip_ownership_check: true,
+            policy: Some(PublishPolicy::Fast),
+            max_attempts: Some(2),
             ..Default::default()
         };
 
         let opts = config.build_runtime_options(cli);
-        assert!(opts.allow_dirty, "config allow_dirty should apply");
-        assert!(opts.skip_ownership_check, "CLI skip_ownership should apply");
-        assert!(
-            opts.strict_ownership,
-            "config strict_ownership should apply"
-        );
+        // Overridden values
+        assert_eq!(opts.policy, PublishPolicy::Fast);
+        assert_eq!(opts.max_attempts, 2);
+        // Preserved config values
+        assert_eq!(opts.verify_mode, VerifyMode::Package);
+        assert_eq!(opts.base_delay, Duration::from_secs(3));
+        assert_eq!(opts.max_delay, Duration::from_secs(180));
+        assert_eq!(opts.output_lines, 200);
+        assert_eq!(opts.lock_timeout, Duration::from_secs(1800));
+        assert!(opts.allow_dirty);
+        assert!(!opts.skip_ownership_check);
+        assert!(opts.strict_ownership);
     }
 
-    #[test]
-    fn test_build_runtime_options_defaults_when_no_config() {
-        let config = ShipperConfig::default();
-        let cli = CliOverrides::default();
-
-        let opts = config.build_runtime_options(cli);
-        assert_eq!(opts.max_attempts, 6);
-        assert_eq!(opts.base_delay, Duration::from_secs(2));
-        assert_eq!(opts.max_delay, Duration::from_secs(120));
-        assert_eq!(opts.policy, PublishPolicy::Safe);
-        assert_eq!(opts.verify_mode, VerifyMode::Workspace);
-        assert_eq!(opts.output_lines, 50);
-        assert_eq!(opts.state_dir, PathBuf::from(".shipper"));
-        assert!(!opts.allow_dirty);
-        assert!(!opts.no_verify);
-        assert!(opts.readiness.enabled);
-    }
+    // ── into_runtime_options conversion ─────────────────────────────
 
     #[test]
-    fn test_build_runtime_options_no_readiness_disables() {
-        let config = ShipperConfig::default(); // readiness.enabled = true
-
-        let cli = CliOverrides {
-            no_readiness: true,
-            ..Default::default()
-        };
-
-        let opts = config.build_runtime_options(cli);
-        assert!(!opts.readiness.enabled);
-    }
-
-    #[test]
-    fn test_build_runtime_options_parallel_merge() {
+    fn into_runtime_options_preserves_all_fields() {
         let config = ShipperConfig {
-            parallel: ParallelConfig {
-                enabled: true,
-                max_concurrent: 8,
-                per_package_timeout: Duration::from_secs(7200),
+            policy: PolicyConfig {
+                mode: PublishPolicy::Balanced,
             },
-            ..Default::default()
+            ..ShipperConfig::default()
         };
-
-        // CLI doesn't set parallel, but config enables it
-        let cli = CliOverrides::default();
-        let opts = config.build_runtime_options(cli);
-        assert!(opts.parallel.enabled);
-        assert_eq!(opts.parallel.max_concurrent, 8);
-        assert_eq!(opts.parallel.per_package_timeout, Duration::from_secs(7200));
-
-        // CLI overrides max_concurrent
-        let cli2 = CliOverrides {
-            max_concurrent: Some(2),
-            ..Default::default()
-        };
-        let opts2 = config.build_runtime_options(cli2);
-        assert!(opts2.parallel.enabled); // from config
-        assert_eq!(opts2.parallel.max_concurrent, 2); // from CLI
+        let runtime_opts = config.build_runtime_options(CliOverrides::default());
+        let converted = into_runtime_options(runtime_opts);
+        assert_eq!(converted.policy, PublishPolicy::Balanced);
+        assert_eq!(converted.verify_mode, VerifyMode::Workspace);
+        assert!(!converted.allow_dirty);
     }
 }

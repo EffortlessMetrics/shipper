@@ -1,0 +1,10 @@
+---
+source: crates/shipper-levels/src/lib.rs
+expression: level_summary(&levels)
+---
+- - 0
+  - - a
+- - 1
+  - - b
+- - 2
+  - - c

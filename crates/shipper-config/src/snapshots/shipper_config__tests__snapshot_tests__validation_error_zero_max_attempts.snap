@@ -1,0 +1,5 @@
+---
+source: crates/shipper-config/src/lib.rs
+expression: err.to_string()
+---
+retry.max_attempts must be greater than 0

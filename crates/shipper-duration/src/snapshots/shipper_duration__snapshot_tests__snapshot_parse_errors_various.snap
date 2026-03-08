@@ -1,0 +1,27 @@
+---
+source: crates/shipper-duration/src/lib.rs
+assertion_line: 561
+expression: results
+---
+[
+    (
+        "",
+        "value was empty",
+    ),
+    (
+        "   ",
+        "value was empty",
+    ),
+    (
+        "42",
+        "time unit needed, for example 42sec or 42ms",
+    ),
+    (
+        "-5s",
+        "expected number at 0",
+    ),
+    (
+        "5xyz",
+        "unknown time unit \"xyz\", supported units: ns, us/µs, ms, sec, min, hours, days, weeks, months, years (and few variations)",
+    ),
+]

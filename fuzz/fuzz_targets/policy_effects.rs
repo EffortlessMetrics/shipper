@@ -1,11 +1,10 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shipper_policy::{PolicyKind, evaluate};
+use shipper_policy::{evaluate, PolicyKind};
 
 fuzz_target!(|data: (u8, bool, bool, bool, bool)| {
-    let (policy_byte, no_verify, skip_ownership_check, strict_ownership, readiness_enabled) =
-        data;
+    let (policy_byte, no_verify, skip_ownership_check, strict_ownership, readiness_enabled) = data;
 
     let policy = match policy_byte % 3 {
         0 => PolicyKind::Safe,

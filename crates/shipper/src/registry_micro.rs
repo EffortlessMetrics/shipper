@@ -21,8 +21,18 @@ impl RegistryClient {
         })
     }
 
+    /// Enable local disk caching for sparse index fragments.
+    pub fn with_cache_dir(mut self, cache_dir: std::path::PathBuf) -> Self {
+        self.registry_client = self.registry_client.with_cache_dir(cache_dir);
+        self
+    }
+
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    pub fn inner(&self) -> &shipper_registry::RegistryClient {
+        &self.registry_client
     }
 
     pub fn version_exists(&self, crate_name: &str, version: &str) -> Result<bool> {
@@ -83,7 +93,7 @@ impl RegistryClient {
         match self.list_owners(crate_name, token) {
             Ok(_) => Ok(true),
             Err(e) => {
-                let msg = e.to_string();
+                let msg = format!("{e:#}");
                 if msg.contains("forbidden")
                     || msg.contains("403")
                     || msg.contains("unauthorized")

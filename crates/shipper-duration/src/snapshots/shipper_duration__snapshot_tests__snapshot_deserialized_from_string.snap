@@ -1,0 +1,8 @@
+---
+source: crates/shipper-duration/src/lib.rs
+assertion_line: 413
+expression: h
+---
+H {
+    v: 3661s,
+}

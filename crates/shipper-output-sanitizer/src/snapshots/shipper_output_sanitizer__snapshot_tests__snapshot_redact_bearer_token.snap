@@ -1,0 +1,6 @@
+---
+source: crates/shipper-output-sanitizer/src/lib.rs
+assertion_line: 227
+expression: "redact_sensitive(\"Authorization: Bearer cio_abc123secret\")"
+---
+Authorization: Bearer [REDACTED]

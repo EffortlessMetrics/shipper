@@ -1,0 +1,19 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: events
+---
+- timestamp: "2025-01-15T12:00:00Z"
+  event_type:
+    type: plan_created
+    plan_id: plan-99
+    package_count: 3
+  package: ""
+- timestamp: "2025-01-15T12:00:00Z"
+  event_type:
+    type: execution_started
+  package: ""
+- timestamp: "2025-01-15T12:00:00Z"
+  event_type:
+    type: execution_finished
+    result: partial_failure
+  package: ""

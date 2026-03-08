@@ -1,0 +1,7 @@
+---
+source: crates/shipper/src/registry.rs
+expression: "evidence.iter().map(|e|\n{\n    format!(\"attempt={} visible={} delay_before={}ms\", e.attempt, e.visible,\n    e.delay_before.as_millis())\n}).collect::<Vec<_>>()"
+---
+[
+    "attempt=1 visible=true delay_before=0ms",
+]

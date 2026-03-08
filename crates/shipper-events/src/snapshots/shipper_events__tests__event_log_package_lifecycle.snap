@@ -1,0 +1,27 @@
+---
+source: crates/shipper-events/src/lib.rs
+expression: log.all_events()
+---
+- timestamp: "2025-01-15T12:00:00Z"
+  event_type:
+    type: package_started
+    name: alpha
+    version: 0.1.0
+  package: alpha@0.1.0
+- timestamp: "2025-01-15T12:00:00Z"
+  event_type:
+    type: package_attempted
+    attempt: 1
+    command: cargo publish -p alpha
+  package: alpha@0.1.0
+- timestamp: "2025-01-15T12:00:00Z"
+  event_type:
+    type: package_output
+    stdout_tail: Uploading alpha v0.1.0
+    stderr_tail: ""
+  package: alpha@0.1.0
+- timestamp: "2025-01-15T12:00:00Z"
+  event_type:
+    type: package_published
+    duration_ms: 2100
+  package: alpha@0.1.0

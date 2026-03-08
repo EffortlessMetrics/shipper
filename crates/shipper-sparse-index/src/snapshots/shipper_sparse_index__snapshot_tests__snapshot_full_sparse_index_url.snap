@@ -1,0 +1,10 @@
+---
+source: crates/shipper-sparse-index/src/lib.rs
+assertion_line: 162
+expression: "urls.join(\"\\n\")"
+---
+https://index.crates.io/se/rd/serde
+https://index.crates.io/1/a
+https://index.crates.io/2/ab
+https://index.crates.io/3/s/syn
+https://index.crates.io/ra/nd/rand_core

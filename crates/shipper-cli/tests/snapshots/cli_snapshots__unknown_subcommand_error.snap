@@ -1,0 +1,9 @@
+---
+source: crates/shipper-cli/tests/cli_snapshots.rs
+expression: redact_version(&stderr)
+---
+error: unrecognized subcommand 'nonexistent'
+
+Usage: shipper.exe [OPTIONS] <COMMAND>
+
+For more information, try '--help'.

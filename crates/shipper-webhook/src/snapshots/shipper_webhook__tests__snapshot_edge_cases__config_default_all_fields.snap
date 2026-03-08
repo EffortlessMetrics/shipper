@@ -1,0 +1,11 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+assertion_line: 2130
+expression: config
+---
+WebhookConfig {
+    url: "",
+    webhook_type: Generic,
+    secret: None,
+    timeout_secs: 30,
+}

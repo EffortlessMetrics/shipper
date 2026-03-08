@@ -1,0 +1,5 @@
+---
+source: crates/shipper-config/src/lib.rs
+expression: err.to_string()
+---
+readiness.jitter_factor must be between 0.0 and 1.0

@@ -1,0 +1,11 @@
+---
+source: crates/shipper-execution-core/src/lib.rs
+expression: steps
+---
+[
+    "initial: Pending",
+    "after failure: Failed { class: Retryable, message: \"rate limited\" }",
+    "after retry reset: Pending",
+    "after upload: Uploaded",
+    "after publish: Published",
+]

@@ -1,0 +1,5 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: err.to_string()
+---
+forbidden when querying owners; token may be invalid or missing required scope

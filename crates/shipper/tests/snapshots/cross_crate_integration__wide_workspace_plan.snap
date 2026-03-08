@@ -1,0 +1,34 @@
+---
+source: crates/shipper/tests/cross_crate_integration.rs
+assertion_line: 1597
+expression: snap
+---
+PlanSnapshot {
+    packages: [
+        (
+            "alpha",
+            "1.0.0",
+        ),
+        (
+            "beta",
+            "1.0.0",
+        ),
+        (
+            "delta",
+            "1.0.0",
+        ),
+        (
+            "gamma",
+            "1.0.0",
+        ),
+    ],
+    levels: [
+        [
+            "alpha",
+            "beta",
+            "delta",
+            "gamma",
+        ],
+    ],
+    dependency_count: 0,
+}

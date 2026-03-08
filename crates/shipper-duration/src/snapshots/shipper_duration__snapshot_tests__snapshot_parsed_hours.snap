@@ -1,0 +1,6 @@
+---
+source: crates/shipper-duration/src/lib.rs
+assertion_line: 381
+expression: "parse_duration(\"2h\").unwrap()"
+---
+7200s

@@ -1,0 +1,5 @@
+---
+source: crates/shipper-lock/src/lib.rs
+expression: "\"failed to read lock file\""
+---
+failed to read lock file

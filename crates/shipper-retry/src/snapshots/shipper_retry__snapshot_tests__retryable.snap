@@ -1,0 +1,6 @@
+---
+source: crates/shipper-retry/src/lib.rs
+assertion_line: 735
+expression: "ErrorClass::Retryable"
+---
+retryable

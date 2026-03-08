@@ -1,0 +1,16 @@
+---
+source: crates/shipper-plan/src/lib.rs
+assertion_line: 1904
+expression: snapshot_of(&ws)
+---
+packages:
+  - name: codegen
+    version: 0.1.0
+  - name: app
+    version: 0.1.0
+dependencies:
+  app:
+    - codegen
+  codegen: []
+skipped: []
+registry_name: crates-io

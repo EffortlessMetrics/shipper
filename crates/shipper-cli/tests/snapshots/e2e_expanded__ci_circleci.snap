@@ -1,0 +1,45 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&stdout)
+---
+# CircleCI config snippet for Shipper
+# Add this to your .circleci/config.yml
+
+version: 2.1
+
+jobs:
+  publish:
+    docker:
+      - image: cimg/rust:latest
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - shipper-state-{{ .Branch }}-{{ .Revision }}
+            - shipper-state-{{ .Branch }}
+            - shipper-state-
+      - run:
+          name: Install Shipper
+          command: cargo install shipper-cli --locked
+      - run:
+          name: Publish Crates
+          command: shipper publish --quiet
+          environment:
+            CARGO_REGISTRY_TOKEN: ${{ CARGO_REGISTRY_TOKEN }}
+      - save_cache:
+          key: shipper-state-{{ .Branch }}-{{ .Revision }}
+          paths:
+            - <STATE_DIR>
+      - store_artifacts:
+          path: <STATE_DIR>
+          destination: shipper-state
+
+workflows:
+  version: 2
+  publish:
+    jobs:
+      - publish:
+          filters:
+            branches:
+              only: main
+          context: cargo-registry

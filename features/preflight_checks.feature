@@ -13,6 +13,13 @@ Feature: Preflight verification
     And the preflight report shows finishability "Proven"
     And all packages are marked as new crates
 
+  Scenario: Preflight uses policy from .shipper.toml
+    Given a workspace with crates "core" and "app" where "app" depends on "core"
+    And a file named ".shipper.toml" with policy set to "fast"
+    When I run "shipper preflight" without passing --policy
+    Then the exit code is 0
+    And the preflight report shows token not detected
+
   Scenario: Preflight detects already published versions
     Given a valid registry token is configured
     And the registry returns "published" for "core@0.1.0"
@@ -48,3 +55,29 @@ Feature: Preflight verification
     When I run "shipper preflight" with "--policy balanced --strict-ownership --no-verify"
     Then the exit code is 0
     And the preflight report shows token not detected
+
+  Scenario: Preflight passes with allow-dirty on dirty working tree
+    Given a valid registry token is configured
+    And the git working tree has uncommitted changes
+    And the registry returns "not found" for all crates
+    When I run "shipper preflight" with "--allow-dirty"
+    Then the exit code is 0
+
+  Scenario: Preflight reports finishability as Unproven without token
+    Given no registry token is configured
+    And the registry returns "not found" for all crates
+    When I run "shipper preflight" with "--policy fast"
+    Then the preflight report shows finishability "Unproven"
+
+  Scenario: Preflight skips ownership check when flag is set
+    Given a valid registry token is configured
+    And the registry returns "not found" for all crates
+    When I run "shipper preflight" with "--skip-ownership-check"
+    Then the exit code is 0
+    And ownership verification is not performed
+
+  Scenario: Preflight validates all crates in dependency order
+    Given a valid registry token is configured
+    And the registry returns "not found" for all crates
+    When I run "shipper preflight"
+    Then "core" is checked before "app" in the preflight report

@@ -1,0 +1,8 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&stdout)
+---
+Removed: <DIR>/state.json
+Removed: <DIR>/events.jsonl
+Removed: <DIR>/receipt.json
+Clean complete

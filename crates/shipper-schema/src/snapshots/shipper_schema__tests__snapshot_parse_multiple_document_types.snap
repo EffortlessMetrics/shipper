@@ -1,0 +1,30 @@
+---
+source: crates/shipper-schema/src/lib.rs
+expression: results
+---
+[
+    (
+        "receipt",
+        Some(
+            1,
+        ),
+    ),
+    (
+        "state",
+        Some(
+            1,
+        ),
+    ),
+    (
+        "events",
+        Some(
+            1,
+        ),
+    ),
+    (
+        "lock",
+        Some(
+            1,
+        ),
+    ),
+]

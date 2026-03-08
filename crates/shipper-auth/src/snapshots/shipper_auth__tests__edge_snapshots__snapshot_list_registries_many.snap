@@ -1,0 +1,11 @@
+---
+source: crates/shipper-auth/src/lib.rs
+expression: registries
+---
+[
+    "alpha",
+    "beta",
+    "crates-io",
+    "delta",
+    "gamma",
+]

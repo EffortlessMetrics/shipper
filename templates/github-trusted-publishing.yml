@@ -13,7 +13,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Optional: install a Rust toolchain.
       - uses: dtolnay/rust-toolchain@stable
@@ -27,7 +27,7 @@ jobs:
 
       # Restore Shipper State (cache for faster restores)
       - name: Restore Shipper State Cache
-        uses: actions/cache@v3
+        uses: actions/cache@v5
         with:
           path: .shipper/
           key: shipper-${{ github.sha }}
@@ -36,21 +36,21 @@ jobs:
 
       # Restore shipper state from previous run (for resumability)
       - name: Restore Shipper State Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: shipper-state
           path: .shipper
         continue-on-error: true
 
       - name: Publish (resumable)
-        run: shipper publish
+        run: shipper publish --quiet
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
       # Save shipper state for next run (even if publish fails)
       - name: Save Shipper State
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v6
         with:
           name: shipper-state
           path: .shipper

@@ -1,0 +1,10 @@
+---
+source: crates/shipper-storage/src/lib.rs
+expression: lifecycle
+---
+- - exists_before_delete
+  - "true"
+- - content
+  - temp data
+- - exists_after_delete
+  - "false"

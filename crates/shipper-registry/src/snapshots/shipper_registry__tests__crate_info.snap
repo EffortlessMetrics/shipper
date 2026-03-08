@@ -1,0 +1,8 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: info
+---
+name: my-crate
+newest_version: 1.2.3
+created_at: "2024-01-15T10:30:00Z"
+updated_at: "2024-06-20T14:00:00Z"

@@ -1,0 +1,8 @@
+---
+source: crates/shipper-encrypt/src/lib.rs
+expression: json
+---
+{
+  "enabled": true,
+  "passphrase": "my-secret"
+}

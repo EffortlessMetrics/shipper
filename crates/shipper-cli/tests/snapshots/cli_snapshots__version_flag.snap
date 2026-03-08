@@ -1,0 +1,5 @@
+---
+source: crates/shipper-cli/tests/cli_snapshots.rs
+expression: redact_version(&stdout)
+---
+shipper [VERSION]

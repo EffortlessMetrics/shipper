@@ -1,0 +1,5 @@
+---
+source: crates/shipper-encrypt/src/lib.rs
+expression: err.to_string()
+---
+decryption failed - wrong passphrase or corrupted data: Error

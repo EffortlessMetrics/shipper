@@ -1,0 +1,11 @@
+---
+source: crates/shipper-process/src/lib.rs
+expression: output
+---
+exit_code: 101
+stdout: ""
+stderr: "error[E0425]: cannot find value `x`\n"
+timed_out: false
+duration:
+  secs: 3
+  nanos: 200000000

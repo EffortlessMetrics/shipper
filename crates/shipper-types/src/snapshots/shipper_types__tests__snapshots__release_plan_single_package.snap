@@ -1,0 +1,16 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: plan
+---
+plan_version: shipper.plan.v1
+plan_id: single-pkg-001
+created_at: "2025-01-15T12:00:00Z"
+registry:
+  name: crates-io
+  api_base: "https://crates.io"
+  index_base: "https://index.crates.io"
+packages:
+  - name: solo-crate
+    version: 1.0.0
+    manifest_path: Cargo.toml
+dependencies: {}

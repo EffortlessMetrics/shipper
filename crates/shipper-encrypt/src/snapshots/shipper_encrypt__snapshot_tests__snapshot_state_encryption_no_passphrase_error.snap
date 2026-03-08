@@ -1,0 +1,6 @@
+---
+source: crates/shipper-encrypt/src/lib.rs
+assertion_line: 2145
+expression: err.to_string()
+---
+encryption is enabled but no passphrase available. Set SHIPPER_ENCRYPT_KEY environment variable or provide passphrase in config.

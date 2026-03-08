@@ -1,0 +1,9 @@
+---
+source: crates/shipper-git/src/lib.rs
+expression: files
+---
+[
+    "old.txt -> new.txt",
+    "original.txt -> copy.txt",
+    "brand_new.txt",
+]

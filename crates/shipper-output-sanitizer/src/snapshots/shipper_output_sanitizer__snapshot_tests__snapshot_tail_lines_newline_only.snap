@@ -1,0 +1,6 @@
+---
+source: crates/shipper-output-sanitizer/src/lib.rs
+assertion_line: 462
+expression: "tail_lines(\"\\n\\n\\n\", 2)"
+---
+

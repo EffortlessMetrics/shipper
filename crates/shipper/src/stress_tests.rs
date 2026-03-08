@@ -56,7 +56,7 @@ mod tests {
 
         // Rapidly acquire and release locks
         for i in 0..100 {
-            let lock = LockFile::acquire(&state_dir)
+            let lock = LockFile::acquire(&state_dir, None)
                 .unwrap_or_else(|_| panic!("Failed to acquire lock on iteration {}", i));
             drop(lock);
         }

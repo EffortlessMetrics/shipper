@@ -1,0 +1,13 @@
+---
+source: crates/shipper-progress/tests/snapshots.rs
+expression: output
+---
+[1/4] Publishing core@0.1.0...
+[1/4] Finished core@0.1.0
+[2/4] Publishing utils@0.2.0...
+[2/4] Finished utils@0.2.0
+[3/4] Publishing macros@0.3.0...
+[3/4] Finished macros@0.3.0
+[4/4] Publishing cli@1.0.0...
+[4/4] Finished cli@1.0.0
+Completed 4/4 packages

@@ -1,0 +1,7 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&stdout)
+---
+plan_id: <PLAN_ID>
+
+demo@0.1.0: published

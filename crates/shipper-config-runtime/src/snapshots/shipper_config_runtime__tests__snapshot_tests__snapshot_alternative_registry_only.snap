@@ -1,0 +1,66 @@
+---
+source: crates/shipper-config-runtime/src/lib.rs
+expression: converted
+---
+RuntimeOptions {
+    allow_dirty: false,
+    skip_ownership_check: false,
+    strict_ownership: false,
+    no_verify: false,
+    max_attempts: 3,
+    base_delay: 5s,
+    max_delay: 300s,
+    retry_strategy: Exponential,
+    retry_jitter: 0.25,
+    retry_per_error: PerErrorConfig {
+        retryable: None,
+        ambiguous: None,
+        permanent: None,
+    },
+    verify_timeout: 60s,
+    verify_poll_interval: 5s,
+    state_dir: ".shipper",
+    force_resume: false,
+    policy: Safe,
+    verify_mode: Workspace,
+    readiness: ReadinessConfig {
+        enabled: false,
+        method: Api,
+        initial_delay: 100ms,
+        max_delay: 60s,
+        max_total_wait: 300s,
+        poll_interval: 5s,
+        jitter_factor: 0.25,
+        index_path: None,
+        prefer_index: false,
+    },
+    output_lines: 20,
+    force: false,
+    lock_timeout: 30s,
+    parallel: ParallelConfig {
+        enabled: false,
+        max_concurrent: 4,
+        per_package_timeout: 120s,
+    },
+    webhook: WebhookConfig {
+        url: "",
+        webhook_type: Generic,
+        secret: None,
+        timeout_secs: 30,
+    },
+    encryption: EncryptionConfig {
+        enabled: false,
+        passphrase: None,
+        env_var: None,
+    },
+    registries: [
+        Registry {
+            name: "my-private-registry",
+            api_base: "https://registry.internal.corp:8443",
+            index_base: Some(
+                "https://index.internal.corp:8443",
+            ),
+        },
+    ],
+    resume_from: None,
+}

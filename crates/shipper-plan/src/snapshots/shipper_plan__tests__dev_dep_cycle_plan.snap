@@ -1,0 +1,16 @@
+---
+source: crates/shipper-plan/src/lib.rs
+assertion_line: 3405
+expression: snapshot_of(&ws)
+---
+packages:
+  - name: crate-y
+    version: 0.1.0
+  - name: crate-x
+    version: 0.1.0
+dependencies:
+  crate-x:
+    - crate-y
+  crate-y: []
+skipped: []
+registry_name: crates-io

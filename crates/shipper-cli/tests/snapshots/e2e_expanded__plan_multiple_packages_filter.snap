@@ -1,0 +1,12 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&stdout)
+---
+plan_id: <PLAN_ID>
+registry: crates-io (https://crates.io)
+workspace_root: <WORKSPACE_ROOT>
+
+Total packages to publish: 2
+
+  1. core-lib@0.2.0
+  2. mid-lib@0.3.0

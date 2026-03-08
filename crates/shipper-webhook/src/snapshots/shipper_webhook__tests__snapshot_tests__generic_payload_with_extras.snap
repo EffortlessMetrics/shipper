@@ -1,0 +1,12 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+expression: json
+---
+ci: github-actions
+message: deployed
+package: my-crate
+registry: crates-io
+run_id: 42
+success: true
+title: Deploy
+version: 1.0.0

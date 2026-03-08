@@ -1,0 +1,7 @@
+---
+source: crates/shipper-storage/src/lib.rs
+expression: storage
+---
+FileStorage {
+    base_path: "/mock/path",
+}

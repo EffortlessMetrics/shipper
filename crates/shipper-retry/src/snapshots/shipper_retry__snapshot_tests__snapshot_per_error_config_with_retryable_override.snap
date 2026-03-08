@@ -1,0 +1,13 @@
+---
+source: crates/shipper-retry/src/lib.rs
+assertion_line: 758
+expression: config
+---
+retryable:
+  strategy: immediate
+  max_attempts: 10
+  base_delay: 0s
+  max_delay: 5s
+  jitter: 0
+ambiguous: ~
+permanent: ~

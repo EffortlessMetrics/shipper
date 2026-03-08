@@ -1,0 +1,8 @@
+---
+source: crates/shipper-storage/src/lib.rs
+expression: config
+---
+storage_type: Gcs
+bucket: gcs-bucket
+region: us-central1
+base_path: ""

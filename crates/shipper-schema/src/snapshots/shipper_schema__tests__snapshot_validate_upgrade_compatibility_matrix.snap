@@ -1,0 +1,31 @@
+---
+source: crates/shipper-schema/src/lib.rs
+expression: matrix
+---
+[
+    "v0 >= v0: true",
+    "v0 >= v1: false",
+    "v0 >= v2: false",
+    "v0 >= v3: false",
+    "v0 >= v5: false",
+    "v1 >= v0: true",
+    "v1 >= v1: true",
+    "v1 >= v2: false",
+    "v1 >= v3: false",
+    "v1 >= v5: false",
+    "v2 >= v0: true",
+    "v2 >= v1: true",
+    "v2 >= v2: true",
+    "v2 >= v3: false",
+    "v2 >= v5: false",
+    "v3 >= v0: true",
+    "v3 >= v1: true",
+    "v3 >= v2: true",
+    "v3 >= v3: true",
+    "v3 >= v5: false",
+    "v5 >= v0: true",
+    "v5 >= v1: true",
+    "v5 >= v2: true",
+    "v5 >= v3: true",
+    "v5 >= v5: true",
+]

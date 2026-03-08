@@ -1,0 +1,8 @@
+---
+source: crates/shipper-git/src/lib.rs
+expression: ctx
+---
+commit: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+branch: ~
+tag: ~
+dirty: ~

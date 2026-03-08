@@ -38,3 +38,31 @@ Feature: Resumable publishing
     Given a fake registry returns sparse index metadata containing "demo@0.1.0"
     When I run "shipper publish" with "--readiness-method index"
     Then the exit code is 0
+
+  Scenario: Publish creates events log for auditing
+    Given cargo publish succeeds
+    And the registry returns "published" for "demo@0.1.0" after publish
+    When I run "shipper publish" with "--verify-timeout 0ms --verify-poll 0ms"
+    Then the exit code is 0
+    And the events file "events.jsonl" exists in the state directory
+
+  Scenario: Publish with custom state directory
+    Given cargo publish succeeds
+    And the registry returns "published" for "demo@0.1.0" after publish
+    When I run "shipper publish" with "--state-dir custom-state --verify-timeout 0ms --verify-poll 0ms"
+    Then the exit code is 0
+    And the state file exists at "custom-state/state.json"
+    And the receipt file exists at "custom-state/receipt.json"
+
+  Scenario: Publish respects no-verify flag
+    Given cargo publish succeeds
+    And the registry returns "published" for "demo@0.1.0" after publish
+    When I run "shipper publish" with "--no-verify --verify-timeout 0ms --verify-poll 0ms"
+    Then the exit code is 0
+    And cargo publish was invoked with "--no-verify"
+
+  Scenario: Publish records failure in receipt when cargo publish fails permanently
+    Given cargo publish fails with "compilation failed"
+    When I run "shipper publish"
+    Then the exit code is non-zero
+    And the receipt shows package "demo@0.1.0" in state "Failed"

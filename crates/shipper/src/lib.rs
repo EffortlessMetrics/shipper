@@ -116,16 +116,16 @@ pub mod process;
 pub mod process;
 
 /// Configuration file (`.shipper.toml`) loading and merging.
-#[cfg(feature = "micro-config")]
-#[path = "config_micro.rs"]
-pub mod config;
-#[cfg(not(feature = "micro-config"))]
 pub mod config;
 
 /// Core publish, preflight, and resume logic.
 pub mod engine;
 
 /// Wave-based parallel publishing engine.
+#[cfg(feature = "micro-parallel")]
+#[path = "engine_parallel_micro.rs"]
+pub mod engine_parallel;
+#[cfg(not(feature = "micro-parallel"))]
 pub mod engine_parallel;
 
 /// Environment fingerprinting (OS, arch, tool versions).
@@ -170,6 +170,12 @@ pub mod registry;
 #[cfg(not(feature = "micro-registry"))]
 pub mod registry;
 
+#[cfg(feature = "micro-policy")]
+#[path = "policy_micro.rs"]
+pub(crate) mod policy;
+#[cfg(not(feature = "micro-policy"))]
+pub(crate) mod policy;
+
 /// State and receipt persistence.
 #[cfg(feature = "micro-state")]
 #[path = "state_micro.rs"]
@@ -192,10 +198,6 @@ pub mod storage;
 pub mod storage;
 
 /// Domain types: specs, plans, options, receipts, errors.
-#[cfg(feature = "micro-types")]
-#[path = "types_micro.rs"]
-pub mod types;
-#[cfg(not(feature = "micro-types"))]
 pub mod types;
 
 /// Configurable retry strategies with backoff and jitter.
@@ -207,17 +209,9 @@ pub use shipper_retry as retry;
 pub use shipper_cargo_failure as cargo_failure;
 
 /// Webhook notifications for publish events.
-#[cfg(feature = "micro-webhook")]
-#[path = "webhook_micro.rs"]
-pub mod webhook;
-#[cfg(not(feature = "micro-webhook"))]
 pub mod webhook;
 
 /// State file encryption module.
-#[cfg(feature = "micro-encrypt")]
-#[path = "encryption_micro.rs"]
-pub mod encryption;
-#[cfg(not(feature = "micro-encrypt"))]
 pub mod encryption;
 
 /// Property-based tests for shipper invariants.

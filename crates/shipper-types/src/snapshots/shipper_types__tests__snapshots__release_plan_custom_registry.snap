@@ -1,0 +1,21 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: plan
+---
+plan_version: shipper.plan.v1
+plan_id: custom-reg-001
+created_at: "2025-01-15T12:00:00Z"
+registry:
+  name: my-private-registry
+  api_base: "https://registry.example.com"
+  index_base: "https://index.registry.example.com"
+packages:
+  - name: internal-utils
+    version: 2.1.0
+    manifest_path: crates/internal-utils/Cargo.toml
+  - name: internal-api
+    version: 3.0.0
+    manifest_path: crates/internal-api/Cargo.toml
+dependencies:
+  internal-api:
+    - internal-utils

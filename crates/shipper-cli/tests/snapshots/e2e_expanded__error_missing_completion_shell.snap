@@ -1,0 +1,10 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_stderr(&stderr)
+---
+error: the following required arguments were not provided:
+  <SHELL>
+
+Usage: shipper completion <SHELL>
+
+For more information, try '--help'.

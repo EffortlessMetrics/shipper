@@ -1,0 +1,12 @@
+---
+source: crates/shipper-process/src/lib.rs
+expression: args
+---
+- publish
+- "--manifest-path"
+- crates/baz/Cargo.toml
+- "--registry"
+- crates-io
+- "--no-verify"
+- "--features"
+- "serde,tokio"

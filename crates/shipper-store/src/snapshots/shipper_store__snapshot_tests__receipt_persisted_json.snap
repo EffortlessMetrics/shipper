@@ -1,0 +1,41 @@
+---
+source: crates/shipper-store/src/lib.rs
+expression: pretty
+---
+{
+  "environment": {
+    "arch": "x86_64",
+    "cargo_version": "1.82.0",
+    "os": "linux",
+    "rust_version": "1.82.0",
+    "shipper_version": "0.3.0"
+  },
+  "event_log_path": ".shipper/events.jsonl",
+  "finished_at": "2025-01-15T12:00:00Z",
+  "git_context": null,
+  "packages": [
+    {
+      "attempts": 1,
+      "duration_ms": 5000,
+      "evidence": {
+        "attempts": [],
+        "readiness_checks": []
+      },
+      "finished_at": "2025-01-15T12:00:00Z",
+      "name": "alpha",
+      "started_at": "2025-01-15T12:00:00Z",
+      "state": {
+        "state": "published"
+      },
+      "version": "0.1.0"
+    }
+  ],
+  "plan_id": "plan-persist",
+  "receipt_version": "shipper.receipt.v2",
+  "registry": {
+    "api_base": "https://crates.io",
+    "index_base": "https://index.crates.io",
+    "name": "crates-io"
+  },
+  "started_at": "2025-01-15T12:00:00Z"
+}

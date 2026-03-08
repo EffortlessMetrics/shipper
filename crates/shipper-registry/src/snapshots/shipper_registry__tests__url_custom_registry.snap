@@ -1,0 +1,5 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: url
+---
+https://my-registry.example.com/api/v1/crates/private-lib

@@ -1,0 +1,16 @@
+---
+source: crates/shipper-git/src/lib.rs
+expression: ctx
+---
+GitContext {
+    commit: Some(
+        "aabbccddaabbccddaabbccddaabbccddaabbccdd",
+    ),
+    branch: Some(
+        "feature/add-logging",
+    ),
+    tag: None,
+    dirty: Some(
+        false,
+    ),
+}

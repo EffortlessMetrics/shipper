@@ -1,0 +1,138 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_stderr(&stdout)
+---
+Print GitHub Actions workflow snippet
+
+Usage: shipper ci github-actions [OPTIONS]
+
+Options:
+      --config <CONFIG>
+          Path to a custom configuration file (.shipper.toml)
+
+      --manifest-path <MANIFEST_PATH>
+          Path to the workspace Cargo.toml
+          
+          [default: Cargo.toml]
+
+      --registry <REGISTRY>
+          Cargo registry name (default: crates-io)
+
+      --api-base <API_BASE>
+          Registry API base URL (default: <https://crates.io>)
+
+      --package <PACKAGES>
+          Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members
+
+      --state-dir <STATE_DIR>
+          Directory for shipper state and receipts (default: .shipper)
+
+      --output-lines <OUTPUT_LINES>
+          Number of output lines to capture for evidence (default: 50)
+
+      --allow-dirty
+          Allow publishing from a dirty git working tree
+
+      --skip-ownership-check
+          Skip owners/permissions preflight
+
+      --strict-ownership
+          Fail preflight if ownership checks fail or if no token is available.
+          
+          Note: crates.io token scopes may not allow querying owners; this is best-effort.
+
+      --no-verify
+          Pass --no-verify to cargo publish
+
+      --max-attempts <MAX_ATTEMPTS>
+          Max attempts per crate publish step (default: 6)
+
+      --base-delay <BASE_DELAY>
+          Base backoff delay (e.g. 2s, 500ms; default: 2s)
+
+      --max-delay <MAX_DELAY>
+          Max backoff delay (e.g. 2m; default: 2m)
+
+      --retry-strategy <RETRY_STRATEGY>
+          Retry strategy: immediate, exponential (default), linear, constant
+
+      --retry-jitter <RETRY_JITTER>
+          Jitter factor for retry delays (0.0 = no jitter, 1.0 = full jitter; default: 0.5)
+
+      --verify-timeout <VERIFY_TIMEOUT>
+          How long to wait for registry visibility after a successful publish (default: 2m)
+
+      --verify-poll <VERIFY_POLL>
+          Poll interval for checking registry visibility (default: 5s)
+
+      --readiness-method <READINESS_METHOD>
+          Readiness check method: api (default, fast), index (slower, more accurate), both (slowest, most reliable)
+
+      --readiness-timeout <READINESS_TIMEOUT>
+          How long to wait for registry visibility during readiness checks (default: 5m)
+
+      --readiness-poll <READINESS_POLL>
+          Poll interval for readiness checks (default: 2s)
+
+      --no-readiness
+          Disable readiness checks (for advanced users)
+
+      --force-resume
+          Force resume even if the computed plan differs from the state file
+
+      --force
+          Force override of existing locks (use with caution)
+
+      --lock-timeout <LOCK_TIMEOUT>
+          Lock timeout duration (e.g. 1h, 30m; default: 1h). Locks older than this are considered stale
+
+      --policy <POLICY>
+          Publish policy: safe (verify+strict), balanced (verify when needed), fast (no verify; default: safe)
+
+      --verify-mode <VERIFY_MODE>
+          Verify mode: workspace (default), package (per-crate), none (no verify)
+
+      --parallel
+          Enable parallel publishing (packages at the same dependency level are published concurrently)
+
+      --max-concurrent <MAX_CONCURRENT>
+          Maximum number of concurrent publish operations (implies --parallel)
+
+      --per-package-timeout <PER_PACKAGE_TIMEOUT>
+          Timeout per package publish operation when using parallel mode (e.g. 30m, 1h)
+
+      --webhook-url <WEBHOOK_URL>
+          Webhook URL to send publish event notifications to
+
+      --webhook-secret <WEBHOOK_SECRET>
+          Optional secret for signing webhook payloads
+
+      --encrypt
+          Enable encryption for state files
+
+      --encrypt-passphrase <ENCRYPT_PASSPHRASE>
+          Passphrase for state file encryption (or use SHIPPER_ENCRYPT_KEY env var)
+
+      --registries <REGISTRIES>
+          Target registries for multi-registry publishing (comma-separated list) Example: --registries crates-io,my-registry
+
+      --all-registries
+          Publish to all configured registries
+
+      --resume-from <RESUME_FROM>
+          Optional package name to resume from
+
+      --format <FORMAT>
+          Output format: text (default) or json
+          
+          [default: text]
+          [possible values: text, json]
+
+      --verbose
+          Show detailed dependency analysis for plan command
+
+  -q, --quiet
+          Suppress informational output
+
+  -h, --help
+          Print help (see a summary with '-h')

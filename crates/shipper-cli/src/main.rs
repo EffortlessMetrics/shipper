@@ -10,9 +10,7 @@ use shipper::config::{CliOverrides, ShipperConfig};
 use shipper::engine::{self, Reporter};
 use shipper::plan;
 use shipper::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
-
-mod progress;
-use progress::ProgressReporter;
+use shipper_progress::ProgressReporter;
 
 #[derive(Parser, Debug)]
 #[command(name = "shipper", version)]
@@ -165,6 +163,10 @@ struct Cli {
     #[arg(long, global = true)]
     all_registries: bool,
 
+    /// Optional package name to resume from
+    #[arg(long, global = true)]
+    resume_from: Option<String>,
+
     /// Output format: text (default) or json
     #[arg(long, default_value = "text", value_parser = ["text", "json"], global = true)]
     format: String,
@@ -172,6 +174,10 @@ struct Cli {
     /// Show detailed dependency analysis for plan command
     #[arg(long, global = true)]
     verbose: bool,
+
+    /// Suppress informational output
+    #[arg(short, long, global = true)]
+    quiet: bool,
 
     #[command(subcommand)]
     cmd: Commands,
@@ -247,15 +253,21 @@ enum ConfigCommands {
     },
 }
 
-struct CliReporter;
+struct CliReporter {
+    quiet: bool,
+}
 
 impl Reporter for CliReporter {
     fn info(&mut self, msg: &str) {
-        eprintln!("[info] {msg}");
+        if !self.quiet {
+            eprintln!("[info] {msg}");
+        }
     }
 
     fn warn(&mut self, msg: &str) {
-        eprintln!("[warn] {msg}");
+        if !self.quiet {
+            eprintln!("[warn] {msg}");
+        }
     }
 
     fn error(&mut self, msg: &str) {
@@ -411,13 +423,14 @@ fn main() -> Result<()> {
                 .collect()
         }),
         all_registries: cli.all_registries,
+        resume_from: cli.resume_from.clone(),
     };
 
     // Merge CLI overrides with config (or defaults if no config)
     let config_for_merge = config.clone().unwrap_or_default();
-    let opts = config_for_merge.build_runtime_options(cli_overrides);
+    let opts: RuntimeOptions = config_for_merge.build_runtime_options(cli_overrides);
 
-    let mut reporter = CliReporter;
+    let mut reporter = CliReporter { quiet: cli.quiet };
 
     match cli.cmd {
         Commands::Plan => {
@@ -428,52 +441,128 @@ fn main() -> Result<()> {
             print_preflight(&rep, &cli.format);
         }
         Commands::Publish => {
-            let total_packages = planned.plan.packages.len();
-            let mut progress = ProgressReporter::new(total_packages);
+            let target_registries = if opts.registries.is_empty() {
+                vec![planned.plan.registry.clone()]
+            } else {
+                opts.registries.clone()
+            };
 
-            // Show initial progress if we have packages
-            if total_packages > 0 {
-                let first_pkg = &planned.plan.packages[0];
-                progress.set_package(1, &first_pkg.name, &first_pkg.version);
+            for reg in target_registries {
+                if opts.registries.len() > 1 {
+                    println!(
+                        "\n🚀 Publishing to registry: {} ({})",
+                        reg.name, reg.api_base
+                    );
+                }
+
+                let mut current_planned = planned.clone();
+                current_planned.plan.registry = reg.clone();
+
+                let mut current_opts = opts.clone();
+                // Segregate state dir by registry name if multiple registries
+                if opts.registries.len() > 1 {
+                    current_opts.state_dir = opts.state_dir.join(&reg.name);
+                }
+
+                let total_packages = current_planned.plan.packages.len();
+                let mut progress = ProgressReporter::new(total_packages, cli.quiet);
+
+                // Show initial progress if we have packages
+                if total_packages > 0 {
+                    let first_pkg = &current_planned.plan.packages[0];
+                    progress.set_package(1, &first_pkg.name, &first_pkg.version);
+                }
+
+                let receipt = engine::run_publish(&current_planned, &current_opts, &mut reporter)?;
+
+                progress.finish();
+
+                print_receipt(
+                    &receipt,
+                    &current_planned.workspace_root,
+                    &current_opts.state_dir,
+                    &cli.format,
+                );
             }
-
-            let receipt = engine::run_publish(&planned, &opts, &mut reporter)?;
-
-            progress.finish();
-
-            print_receipt(
-                &receipt,
-                &planned.workspace_root,
-                &opts.state_dir,
-                &cli.format,
-            );
         }
         Commands::Resume => {
-            let total_packages = planned.plan.packages.len();
-            let mut progress = ProgressReporter::new(total_packages);
+            let target_registries = if opts.registries.is_empty() {
+                vec![planned.plan.registry.clone()]
+            } else {
+                opts.registries.clone()
+            };
 
-            // Show initial progress if we have packages
-            if total_packages > 0 {
-                let first_pkg = &planned.plan.packages[0];
-                progress.set_package(1, &first_pkg.name, &first_pkg.version);
+            for reg in target_registries {
+                if opts.registries.len() > 1 {
+                    println!(
+                        "\n🔄 Resuming for registry: {} ({})",
+                        reg.name, reg.api_base
+                    );
+                }
+
+                let mut current_planned = planned.clone();
+                current_planned.plan.registry = reg.clone();
+
+                let mut current_opts = opts.clone();
+                if opts.registries.len() > 1 {
+                    current_opts.state_dir = opts.state_dir.join(&reg.name);
+                }
+
+                let total_packages = current_planned.plan.packages.len();
+                let mut progress = ProgressReporter::new(total_packages, cli.quiet);
+
+                // Show initial progress if we have packages
+                if total_packages > 0 {
+                    let first_pkg = &current_planned.plan.packages[0];
+                    progress.set_package(1, &first_pkg.name, &first_pkg.version);
+                }
+
+                let receipt = engine::run_resume(&current_planned, &current_opts, &mut reporter)?;
+
+                progress.finish();
+
+                print_receipt(
+                    &receipt,
+                    &current_planned.workspace_root,
+                    &current_opts.state_dir,
+                    &cli.format,
+                );
             }
-
-            let receipt = engine::run_resume(&planned, &opts, &mut reporter)?;
-
-            progress.finish();
-
-            print_receipt(
-                &receipt,
-                &planned.workspace_root,
-                &opts.state_dir,
-                &cli.format,
-            );
         }
         Commands::Status => {
-            run_status(&planned, &mut reporter)?;
+            let target_registries = if opts.registries.is_empty() {
+                vec![planned.plan.registry.clone()]
+            } else {
+                opts.registries.clone()
+            };
+
+            for reg in target_registries {
+                if opts.registries.len() > 1 {
+                    println!("\n📊 Status for registry: {} ({})", reg.name, reg.api_base);
+                }
+                let mut current_planned = planned.clone();
+                current_planned.plan.registry = reg;
+                run_status(&current_planned, &mut reporter)?;
+            }
         }
         Commands::Doctor => {
-            run_doctor(&planned, &opts, &mut reporter)?;
+            let target_registries = if opts.registries.is_empty() {
+                vec![planned.plan.registry.clone()]
+            } else {
+                opts.registries.clone()
+            };
+
+            for reg in target_registries {
+                if opts.registries.len() > 1 {
+                    println!(
+                        "\n🩺 Diagnostics for registry: {} ({})",
+                        reg.name, reg.api_base
+                    );
+                }
+                let mut current_planned = planned.clone();
+                current_planned.plan.registry = reg;
+                run_doctor(&current_planned, &opts, &mut reporter)?;
+            }
         }
         Commands::InspectEvents => {
             run_inspect_events(&planned, &opts)?;
@@ -509,29 +598,29 @@ fn parse_duration(s: &str) -> Result<Duration> {
     shipper_duration::parse_duration(s).with_context(|| format!("invalid duration: {s}"))
 }
 
-fn parse_policy(s: &str) -> Result<shipper::types::PublishPolicy> {
+fn parse_policy(s: &str) -> Result<shipper::config::PublishPolicy> {
     match s.to_lowercase().as_str() {
-        "safe" => Ok(shipper::types::PublishPolicy::Safe),
-        "balanced" => Ok(shipper::types::PublishPolicy::Balanced),
-        "fast" => Ok(shipper::types::PublishPolicy::Fast),
+        "safe" => Ok(shipper::config::PublishPolicy::Safe),
+        "balanced" => Ok(shipper::config::PublishPolicy::Balanced),
+        "fast" => Ok(shipper::config::PublishPolicy::Fast),
         _ => bail!("invalid policy: {s} (expected: safe, balanced, fast)"),
     }
 }
 
-fn parse_verify_mode(s: &str) -> Result<shipper::types::VerifyMode> {
+fn parse_verify_mode(s: &str) -> Result<shipper::config::VerifyMode> {
     match s.to_lowercase().as_str() {
-        "workspace" => Ok(shipper::types::VerifyMode::Workspace),
-        "package" => Ok(shipper::types::VerifyMode::Package),
-        "none" => Ok(shipper::types::VerifyMode::None),
+        "workspace" => Ok(shipper::config::VerifyMode::Workspace),
+        "package" => Ok(shipper::config::VerifyMode::Package),
+        "none" => Ok(shipper::config::VerifyMode::None),
         _ => bail!("invalid verify-mode: {s} (expected: workspace, package, none)"),
     }
 }
 
-fn parse_readiness_method(s: &str) -> Result<shipper::types::ReadinessMethod> {
+fn parse_readiness_method(s: &str) -> Result<shipper::config::ReadinessMethod> {
     match s.to_lowercase().as_str() {
-        "api" => Ok(shipper::types::ReadinessMethod::Api),
-        "index" => Ok(shipper::types::ReadinessMethod::Index),
-        "both" => Ok(shipper::types::ReadinessMethod::Both),
+        "api" => Ok(shipper::config::ReadinessMethod::Api),
+        "index" => Ok(shipper::config::ReadinessMethod::Index),
+        "both" => Ok(shipper::config::ReadinessMethod::Both),
         _ => bail!("invalid readiness-method: {s} (expected: api, index, both)"),
     }
 }
@@ -788,6 +877,29 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
                 "└─────────────────────┴─────────┴──────────┴──────────┴───────────────┴─────────────┴─────────────┘"
             );
             println!();
+
+            // Display dry-run failures if any
+            let failed_packages: Vec<_> = rep
+                .packages
+                .iter()
+                .filter(|p| !p.dry_run_passed && p.dry_run_output.is_some())
+                .collect();
+
+            if !failed_packages.is_empty() {
+                println!("Dry-run Failures:");
+                println!("-----------------");
+                for p in failed_packages {
+                    println!("Package: {}@{}", p.name, p.version);
+                    println!("{}", p.dry_run_output.as_ref().unwrap());
+                    println!();
+                }
+            } else if rep.finishability == Finishability::Failed && rep.dry_run_output.is_some() {
+                // Check if workspace dry-run failed
+                println!("Workspace Dry-run Failure:");
+                println!("--------------------------");
+                println!("{}", rep.dry_run_output.as_ref().unwrap());
+                println!();
+            }
 
             // Summary
             let total = rep.packages.len();
@@ -1071,25 +1183,25 @@ fn run_doctor(
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
 ) -> Result<()> {
+    println!("Shipper Doctor - Diagnostics Report");
+    println!("----------------------------------");
     println!("workspace_root: {}", ws.workspace_root.display());
     println!(
         "registry: {} ({})",
         ws.plan.registry.name, ws.plan.registry.api_base
     );
 
+    // 1. Check Authentication
     let auth_type = shipper::auth::detect_auth_type(&ws.plan.registry.name)?;
-    println!(
-        "token_detected: {}",
-        matches!(auth_type, Some(shipper::types::AuthType::Token))
-    );
     let auth_label = match auth_type {
-        Some(shipper::types::AuthType::Token) => "token",
-        Some(shipper::types::AuthType::TrustedPublishing) => "trusted",
+        Some(shipper::types::AuthType::Token) => "token (detected)",
+        Some(shipper::types::AuthType::TrustedPublishing) => "trusted (detected)",
         Some(shipper::types::AuthType::Unknown) => "unknown",
-        None => "-",
+        None => "NONE FOUND (set CARGO_REGISTRY_TOKEN)",
     };
     println!("auth_type: {}", auth_label);
 
+    // 2. Check State Directory
     let abs_state = if opts.state_dir.is_absolute() {
         opts.state_dir.clone()
     } else {
@@ -1097,10 +1209,58 @@ fn run_doctor(
     };
     println!("state_dir: {}", abs_state.display());
 
-    println!();
+    if abs_state.exists() {
+        if let Ok(meta) = std::fs::metadata(&abs_state) {
+            println!("state_dir_writable: {}", !meta.permissions().readonly());
+        }
+    } else {
+        println!("state_dir_exists: false (will be created)");
+    }
 
+    // 3. Check Tools
+    println!();
     print_cmd_version("cargo", reporter);
     print_cmd_version("git", reporter);
+
+    // 4. Network Connectivity (Best Effort)
+    println!();
+    reporter.info("checking registry connectivity...");
+    let reg_client = shipper::registry::RegistryClient::new(ws.plan.registry.clone())?;
+
+    match reg_client.crate_exists("serde") {
+        Ok(_) => println!("registry_reachable: true"),
+        Err(e) => reporter.warn(&format!("registry_reachable: false ({e:#})")),
+    }
+
+    let index_base = ws.plan.registry.get_index_base();
+    println!("index_base: {}", index_base);
+
+    // 5. Check Git State
+    println!();
+    match shipper::git::collect_git_context() {
+        Some(git) => {
+            println!("git_commit: {}", git.commit.unwrap_or_else(|| "-".into()));
+            println!("git_branch: {}", git.branch.unwrap_or_else(|| "-".into()));
+            println!("git_dirty: {}", git.dirty.unwrap_or(false));
+        }
+        None => println!("git_context: not a git repository"),
+    }
+
+    // 6. Encryption Check
+    if opts.encryption.enabled {
+        println!();
+        println!("encryption: enabled");
+        if opts.encryption.passphrase.is_some() {
+            println!("encryption_key_source: config");
+        } else if let Some(ref env_var) = opts.encryption.env_var {
+            let present = std::env::var(env_var).is_ok();
+            println!("encryption_key_source: env ({})", env_var);
+            println!("encryption_key_present: {}", present);
+        }
+    }
+
+    println!();
+    println!("Diagnostics complete.");
 
     Ok(())
 }
@@ -1155,7 +1315,7 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
             println!();
             println!("# Run shipper publish (will resume if state exists)");
             println!("- name: Publish Crates");
-            println!("  run: shipper publish");
+            println!("  run: shipper publish --quiet");
             println!("  env:");
             println!("    CARGO_REGISTRY_TOKEN: ${{{{ secrets.CARGO_REGISTRY_TOKEN }}}}");
             println!();
@@ -1181,7 +1341,7 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
             println!("      - target/");
             println!("  script:");
             println!("    - cargo install shipper-cli --locked");
-            println!("    - shipper publish");
+            println!("    - shipper publish --quiet");
             println!("  variables:");
             println!("    CARGO_TERM_COLOR: \"always\"");
             println!("    # Configure this in GitLab CI/CD settings (masked, protected)");
@@ -1214,7 +1374,7 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
             println!("          command: cargo install shipper-cli --locked");
             println!("      - run:");
             println!("          name: Publish Crates");
-            println!("          command: shipper publish");
+            println!("          command: shipper publish --quiet");
             println!("          environment:");
             println!("            CARGO_REGISTRY_TOKEN: ${{{{ CARGO_REGISTRY_TOKEN }}}}");
             println!("      - save_cache:");
@@ -1262,7 +1422,7 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
             println!("  - script: cargo install shipper-cli --locked");
             println!("    displayName: 'Install Shipper'");
             println!();
-            println!("  - script: shipper publish");
+            println!("  - script: shipper publish --quiet");
             println!("    displayName: 'Publish Crates'");
             println!("    env:");
             println!("      CARGO_REGISTRY_TOKEN: $(CARGO_REGISTRY_TOKEN)");
@@ -1289,10 +1449,42 @@ fn run_clean(
         workspace_root.join(state_dir)
     };
 
-    let state_path = abs_state.join(shipper::state::STATE_FILE);
-    let receipt_path = abs_state.join(shipper::state::RECEIPT_FILE);
-    let events_path = abs_state.join(shipper::events::EVENTS_FILE);
-    let lock_path = abs_state.join(shipper::lock::LOCK_FILE);
+    if !abs_state.exists() {
+        println!("State directory does not exist: {}", abs_state.display());
+        return Ok(());
+    }
+
+    // Identify all directories to clean (base + any registry subdirs)
+    let mut dirs_to_clean = vec![abs_state.clone()];
+    if let Ok(entries) = std::fs::read_dir(&abs_state) {
+        for entry in entries.flatten() {
+            if let Ok(file_type) = entry.file_type()
+                && file_type.is_dir()
+                && entry.file_name() != "cache"
+            {
+                dirs_to_clean.push(entry.path());
+            }
+        }
+    }
+
+    for dir in dirs_to_clean {
+        clean_single_dir(&dir, workspace_root, keep_receipt, force)?;
+    }
+
+    println!("Clean complete");
+    Ok(())
+}
+
+fn clean_single_dir(
+    dir: &Path,
+    workspace_root: &Path,
+    keep_receipt: bool,
+    force: bool,
+) -> Result<()> {
+    let state_path = dir.join(shipper::state::STATE_FILE);
+    let receipt_path = dir.join(shipper::state::RECEIPT_FILE);
+    let events_path = dir.join(shipper::events::EVENTS_FILE);
+    let lock_path = shipper::lock::lock_path(dir, Some(workspace_root));
 
     // Check for active lock
     if lock_path.exists() {
@@ -1304,20 +1496,23 @@ fn run_clean(
             std::fs::remove_file(&lock_path)
                 .with_context(|| format!("failed to remove lock file {}", lock_path.display()))?;
         } else {
-            match shipper::lock::LockFile::read_lock_info(&abs_state) {
+            match shipper::lock::LockFile::read_lock_info(dir, Some(workspace_root)) {
                 Ok(lock_info) => {
-                    eprintln!("[warn] Active lock found:");
+                    eprintln!("[warn] Active lock found in {}:", dir.display());
                     eprintln!("[warn]   PID: {}", lock_info.pid);
                     eprintln!("[warn]   Hostname: {}", lock_info.hostname);
                     eprintln!("[warn]   Acquired at: {}", lock_info.acquired_at);
                     eprintln!("[warn]   Plan ID: {:?}", lock_info.plan_id);
                 }
                 Err(err) => {
-                    eprintln!("[warn] Active lock found but metadata could not be read: {err:#}");
+                    eprintln!(
+                        "[warn] Active lock found in {} but metadata could not be read: {err:#}",
+                        dir.display()
+                    );
                 }
             }
             eprintln!("[warn] Use --force to override the lock");
-            bail!("cannot clean: active lock exists");
+            bail!("cannot clean: active lock exists in {}", dir.display());
         }
     }
 
@@ -1347,10 +1542,14 @@ fn run_clean(
         );
     }
 
-    // Note: We don't remove the state directory itself as it may contain other files
-    // and we want to keep the structure for future runs
+    // Remove cache directory if exists
+    let cache_dir = dir.join("cache");
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir)
+            .with_context(|| format!("failed to remove cache directory {}", cache_dir.display()))?;
+        println!("Removed: {}", cache_dir.display());
+    }
 
-    println!("Clean complete");
     Ok(())
 }
 
@@ -1453,7 +1652,7 @@ mod tests {
 
     #[test]
     fn cli_reporter_methods_are_callable() {
-        let mut rep = CliReporter;
+        let mut rep = CliReporter { quiet: false };
         rep.info("info");
         rep.warn("warn");
         rep.error("error");
@@ -1564,6 +1763,7 @@ mod tests {
             webhook: shipper::webhook::WebhookConfig::default(),
             encryption: shipper::encryption::EncryptionConfig::default(),
             registries: vec![],
+            resume_from: None,
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
@@ -1632,6 +1832,7 @@ mod tests {
             webhook: shipper::webhook::WebhookConfig::default(),
             encryption: shipper::encryption::EncryptionConfig::default(),
             registries: vec![],
+            resume_from: None,
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
@@ -1804,20 +2005,21 @@ mode = "fast"
         assert!(config.is_some(), "should return Some when config exists");
         assert_eq!(
             config.unwrap().policy.mode,
-            shipper::types::PublishPolicy::Fast
+            shipper::config::PublishPolicy::Fast
         );
     }
 
     #[test]
     fn config_merge_with_cli_overrides() {
         let config = ShipperConfig {
+            schema_version: "shipper.config.v1".to_string(),
             policy: shipper::config::PolicyConfig {
-                mode: shipper::types::PublishPolicy::Safe,
+                mode: shipper::config::PublishPolicy::Safe,
             },
             verify: shipper::config::VerifyConfig {
-                mode: shipper::types::VerifyMode::Workspace,
+                mode: shipper::config::VerifyMode::Workspace,
             },
-            readiness: shipper::types::ReadinessConfig::default(),
+            readiness: shipper::config::ReadinessConfig::default(),
             output: shipper::config::OutputConfig { lines: 100 },
             lock: shipper::config::LockConfig {
                 timeout: Duration::from_secs(1800),
@@ -1839,8 +2041,8 @@ mode = "fast"
             state_dir: None,
             registry: None,
             registries: shipper::config::MultiRegistryConfig::default(),
-            parallel: shipper::types::ParallelConfig::default(),
-            webhook: shipper::webhook::WebhookConfig::default(),
+            parallel: shipper::config::ParallelConfig::default(),
+            webhook: shipper::config::WebhookConfig::default(),
             encryption: shipper::config::EncryptionConfigInner::default(),
             storage: shipper::config::StorageConfigInner::default(),
         };
@@ -1850,12 +2052,12 @@ mode = "fast"
             allow_dirty: true,
             max_attempts: Some(3),
             output_lines: Some(50),
-            policy: Some(shipper::types::PublishPolicy::Fast),
-            verify_mode: Some(shipper::types::VerifyMode::None),
+            policy: Some(shipper::config::PublishPolicy::Fast),
+            verify_mode: Some(shipper::config::VerifyMode::None),
             ..Default::default()
         };
 
-        let merged = config.build_runtime_options(cli);
+        let merged: RuntimeOptions = config.build_runtime_options(cli);
 
         // CLI values should win where set
         assert!(merged.allow_dirty, "CLI allow_dirty should win");
@@ -1903,15 +2105,16 @@ mode = "fast"
             acquired_at: Utc::now(),
             plan_id: Some("plan-123".to_string()),
         };
+        let lock_path = shipper::lock::lock_path(&abs_state, Some(td.path()));
         fs::write(
-            abs_state.join(shipper::lock::LOCK_FILE),
+            &lock_path,
             serde_json::to_string(&lock_info).expect("serialize"),
         )
         .expect("write lock");
 
         let err = run_clean(&state_dir, td.path(), false, false).expect_err("must fail");
         assert!(err.to_string().contains("cannot clean: active lock exists"));
-        assert!(abs_state.join(shipper::lock::LOCK_FILE).exists());
+        assert!(lock_path.exists());
     }
 
     #[test]
@@ -1924,7 +2127,7 @@ mode = "fast"
         let state_path = abs_state.join(shipper::state::STATE_FILE);
         let receipt_path = abs_state.join(shipper::state::RECEIPT_FILE);
         let events_path = abs_state.join(shipper::events::EVENTS_FILE);
-        let lock_path = abs_state.join(shipper::lock::LOCK_FILE);
+        let lock_path = shipper::lock::lock_path(&abs_state, Some(td.path()));
 
         fs::write(&state_path, "{}").expect("write state");
         fs::write(&receipt_path, "{}").expect("write receipt");

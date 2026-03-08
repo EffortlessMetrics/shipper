@@ -1,0 +1,6 @@
+---
+source: crates/shipper-output-sanitizer/src/lib.rs
+assertion_line: 435
+expression: "redact_sensitive(\"\")"
+---
+

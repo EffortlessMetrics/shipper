@@ -1,0 +1,5 @@
+---
+source: crates/shipper-encrypt/src/lib.rs
+expression: hex
+---
+afd6222201f429ae31366426c7f6a75cd34d7c09aa14f1da3c595009ecb3fed6

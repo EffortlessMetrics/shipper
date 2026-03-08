@@ -1,0 +1,8 @@
+---
+source: crates/shipper-duration/tests/snapshots.rs
+expression: "output.join(\"\\n\")"
+---
+250ms => 250ms
+   2s => 2s
+   5m => 300s
+   1h => 3600s

@@ -1,0 +1,10 @@
+---
+source: crates/shipper-output-sanitizer/src/lib.rs
+expression: redact_sensitive(input)
+---
+   Compiling mycrate v0.2.0 (/home/user/project)
+    Finished `release` profile [optimized] target(s) in 3.42s
+   Uploading mycrate v0.2.0 (/home/user/project/Cargo.toml)
+    Uploaded mycrate v0.2.0 to `crates.io`
+note: waiting for `mycrate v0.2.0` to be available at registry `crates.io`
+published mycrate v0.2.0 at registry `crates.io`

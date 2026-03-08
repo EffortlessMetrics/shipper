@@ -1,0 +1,7 @@
+---
+source: crates/shipper-process/src/lib.rs
+expression: args
+---
+- publish
+- "--manifest-path"
+- crates/foo/Cargo.toml

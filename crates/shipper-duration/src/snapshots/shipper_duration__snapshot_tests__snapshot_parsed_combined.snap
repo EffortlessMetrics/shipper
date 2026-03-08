@@ -1,0 +1,6 @@
+---
+source: crates/shipper-duration/src/lib.rs
+assertion_line: 386
+expression: "parse_duration(\"1h 30m 15s 200ms\").unwrap()"
+---
+5415.2s

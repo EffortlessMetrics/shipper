@@ -23,6 +23,7 @@ shipper-levels = { path = "../shipper-levels" }
 [dev-dependencies]
 serde_json = "1.0"
 proptest = "1.10.0"
+insta = { version = "1", features = ["yaml"] }
 
 [lints]
 workspace = true

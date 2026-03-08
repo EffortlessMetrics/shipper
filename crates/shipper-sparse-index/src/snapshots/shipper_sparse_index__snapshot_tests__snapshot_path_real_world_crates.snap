@@ -1,0 +1,14 @@
+---
+source: crates/shipper-sparse-index/src/lib.rs
+expression: "paths.join(\"\\n\")"
+---
+serde -> se/rd/serde
+tokio -> to/ki/tokio
+clap -> cl/ap/clap
+anyhow -> an/yh/anyhow
+rand -> ra/nd/rand
+syn -> 3/s/syn
+proc-macro2 -> pr/oc/proc-macro2
+quote -> qu/ot/quote
+libc -> li/bc/libc
+regex -> re/ge/regex

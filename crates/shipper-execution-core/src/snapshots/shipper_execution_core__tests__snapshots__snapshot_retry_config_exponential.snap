@@ -1,0 +1,9 @@
+---
+source: crates/shipper-execution-core/src/lib.rs
+expression: config
+---
+strategy: exponential
+max_attempts: 5
+base_delay: 2s
+max_delay: 2m
+jitter: 0.5

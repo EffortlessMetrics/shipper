@@ -1,0 +1,9 @@
+---
+source: crates/shipper-store/src/lib.rs
+expression: json
+---
+{
+  "name": "crates-io",
+  "api_base": "https://crates.io",
+  "index_base": "https://index.crates.io"
+}

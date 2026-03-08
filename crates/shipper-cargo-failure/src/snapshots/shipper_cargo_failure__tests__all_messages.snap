@@ -1,0 +1,7 @@
+---
+source: crates/shipper-cargo-failure/src/lib.rs
+expression: "format!(\"retryable: {}\\npermanent: {}\\nambiguous: {}\", retryable.message, permanent.message, ambiguous.message)"
+---
+retryable: transient failure (retryable)
+permanent: permanent failure (fix required)
+ambiguous: publish outcome ambiguous; registry did not show version

@@ -1,0 +1,42 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&stdout)
+---
+plan_id: <PLAN_ID>
+registry: crates-io (https://crates.io)
+workspace_root: <WORKSPACE_ROOT>
+
+Total packages to publish: 3
+
+=== Dependency Analysis ===
+
+Publishing Levels (packages at same level can be published in parallel):
+
+  Level 0: core-lib@0.2.0
+  Level 1: mid-lib@0.3.0
+  Level 2: top-app@0.4.0
+
+Dependency Graph:
+
+    1. core-lib@0.2.0 (no workspace dependencies)
+    2. mid-lib@0.3.0 (depends on: core-lib@0.2.0)
+    3. top-app@0.4.0 (depends on: mid-lib@0.3.0)
+
+=== Preflight Considerations ===
+
+  No obvious issues detected.
+  All packages have reasonable dependency structures.
+
+=== Estimated Publishing Analysis ===
+
+  Parallel publishing: sequential
+  Max concurrent packages: 1
+  Total publish levels: 3
+  Estimated time (sequential): ~90s (1.5min)
+  Estimated time (parallel): ~90s (1.5min)
+
+=== Full Publish Order ===
+
+    1. [Level 0] core-lib @0.2.0
+    2. [Level 1] mid-lib @0.3.0
+    3. [Level 2] top-app @0.4.0

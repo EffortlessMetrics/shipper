@@ -1,0 +1,10 @@
+---
+source: crates/shipper-storage/src/lib.rs
+expression: state
+---
+- - src.txt
+  - false
+- - copied.txt
+  - true
+- - moved.txt
+  - true

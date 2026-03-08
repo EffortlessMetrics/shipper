@@ -1,0 +1,10 @@
+---
+source: crates/shipper-cli/tests/e2e_expanded.rs
+expression: normalize_output(&normalize_stderr(&combined))
+---
+--- stdout ---
+--- stderr ---
+[info] initializing registry client...
+[info] running workspace dry-run verification...
+[info] checking packages against registry...
+Error: unexpected status while checking crate existence: failed to send request to registry

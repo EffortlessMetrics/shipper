@@ -1,0 +1,27 @@
+---
+source: crates/shipper-types/src/lib.rs
+expression: events
+---
+- timestamp: "2025-01-15T12:00:00Z"
+  event_type:
+    type: package_started
+    name: my-crate
+    version: 1.0.0
+  package: my-crate@1.0.0
+- timestamp: "2025-01-15T12:00:00Z"
+  event_type:
+    type: package_attempted
+    attempt: 1
+    command: cargo publish -p my-crate
+  package: my-crate@1.0.0
+- timestamp: "2025-01-15T12:00:00Z"
+  event_type:
+    type: package_output
+    stdout_tail: Uploading my-crate v1.0.0
+    stderr_tail: ""
+  package: my-crate@1.0.0
+- timestamp: "2025-01-15T12:00:00Z"
+  event_type:
+    type: package_published
+    duration_ms: 4500
+  package: my-crate@1.0.0

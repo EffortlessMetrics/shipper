@@ -1,0 +1,7 @@
+---
+source: crates/shipper-registry/src/lib.rs
+expression: owner
+---
+login: alice
+name: Alice Smith
+avatar: "https://example.com/alice.png"

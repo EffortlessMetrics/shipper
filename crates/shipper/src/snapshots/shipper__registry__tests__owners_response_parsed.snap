@@ -1,0 +1,20 @@
+---
+source: crates/shipper/src/registry.rs
+expression: owners
+---
+OwnersResponse {
+    users: [
+        Owner {
+            id: 42,
+            login: "alice",
+            name: Some(
+                "Alice Wonderland",
+            ),
+        },
+        Owner {
+            id: 99,
+            login: "bob",
+            name: None,
+        },
+    ],
+}

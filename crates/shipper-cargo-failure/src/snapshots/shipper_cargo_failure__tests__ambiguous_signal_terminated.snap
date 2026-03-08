@@ -1,0 +1,9 @@
+---
+source: crates/shipper-cargo-failure/src/lib.rs
+assertion_line: 1036
+expression: outcome
+---
+CargoFailureOutcome {
+    class: Ambiguous,
+    message: "publish outcome ambiguous; registry did not show version",
+}

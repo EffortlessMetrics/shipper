@@ -1,0 +1,18 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+expression: json
+---
+embeds:
+  - color: 16711680
+    description: Failed to publish my-crate@1.2.3
+    fields:
+      - inline: true
+        name: Package
+        value: my-crate
+      - inline: true
+        name: Version
+        value: 1.2.3
+      - inline: false
+        name: Error
+        value: network error
+    title: Publish Failed

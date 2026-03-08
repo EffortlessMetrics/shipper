@@ -1,0 +1,23 @@
+---
+source: crates/shipper-webhook/src/lib.rs
+assertion_line: 2164
+expression: payload
+---
+WebhookPayload {
+    message: "Failed to publish my-crate@2.0.0",
+    title: Some(
+        "Publish Failed",
+    ),
+    success: false,
+    package: Some(
+        "my-crate",
+    ),
+    version: Some(
+        "2.0.0",
+    ),
+    registry: None,
+    error: Some(
+        "connection refused: server at registry.example.com:443 not reachable",
+    ),
+    extra: {},
+}

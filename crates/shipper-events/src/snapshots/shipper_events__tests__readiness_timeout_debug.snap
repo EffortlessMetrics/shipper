@@ -1,0 +1,11 @@
+---
+source: crates/shipper-events/src/lib.rs
+expression: event
+---
+PublishEvent {
+    timestamp: 2025-01-15T12:00:00Z,
+    event_type: ReadinessTimeout {
+        max_wait_ms: 300000,
+    },
+    package: "my-crate@1.0.0",
+}

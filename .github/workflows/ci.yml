@@ -9,6 +9,10 @@ on:
     # Nightly quick fuzz and elevated property tests
     - cron: '0 3 * * *'
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
@@ -30,7 +34,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -64,7 +68,7 @@ jobs:
           tool: cargo-nextest
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -86,7 +90,7 @@ jobs:
 
       - name: Upload JUnit
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: junit-${{ matrix.os }}
           path: target/nextest/ci/junit.xml
@@ -104,7 +108,7 @@ jobs:
           toolchain: 1.92.0
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -141,7 +145,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -173,7 +177,7 @@ jobs:
           tool: cargo-llvm-cov
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -186,14 +190,14 @@ jobs:
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: lcov
           path: lcov.info
           retention-days: 14
 
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: lcov.info
           fail_ci_if_error: false
@@ -206,13 +210,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        feature-set: ["", "micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-registry", "micro-process", "micro-webhook", "micro-types", "micro-config", "micro-state", "micro-store", "micro-all"]
+        feature-set: ["", "micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-policy", "micro-registry", "micro-process", "micro-webhook", "micro-types", "micro-config", "micro-state", "micro-store", "micro-all"]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -248,7 +252,7 @@ jobs:
           tool: cargo-fuzz
 
       - name: Cache Cargo + fuzz
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -263,7 +267,9 @@ jobs:
           cargo fuzz run load_state --target x86_64-unknown-linux-gnu -- -max_total_time=60
           cargo fuzz run resolve_token --target x86_64-unknown-linux-gnu -- -max_total_time=60
           cargo fuzz run schema_version --target x86_64-unknown-linux-gnu -- -max_total_time=60
+          cargo fuzz run policy_effects --target x86_64-unknown-linux-gnu -- -max_total_time=60
           cargo fuzz run release_levels --target x86_64-unknown-linux-gnu -- -max_total_time=60
+          cargo fuzz run redact_output --target x86_64-unknown-linux-gnu -- -max_total_time=60
 
   cross-platform:
     name: Build (${{ matrix.os }}, ${{ matrix.target }})
@@ -291,7 +297,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -321,7 +327,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -334,7 +340,7 @@ jobs:
         run: cargo build --release
 
       - name: Upload release binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: shipper-linux-x86_64
           path: target/release/shipper

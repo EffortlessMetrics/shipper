@@ -1,0 +1,10 @@
+---
+source: crates/shipper-retry/src/lib.rs
+assertion_line: 720
+expression: "RetryPolicy::Aggressive.to_config()"
+---
+strategy: exponential
+max_attempts: 10
+base_delay: 500ms
+max_delay: 30s
+jitter: 0.3

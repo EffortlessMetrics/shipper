@@ -1,0 +1,12 @@
+---
+source: crates/shipper-cargo/src/lib.rs
+assertion_line: 1128
+expression: info
+---
+name: my-private-crate
+version: 1.2.3-beta.1
+manifest_path: crates/my-private-crate/Cargo.toml
+is_workspace_member: false
+publish:
+  - crates-io
+  - my-private-registry

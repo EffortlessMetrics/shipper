@@ -18,3 +18,15 @@ Feature: Micro backend feature flags
     When I run "shipper preflight" with "--policy fast" and "--allow-dirty"
     Then the preflight report shows token not detected
     And the exit code is 0
+
+  Scenario: Plan output is consistent with micro backends enabled
+    Given a workspace with a dependency chain
+    When I run "shipper plan"
+    Then the exit code is 0
+    And the plan output lists crates in dependency order
+
+  Scenario: Config loading works with micro backends
+    Given a workspace with a dependency chain
+    And a file named ".shipper.toml" with policy set to "fast"
+    When I run "shipper config validate"
+    Then the exit code is 0

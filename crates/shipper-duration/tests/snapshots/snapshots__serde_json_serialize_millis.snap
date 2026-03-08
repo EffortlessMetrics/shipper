@@ -1,0 +1,36 @@
+---
+source: crates/shipper-duration/tests/snapshots.rs
+expression: "output.join(\"\\n\")"
+---
+--- 0ms ---
+{
+  "value": 0
+}
+--- 1ms ---
+{
+  "value": 1
+}
+--- 250ms ---
+{
+  "value": 250
+}
+--- 1000ms ---
+{
+  "value": 1000
+}
+--- 5000ms ---
+{
+  "value": 5000
+}
+--- 60000ms ---
+{
+  "value": 60000
+}
+--- 3600000ms ---
+{
+  "value": 3600000
+}
+--- 86400000ms ---
+{
+  "value": 86400000
+}

@@ -1,0 +1,6 @@
+---
+source: crates/shipper-plan/src/lib.rs
+assertion_line: 1192
+expression: "format!(\"{err:#}\")"
+---
+selected package not found or not publishable: c

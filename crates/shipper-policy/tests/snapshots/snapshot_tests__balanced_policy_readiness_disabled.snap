@@ -1,0 +1,8 @@
+---
+source: crates/shipper-policy/tests/snapshot_tests.rs
+expression: effects
+---
+run_dry_run: true
+check_ownership: false
+strict_ownership: false
+readiness_enabled: false

@@ -110,9 +110,12 @@ Use `--state-dir <path>` to redirect these elsewhere (for example, a CI artifact
 
 - `shipper ci github-actions` — print GitHub Actions workflow snippet
 - `shipper ci gitlab` — print GitLab CI workflow snippet
+- `shipper ci circleci` — print CircleCI configuration snippet
+- `shipper ci azure-devops` — print Azure DevOps pipeline snippet
 
-### Configuration commands
+### Utility commands
 
+- `shipper completion <shell>` — generate shell completion scripts (bash, zsh, fish, powershell, elvish)
 - `shipper config init` — generate a default `.shipper.toml` configuration file
 - `shipper config validate` — validate a configuration file
 
@@ -126,6 +129,8 @@ Use `--state-dir <path>` to redirect these elsewhere (for example, a CI artifact
 - `--api-base <url>` — Registry API base URL (default: https://crates.io)
 - `--package <name>` — Restrict to specific packages (repeatable)
 - `--format <format>` — Output format: text (default) or json
+- `--verbose` — Show detailed output (e.g., dependency analysis for plan)
+- `-q` / `--quiet` — Suppress informational output
 
 ### State options
 
@@ -157,6 +162,8 @@ Use `--state-dir <path>` to redirect these elsewhere (for example, a CI artifact
 - `--max-attempts <number>` — Max attempts per crate publish step (default: 6)
 - `--base-delay <duration>` — Base backoff delay (default: 2s)
 - `--max-delay <duration>` — Max backoff delay (default: 2m)
+- `--retry-strategy <strategy>` — Retry strategy: immediate, exponential (default), linear, constant
+- `--retry-jitter <factor>` — Jitter factor for retry delays (0.0 = no jitter, 1.0 = full jitter; default: 0.5)
 - `--verify-timeout <duration>` — How long to wait for registry visibility after a successful publish (default: 2m)
 - `--verify-poll <duration>` — Poll interval for checking registry visibility (default: 5s)
 
@@ -256,11 +263,26 @@ shipper inspect-receipt --format json
 ### Resuming after interruption
 
 ```bash
-# Resume normally
+# Resume normally from where it left off
 shipper resume
 
 # Force resume if plan has changed
 shipper resume --force-resume
+
+# Resume from a specific package (skipping previous ones)
+shipper publish --resume-from my-crate
+```
+
+### Multi-registry publishing
+
+Shipper can publish to multiple registries in a single run. State and receipts are segregated by registry name.
+
+```bash
+# Publish to all registries defined in .shipper.toml
+shipper publish --all-registries
+
+# Publish to specific registries
+shipper publish --registries crates-io,internal-mirror
 ```
 
 ### Parallel publishing
