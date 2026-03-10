@@ -25,7 +25,7 @@ shipper-levels = { path = "../crates/shipper-levels" }
 shipper-chunking = { path = "../crates/shipper-chunking" }
 shipper-sparse-index = { path = "../crates/shipper-sparse-index" }
 shipper-webhook = { path = "../crates/shipper-webhook" }
-chrono = "0.4.43"
+chrono = "0.4.44"
 hmac = "0.12"
 sha2 = "0.10"
 url = "2"
