@@ -22,7 +22,7 @@ shipper-types = { path = "../shipper-types" }
 insta = { workspace = true }
 proptest.workspace = true
 serde = { version = "1", features = ["derive"] }
-tempfile = "3.25.0"
+tempfile = "3.27.0"
 
 [lints]
 workspace = true
