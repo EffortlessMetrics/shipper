@@ -13,7 +13,7 @@ categories = ["development-tools"]
 [dependencies]
 serde.workspace = true
 anyhow = "1.0"
-toml = "1.0"
+toml = "1.1"
 serde_with = "3.17.0"
 shipper-types = { path = "../shipper-types" }
 shipper-encrypt = { path = "../shipper-encrypt" }
