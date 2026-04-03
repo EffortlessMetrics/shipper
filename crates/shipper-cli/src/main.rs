@@ -9,7 +9,9 @@ use clap_complete::Shell;
 use shipper::config::{CliOverrides, ShipperConfig};
 use shipper::engine::{self, Reporter};
 use shipper::plan;
-use shipper::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
+use shipper::types::{
+    Finishability, PreflightReport, Registry, ReleasePlan, ReleaseSpec, RuntimeOptions,
+};
 use shipper_progress::ProgressReporter;
 
 #[derive(Parser, Debug)]
@@ -311,7 +313,32 @@ fn main() -> Result<()> {
         },
     };
 
-    let mut planned = plan::build_plan(&spec)?;
+    let is_doctor = matches!(cli.cmd, Commands::Doctor);
+    let mut planned = match plan::build_plan(&spec) {
+        Ok(p) => p,
+        Err(_) if is_doctor => {
+            // Doctor should still run when cargo metadata fails (e.g. cargo not on PATH).
+            // Build a minimal PlannedWorkspace so diagnostics can proceed.
+            let workspace_root = cli
+                .manifest_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
+            plan::PlannedWorkspace {
+                workspace_root,
+                plan: ReleasePlan {
+                    plan_version: String::new(),
+                    plan_id: String::new(),
+                    created_at: chrono::Utc::now(),
+                    registry: spec.registry.clone(),
+                    packages: vec![],
+                    dependencies: std::collections::BTreeMap::new(),
+                },
+                skipped: vec![],
+            }
+        }
+        Err(e) => return Err(e),
+    };
 
     // Load configuration file
     let config =
