@@ -13,7 +13,7 @@ categories = ["algorithms", "asynchronous"]
 [dependencies]
 serde.workspace = true
 humantime-serde = "1.1"
-rand = { version = "0.10.0", features = ["std"] }
+rand = { version = "0.10.1", features = ["std"] }
 
 [dev-dependencies]
 proptest.workspace = true
