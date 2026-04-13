@@ -2494,6 +2494,7 @@ mod tests {
 
     fn normalize_error(err: &str, state_dir: &std::path::Path) -> String {
         err.replace(&state_dir.display().to_string(), "<STATE_DIR>")
+            .replace('\\', "/")
     }
 
     #[test]

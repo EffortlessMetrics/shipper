@@ -1,10 +1,10 @@
 ---
 source: crates/shipper-cli/tests/cli_snapshots.rs
-expression: redact_version(&stderr)
+expression: normalize_output(&stderr)
 ---
 Resumable, backoff-aware crates.io publishing for workspaces
 
-Usage: shipper.exe [OPTIONS] <COMMAND>
+Usage: shipper [OPTIONS] <COMMAND>
 
 Commands:
   plan             Print the deterministic publish plan (dependency-first ordering)

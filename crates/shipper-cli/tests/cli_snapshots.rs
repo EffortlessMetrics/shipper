@@ -2,9 +2,16 @@ use std::process::Command;
 
 use insta::assert_snapshot;
 
-/// Normalize version strings so snapshots don't break on every release.
-fn redact_version(raw: &str) -> String {
-    raw.replace(env!("CARGO_PKG_VERSION"), "[VERSION]")
+/// Normalize line endings, platform-specific binary names, and versions so
+/// snapshots stay stable across environments.
+fn normalize_output(raw: &str) -> String {
+    raw.replace("\r\n", "\n")
+        .replace("shipper.exe", "shipper")
+        .replace(env!("CARGO_PKG_VERSION"), "[VERSION]")
+}
+
+fn normalize_help_output(raw: &str) -> String {
+    normalize_output(raw)
 }
 
 fn shipper_cmd() -> Command {
@@ -17,7 +24,7 @@ fn shipper_cmd() -> Command {
 fn help_text() {
     let output = shipper_cmd().arg("--help").output().expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("help_text", redact_version(&stdout));
+    assert_snapshot!("help_text", normalize_help_output(&stdout));
 }
 
 #[test]
@@ -27,7 +34,7 @@ fn plan_help() {
         .output()
         .expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("plan_help", redact_version(&stdout));
+    assert_snapshot!("plan_help", normalize_help_output(&stdout));
 }
 
 #[test]
@@ -37,7 +44,7 @@ fn publish_help() {
         .output()
         .expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("publish_help", redact_version(&stdout));
+    assert_snapshot!("publish_help", normalize_help_output(&stdout));
 }
 
 #[test]
@@ -47,7 +54,7 @@ fn resume_help() {
         .output()
         .expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("resume_help", redact_version(&stdout));
+    assert_snapshot!("resume_help", normalize_help_output(&stdout));
 }
 
 #[test]
@@ -57,7 +64,7 @@ fn preflight_help() {
         .output()
         .expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("preflight_help", redact_version(&stdout));
+    assert_snapshot!("preflight_help", normalize_help_output(&stdout));
 }
 
 #[test]
@@ -67,7 +74,7 @@ fn status_help() {
         .output()
         .expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("status_help", redact_version(&stdout));
+    assert_snapshot!("status_help", normalize_help_output(&stdout));
 }
 
 #[test]
@@ -77,7 +84,7 @@ fn doctor_help() {
         .output()
         .expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("doctor_help", redact_version(&stdout));
+    assert_snapshot!("doctor_help", normalize_help_output(&stdout));
 }
 
 #[test]
@@ -87,7 +94,7 @@ fn config_help() {
         .output()
         .expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("config_help", redact_version(&stdout));
+    assert_snapshot!("config_help", normalize_help_output(&stdout));
 }
 
 #[test]
@@ -97,7 +104,7 @@ fn ci_help() {
         .output()
         .expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("ci_help", redact_version(&stdout));
+    assert_snapshot!("ci_help", normalize_help_output(&stdout));
 }
 
 #[test]
@@ -107,7 +114,7 @@ fn clean_help() {
         .output()
         .expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("clean_help", redact_version(&stdout));
+    assert_snapshot!("clean_help", normalize_help_output(&stdout));
 }
 
 // ── Version ──────────────────────────────────────────────────────────
@@ -119,7 +126,7 @@ fn version_flag() {
         .output()
         .expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("version_flag", redact_version(&stdout));
+    assert_snapshot!("version_flag", normalize_output(&stdout));
 }
 
 // ── Error cases ──────────────────────────────────────────────────────
@@ -128,7 +135,7 @@ fn version_flag() {
 fn no_subcommand_shows_error() {
     let output = shipper_cmd().output().expect("failed to run");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_snapshot!("no_subcommand_error", redact_version(&stderr));
+    assert_snapshot!("no_subcommand_error", normalize_output(&stderr));
 }
 
 #[test]
@@ -138,7 +145,7 @@ fn unknown_subcommand_shows_error() {
         .output()
         .expect("failed to run");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_snapshot!("unknown_subcommand_error", redact_version(&stderr));
+    assert_snapshot!("unknown_subcommand_error", normalize_output(&stderr));
 }
 
 #[test]
@@ -148,5 +155,5 @@ fn completion_missing_shell_arg() {
         .output()
         .expect("failed to run");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_snapshot!("completion_missing_shell", redact_version(&stderr));
+    assert_snapshot!("completion_missing_shell", normalize_output(&stderr));
 }

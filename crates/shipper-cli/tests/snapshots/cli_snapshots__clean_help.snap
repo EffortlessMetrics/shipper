@@ -1,10 +1,10 @@
 ---
 source: crates/shipper-cli/tests/cli_snapshots.rs
-expression: redact_version(&stdout)
+expression: normalize_help_output(&stdout)
 ---
 Clean state files (state.json, receipt.json, events.jsonl)
 
-Usage: shipper.exe clean [OPTIONS]
+Usage: shipper clean [OPTIONS]
 
 Options:
       --config <CONFIG>

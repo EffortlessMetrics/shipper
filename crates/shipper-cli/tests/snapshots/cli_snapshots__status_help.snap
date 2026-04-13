@@ -1,10 +1,10 @@
 ---
 source: crates/shipper-cli/tests/cli_snapshots.rs
-expression: redact_version(&stdout)
+expression: normalize_help_output(&stdout)
 ---
 Compare local workspace versions to the registry
 
-Usage: shipper.exe status [OPTIONS]
+Usage: shipper status [OPTIONS]
 
 Options:
       --config <CONFIG>

@@ -108,8 +108,18 @@ fn normalize_embedded_paths(line: &str) -> String {
 /// Normalize stderr/stdout that may contain the binary name (which differs
 /// across platforms) and the embedded version string.
 fn normalize_stderr(raw: &str) -> String {
-    raw.replace("shipper.exe", "shipper")
+    raw.replace("\r\n", "\n")
+        .replace("shipper.exe", "shipper")
         .replace(env!("CARGO_PKG_VERSION"), "[VERSION]")
+}
+
+fn normalize_tempdir_stderr(raw: &str, tempdir: &Path) -> String {
+    let tempdir = tempdir.to_string_lossy();
+    normalize_stderr(
+        &raw.replace(tempdir.as_ref(), "<TMPDIR>")
+            .replace(&tempdir.replace('\\', "/"), "<TMPDIR>")
+            .replace('\\', "/"),
+    )
 }
 
 /// Create a simple workspace with a single publishable crate.
@@ -2013,11 +2023,7 @@ fn publish_missing_manifest_snapshot() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_snapshot!(
         "publish_missing_manifest",
-        normalize_stderr(
-            &stderr
-                .replace(td.path().to_str().unwrap(), "<TMPDIR>")
-                .replace(&td.path().to_str().unwrap().replace('\\', "/"), "<TMPDIR>")
-        )
+        normalize_tempdir_stderr(&stderr, td.path())
     );
 }
 
@@ -2534,11 +2540,7 @@ fn resume_missing_manifest_snapshot() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_snapshot!(
         "resume_missing_manifest",
-        normalize_stderr(
-            &stderr
-                .replace(td.path().to_str().unwrap(), "<TMPDIR>")
-                .replace(&td.path().to_str().unwrap().replace('\\', "/"), "<TMPDIR>")
-        )
+        normalize_tempdir_stderr(&stderr, td.path())
     );
 }
 

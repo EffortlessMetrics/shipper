@@ -11,7 +11,6 @@ keywords = ["cli", "progress", "publishing", "terminal"]
 categories = ["development-tools"]
 
 [dependencies]
-atty = "0.2"
 indicatif = "0.18.4"
 
 [dev-dependencies]

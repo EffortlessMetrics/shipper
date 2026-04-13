@@ -1,10 +1,10 @@
 ---
 source: crates/shipper-cli/tests/cli_snapshots.rs
-expression: redact_version(&stdout)
+expression: normalize_help_output(&stdout)
 ---
 Execute the plan (will resume if a matching state file exists)
 
-Usage: shipper.exe publish [OPTIONS]
+Usage: shipper publish [OPTIONS]
 
 Options:
       --config <CONFIG>

@@ -1,10 +1,10 @@
 ---
 source: crates/shipper-cli/tests/cli_snapshots.rs
-expression: redact_version(&stdout)
+expression: normalize_help_output(&stdout)
 ---
 Resume a previous publish run
 
-Usage: shipper.exe resume [OPTIONS]
+Usage: shipper resume [OPTIONS]
 
 Options:
       --config <CONFIG>

@@ -1,10 +1,10 @@
 ---
 source: crates/shipper-cli/tests/cli_snapshots.rs
-expression: redact_version(&stdout)
+expression: normalize_help_output(&stdout)
 ---
 Configuration file management
 
-Usage: shipper.exe config [OPTIONS] <COMMAND>
+Usage: shipper config [OPTIONS] <COMMAND>
 
 Commands:
   init      Generate a default .shipper.toml configuration file

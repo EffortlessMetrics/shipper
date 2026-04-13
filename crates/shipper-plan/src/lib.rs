@@ -3407,6 +3407,10 @@ crate-x = { path = "../crate-x", version = "0.1.0" }
 
     // ── error message quality snapshots ──────────────────────────────────
 
+    fn normalize_error_message(err: &str) -> String {
+        err.replace('\\', "/")
+    }
+
     #[test]
     fn snapshot_error_message_missing_manifest() {
         let spec = ReleaseSpec {
@@ -3415,7 +3419,10 @@ crate-x = { path = "../crate-x", version = "0.1.0" }
             selected_packages: None,
         };
         let err = build_plan(&spec).expect_err("must fail");
-        insta::assert_snapshot!("error_msg_missing_manifest", format!("{err:#}"));
+        insta::assert_snapshot!(
+            "error_msg_missing_manifest",
+            normalize_error_message(&format!("{err:#}"))
+        );
     }
 
     #[test]

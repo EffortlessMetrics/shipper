@@ -1,5 +1,5 @@
 ---
 source: crates/shipper-plan/src/lib.rs
-expression: "format!(\"{err:#}\")"
+expression: "normalize_error_message(&format!(\"{err:#}\"))"
 ---
-failed to execute cargo metadata: `cargo metadata` exited with an error: error: manifest path `nonexistent-dir\Cargo.toml` does not exist
+failed to execute cargo metadata: `cargo metadata` exited with an error: error: manifest path `nonexistent-dir/Cargo.toml` does not exist

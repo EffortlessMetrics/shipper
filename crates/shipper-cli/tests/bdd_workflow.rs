@@ -5,7 +5,7 @@
 //! end-to-end situations inside temporary workspaces.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
@@ -140,6 +140,145 @@ fn setup_fake_cargo(td: &Path) -> (String, String, String) {
     let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let fake_cargo = fake_cargo_bin_path(&bin_dir);
     (new_path, real_cargo, fake_cargo)
+}
+
+fn find_executable_on_path(program: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+
+    #[cfg(windows)]
+    let candidates = [
+        format!("{program}.exe"),
+        format!("{program}.cmd"),
+        format!("{program}.bat"),
+        program.to_string(),
+    ];
+    #[cfg(not(windows))]
+    let candidates = [program.to_string()];
+
+    std::env::split_paths(&path_var)
+        .flat_map(|dir| candidates.iter().map(move |candidate| dir.join(candidate)))
+        .find(|candidate| candidate.is_file())
+}
+
+fn resolve_tool_path(env_var: &str, program: &str) -> PathBuf {
+    if let Some(configured) = std::env::var_os(env_var) {
+        let configured = PathBuf::from(configured);
+        if configured.is_file() {
+            return configured;
+        }
+        if let Some(resolved) = find_executable_on_path(&configured.to_string_lossy()) {
+            return resolved;
+        }
+    }
+
+    find_executable_on_path(program).unwrap_or_else(|| panic!("failed to resolve {program}"))
+}
+
+fn create_tool_proxy(bin_dir: &Path, tool: &str, env_var: &str) {
+    #[cfg(windows)]
+    {
+        fs::write(
+            bin_dir.join(format!("{tool}.cmd")),
+            format!("@echo off\r\n\"%{env_var}%\" %*\r\nexit /b %ERRORLEVEL%\r\n"),
+        )
+        .expect("write tool proxy");
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = bin_dir.join(tool);
+        fs::write(
+            &path,
+            format!("#!/usr/bin/env sh\n\"${{{env_var}}}\" \"$@\"\n"),
+        )
+        .expect("write tool proxy");
+        let mut perms = fs::metadata(&path).expect("meta").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms).expect("chmod");
+    }
+}
+
+fn create_failing_tool_proxy(bin_dir: &Path, tool: &str, message: &str) {
+    #[cfg(windows)]
+    {
+        fs::write(
+            bin_dir.join(format!("{tool}.cmd")),
+            format!("@echo off\r\necho {message} 1>&2\r\nexit /b 1\r\n"),
+        )
+        .expect("write failing tool proxy");
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = bin_dir.join(tool);
+        fs::write(
+            &path,
+            format!("#!/usr/bin/env sh\necho '{message}' >&2\nexit 1\n"),
+        )
+        .expect("write failing tool proxy");
+        let mut perms = fs::metadata(&path).expect("meta").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms).expect("chmod");
+    }
+}
+
+fn path_entry_has_cargo(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        path.join("cargo.exe").exists()
+            || path.join("cargo.cmd").exists()
+            || path.join("cargo.bat").exists()
+            || path.join("cargo.com").exists()
+    }
+
+    #[cfg(not(windows))]
+    {
+        path.join("cargo").exists()
+    }
+}
+
+fn setup_doctor_tool_path(td: &Path) -> (String, String, String, Option<String>) {
+    let bin_dir = td.join("doctor-bin");
+    fs::create_dir_all(&bin_dir).expect("mkdir");
+
+    create_failing_tool_proxy(&bin_dir, "cargo", "simulated missing cargo");
+    create_tool_proxy(&bin_dir, "rustc", "REAL_RUSTC");
+    let real_cargo = resolve_tool_path("CARGO", "cargo");
+    let real_rustc = resolve_tool_path("RUSTC", "rustc");
+
+    let real_git = find_executable_on_path("git");
+    if real_git.is_some() {
+        create_tool_proxy(&bin_dir, "git", "REAL_GIT");
+    }
+
+    let filtered_path = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .filter(|entry| !path_entry_has_cargo(entry))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut tool_path = bin_dir.display().to_string();
+    if !filtered_path.is_empty() {
+        tool_path.push_str(path_sep());
+        tool_path.push_str(
+            &std::env::join_paths(filtered_path)
+                .expect("join PATH")
+                .to_string_lossy(),
+        );
+    }
+
+    (
+        tool_path,
+        real_cargo.display().to_string(),
+        real_rustc.display().to_string(),
+        real_git.map(|path| path.display().to_string()),
+    )
 }
 
 fn fast_args(cmd: &mut Command, manifest: &Path, api_base: &str, state_dir: &Path) {
@@ -1805,7 +1944,7 @@ mod bdd_doctor_missing_cargo {
     // Scenario: User runs doctor with cargo not on PATH
     //
     // Given: a valid workspace with "demo"
-    // And: PATH is set to an empty directory (cargo is not available)
+    // And: PATH only exposes the toolchain binaries needed for metadata
     // When: I run "shipper doctor"
     // Then: exit code is 0 (doctor is diagnostic, not a hard failure)
     // And: stderr contains a warning about being unable to run cargo
@@ -1815,25 +1954,27 @@ mod bdd_doctor_missing_cargo {
         create_single_crate_workspace(td.path());
         let cargo_home = td.path().join("cargo-home");
         fs::create_dir_all(&cargo_home).expect("mkdir");
-
-        // Empty bin dir with no cargo
-        let empty_bin = td.path().join("empty-bin");
-        fs::create_dir_all(&empty_bin).expect("mkdir");
+        let (tool_path, real_cargo, real_rustc, real_git) = setup_doctor_tool_path(td.path());
 
         let registry = spawn_doctor_registry(1);
 
-        let assert = shipper_cmd()
-            .arg("--manifest-path")
+        let mut cmd = shipper_cmd();
+        cmd.arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
             .arg(&registry.base_url)
             .arg("doctor")
-            .env("PATH", empty_bin.display().to_string())
+            .env("PATH", &tool_path)
+            .env("CARGO", &real_cargo)
+            .env("REAL_RUSTC", &real_rustc)
             .env("CARGO_HOME", &cargo_home)
             .env_remove("CARGO_REGISTRY_TOKEN")
-            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
-            .assert()
-            .success();
+            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN");
+        if let Some(ref real_git) = real_git {
+            cmd.env("REAL_GIT", real_git);
+        }
+
+        let assert = cmd.assert().success();
 
         // Then: stderr warns about cargo not being available
         let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf8");

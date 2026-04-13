@@ -1,10 +1,10 @@
 ---
 source: crates/shipper-cli/tests/cli_snapshots.rs
-expression: redact_version(&stdout)
+expression: normalize_help_output(&stdout)
 ---
 Print the deterministic publish plan (dependency-first ordering)
 
-Usage: shipper.exe plan [OPTIONS]
+Usage: shipper plan [OPTIONS]
 
 Options:
       --config <CONFIG>
