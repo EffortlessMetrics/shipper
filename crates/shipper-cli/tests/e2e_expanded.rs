@@ -108,7 +108,9 @@ fn normalize_embedded_paths(line: &str) -> String {
 /// Normalize stderr/stdout that may contain the binary name (which differs
 /// across platforms) and the embedded version string.
 fn normalize_stderr(raw: &str) -> String {
-    raw.replace("\r\n", "\n")
+    let stripped = console::strip_ansi_codes(raw);
+    stripped
+        .replace("\r\n", "\n")
         .replace("shipper.exe", "shipper")
         .replace(env!("CARGO_PKG_VERSION"), "[VERSION]")
 }

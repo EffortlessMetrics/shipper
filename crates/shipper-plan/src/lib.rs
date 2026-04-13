@@ -3408,7 +3408,8 @@ crate-x = { path = "../crate-x", version = "0.1.0" }
     // ── error message quality snapshots ──────────────────────────────────
 
     fn normalize_error_message(err: &str) -> String {
-        err.replace('\\', "/")
+        let stripped = console::strip_ansi_codes(err);
+        stripped.replace('\\', "/")
     }
 
     #[test]

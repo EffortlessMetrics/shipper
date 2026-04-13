@@ -21,6 +21,7 @@ shipper-state = { path = "../shipper-state" }
 shipper-types = { path = "../shipper-types" }
 
 [dev-dependencies]
+console = "0.16.3"
 insta = { version = "1", features = ["yaml"] }
 proptest.workspace = true
 serde = { version = "1", features = ["derive"] }
