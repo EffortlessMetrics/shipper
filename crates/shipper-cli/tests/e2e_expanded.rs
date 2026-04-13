@@ -110,7 +110,10 @@ fn normalize_embedded_paths(line: &str) -> String {
 fn normalize_stderr(raw: &str) -> String {
     let stripped = console::strip_ansi_codes(raw);
     // Strip relative path prefixes often seen in cargo error messages in some CI environments
-    let mut normalized = stripped.replace("../", "");
+    // Also strip common GitHub Actions workspace prefixes.
+    let mut normalized = stripped
+        .replace("/home/runner/work/shipper/shipper/", "")
+        .replace("../", "");
 
     normalized = normalized
         .replace("\r\n", "\n")
