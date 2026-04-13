@@ -109,10 +109,17 @@ fn normalize_embedded_paths(line: &str) -> String {
 /// across platforms) and the embedded version string.
 fn normalize_stderr(raw: &str) -> String {
     let stripped = console::strip_ansi_codes(raw);
-    stripped
+    let mut normalized = stripped
         .replace("\r\n", "\n")
         .replace("shipper.exe", "shipper")
-        .replace(env!("CARGO_PKG_VERSION"), "[VERSION]")
+        .replace(env!("CARGO_PKG_VERSION"), "[VERSION]");
+
+    // Strip relative path prefixes often seen in cargo error messages in some CI environments
+    while normalized.contains("../") {
+        normalized = normalized.replace("../", "");
+    }
+
+    normalized
 }
 
 fn normalize_tempdir_stderr(raw: &str, tempdir: &Path) -> String {
