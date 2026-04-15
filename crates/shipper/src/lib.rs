@@ -133,10 +133,6 @@ pub mod engine_parallel;
 pub mod environment;
 
 /// Git operations (cleanliness check, context capture).
-#[cfg(feature = "micro-git")]
-#[path = "git_micro.rs"]
-pub mod git;
-#[cfg(not(feature = "micro-git"))]
 pub mod git;
 
 /// Distributed lock to prevent concurrent publishes.
