@@ -149,12 +149,19 @@ pub mod git;
 #[cfg(not(feature = "micro-git"))]
 pub mod git;
 
+/// Layer 1: I/O primitives (filesystem, git, cargo, OS, network).
+///
+/// Scaffolded in PR #49 and progressively populated as microcrates are
+/// absorbed. See `crates/shipper/src/ops/CLAUDE.md` for layer rules.
+pub(crate) mod ops;
+
 /// Distributed lock to prevent concurrent publishes.
-#[cfg(feature = "micro-lock")]
-#[path = "lock_micro.rs"]
-pub mod lock;
-#[cfg(not(feature = "micro-lock"))]
-pub mod lock;
+///
+/// Re-export of [`crate::ops::lock`] (absorbed from the `shipper-lock`
+/// microcrate during the decrating effort — see
+/// `docs/decrating-plan.md` §6 Phase 2). The historical public path
+/// `shipper::lock` is preserved for backward compatibility.
+pub use crate::ops::lock;
 
 /// Workspace analysis and topological plan generation.
 #[cfg(feature = "micro-plan")]

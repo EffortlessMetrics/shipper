@@ -3,5 +3,7 @@
 //! This layer must not import from `engine`, `plan`, `state`, or `runtime`.
 //! See `CLAUDE.md` in this folder for the architectural rules.
 
-// Subsystem modules will be added here as they are absorbed from microcrates.
-// Currently this is a scaffold — no submodules yet.
+// Subsystem modules are added here as they are absorbed from microcrates.
+// `shipper::lock` is re-exported from `crate::ops::lock` in `lib.rs` to
+// preserve the historical public API surface.
+pub mod lock;

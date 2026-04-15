@@ -1,13 +1,17 @@
 //! File-based locking mechanism to prevent concurrent operations.
 //!
-//! This crate provides a simple file-based lock that can be used to prevent
+//! This module provides a simple file-based lock that can be used to prevent
 //! concurrent access to shared resources across processes. The lock file
 //! contains metadata about the lock holder (PID, hostname, timestamp).
+//!
+//! Absorbed from the standalone `shipper-lock` crate during the decrating
+//! effort (see `docs/decrating-plan.md` §6 Phase 2). The public surface at
+//! `shipper::lock` is preserved via a re-export in `crate::lib`.
 //!
 //! # Example
 //!
 //! ```
-//! use shipper_lock::LockFile;
+//! use shipper::lock::LockFile;
 //! use std::path::Path;
 //!
 //! # fn example() -> anyhow::Result<()> {
@@ -64,7 +68,7 @@ impl LockFile {
     /// # Example
     ///
     /// ```
-    /// use shipper_lock::LockFile;
+    /// use shipper::lock::LockFile;
     /// use std::path::Path;
     ///
     /// # fn example() -> anyhow::Result<()> {
@@ -140,7 +144,7 @@ impl LockFile {
     /// # Example
     ///
     /// ```
-    /// use shipper_lock::LockFile;
+    /// use shipper::lock::LockFile;
     /// use std::path::Path;
     /// use std::time::Duration;
     ///

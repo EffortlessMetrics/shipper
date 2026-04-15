@@ -1,14 +1,12 @@
 ---
-source: crates/shipper-lock/src/lib.rs
+source: crates/shipper/src/ops/lock/mod.rs
 expression: state
 ---
-Stale(
+Locked(
     LockInfo {
-        pid: 300,
+        pid: 100,
         hostname: "snap-host",
         acquired_at: 2025-06-15T08:30:00Z,
-        plan_id: Some(
-            "old-plan",
-        ),
+        plan_id: None,
     },
 )

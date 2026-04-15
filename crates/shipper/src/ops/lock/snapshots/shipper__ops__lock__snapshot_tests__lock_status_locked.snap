@@ -1,5 +1,5 @@
 ---
-source: crates/shipper-lock/src/lib.rs
+source: crates/shipper/src/ops/lock/mod.rs
 expression: "format!(\"locked: {locked}\")"
 ---
 locked: true
