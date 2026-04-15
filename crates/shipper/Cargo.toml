@@ -18,7 +18,6 @@ shipper-retry = { path = "../shipper-retry" }
 shipper-encrypt = { path = "../shipper-encrypt" }
 shipper-git = { path = "../shipper-git" }
 shipper-events = { path = "../shipper-events" }
-shipper-execution-core = { path = "../shipper-execution-core" }
 shipper-environment = { path = "../shipper-environment" }
 shipper-storage = { path = "../shipper-storage" }
 shipper-cargo = { path = "../shipper-cargo" }

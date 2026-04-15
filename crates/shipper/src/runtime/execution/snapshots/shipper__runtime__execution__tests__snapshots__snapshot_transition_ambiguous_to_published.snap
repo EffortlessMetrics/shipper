@@ -1,0 +1,8 @@
+---
+source: crates/shipper/src/runtime/execution/mod.rs
+expression: steps
+---
+[
+    "initial: Ambiguous { message: \"upload timeout\" }",
+    "after verification: Published",
+]

@@ -39,7 +39,7 @@ CLI binary, and 29 focused microcrates that each own a single responsibility.
 | `shipper-encrypt` | AES-256-GCM encryption for state files |
 | `shipper-environment` | Environment fingerprinting (OS, arch, CI, tool versions) |
 | `shipper-events` | _Absorbed — now `shipper::state::events` module (PR #60)_ |
-| `shipper-execution-core` | Shared helpers for state updates, error classification, and backoff |
+| `shipper-execution-core` | _Absorbed — now `shipper::runtime::execution` module (PR #69)_ |
 | `shipper-git` | Git operations (cleanliness check, branch/commit context) |
 | `shipper-levels` | _Absorbed — now `shipper::plan::levels` module (PR #56)_ |
 | `shipper-lock` | _Absorbed — now `shipper::ops::lock` module (PR #52)_ |
@@ -85,7 +85,6 @@ shipper  (facade — re-exports all microcrates)
   ├── shipper-encrypt
   ├── shipper-webhook
   ├── shipper-cargo-failure
-  ├── shipper-execution-core
   ├── shipper-output-sanitizer
   ├── shipper-sparse-index
   ├── shipper-cargo           (optional)
@@ -121,12 +120,6 @@ shipper-config  (contains `runtime` submodule for config→RuntimeOptions conver
 
 shipper-plan
   ├── shipper-cargo
-  ├── shipper-state
-  └── shipper-types
-
-shipper-execution-core
-  ├── shipper-cargo-failure
-  ├── shipper-retry
   ├── shipper-state
   └── shipper-types
 
@@ -308,7 +301,6 @@ from disk → produces `RuntimeOptions` consumed by the engine.
 
 | Crate | Role |
 |-------|------|
-| `shipper-execution-core` | Shared helpers: state updates, failure classification, backoff delay |
 | `shipper-cargo` | Run `cargo metadata` / `cargo publish` via subprocess |
 | `shipper-cargo-failure` | Pattern-match `cargo publish` stderr into failure categories |
 | `shipper-process` | Cross-platform process spawning with timeout support |

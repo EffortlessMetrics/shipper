@@ -13,8 +13,8 @@ use super::policy::policy_effects;
 use super::publish::{publish_package, run_publish_level};
 use super::run_publish_parallel_inner as run_publish_parallel;
 use super::*;
+use crate::runtime::execution::{pkg_key, update_state_locked};
 use shipper_events as events;
-use shipper_execution_core::{pkg_key, update_state_locked};
 use crate::plan::PlannedWorkspace;
 use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
@@ -1291,8 +1291,7 @@ fn test_failed_level_stops_subsequent_levels() {
             ("SHIPPER_CARGO_STDERR", Some("permission denied")),
         ],
         || {
-            let result =
-                run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter);
+            let result = run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter);
 
             // Level 0 (base) should fail, causing the whole publish to fail
             assert!(result.is_err(), "expected error from failed level");
@@ -2733,8 +2732,7 @@ fn test_error_in_first_level_prevents_all_subsequent() {
             ("SHIPPER_CARGO_STDERR", Some("permission denied")),
         ],
         || {
-            let result =
-                run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter);
+            let result = run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter);
 
             assert!(result.is_err(), "publish should fail");
 

@@ -2301,7 +2301,6 @@ dependencies = [
  "shipper-encrypt",
  "shipper-environment",
  "shipper-events",
- "shipper-execution-core",
  "shipper-git",
  "shipper-output-sanitizer",
  "shipper-registry",
@@ -2443,22 +2442,6 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
- "shipper-types",
- "tempfile",
-]
-
-[[package]]
-name = "shipper-execution-core"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "chrono",
- "insta",
- "proptest",
- "serde",
- "shipper-cargo-failure",
- "shipper-retry",
- "shipper-state",
  "shipper-types",
  "tempfile",
 ]

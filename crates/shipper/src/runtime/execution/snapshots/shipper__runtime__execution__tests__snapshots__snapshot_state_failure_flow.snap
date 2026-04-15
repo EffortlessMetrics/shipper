@@ -1,0 +1,22 @@
+---
+source: crates/shipper/src/runtime/execution/mod.rs
+expression: st
+---
+state_version: shipper.state.v1
+plan_id: plan-snapshot-test
+registry:
+  name: crates-io
+  api_base: "https://crates.io"
+  index_base: "https://index.crates.io"
+created_at: "2025-01-15T12:00:00Z"
+updated_at: "2025-01-15T12:00:00Z"
+packages:
+  demo@1.0.0:
+    name: demo
+    version: 1.0.0
+    attempts: 3
+    state:
+      state: failed
+      class: retryable
+      message: 429 rate limited
+    last_updated_at: "2025-01-15T12:00:00Z"

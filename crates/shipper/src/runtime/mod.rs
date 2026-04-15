@@ -4,3 +4,4 @@
 //! See `CLAUDE.md` in this folder for the architectural rules.
 
 pub(crate) mod policy;
+pub mod execution;
