@@ -42,19 +42,8 @@ jobs:
           no_output_timeout: 30m
 
       - run:
-          name: Run BDD compatibility matrix
-          # Deleted features removed via decrating PRs #52, #54, #55, #57, #58, #60, #61, #63:
-          #   micro-lock, micro-policy, micro-process, micro-store, micro-events,
-          #   micro-state, micro-registry, micro-auth
-          # In-flight absorptions (environment, git, storage) left intact.
-          command: |
-            for feature_set in "" "micro-git" "micro-encrypt" "micro-environment" "micro-storage" "micro-cargo" "micro-webhook" "micro-types" "micro-config" "micro-all"; do
-            if [ -z "$feature_set" ]; then
-              cargo test -p shipper-cli --test bdd_publish -- --nocapture
-            else
-                cargo test -p shipper-cli --test bdd_publish --features "$feature_set" -- --nocapture
-            fi
-            done
+          name: Run BDD tests
+          command: cargo test -p shipper-cli --test bdd_publish -- --nocapture
 
       - save_cache:
           key: cargo-registry-{{ arch }}-{{ checksum "Cargo.lock" }}

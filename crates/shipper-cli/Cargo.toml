@@ -29,14 +29,6 @@ indicatif = "0.18.4"
 [lints]
 workspace = true
 
-[features]
-default = ["micro-all"]
-micro-encrypt = ["shipper/micro-encrypt"]
-micro-webhook = ["shipper/micro-webhook"]
-micro-types = ["shipper/micro-types"]
-micro-config = ["shipper/micro-config"]
-micro-all = ["shipper/micro-all"]
-
 [dev-dependencies]
 console = "0.16.3"
 assert_cmd = "2"
