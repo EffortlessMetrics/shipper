@@ -2296,7 +2296,6 @@ dependencies = [
  "shipper-cargo",
  "shipper-cargo-failure",
  "shipper-config",
- "shipper-config-runtime",
  "shipper-duration",
  "shipper-encrypt",
  "shipper-engine-parallel",
@@ -2413,18 +2412,6 @@ dependencies = [
  "shipper-types",
  "shipper-webhook",
  "tempfile",
- "toml",
-]
-
-[[package]]
-name = "shipper-config-runtime"
-version = "0.3.0-rc.1"
-dependencies = [
- "insta",
- "proptest",
- "shipper-config",
- "shipper-retry",
- "shipper-types",
  "toml",
 ]
 

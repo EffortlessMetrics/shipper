@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use shipper_config::runtime::into_runtime_options;
 use shipper_config::{
     CliOverrides, MultiRegistryConfig, PolicyConfig, ReadinessConfig, ReadinessMethod,
     RegistryConfig, ShipperConfig,
 };
-use shipper_config_runtime::into_runtime_options;
 use shipper_retry::RetryStrategyType;
 use shipper_types::{ParallelConfig, PublishPolicy, VerifyMode};
 

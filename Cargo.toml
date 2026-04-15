@@ -25,7 +25,6 @@ members = [
     "crates/shipper-output-sanitizer",
     "crates/shipper-levels",
     "crates/shipper-execution-core",
-    "crates/shipper-config-runtime",
 ]
 exclude = ["fuzz"]
 resolver = "3"

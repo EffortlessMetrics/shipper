@@ -30,7 +30,6 @@ shipper-webhook = { path = "../shipper-webhook" }
 shipper-types = { path = "../shipper-types" }
 shipper-config = { path = "../shipper-config" }
 shipper-state = { path = "../shipper-state", optional = true }
-shipper-config-runtime = { path = "../shipper-config-runtime" }
 shipper-duration = { path = "../shipper-duration" }
 shipper-schema = { path = "../shipper-schema" }
 shipper-cargo-failure = { path = "../shipper-cargo-failure" }

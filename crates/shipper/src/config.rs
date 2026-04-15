@@ -1,5 +1,5 @@
+pub use shipper_config::runtime::*;
 pub use shipper_config::*;
-pub use shipper_config_runtime::*;
 
 #[cfg(test)]
 mod tests {
