@@ -10,6 +10,7 @@
 //! `lib.rs`).
 
 pub(crate) mod auth;
+pub mod cargo;
 pub mod lock;
 pub(crate) mod process;
 

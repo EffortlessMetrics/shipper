@@ -17,7 +17,6 @@ categories = ["development-tools", "development-tools::build-utils"]
 shipper-retry = { path = "../shipper-retry" }
 shipper-encrypt = { path = "../shipper-encrypt" }
 shipper-git = { path = "../shipper-git" }
-shipper-cargo = { path = "../shipper-cargo" }
 shipper-registry = { path = "../shipper-registry" }
 shipper-webhook = { path = "../shipper-webhook" }
 shipper-types = { path = "../shipper-types" }
@@ -54,11 +53,10 @@ sha2 = "0.11"
 
 [features]
 micro-encrypt = []
-micro-cargo = []
 micro-webhook = []
 micro-types = ["micro-webhook", "micro-encrypt", "micro-config"]
 micro-config = ["micro-types"]
-micro-all = ["micro-encrypt", "micro-cargo", "micro-webhook", "micro-types", "micro-config"]
+micro-all = ["micro-encrypt", "micro-webhook", "micro-types", "micro-config"]
 
 [lints]
 workspace = true

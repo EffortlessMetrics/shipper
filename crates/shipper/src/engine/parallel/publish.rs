@@ -13,13 +13,13 @@ use std::time::Instant;
 use anyhow::{Result, bail};
 use chrono::Utc;
 
+use crate::ops::cargo;
 use crate::plan::PlannedWorkspace;
 use crate::runtime::execution::{
     backoff_delay, classify_cargo_failure, pkg_key, update_state_locked,
 };
 use crate::state::events;
 use crate::state::execution_state as state;
-use shipper_cargo as cargo;
 use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionState, PackageEvidence, PackageReceipt,
