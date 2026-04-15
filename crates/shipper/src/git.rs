@@ -1,6 +1,6 @@
 //! Public façade for git operations.
 //!
-//! Re-exports the absorbed [`crate::ops::git`] module's public API so external
+//! Re-exports the absorbed `crate::ops::git` module's public API so external
 //! consumers (notably `shipper-cli`) keep using `shipper::git::*` after the
 //! `shipper-git` microcrate absorption.
 //!

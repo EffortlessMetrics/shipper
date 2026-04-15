@@ -31,8 +31,8 @@ use crate::types::GitContext;
 /// Returns `None` when the CWD is not inside a git repository.
 ///
 /// When `SHIPPER_GIT_BIN` is set, every sub-query is routed through the
-/// [`bin_override`] helpers — there is no silent fallback to the default
-/// `git` binary. Without the override, queries go through [`context`].
+/// `bin_override` helpers — there is no silent fallback to the default
+/// `git` binary. Without the override, queries go through `context`.
 pub fn collect_git_context() -> Option<GitContext> {
     let repo_root = std::env::current_dir().ok()?;
 

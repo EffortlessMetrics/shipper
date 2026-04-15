@@ -53,13 +53,12 @@ pub use resolver::{
 
 /// Resolve the authentication token for a registry.
 ///
-/// Wraps the lower-level [`resolver::resolve_token`] (which returns an
-/// [`AuthInfo`] diagnostic record) and adds:
+/// Wraps the lower-level resolver (which returns an [`AuthInfo`] diagnostic
+/// record) and adds:
 ///
 /// - Whitespace trimming; empty/whitespace-only tokens are treated as absent.
 /// - Fallback to the legacy `$CARGO_HOME/credentials` filename (in addition
-///   to `credentials.toml`) with crates.io alias handling
-///   ([`credentials::token_from_credentials_file_extended`]).
+///   to `credentials.toml`) with crates.io alias handling.
 ///
 /// This is the canonical public-crate API used by `engine.rs` and the CLI.
 pub fn resolve_token(registry_name: &str) -> Result<Option<String>> {
