@@ -33,7 +33,7 @@ jobs:
             echo "ops/ layer not yet scaffolded — skipping (this is expected before Phase 3)."
             exit 0
           fi
-          if grep -rE 'use crate::(engine|plan|state|runtime)::' crates/shipper/src/ops/; then
+          if grep -rE --include='*.rs' 'use crate::(engine|plan|state|runtime)::' crates/shipper/src/ops/; then
             echo "::error::ops/ layer must not import from engine, plan, state, or runtime"
             exit 1
           fi
@@ -45,7 +45,7 @@ jobs:
             echo "runtime/ layer not yet scaffolded — skipping."
             exit 0
           fi
-          if grep -rE 'use crate::(engine|plan|state)::' crates/shipper/src/runtime/; then
+          if grep -rE --include='*.rs' 'use crate::(engine|plan|state)::' crates/shipper/src/runtime/; then
             echo "::error::runtime/ layer must not import from engine, plan, or state"
             exit 1
           fi
@@ -57,7 +57,7 @@ jobs:
             echo "state/ layer not yet scaffolded — skipping."
             exit 0
           fi
-          if grep -rE 'use crate::(engine|plan)::' crates/shipper/src/state/; then
+          if grep -rE --include='*.rs' 'use crate::(engine|plan)::' crates/shipper/src/state/; then
             echo "::error::state/ layer must not import from engine or plan"
             exit 1
           fi
@@ -69,7 +69,7 @@ jobs:
             echo "plan/ layer not yet scaffolded — skipping."
             exit 0
           fi
-          if grep -rE 'use crate::engine::' crates/shipper/src/plan/; then
+          if grep -rE --include='*.rs' 'use crate::engine::' crates/shipper/src/plan/; then
             echo "::error::plan/ layer must not import from engine"
             exit 1
           fi
