@@ -165,10 +165,6 @@ pub(crate) mod policy;
 pub(crate) mod policy;
 
 /// State and receipt persistence.
-#[cfg(feature = "micro-state")]
-#[path = "state_micro.rs"]
-pub mod state;
-#[cfg(not(feature = "micro-state"))]
 pub mod state;
 
 /// `StateStore` trait for pluggable persistence backends.
