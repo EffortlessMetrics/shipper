@@ -122,6 +122,15 @@ jobs:
           key: ${{ runner.os }}-publish-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-publish-
 
+      # NOTE: Publish order will be finalized in Phase 8 of the decrating plan.
+      # During Phase 2 absorption, only the still-public crates (shipper and
+      # shipper-cli) are published from here; individual absorption PRs remove
+      # any references to crates being folded in. Full topological publish
+      # order for remaining public crates (shipper-types, shipper-schema,
+      # shipper-duration, shipper-retry, shipper-encrypt, shipper-webhook,
+      # shipper-registry, shipper-sparse-index, shipper-cargo-failure,
+      # shipper-output-sanitizer, shipper-config, plus shipper and shipper-cli)
+      # will be codified once the module layout settles.
       - name: Publish shipper crate
         run: cargo publish -p shipper --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         continue-on-error: true  # May already be published

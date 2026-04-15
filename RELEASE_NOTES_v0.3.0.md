@@ -36,7 +36,7 @@ The `doctor` command has been expanded to perform deep health checks on your env
 ## Technical Improvements
 - **Workspace-Aware Locking**: Lock files are now hashed by workspace path, preventing global collisions and allowing parallel publishes of different workspaces.
 - **Atomic State Writes**: Improved data integrity through atomic filesystem operations for all state and lock files.
-- **Modular Architecture**: Shipper now uses a set of specialized micro-crates (`shipper-lock`, `shipper-registry`, etc.) by default.
+- **Modular Architecture**: Shipper is organized as a small set of public crates (`shipper`, `shipper-cli`, `shipper-config`, `shipper-types`, `shipper-registry`, and a handful of focused leaf crates). An earlier RC split every concern into its own microcrate; those layers have since been consolidated back into module folders inside `shipper`, `shipper-config`, and `shipper-cli` (see `docs/architecture.md` and the decrating plan).
 
 ## Installation
 ```bash

@@ -39,10 +39,16 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-mutants-
 
       - name: Run mutation testing
+        # Note: shipper-plan, shipper-policy, shipper-levels removed during
+        # decrating (PRs #54, #56). Their mutation coverage will be reintroduced
+        # under the new module paths in shipper/ once absorptions settle.
         run: |
           cargo mutants --no-shuffle \
+<<<<<<< HEAD
             -p shipper-plan \
             -p shipper-levels \
+=======
+>>>>>>> 22fcbbd (decrating: consolidated CI + docs stale-reference cleanup)
             -p shipper-schema \
             -p shipper-duration \
             -p shipper-types \
