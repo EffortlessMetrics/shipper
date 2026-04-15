@@ -16,7 +16,6 @@ categories = ["development-tools", "development-tools::build-utils"]
 # Workspace microcrates
 shipper-retry = { path = "../shipper-retry" }
 shipper-encrypt = { path = "../shipper-encrypt" }
-shipper-auth = { path = "../shipper-auth" }
 shipper-git = { path = "../shipper-git", optional = true }
 shipper-events = { path = "../shipper-events" }
 shipper-execution-core = { path = "../shipper-execution-core" }
@@ -49,6 +48,7 @@ chrono = { version = "0.4.44", features = ["serde"] }
 humantime = "2.3.0"
 which = "8.0"
 toml = "1.0.3"
+dirs = "6.0"
 hex = "0.4.3"
 gethostname = "1.1.0"
 tokio = { version = "1.42", features = ["rt", "time", "sync", "macros"] }

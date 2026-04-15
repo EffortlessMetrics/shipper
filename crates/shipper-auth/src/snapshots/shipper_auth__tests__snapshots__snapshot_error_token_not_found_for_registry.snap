@@ -1,5 +1,0 @@
----
-source: crates/shipper-auth/src/lib.rs
-expression: err.to_string()
----
-"token not found for registry: nonexistent-registry"

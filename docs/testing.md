@@ -188,7 +188,6 @@ cargo mutants --no-shuffle \
   -p shipper-duration \
   -p shipper-types \
   -p shipper-config \
-  -p shipper-auth \
   -- --all-features
 ```
 
