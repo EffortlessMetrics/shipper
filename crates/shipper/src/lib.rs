@@ -152,9 +152,6 @@ pub mod state;
 #[path = "state/store/mod.rs"]
 pub mod store;
 
-/// Crate-private operational layer (storage, etc.).
-pub(crate) mod ops;
-
 /// Domain types: specs, plans, options, receipts, errors.
 pub mod types;
 
