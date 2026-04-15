@@ -218,7 +218,7 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     Ok(PlannedWorkspace {
         workspace_root,
         plan: ReleasePlan {
-            plan_version: crate::state::CURRENT_PLAN_VERSION.to_string(),
+            plan_version: crate::state::execution_state::CURRENT_PLAN_VERSION.to_string(),
             plan_id,
             created_at: Utc::now(),
             registry: spec.registry.clone(),
@@ -1559,7 +1559,7 @@ core-lib = { path = "../core-lib", version = "3.2.1" }
         create_single_package_workspace(td.path());
 
         let ws = build_plan(&spec_for(td.path())).expect("plan");
-        assert_eq!(ws.plan.plan_version, crate::state::CURRENT_PLAN_VERSION,);
+        assert_eq!(ws.plan.plan_version, crate::state::execution_state::CURRENT_PLAN_VERSION,);
     }
 
     // =======================================================================

@@ -967,17 +967,17 @@ fn print_receipt(
             println!(
                 "state:   {}/{}",
                 abs_state.display(),
-                shipper::state::STATE_FILE
+                shipper::state::execution_state::STATE_FILE
             );
             println!(
                 "receipt: {}/{}",
                 abs_state.display(),
-                shipper::state::RECEIPT_FILE
+                shipper::state::execution_state::RECEIPT_FILE
             );
             println!(
                 "events:   {}/{}",
                 abs_state.display(),
-                shipper::events::EVENTS_FILE
+                shipper::state::events::EVENTS_FILE
             );
             println!();
 
@@ -1042,8 +1042,8 @@ fn run_inspect_events(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Res
         ws.workspace_root.join(&opts.state_dir)
     };
 
-    let events_path = shipper::events::events_path(&state_dir);
-    let event_log = shipper::events::EventLog::read_from_file(&events_path)
+    let events_path = shipper::state::events::events_path(&state_dir);
+    let event_log = shipper::state::events::EventLog::read_from_file(&events_path)
         .with_context(|| format!("failed to read event log from {}", events_path.display()))?;
 
     println!("Event log: {}", events_path.display());
@@ -1068,7 +1068,7 @@ fn run_inspect_receipt(
         ws.workspace_root.join(&opts.state_dir)
     };
 
-    let receipt_path = shipper::state::receipt_path(&state_dir);
+    let receipt_path = shipper::state::execution_state::receipt_path(&state_dir);
     let content = std::fs::read_to_string(&receipt_path)
         .with_context(|| format!("failed to read receipt from {}", receipt_path.display()))?;
 
@@ -1481,9 +1481,9 @@ fn clean_single_dir(
     keep_receipt: bool,
     force: bool,
 ) -> Result<()> {
-    let state_path = dir.join(shipper::state::STATE_FILE);
-    let receipt_path = dir.join(shipper::state::RECEIPT_FILE);
-    let events_path = dir.join(shipper::events::EVENTS_FILE);
+    let state_path = dir.join(shipper::state::execution_state::STATE_FILE);
+    let receipt_path = dir.join(shipper::state::execution_state::RECEIPT_FILE);
+    let events_path = dir.join(shipper::state::events::EVENTS_FILE);
     let lock_path = shipper::lock::lock_path(dir, Some(workspace_root));
 
     // Check for active lock
@@ -2124,9 +2124,9 @@ mode = "fast"
         let abs_state = td.path().join(&state_dir);
         fs::create_dir_all(&abs_state).expect("mkdir");
 
-        let state_path = abs_state.join(shipper::state::STATE_FILE);
-        let receipt_path = abs_state.join(shipper::state::RECEIPT_FILE);
-        let events_path = abs_state.join(shipper::events::EVENTS_FILE);
+        let state_path = abs_state.join(shipper::state::execution_state::STATE_FILE);
+        let receipt_path = abs_state.join(shipper::state::execution_state::RECEIPT_FILE);
+        let events_path = abs_state.join(shipper::state::events::EVENTS_FILE);
         let lock_path = shipper::lock::lock_path(&abs_state, Some(td.path()));
 
         fs::write(&state_path, "{}").expect("write state");

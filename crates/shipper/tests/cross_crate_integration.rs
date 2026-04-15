@@ -10,9 +10,9 @@ use chrono::Utc;
 use tempfile::tempdir;
 
 use shipper::config::{CliOverrides, ShipperConfig};
-use shipper::events::EventLog;
+use shipper::state::events::EventLog;
 use shipper::plan;
-use shipper::state;
+use shipper::state::execution_state as state;
 use shipper::store::{FileStore, StateStore};
 use shipper::types::{
     EnvironmentFingerprint, ErrorClass, EventType, ExecutionResult, ExecutionState,
@@ -441,7 +441,7 @@ fn event_log_simulated_publish_lifecycle() {
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir");
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     let plan_id = "sim-plan-001";
 
     // Phase 1: Plan creation
@@ -721,7 +721,7 @@ fn events_persisted_via_store_readable_via_state_module() {
     store.save_events(&events).expect("save events via store");
 
     // Read back through the events module directly
-    let events_file = shipper::events::events_path(&state_dir);
+    let events_file = shipper::state::events::events_path(&state_dir);
     let loaded = EventLog::read_from_file(&events_file).expect("read events directly");
     assert_eq!(loaded.all_events().len(), 2);
 }
@@ -1251,7 +1251,7 @@ fn event_log_full_publish_flow_deep_chain() {
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir");
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     let plan_id = "chain-publish-001";
 
     let mut log = EventLog::new();

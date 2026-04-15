@@ -23,7 +23,7 @@ fn sample_state() -> ExecutionState {
     );
 
     ExecutionState {
-        state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: "p1".to_string(),
         registry: Registry::crates_io(),
         created_at: Utc::now(),
@@ -369,7 +369,7 @@ fn file_store_state_with_all_package_states() {
     );
 
     let state = ExecutionState {
-        state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: "multi".to_string(),
         registry: Registry::crates_io(),
         created_at: now,
@@ -621,7 +621,7 @@ fn file_store_load_state_corrupt_json_returns_error() {
     let td = tempdir().expect("tempdir");
     let store = FileStore::new(td.path().to_path_buf());
 
-    let state_file = crate::state::state_path(td.path());
+    let state_file = crate::state::execution_state::state_path(td.path());
     std::fs::create_dir_all(state_file.parent().unwrap_or(td.path())).ok();
     std::fs::write(&state_file, "{ not valid json !!!").expect("write corrupt");
 
@@ -634,7 +634,7 @@ fn file_store_load_receipt_corrupt_json_returns_error() {
     let td = tempdir().expect("tempdir");
     let store = FileStore::new(td.path().to_path_buf());
 
-    let receipt_file = crate::state::receipt_path(td.path());
+    let receipt_file = crate::state::execution_state::receipt_path(td.path());
     std::fs::create_dir_all(receipt_file.parent().unwrap_or(td.path())).ok();
     std::fs::write(&receipt_file, "<<<garbage>>>").expect("write corrupt");
 
@@ -647,7 +647,7 @@ fn file_store_load_events_corrupt_jsonl_returns_error() {
     let td = tempdir().expect("tempdir");
     let store = FileStore::new(td.path().to_path_buf());
 
-    let events_file = crate::events::events_path(td.path());
+    let events_file = crate::state::events::events_path(td.path());
     std::fs::create_dir_all(events_file.parent().unwrap_or(td.path())).ok();
     std::fs::write(&events_file, "not-json-at-all\n").expect("write corrupt");
 
@@ -660,7 +660,7 @@ fn file_store_load_state_empty_file_returns_error() {
     let td = tempdir().expect("tempdir");
     let store = FileStore::new(td.path().to_path_buf());
 
-    let state_file = crate::state::state_path(td.path());
+    let state_file = crate::state::execution_state::state_path(td.path());
     std::fs::create_dir_all(state_file.parent().unwrap_or(td.path())).ok();
     std::fs::write(&state_file, "").expect("write empty");
 
@@ -727,7 +727,7 @@ fn file_store_state_with_empty_packages() {
     let store = FileStore::new(td.path().to_path_buf());
 
     let state = ExecutionState {
-        state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: "empty".to_string(),
         registry: Registry::crates_io(),
         created_at: Utc::now(),
@@ -987,7 +987,7 @@ fn file_store_load_state_truncated_json_returns_error() {
     let td = tempdir().expect("tempdir");
     let store = FileStore::new(td.path().to_path_buf());
 
-    let state_file = crate::state::state_path(td.path());
+    let state_file = crate::state::execution_state::state_path(td.path());
     std::fs::create_dir_all(state_file.parent().unwrap_or(td.path())).ok();
     let truncated = r#"{"state_version":"shipper.state.v1","plan_id":"tr"#;
     std::fs::write(&state_file, truncated).expect("write truncated");
@@ -1001,7 +1001,7 @@ fn file_store_load_receipt_truncated_json_returns_error() {
     let td = tempdir().expect("tempdir");
     let store = FileStore::new(td.path().to_path_buf());
 
-    let receipt_file = crate::state::receipt_path(td.path());
+    let receipt_file = crate::state::execution_state::receipt_path(td.path());
     std::fs::create_dir_all(receipt_file.parent().unwrap_or(td.path())).ok();
     let truncated = r#"{"receipt_version":"shipper.receipt.v2","plan_id":"#;
     std::fs::write(&receipt_file, truncated).expect("write truncated");
@@ -1090,7 +1090,7 @@ fn file_store_state_very_long_package_name() {
     );
 
     let state = ExecutionState {
-        state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: "long".to_string(),
         registry: Registry::crates_io(),
         created_at: Utc::now(),
@@ -1112,7 +1112,7 @@ fn file_store_state_empty_plan_id() {
     let store = FileStore::new(td.path().to_path_buf());
 
     let state = ExecutionState {
-        state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: String::new(),
         registry: Registry::crates_io(),
         created_at: Utc::now(),
@@ -1424,7 +1424,7 @@ fn file_store_concurrent_writers_last_write_readable() {
                 barrier.wait();
                 let store = FileStore::new((*dir).clone());
                 let mut state = ExecutionState {
-                    state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+                    state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
                     plan_id: format!("writer-{i}"),
                     registry: Registry::crates_io(),
                     created_at: Utc::now(),
@@ -1486,7 +1486,7 @@ fn file_store_state_with_many_packages() {
     }
 
     let state = ExecutionState {
-        state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: "many-pkgs".to_string(),
         registry: Registry::crates_io(),
         created_at: now,
@@ -1551,7 +1551,7 @@ fn file_store_load_state_wrong_json_shape_returns_error() {
     let td = tempdir().expect("tempdir");
     let store = FileStore::new(td.path().to_path_buf());
 
-    let state_file = crate::state::state_path(td.path());
+    let state_file = crate::state::execution_state::state_path(td.path());
     std::fs::create_dir_all(state_file.parent().unwrap_or(td.path())).ok();
     // Valid JSON, but wrong schema
     std::fs::write(&state_file, r#"{"name":"not-a-state"}"#).expect("write");
@@ -1568,7 +1568,7 @@ fn file_store_load_receipt_wrong_json_shape_returns_error() {
     let td = tempdir().expect("tempdir");
     let store = FileStore::new(td.path().to_path_buf());
 
-    let receipt_file = crate::state::receipt_path(td.path());
+    let receipt_file = crate::state::execution_state::receipt_path(td.path());
     std::fs::create_dir_all(receipt_file.parent().unwrap_or(td.path())).ok();
     // Valid JSON but completely wrong shape — no receipt_version, no packages, etc.
     std::fs::write(&receipt_file, r#"{"unexpected_key": true, "number": 42}"#).expect("write");
@@ -1646,7 +1646,7 @@ mod proptests_hardened {
             let td = tempdir().expect("tempdir");
             let store = FileStore::new(td.path().to_path_buf());
 
-            let state_file = crate::state::state_path(td.path());
+            let state_file = crate::state::execution_state::state_path(td.path());
             std::fs::create_dir_all(state_file.parent().unwrap_or(td.path())).ok();
             std::fs::write(&state_file, &data).expect("write");
 
@@ -1659,7 +1659,7 @@ mod proptests_hardened {
             let td = tempdir().expect("tempdir");
             let store = FileStore::new(td.path().to_path_buf());
 
-            let receipt_file = crate::state::receipt_path(td.path());
+            let receipt_file = crate::state::execution_state::receipt_path(td.path());
             std::fs::create_dir_all(receipt_file.parent().unwrap_or(td.path())).ok();
             std::fs::write(&receipt_file, &data).expect("write");
 
@@ -1691,7 +1691,7 @@ mod proptests_hardened {
             }
 
             let state = ExecutionState {
-                state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+                state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
                 plan_id: plan_id.clone(),
                 registry: Registry::crates_io(),
                 created_at: now,

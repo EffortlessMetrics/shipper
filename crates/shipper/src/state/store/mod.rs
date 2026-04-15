@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 
-use crate::events::EventLog;
+use crate::state::events::EventLog;
 use crate::types::{ExecutionState, Receipt};
 
 /// Trait for state storage backends.
@@ -50,7 +50,7 @@ pub trait StateStore: Send + Sync {
 pub fn validate_schema_version(version: &str) -> Result<()> {
     shipper_schema::validate_schema_version(
         version,
-        crate::state::MINIMUM_SUPPORTED_VERSION,
+        crate::state::execution_state::MINIMUM_SUPPORTED_VERSION,
         "schema",
     )
 }

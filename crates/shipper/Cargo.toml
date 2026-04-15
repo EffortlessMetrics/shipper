@@ -18,7 +18,7 @@ shipper-retry = { path = "../shipper-retry" }
 shipper-encrypt = { path = "../shipper-encrypt" }
 shipper-auth = { path = "../shipper-auth", optional = true }
 shipper-git = { path = "../shipper-git", optional = true }
-shipper-events = { path = "../shipper-events", optional = true }
+shipper-events = { path = "../shipper-events" }
 shipper-execution-core = { path = "../shipper-execution-core" }
 shipper-environment = { path = "../shipper-environment", optional = true }
 shipper-storage = { path = "../shipper-storage", optional = true }
@@ -29,7 +29,7 @@ shipper-registry = { path = "../shipper-registry", optional = true }
 shipper-webhook = { path = "../shipper-webhook" }
 shipper-types = { path = "../shipper-types" }
 shipper-config = { path = "../shipper-config" }
-shipper-state = { path = "../shipper-state", optional = true }
+shipper-state = { path = "../shipper-state" }
 shipper-duration = { path = "../shipper-duration" }
 shipper-schema = { path = "../shipper-schema" }
 shipper-cargo-failure = { path = "../shipper-cargo-failure" }
@@ -63,7 +63,6 @@ sha2 = "0.11"
 [features]
 micro-auth = ["dep:shipper-auth"]
 micro-git = ["dep:shipper-git"]
-micro-events = ["dep:shipper-events", "micro-types"]
 micro-encrypt = []
 micro-environment = ["dep:shipper-environment", "micro-types"]
 micro-storage = ["dep:shipper-storage"]
@@ -73,9 +72,8 @@ micro-registry = ["dep:shipper-registry"]
 micro-webhook = []
 micro-types = ["micro-webhook", "micro-encrypt", "micro-config"]
 micro-config = ["micro-types", "micro-storage"]
-micro-state = ["dep:shipper-state", "micro-types", "micro-environment", "micro-encrypt"]
 micro-parallel = ["micro-types", "micro-plan", "micro-registry", "dep:shipper-engine-parallel"]
-micro-all = ["micro-auth", "micro-git", "micro-events", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-registry", "micro-webhook", "micro-types", "micro-config", "micro-state", "micro-parallel"]
+micro-all = ["micro-auth", "micro-git", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-registry", "micro-webhook", "micro-types", "micro-config", "micro-parallel"]
 
 [lints]
 workspace = true

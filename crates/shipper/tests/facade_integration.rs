@@ -16,9 +16,9 @@ use serial_test::serial;
 use tempfile::tempdir;
 
 use shipper::config::{CliOverrides, ShipperConfig};
-use shipper::events::EventLog;
+use shipper::state::events::EventLog;
 use shipper::plan;
-use shipper::state;
+use shipper::state::execution_state as state;
 use shipper::store::{FileStore, StateStore};
 use shipper::types::{
     AuthType, EnvironmentFingerprint, ErrorClass, EventType, ExecutionResult, ExecutionState,
@@ -478,7 +478,7 @@ fn event_emission_full_lifecycle_with_preflight() {
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir");
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     let plan_id = "facade-events-001";
 
     let mut log = EventLog::new();
@@ -698,7 +698,7 @@ fn events_through_store_match_direct_event_log() {
     assert_eq!(via_store.all_events().len(), 3);
 
     // Load via direct file read
-    let events_file = shipper::events::events_path(td.path());
+    let events_file = shipper::state::events::events_path(td.path());
     let via_file = EventLog::read_from_file(&events_file).expect("read directly");
     assert_eq!(via_file.all_events().len(), 3);
 }
@@ -1547,7 +1547,7 @@ fn event_log_full_publish_with_skipped_and_failed() {
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir");
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
 
     let mut log = EventLog::new();
 
@@ -1994,7 +1994,7 @@ fn event_log_jsonl_file_has_correct_structure() {
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir");
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     let plan_id = "jsonl-structure-test";
 
     let mut log = EventLog::new();

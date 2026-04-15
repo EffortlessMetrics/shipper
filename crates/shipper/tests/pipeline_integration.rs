@@ -15,9 +15,9 @@ use serial_test::serial;
 use tempfile::tempdir;
 
 use shipper::config::{CliOverrides, ShipperConfig};
-use shipper::events::EventLog;
+use shipper::state::events::EventLog;
 use shipper::plan;
-use shipper::state;
+use shipper::state::execution_state as state;
 use shipper::store::{FileStore, StateStore};
 use shipper::types::{
     AttemptEvidence, EnvironmentFingerprint, ErrorClass, EventType, ExecutionResult,
@@ -360,7 +360,7 @@ fn registry_timeout_error_captured_in_state_and_events() {
         },
         package: "some-crate@1.0.0".to_string(),
     });
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     log.write_to_file(&events_path).expect("write events");
 
     // Verify state persisted the error
@@ -467,7 +467,7 @@ fn event_log_complete_pipeline_with_all_phases() {
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir");
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     let plan_id = "pipeline-events-001";
 
     let mut log = EventLog::new();
@@ -808,7 +808,7 @@ fn lock_state_events_receipt_full_simulation() {
         package: "all".to_string(),
     });
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     log.write_to_file(&events_path).expect("write events");
 
     // Step 4: Update state to all published
@@ -1288,7 +1288,7 @@ fn full_pipeline_plan_preflight_publish_verify_receipt() {
         package: "all".to_string(),
     });
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     log.write_to_file(&events_path).expect("write events");
 
     // Update state → all published
@@ -1430,7 +1430,7 @@ fn permanent_failure_recorded_in_state_and_events() {
         package: "all".to_string(),
     });
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     log.write_to_file(&events_path).expect("write events");
 
     // Verify state
@@ -1642,7 +1642,7 @@ fn event_log_timestamps_are_non_decreasing() {
         });
     }
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     log.write_to_file(&events_path).expect("write");
 
     let loaded = EventLog::read_from_file(&events_path).expect("read");
@@ -1829,7 +1829,7 @@ fn event_log_clear_and_rerecord() {
     let td = tempdir().expect("tempdir");
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir");
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
 
     // First batch
     let mut log = EventLog::new();
@@ -2051,7 +2051,7 @@ fn event_log_package_filtering_is_exact() {
         package: "core@1.0.0".to_string(),
     });
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     log.write_to_file(&events_path).expect("write");
 
     let loaded = EventLog::read_from_file(&events_path).expect("read");
@@ -2195,7 +2195,7 @@ fn complete_failure_recorded_in_events() {
         package: "all".to_string(),
     });
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     log.write_to_file(&events_path).expect("write");
 
     let loaded = EventLog::read_from_file(&events_path).expect("read");
@@ -2249,7 +2249,7 @@ fn readiness_timeout_event_roundtrips() {
         package: "slow-crate@1.0.0".to_string(),
     });
 
-    let events_path = shipper::events::events_path(&state_dir);
+    let events_path = shipper::state::events::events_path(&state_dir);
     log.write_to_file(&events_path).expect("write");
 
     let loaded = EventLog::read_from_file(&events_path).expect("read");

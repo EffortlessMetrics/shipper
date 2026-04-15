@@ -2304,10 +2304,8 @@ dependencies = [
  "shipper-execution-core",
  "shipper-git",
  "shipper-levels",
- "shipper-lock",
  "shipper-output-sanitizer",
  "shipper-plan",
- "shipper-policy",
  "shipper-registry",
  "shipper-retry",
  "shipper-schema",
@@ -2463,7 +2461,6 @@ dependencies = [
  "shipper-events",
  "shipper-execution-core",
  "shipper-plan",
- "shipper-policy",
  "shipper-registry",
  "shipper-retry",
  "shipper-sparse-index",
@@ -2543,20 +2540,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shipper-lock"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "chrono",
- "gethostname",
- "insta",
- "proptest",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "shipper-output-sanitizer"
 version = "0.3.0-rc.1"
 dependencies = [
@@ -2581,17 +2564,6 @@ dependencies = [
  "shipper-state",
  "shipper-types",
  "tempfile",
-]
-
-[[package]]
-name = "shipper-policy"
-version = "0.3.0-rc.1"
-dependencies = [
- "insta",
- "proptest",
- "serde",
- "shipper-retry",
- "shipper-types",
 ]
 
 [[package]]

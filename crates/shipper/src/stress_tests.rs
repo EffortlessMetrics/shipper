@@ -9,7 +9,7 @@
 mod tests {
     use crate::encryption::{decrypt, encrypt};
     use crate::lock::LockFile;
-    use crate::state::{load_state, save_state};
+    use crate::state::execution_state::{load_state, save_state};
     use crate::types::*;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn stress_event_log_append() {
-        use crate::events::EventLog;
+        use crate::state::events::EventLog;
         let temp_dir = TempDir::new().unwrap();
         let log_path = temp_dir.path().join("events.jsonl");
 
