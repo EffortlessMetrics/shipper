@@ -40,7 +40,6 @@
   cargo publish -p shipper-encrypt --dry-run
   cargo publish -p shipper-cargo-failure --dry-run
   cargo publish -p shipper-webhook --dry-run
-  cargo publish -p shipper-storage --dry-run
   cargo publish -p shipper-git --dry-run
 
   # Layer 1 — depend only on Layer 0
@@ -64,7 +63,7 @@
   `shipper-levels`, `shipper-chunking`, `shipper-policy`,
   `shipper-config-runtime`, `shipper-plan`, `shipper-store`,
   `shipper-events`, `shipper-state`, `shipper-execution-core`,
-  `shipper-environment`, `shipper-progress`._
+  `shipper-environment`, `shipper-progress`, `shipper-storage`._
   The remaining order is provisional and will be finalized in Phase 8 once
   in-flight absorptions settle.
 

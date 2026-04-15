@@ -16,7 +16,6 @@ members = [
   "crates/shipper-cargo",
   "crates/shipper-cargo-failure",
   "crates/shipper-webhook",
-  "crates/shipper-storage",
     "crates/shipper-output-sanitizer",
 ]
 exclude = ["fuzz"]

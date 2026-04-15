@@ -33,6 +33,9 @@ pub use shipper_duration::{deserialize_duration, serialize_duration};
 use shipper_encrypt::EncryptionConfig as EncryptionSettings;
 use shipper_webhook::WebhookConfig;
 
+/// Storage backend configuration types (was `shipper-storage`, split).
+pub mod storage;
+
 /// Represents a Cargo registry for publishing crates.
 ///
 /// A registry is identified by its name (used with `cargo publish --registry <name>`)

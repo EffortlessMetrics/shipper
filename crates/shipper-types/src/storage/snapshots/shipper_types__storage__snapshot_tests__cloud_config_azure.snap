@@ -1,0 +1,7 @@
+---
+source: crates/shipper-types/src/storage/mod.rs
+expression: config
+---
+storage_type: Azure
+bucket: my-container
+base_path: releases/v1

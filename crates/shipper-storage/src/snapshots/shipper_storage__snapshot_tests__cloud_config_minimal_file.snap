@@ -1,7 +1,0 @@
----
-source: crates/shipper-storage/src/lib.rs
-expression: config
----
-storage_type: File
-bucket: ""
-base_path: ".shipper"

@@ -1,7 +1,0 @@
----
-source: crates/shipper-storage/src/lib.rs
-expression: files
----
-- events.jsonl
-- receipt.json
-- state.json

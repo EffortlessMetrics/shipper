@@ -1,8 +1,0 @@
----
-source: crates/shipper-storage/src/lib.rs
-expression: displays
----
-- file
-- s3
-- gcs
-- azure

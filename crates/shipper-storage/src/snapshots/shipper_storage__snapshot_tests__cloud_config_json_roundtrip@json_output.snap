@@ -1,5 +1,0 @@
----
-source: crates/shipper-storage/src/lib.rs
-expression: json
----
-"{\n  \"storage_type\": \"S3\",\n  \"bucket\": \"my-bucket\",\n  \"region\": \"ap-southeast-1\",\n  \"base_path\": \"releases\"\n}"

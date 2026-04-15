@@ -1,7 +1,0 @@
----
-source: crates/shipper-storage/src/lib.rs
-expression: config
----
-storage_type: Azure
-bucket: my-container
-base_path: releases/v1

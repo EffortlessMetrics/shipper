@@ -1,0 +1,12 @@
+---
+source: crates/shipper-types/src/storage/mod.rs
+expression: config
+---
+storage_type: S3
+bucket: my-releases
+region: eu-west-1
+base_path: shipper/state
+endpoint: "https://s3.custom.example.com"
+access_key_id: AKIAEXAMPLE
+secret_access_key: secret-key
+session_token: session-tok

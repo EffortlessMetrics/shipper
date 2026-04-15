@@ -12,3 +12,10 @@
 pub(crate) mod auth;
 pub mod lock;
 pub(crate) mod process;
+
+// Storage trait + filesystem impl; kept as `pub(crate)` even though no
+// internal callers exist yet, because future persistence backends will
+// plug in here. `dead_code` is allowed so this scaffolding doesn't block
+// `-D warnings` builds.
+#[allow(dead_code)]
+pub(crate) mod storage;

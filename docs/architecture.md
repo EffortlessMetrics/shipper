@@ -53,7 +53,7 @@ CLI binary, and 29 focused microcrates that each own a single responsibility.
 | `shipper-schema` | Schema-version parsing and compatibility validation |
 | `shipper-sparse-index` | Cargo sparse-index path derivation and version lookup |
 | `shipper-state` | _Absorbed — now `shipper::state::execution_state` module (PR #60)_ |
-| `shipper-storage` | Pluggable storage backends (filesystem, S3, GCS, Azure) |
+| `shipper-storage` | _SPLIT — config types to `shipper-types::storage`, backend to `shipper::ops::storage` (PR #68)_ |
 | `shipper-store` | _Absorbed — now `shipper::state::store` module (PR #57)_ |
 | `shipper-types` | Core domain types (specs, plans, options, receipts, errors) |
 | `shipper-webhook` | Webhook notifications for publish lifecycle events |
@@ -95,7 +95,6 @@ shipper  (facade — re-exports all microcrates)
   ├── shipper-process         (optional)
   ├── shipper-registry
   ├── shipper-state           (optional)
-  ├── shipper-storage         (optional)
   └── shipper-store           (optional)
 ```
 
@@ -112,7 +111,6 @@ shipper-types
 shipper-config  (contains `runtime` submodule for config→RuntimeOptions conversion)
   ├── shipper-types
   ├── shipper-encrypt
-  ├── shipper-storage
   ├── shipper-webhook
   ├── shipper-retry
   └── shipper-schema
@@ -323,7 +321,6 @@ wave concurrency.
 |-------|------|
 | `shipper-state` | Read/write `state.json` with optional encryption |
 | `shipper-store` | `StateStore` trait — high-level read/write/list for state + events |
-| `shipper-storage` | `StorageBackend` trait and implementations (filesystem, S3, GCS, Azure) |
 | `shipper-encrypt` | AES-256-GCM encrypt/decrypt primitives |
 | `shipper-events` | Append-only JSONL event log writer |
 

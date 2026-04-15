@@ -2299,7 +2299,6 @@ dependencies = [
  "shipper-config",
  "shipper-duration",
  "shipper-encrypt",
- "shipper-environment",
  "shipper-events",
  "shipper-git",
  "shipper-output-sanitizer",
@@ -2308,7 +2307,6 @@ dependencies = [
  "shipper-schema",
  "shipper-sparse-index",
  "shipper-state",
- "shipper-storage",
  "shipper-types",
  "shipper-webhook",
  "temp-env",
@@ -2355,14 +2353,15 @@ dependencies = [
  "clap",
  "clap_complete",
  "console",
+ "indicatif",
  "insta",
  "predicates",
+ "proptest",
  "serde_json",
  "serde_yaml",
  "serial_test",
  "shipper",
  "shipper-duration",
- "shipper-progress",
  "temp-env",
  "tempfile",
  "tiny_http",
@@ -2380,7 +2379,6 @@ dependencies = [
  "shipper-encrypt",
  "shipper-retry",
  "shipper-schema",
- "shipper-storage",
  "shipper-types",
  "shipper-webhook",
  "tempfile",
@@ -2417,22 +2415,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shipper-environment"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "chrono",
- "insta",
- "proptest",
- "serde",
- "serde_json",
- "serial_test",
- "shipper-types",
- "temp-env",
- "tempfile",
-]
-
-[[package]]
 name = "shipper-events"
 version = "0.3.0-rc.1"
 dependencies = [
@@ -2463,15 +2445,6 @@ dependencies = [
 name = "shipper-output-sanitizer"
 version = "0.3.0-rc.1"
 dependencies = [
- "insta",
- "proptest",
-]
-
-[[package]]
-name = "shipper-progress"
-version = "0.3.0-rc.1"
-dependencies = [
- "indicatif",
  "insta",
  "proptest",
 ]
@@ -2535,22 +2508,8 @@ dependencies = [
  "serde",
  "serde_json",
  "shipper-encrypt",
- "shipper-environment",
  "shipper-schema",
  "shipper-types",
- "tempfile",
-]
-
-[[package]]
-name = "shipper-storage"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "insta",
- "proptest",
- "serde",
- "serde_json",
- "temp-env",
  "tempfile",
 ]
 

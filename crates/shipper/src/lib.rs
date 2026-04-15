@@ -76,7 +76,6 @@
 //! - [`git`] — Git operations (cleanliness check, context capture)
 //! - [`lock`] — Distributed lock to prevent concurrent publishes
 //! - [`store`] — `StateStore` trait for pluggable persistence backends
-//! - [`storage`] — Storage backends with pluggable `StorageBackend` trait
 //! - [`cargo`] — Workspace metadata via `cargo_metadata`
 //! - [`cargo_failure`] — Cargo publish failure classification heuristics
 //! - [`webhook`] — Webhook notifications for publish events
@@ -152,9 +151,6 @@ pub mod state;
 /// the public path `shipper::store` is preserved for backward compatibility.
 #[path = "state/store/mod.rs"]
 pub mod store;
-
-/// Storage backends with pluggable `StorageBackend` trait.
-pub mod storage;
 
 /// Domain types: specs, plans, options, receipts, errors.
 pub mod types;
