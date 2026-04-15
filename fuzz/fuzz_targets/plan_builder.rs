@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use libfuzzer_sys::fuzz_target;
-use shipper_plan::build_plan;
+use shipper::plan::build_plan;
 use shipper_types::{Registry, ReleasePlan, ReleaseSpec};
 use tempfile::tempdir;
 

@@ -44,11 +44,6 @@ jobs:
         # under the new module paths in shipper/ once absorptions settle.
         run: |
           cargo mutants --no-shuffle \
-<<<<<<< HEAD
-            -p shipper-plan \
-            -p shipper-levels \
-=======
->>>>>>> 22fcbbd (decrating: consolidated CI + docs stale-reference cleanup)
             -p shipper-schema \
             -p shipper-duration \
             -p shipper-types \

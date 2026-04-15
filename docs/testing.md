@@ -41,7 +41,7 @@ cargo nextest run --workspace --all-features --profile ci
 ```bash
 cargo test -p shipper           # core library
 cargo test -p shipper-cli       # CLI + integration tests
-cargo test -p shipper-cargo-failure  # example microcrate (failure classifier)
+cargo test -p shipper-cargo-failure  # failure classifier
 ```
 
 ### Specific test binary or name

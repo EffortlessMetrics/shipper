@@ -22,8 +22,6 @@ shipper-execution-core = { path = "../shipper-execution-core" }
 shipper-environment = { path = "../shipper-environment" }
 shipper-storage = { path = "../shipper-storage" }
 shipper-cargo = { path = "../shipper-cargo" }
-shipper-plan = { path = "../shipper-plan" }
-shipper-chunking = { path = "../shipper-chunking" }
 shipper-registry = { path = "../shipper-registry" }
 shipper-webhook = { path = "../shipper-webhook" }
 shipper-types = { path = "../shipper-types" }
@@ -32,7 +30,6 @@ shipper-state = { path = "../shipper-state" }
 shipper-duration = { path = "../shipper-duration" }
 shipper-schema = { path = "../shipper-schema" }
 shipper-cargo-failure = { path = "../shipper-cargo-failure" }
-shipper-levels = { path = "../shipper-levels" }
 shipper-sparse-index = { path = "../shipper-sparse-index" }
 shipper-output-sanitizer = { path = "../shipper-output-sanitizer" }
 
@@ -63,11 +60,10 @@ sha2 = "0.11"
 [features]
 micro-encrypt = []
 micro-cargo = []
-micro-plan = ["micro-types"]
 micro-webhook = []
 micro-types = ["micro-webhook", "micro-encrypt", "micro-config"]
 micro-config = ["micro-types"]
-micro-all = ["micro-encrypt", "micro-cargo", "micro-plan", "micro-webhook", "micro-types", "micro-config"]
+micro-all = ["micro-encrypt", "micro-cargo", "micro-webhook", "micro-types", "micro-config"]
 
 [lints]
 workspace = true
@@ -79,4 +75,5 @@ proptest = "1.10.0"
 serial_test = "3.4.0"
 tiny_http = "0.12.0"
 temp-env = "0.3"
+console = "0.16.3"
 
