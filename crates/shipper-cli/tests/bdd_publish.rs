@@ -780,8 +780,7 @@ mod policy_modes {
         registry.join();
     }
 
-    #[cfg(feature = "micro-policy")]
-    // Scenario: Preflight behavior is stable with policy micro backend enabled
+    // Scenario: Preflight behavior is stable after the policy absorption
     #[test]
     fn given_no_token_when_preflight_with_micro_policy_then_reports_token_not_detected() {
         let td = tempdir().expect("tempdir");

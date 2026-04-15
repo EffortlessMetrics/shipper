@@ -23,7 +23,6 @@ serde_json = "1.0.149"
 shipper-cargo = { path = "../shipper-cargo" }
 shipper-events = { path = "../shipper-events" }
 shipper-plan = { path = "../shipper-plan" }
-shipper-policy = { path = "../shipper-policy" }
 shipper-registry = { path = "../shipper-registry" }
 shipper-retry = { path = "../shipper-retry" }
 shipper-state = { path = "../shipper-state" }

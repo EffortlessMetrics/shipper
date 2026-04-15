@@ -1,0 +1,6 @@
+---
+source: crates/shipper/src/runtime/policy/mod.rs
+assertion_line: 605
+expression: "PolicyKind::Balanced"
+---
+Balanced

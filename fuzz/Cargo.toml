@@ -14,7 +14,6 @@ shipper = { path = "../crates/shipper" }
 shipper-duration = { path = "../crates/shipper-duration" }
 shipper-config = { path = "../crates/shipper-config" }
 shipper-schema = { path = "../crates/shipper-schema" }
-shipper-policy = { path = "../crates/shipper-policy" }
 shipper-output-sanitizer = { path = "../crates/shipper-output-sanitizer" }
 shipper-config-runtime = { path = "../crates/shipper-config-runtime" }
 shipper-cargo-failure = { path = "../crates/shipper-cargo-failure" }
@@ -64,13 +63,6 @@ bench = false
 [[bin]]
 name = "schema_version"
 path = "fuzz_targets/schema_version.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "policy_effects"
-path = "fuzz_targets/policy_effects.rs"
 test = false
 doc = false
 bench = false

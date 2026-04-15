@@ -42,7 +42,6 @@ jobs:
         run: |
           cargo mutants --no-shuffle \
             -p shipper-plan \
-            -p shipper-policy \
             -p shipper-levels \
             -p shipper-schema \
             -p shipper-duration \

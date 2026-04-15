@@ -2307,7 +2307,6 @@ dependencies = [
  "shipper-levels",
  "shipper-output-sanitizer",
  "shipper-plan",
- "shipper-policy",
  "shipper-process",
  "shipper-registry",
  "shipper-retry",
@@ -2476,7 +2475,6 @@ dependencies = [
  "shipper-events",
  "shipper-execution-core",
  "shipper-plan",
- "shipper-policy",
  "shipper-registry",
  "shipper-retry",
  "shipper-sparse-index",
@@ -2580,17 +2578,6 @@ dependencies = [
  "shipper-state",
  "shipper-types",
  "tempfile",
-]
-
-[[package]]
-name = "shipper-policy"
-version = "0.3.0-rc.1"
-dependencies = [
- "insta",
- "proptest",
- "serde",
- "shipper-retry",
- "shipper-types",
 ]
 
 [[package]]
