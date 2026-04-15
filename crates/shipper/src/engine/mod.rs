@@ -7,16 +7,16 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
 use crate::cargo;
-use crate::runtime::environment;
-use crate::state::events;
 use crate::git;
 use crate::lock;
 use crate::ops::auth;
 use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
+use crate::runtime::environment;
 use crate::runtime::execution::{
     backoff_delay, classify_cargo_failure, pkg_key, resolve_state_dir, short_state, update_state,
 };
+use crate::state::events;
 use crate::state::execution_state as state;
 use crate::types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, Finishability,
@@ -1811,7 +1811,8 @@ mod tests {
             let _ = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
             let events_path = td.path().join(".shipper").join("events.jsonl");
-            let log = crate::state::events::EventLog::read_from_file(&events_path).expect("read events");
+            let log =
+                crate::state::events::EventLog::read_from_file(&events_path).expect("read events");
             let events = log.all_events();
 
             assert!(
@@ -3336,7 +3337,8 @@ mod tests {
             let _ = run_publish(&ws, &opts, &mut reporter).expect("publish");
 
             let events_path = td.path().join(".shipper").join("events.jsonl");
-            let log = crate::state::events::EventLog::read_from_file(&events_path).expect("read events");
+            let log =
+                crate::state::events::EventLog::read_from_file(&events_path).expect("read events");
             let events = log.all_events();
 
             assert!(
@@ -3534,8 +3536,8 @@ mod tests {
                 let _ = run_publish(&ws, &opts, &mut reporter);
 
                 let events_path = td.path().join(".shipper").join("events.jsonl");
-                let log =
-                    crate::state::events::EventLog::read_from_file(&events_path).expect("read events");
+                let log = crate::state::events::EventLog::read_from_file(&events_path)
+                    .expect("read events");
                 let events = log.all_events();
 
                 assert!(
@@ -3814,8 +3816,8 @@ mod tests {
 
             // Check that the receipt event log was written
             assert!(receipt.event_log_path.exists());
-            let log =
-                crate::state::events::EventLog::read_from_file(&receipt.event_log_path).expect("events");
+            let log = crate::state::events::EventLog::read_from_file(&receipt.event_log_path)
+                .expect("events");
             let finish_events: Vec<_> = log
                 .all_events()
                 .iter()
@@ -5338,8 +5340,8 @@ mod tests {
                 let _ = run_publish(&ws, &opts, &mut reporter);
 
                 let events_path = td.path().join(".shipper").join("events.jsonl");
-                let log =
-                    crate::state::events::EventLog::read_from_file(&events_path).expect("read events");
+                let log = crate::state::events::EventLog::read_from_file(&events_path)
+                    .expect("read events");
                 let events = log.all_events();
 
                 // Must have: ExecutionStarted, PlanCreated, PackageStarted, PackageAttempted, PackageFailed
@@ -5385,7 +5387,10 @@ mod tests {
         );
 
         let mut st = init_state(&ws, &state_dir).expect("init");
-        assert_eq!(st.state_version, crate::state::execution_state::CURRENT_STATE_VERSION);
+        assert_eq!(
+            st.state_version,
+            crate::state::execution_state::CURRENT_STATE_VERSION
+        );
 
         // Transition alpha: Pending → Uploaded → Published
         update_state(&mut st, &state_dir, "alpha@1.0.0", PackageState::Uploaded).expect("update");
@@ -5406,7 +5411,10 @@ mod tests {
         let loaded = state::load_state(&state_dir)
             .expect("load")
             .expect("exists");
-        assert_eq!(loaded.state_version, crate::state::execution_state::CURRENT_STATE_VERSION);
+        assert_eq!(
+            loaded.state_version,
+            crate::state::execution_state::CURRENT_STATE_VERSION
+        );
         assert!(matches!(
             loaded.packages.get("alpha@1.0.0").unwrap().state,
             PackageState::Published

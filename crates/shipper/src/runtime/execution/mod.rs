@@ -28,7 +28,7 @@ pub fn update_state(
     pr.state = new_state;
     pr.last_updated_at = Utc::now();
     st.updated_at = Utc::now();
-    shipper_state::save_state(state_dir, st)
+    crate::state::execution_state::save_state(state_dir, st)
 }
 
 /// Resolve the effective state directory from a workspace root and user option.
@@ -123,7 +123,7 @@ mod tests {
 
     fn sample_state(key: &str, state: PackageState) -> shipper_types::ExecutionState {
         shipper_types::ExecutionState {
-            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "plan-sample".to_string(),
             registry: shipper_types::Registry::crates_io(),
             created_at: Utc::now(),
@@ -214,7 +214,7 @@ mod tests {
         .expect("state update");
 
         assert!(st.updated_at >= before);
-        let loaded = shipper_state::load_state(state_dir)
+        let loaded = crate::state::execution_state::load_state(state_dir)
             .expect("load state")
             .expect("state exists");
         assert!(matches!(
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn update_state_on_empty_packages_returns_error() {
         let mut st = shipper_types::ExecutionState {
-            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "plan-empty".to_string(),
             registry: shipper_types::Registry::crates_io(),
             created_at: Utc::now(),
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn update_state_locked_on_empty_packages_is_noop() {
         let mut st = shipper_types::ExecutionState {
-            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "plan-empty".to_string(),
             registry: shipper_types::Registry::crates_io(),
             created_at: Utc::now(),
@@ -410,7 +410,7 @@ mod tests {
             );
         }
         ExecutionState {
-            state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "plan-multi".to_string(),
             registry: shipper_types::Registry::crates_io(),
             created_at: Utc::now(),
@@ -660,7 +660,9 @@ mod tests {
             },
         )
         .expect("persist");
-        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        let loaded = crate::state::execution_state::load_state(td.path())
+            .unwrap()
+            .unwrap();
         assert!(matches!(
             loaded.packages[key].state,
             PackageState::Skipped { .. }
@@ -682,7 +684,9 @@ mod tests {
             },
         )
         .expect("persist");
-        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        let loaded = crate::state::execution_state::load_state(td.path())
+            .unwrap()
+            .unwrap();
         match &loaded.packages[key].state {
             PackageState::Failed { class, message } => {
                 assert_eq!(*class, ErrorClass::Ambiguous);
@@ -706,7 +710,9 @@ mod tests {
             },
         )
         .expect("persist");
-        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        let loaded = crate::state::execution_state::load_state(td.path())
+            .unwrap()
+            .unwrap();
         assert!(matches!(
             loaded.packages[key].state,
             PackageState::Ambiguous { .. }
@@ -782,7 +788,9 @@ mod tests {
             },
         )
         .unwrap();
-        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        let loaded = crate::state::execution_state::load_state(td.path())
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.packages["a@1.0.0"].state, PackageState::Published);
         assert!(matches!(
             loaded.packages["b@2.0.0"].state,
@@ -1202,7 +1210,7 @@ mod tests {
                 );
             }
             ExecutionState {
-                state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+                state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
                 plan_id: "plan-snapshot-test".to_string(),
                 registry: shipper_types::Registry::crates_io(),
                 created_at: fixed_time(),
@@ -1854,7 +1862,9 @@ mod tests {
         ]);
         update_state(&mut st, td.path(), "a@1.0.0", PackageState::Uploaded).unwrap();
         update_state(&mut st, td.path(), "b@1.0.0", PackageState::Published).unwrap();
-        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        let loaded = crate::state::execution_state::load_state(td.path())
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.packages["a@1.0.0"].state, PackageState::Uploaded);
         assert_eq!(loaded.packages["b@1.0.0"].state, PackageState::Published);
     }
@@ -1885,8 +1895,10 @@ mod tests {
     fn empty_plan_persist_and_reload() {
         let td = tempdir().expect("tempdir");
         let st = multi_state(&[]);
-        shipper_state::save_state(td.path(), &st).unwrap();
-        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        crate::state::execution_state::save_state(td.path(), &st).unwrap();
+        let loaded = crate::state::execution_state::load_state(td.path())
+            .unwrap()
+            .unwrap();
         assert!(loaded.packages.is_empty());
         assert_eq!(loaded.plan_id, "plan-multi");
     }
@@ -1902,7 +1914,9 @@ mod tests {
         assert_eq!(st.packages[key].state, PackageState::Uploaded);
         update_state(&mut st, td.path(), key, PackageState::Published).unwrap();
         assert_eq!(st.packages[key].state, PackageState::Published);
-        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        let loaded = crate::state::execution_state::load_state(td.path())
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.packages[key].state, PackageState::Published);
     }
 
@@ -1920,7 +1934,9 @@ mod tests {
             },
         )
         .unwrap();
-        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        let loaded = crate::state::execution_state::load_state(td.path())
+            .unwrap()
+            .unwrap();
         assert!(matches!(
             loaded.packages[key].state,
             PackageState::Skipped { .. }
@@ -1942,7 +1958,9 @@ mod tests {
             },
         )
         .unwrap();
-        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        let loaded = crate::state::execution_state::load_state(td.path())
+            .unwrap()
+            .unwrap();
         match &loaded.packages[key].state {
             PackageState::Failed { class, message } => {
                 assert_eq!(*class, ErrorClass::Permanent);
@@ -2018,7 +2036,9 @@ mod tests {
             },
         )
         .unwrap();
-        let loaded = shipper_state::load_state(td.path()).unwrap().unwrap();
+        let loaded = crate::state::execution_state::load_state(td.path())
+            .unwrap()
+            .unwrap();
         assert!(
             loaded
                 .packages

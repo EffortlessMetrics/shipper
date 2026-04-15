@@ -24,7 +24,6 @@ hmac = "0.12"
 sha2 = "0.10"
 url = "2"
 shipper-types = { path = "../crates/shipper-types" }
-shipper-events = { path = "../crates/shipper-events" }
 tempfile = "3"
 temp-env = "0.3"
 serde = { version = "1", features = ["derive"] }

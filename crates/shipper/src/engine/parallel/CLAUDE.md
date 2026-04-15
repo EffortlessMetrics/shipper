@@ -49,8 +49,8 @@ in-tree duplicate, including the webhook submodule and BDD tests).
 
 ## Internal microcrate dependencies (transitional)
 
-This module currently imports from `crate::runtime::execution`, `shipper_cargo`,
-`shipper_events`, `shipper_plan`, `shipper_chunking`, `shipper_state`,
-`shipper_registry`, `shipper_types`, `shipper_policy`, `shipper_webhook`,
-`shipper_sparse_index`. As each of those microcrates is absorbed in
+This module currently imports from `crate::runtime::execution`,
+`crate::state::events`, `crate::state::execution_state`, `crate::plan`,
+`shipper_cargo`, `shipper_registry`, `shipper_types`, `shipper_webhook`,
+`shipper_sparse_index`. As each of those remaining microcrates is absorbed in
 subsequent PRs, these imports will be rewritten to `crate::*` paths.

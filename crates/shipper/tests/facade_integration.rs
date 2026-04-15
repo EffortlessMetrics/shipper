@@ -16,8 +16,8 @@ use serial_test::serial;
 use tempfile::tempdir;
 
 use shipper::config::{CliOverrides, ShipperConfig};
-use shipper::state::events::EventLog;
 use shipper::plan;
+use shipper::state::events::EventLog;
 use shipper::state::execution_state as state;
 use shipper::store::{FileStore, StateStore};
 use shipper::types::{

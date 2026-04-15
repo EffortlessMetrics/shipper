@@ -784,7 +784,10 @@ edition = "2021"
         create_single_crate_workspace(td.path());
 
         let ws = build_plan(&spec_for(td.path())).expect("plan");
-        assert_eq!(ws.plan.plan_version, crate::state::execution_state::CURRENT_PLAN_VERSION);
+        assert_eq!(
+            ws.plan.plan_version,
+            crate::state::execution_state::CURRENT_PLAN_VERSION
+        );
     }
 
     // --- publish_allowed unit tests ---

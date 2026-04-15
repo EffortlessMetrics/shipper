@@ -22,4 +22,7 @@
 
 ## Internal microcrate dependencies (transitional)
 
-This module currently imports from `shipper_state`, `shipper_retry`, `shipper_types`, and `shipper_cargo_failure`. As each of those microcrates is absorbed in subsequent PRs, these imports will be rewritten to `crate::*` paths.
+This module currently imports from `crate::state::execution_state`,
+`shipper_retry`, `shipper_types`, and `shipper_cargo_failure`. As each of the
+remaining microcrates is absorbed in subsequent PRs, these imports will be
+rewritten to `crate::*` paths.

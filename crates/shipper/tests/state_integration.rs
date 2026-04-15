@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use chrono::{TimeZone, Utc};
 use tempfile::tempdir;
 
-use shipper_state::{
+use shipper::state::execution_state::{
     CURRENT_RECEIPT_VERSION, CURRENT_STATE_VERSION, RECEIPT_FILE, STATE_FILE, clear_state,
     has_incomplete_state, load_receipt, load_state, receipt_path, save_state, state_path,
     write_receipt,
@@ -388,7 +388,7 @@ fn receipt_v2_loaded_as_is() {
 
 #[test]
 fn receipt_version_too_old_rejected() {
-    let result = shipper_state::validate_receipt_version("shipper.receipt.v0");
+    let result = shipper::state::execution_state::validate_receipt_version("shipper.receipt.v0");
     assert!(result.is_err());
     let msg = format!("{:#}", result.unwrap_err());
     assert!(msg.contains("too old"), "unexpected error: {msg}");
@@ -396,7 +396,7 @@ fn receipt_version_too_old_rejected() {
 
 #[test]
 fn receipt_version_invalid_format_rejected() {
-    let result = shipper_state::validate_receipt_version("garbage");
+    let result = shipper::state::execution_state::validate_receipt_version("garbage");
     assert!(result.is_err());
 }
 

@@ -342,7 +342,8 @@ fn snapshot_state_persisted_json() {
     };
 
     store.save_state(&state).expect("save");
-    let raw = std::fs::read_to_string(crate::state::execution_state::state_path(td.path())).expect("read");
+    let raw = std::fs::read_to_string(crate::state::execution_state::state_path(td.path()))
+        .expect("read");
     let roundtrip: serde_json::Value = serde_json::from_str(&raw).expect("parse");
     let pretty = serde_json::to_string_pretty(&roundtrip).expect("pretty");
     insta::assert_snapshot!("state_persisted_json", pretty);
@@ -385,7 +386,8 @@ fn snapshot_receipt_persisted_json() {
     };
 
     store.save_receipt(&receipt).expect("save");
-    let raw = std::fs::read_to_string(crate::state::execution_state::receipt_path(td.path())).expect("read");
+    let raw = std::fs::read_to_string(crate::state::execution_state::receipt_path(td.path()))
+        .expect("read");
     let roundtrip: serde_json::Value = serde_json::from_str(&raw).expect("parse");
     let pretty = serde_json::to_string_pretty(&roundtrip).expect("pretty");
     insta::assert_snapshot!("receipt_persisted_json", pretty);

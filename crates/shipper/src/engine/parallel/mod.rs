@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
-use shipper_events as events;
 use crate::plan::PlannedWorkspace;
+use crate::state::events;
 use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
     ExecutionResult, ExecutionState, PackageEvidence, PackageReceipt, PackageState, RuntimeOptions,
