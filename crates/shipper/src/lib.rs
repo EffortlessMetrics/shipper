@@ -67,7 +67,7 @@
 //!
 //! - [`plan`] — Workspace analysis and topological plan generation
 //! - [`engine`] — Core publish, preflight, and resume logic
-//! - [`engine_parallel`] — Wave-based parallel publishing engine
+//! - [`engine::parallel`] — Wave-based parallel publishing engine
 //! - [`types`] — Domain types: specs, plans, options, receipts, errors
 //! - [`config`] — Configuration file (`.shipper.toml`) loading and merging
 //! - [`auth`] — Token resolution and authentication detection
@@ -121,13 +121,6 @@ pub mod config;
 
 /// Core publish, preflight, and resume logic.
 pub mod engine;
-
-/// Wave-based parallel publishing engine.
-#[cfg(feature = "micro-parallel")]
-#[path = "engine_parallel_micro.rs"]
-pub mod engine_parallel;
-#[cfg(not(feature = "micro-parallel"))]
-pub mod engine_parallel;
 
 /// Environment fingerprinting (OS, arch, tool versions).
 pub mod environment;

@@ -1,8 +1,0 @@
----
-source: crates/shipper/src/engine.rs
-expression: snapshot
----
-[
-    "name=alpha version=1.0.0 attempts=1 state=published",
-    "name=beta version=2.0.0 attempts=0 state=skipped",
-]

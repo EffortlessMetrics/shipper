@@ -2,7 +2,6 @@
 members = [
   "crates/shipper",
   "crates/shipper-cli",
-  "crates/shipper-engine-parallel",
   "crates/shipper-schema",
   "crates/shipper-duration",
   "crates/shipper-retry",

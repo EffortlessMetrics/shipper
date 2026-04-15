@@ -45,7 +45,7 @@ Toolchain:
 ## High-level architecture (big picture)
 
 - Workspace layout:
-  - `crates/shipper` — core library exposing modules: `auth`, `cargo`, `config`, `engine`, `engine_parallel`, `environment`, `events`, `git`, `lock`, `plan`, `registry`, `state`, `store`, `types`.
+  - `crates/shipper` — core library exposing modules: `auth`, `cargo`, `config`, `engine` (with `engine::parallel`), `environment`, `events`, `git`, `lock`, `plan`, `registry`, `state`, `store`, `types`.
   - `crates/shipper-cli` — binary that parses CLI args and calls into the library (builds `ReleaseSpec`/`RuntimeOptions` then runs plan/preflight/publish/resume/status/doctor flows).
 
 - Primary flow:
