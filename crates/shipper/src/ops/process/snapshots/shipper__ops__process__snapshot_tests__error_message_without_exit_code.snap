@@ -1,5 +1,5 @@
 ---
-source: crates/shipper-process/src/lib.rs
+source: crates/shipper/src/ops/process/snapshot_tests.rs
 expression: err.to_string()
 ---
 "command failed with exit code None: killed by signal 9"

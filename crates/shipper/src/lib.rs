@@ -80,7 +80,6 @@
 //! - [`store`] — `StateStore` trait for pluggable persistence backends
 //! - [`storage`] — Storage backends with pluggable `StorageBackend` trait
 //! - [`cargo`] — Workspace metadata via `cargo_metadata`
-//! - [`process`] — Cross-platform command execution with timeout support
 //! - [`cargo_failure`] — Cargo publish failure classification heuristics
 //! - [`webhook`] — Webhook notifications for publish events
 //!
@@ -107,13 +106,6 @@ pub mod auth;
 pub mod cargo;
 #[cfg(not(feature = "micro-cargo"))]
 pub mod cargo;
-
-/// Process execution with optional timeout support.
-#[cfg(feature = "micro-process")]
-#[path = "process_micro.rs"]
-pub mod process;
-#[cfg(not(feature = "micro-process"))]
-pub mod process;
 
 /// Configuration file (`.shipper.toml`) loading and merging.
 pub mod config;
