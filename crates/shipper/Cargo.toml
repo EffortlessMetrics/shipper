@@ -16,7 +16,7 @@ categories = ["development-tools", "development-tools::build-utils"]
 # Workspace microcrates
 shipper-retry = { path = "../shipper-retry" }
 shipper-encrypt = { path = "../shipper-encrypt" }
-shipper-auth = { path = "../shipper-auth", optional = true }
+shipper-auth = { path = "../shipper-auth" }
 shipper-git = { path = "../shipper-git", optional = true }
 shipper-events = { path = "../shipper-events" }
 shipper-execution-core = { path = "../shipper-execution-core" }
@@ -61,7 +61,6 @@ hmac = "0.13"
 sha2 = "0.11"
 
 [features]
-micro-auth = ["dep:shipper-auth"]
 micro-git = ["dep:shipper-git"]
 micro-encrypt = []
 micro-environment = ["dep:shipper-environment", "micro-types"]
@@ -72,7 +71,7 @@ micro-webhook = []
 micro-types = ["micro-webhook", "micro-encrypt", "micro-config"]
 micro-config = ["micro-types", "micro-storage"]
 micro-parallel = ["micro-types", "micro-plan", "dep:shipper-engine-parallel"]
-micro-all = ["micro-auth", "micro-git", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-webhook", "micro-types", "micro-config", "micro-parallel"]
+micro-all = ["micro-git", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-webhook", "micro-types", "micro-config", "micro-parallel"]
 
 [lints]
 workspace = true

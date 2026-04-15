@@ -260,8 +260,8 @@ Each concern lives in its own crate with a minimal public API. This provides:
   `shipper-git`.
 - **Independent testability** — each crate has its own unit tests with no
   reliance on the full workspace.
-- **Optional composition** — the facade uses Cargo features (`micro-auth`,
-  `micro-git`, etc.) to make most microcrates optional, enabling slim builds
+- **Optional composition** — the facade uses Cargo features (`micro-git`,
+  `micro-events`, etc.) to make most microcrates optional, enabling slim builds
   for downstream consumers.
 
 Fifteen of the 29 microcrates are **leaf crates** with zero internal
@@ -409,11 +409,14 @@ encryption, webhooks, and output format. CLI flags always override
 The facade crate uses Cargo features to gate microcrate dependencies:
 
 ```
-micro-auth, micro-git, micro-events, micro-lock, micro-encrypt,
+micro-git, micro-events, micro-lock, micro-encrypt,
 micro-environment, micro-storage, micro-cargo, micro-plan,
 micro-process, micro-policy, micro-webhook,
 micro-types, micro-config, micro-state, micro-store, micro-parallel
 ```
+
+`shipper-auth` is now a required dependency of `shipper` (no longer gated
+behind an optional feature).
 
 `micro-all` enables everything and is the default for `shipper-cli`. Downstream
 library consumers can depend on `shipper` with only the features they need,
