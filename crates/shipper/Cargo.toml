@@ -50,13 +50,6 @@ pbkdf2 = { version = "0.12", features = ["simple"] }
 hmac = "0.13"
 sha2 = "0.11"
 
-[features]
-micro-encrypt = []
-micro-webhook = []
-micro-types = ["micro-webhook", "micro-encrypt", "micro-config"]
-micro-config = ["micro-types"]
-micro-all = ["micro-encrypt", "micro-webhook", "micro-types", "micro-config"]
-
 [lints]
 workspace = true
 

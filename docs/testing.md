@@ -88,11 +88,7 @@ BDD tests implement scenarios from the `features/*.feature` files. They use
 tests.
 
 ```bash
-# Default (all micro-backends enabled)
 cargo test -p shipper-cli --test bdd_publish
-
-# With a specific micro-backend feature set
-cargo test -p shipper-cli --test bdd_publish --features micro-git
 
 # Other BDD suites
 cargo test -p shipper-cli --test bdd_preflight
@@ -106,10 +102,11 @@ Feature files in `features/`:
 - `publish_resume.feature` — publish + resume lifecycle
 - `preflight_checks.feature` — preflight verification scenarios
 - `parallel_levels.feature` — parallel level grouping
-- `micro_backend_feature_flags.feature` — micro-backend stability
 
-In CI, BDD tests run across a matrix of all micro-backend feature combinations
-(see `.github/workflows/ci.yml`, `bdd` job).
+In CI, BDD tests run as a single job on the canonical build (see
+`.github/workflows/ci.yml`, `bdd` job). Earlier RCs ran a feature-flag
+matrix toggling `micro-*` backends; both the flags and the matrix were
+removed during decrating.
 
 ### Property tests
 
@@ -415,7 +412,7 @@ and every pull request. The pipeline includes:
 | **Lint** | ubuntu | `cargo fmt --check` + `cargo clippy -D warnings` |
 | **Tests** | ubuntu, windows, macos | `cargo nextest run` with `INSTA_UPDATE=no`, `PROPTEST_CASES=256` |
 | **Doc tests** | ubuntu, windows, macos | `cargo test --workspace --doc` |
-| **BDD** | ubuntu | BDD suites across all micro-backend feature combinations |
+| **BDD** | ubuntu | BDD suites on the canonical build |
 | **MSRV** | ubuntu | `cargo check` with Rust 1.92 |
 | **Security** | ubuntu | `cargo audit` |
 | **Docs** | ubuntu | `cargo doc` with `-Dwarnings` |

@@ -208,11 +208,11 @@ Each concern lives in its own crate with a minimal public API. This provides:
   unrelated microcrates like `shipper-webhook`.
 - **Independent testability** — each crate has its own unit tests with no
   reliance on the full workspace.
-- **Optional composition** — the facade uses Cargo features (`micro-encrypt`,
-  `micro-webhook`, etc.) to make most microcrates optional, enabling slim
-  builds for downstream consumers.
+- **Stable public surface** — the 13-crate target (achieved via the
+  decrating effort) keeps semver promises and docs.rs pages small while
+  preserving SRP at the module level inside the facade crate.
 
-Fifteen of the 29 microcrates are **leaf crates** with zero internal
+Several of the remaining microcrates are **leaf crates** with zero internal
 dependencies, enforcing loose coupling.
 
 ### Facade pattern
@@ -349,22 +349,15 @@ encryption, webhooks, and output format. CLI flags always override
 
 ## Compile-Time Feature Flags
 
-The facade crate uses Cargo features to gate microcrate dependencies:
+The `shipper` facade and `shipper-cli` crates do not expose feature flags
+for swapping implementations. Earlier RC builds used a `micro-*` feature
+matrix to toggle between in-tree modules and standalone microcrates; both
+the flags and the dual implementations were removed as part of the
+decrating effort. The production code path is now the only code path.
 
-```
-micro-git, micro-events, micro-lock, micro-encrypt,
-micro-environment, micro-storage, micro-cargo, micro-plan,
-micro-process, micro-policy, micro-webhook,
-micro-types, micro-config, micro-state, micro-store
-```
-
-Token resolution is provided in-crate by `crate::ops::auth`
-(re-exported as `shipper::auth::*`); previously this was the
-standalone `shipper-auth` microcrate.
-
-`micro-all` enables everything and is the default for `shipper-cli`. Downstream
-library consumers can depend on `shipper` with only the features they need,
-keeping compile times and binary size minimal.
+Token resolution is provided in-crate by `crate::ops::auth` (re-exported
+as `shipper::auth::*`); previously this was the standalone `shipper-auth`
+microcrate.
 
 ---
 

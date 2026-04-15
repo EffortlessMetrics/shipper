@@ -207,14 +207,6 @@ jobs:
     name: BDD Tests
     runs-on: ubuntu-latest
     needs: [lint]
-    strategy:
-      fail-fast: false
-      matrix:
-        # Deleted features removed via decrating PRs #52, #54, #55, #56, #57, #58, #60, #61, #63:
-        #   micro-lock, micro-plan (kept for micro-parallel), micro-policy, micro-process,
-        #   micro-store, micro-events, micro-state, micro-registry, micro-auth
-        # In-flight absorptions (environment, git, storage) kept pending their PRs.
-        feature-set: ["", "micro-git", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-webhook", "micro-types", "micro-config", "micro-all"]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -230,12 +222,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Run BDD tests
-        run: |
-          if [ "${{ matrix.feature-set }}" = "" ]; then
-            cargo test -p shipper-cli --test bdd_publish -- --nocapture
-          else
-            cargo test -p shipper-cli --test bdd_publish --features "${{ matrix.feature-set }}" -- --nocapture
-          fi
+        run: cargo test -p shipper-cli --test bdd_publish -- --nocapture
 
   fuzz-smoke:
     name: Fuzz Smoke (PR)

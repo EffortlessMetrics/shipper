@@ -1,12 +1,10 @@
-//! BDD (Behavior-Driven Development) tests for micro backend feature flags.
+//! BDD (Behavior-Driven Development) tests for preflight stability.
 //!
-//! These tests verify that shipper's preflight behavior remains stable
-//! regardless of which micro-crate backends are active.
-//!
-//! Feature: Micro backend feature flags
-//!   Shipper's auth, git, events, lock, encrypt, environment, process, storage,
-//!   cargo, registry, webhook, types, config, state, and store modules can be
-//!   provided by shared microcrates.
+//! These tests verify that shipper's preflight behavior remains stable.
+//! Historically these tests toggled `micro-*` feature flags that swapped
+//! in-tree modules for external microcrates; those flags and the dual
+//! implementation were removed as part of the decrating effort, leaving
+//! a single canonical code path that these tests still exercise.
 
 use std::fs;
 use std::path::Path;
@@ -115,13 +113,13 @@ fn spawn_not_found_registry(expected_requests: usize) -> TestRegistry {
 }
 
 // ============================================================================
-// Feature: Micro backend feature flags
+// Feature: Preflight stability
 // ============================================================================
 
-mod preflight_with_micro_backends {
+mod preflight_stability {
     use super::*;
 
-    // Scenario: Preflight behavior stays stable with micro backends enabled
+    // Scenario: Preflight behavior stays stable
     //   Given a workspace with a dependency chain
     //   And no registry token is configured
     //   And the registry returns "not found" for all crates
@@ -129,7 +127,7 @@ mod preflight_with_micro_backends {
     //   Then the preflight report shows token not detected
     //   And the exit code is 0
     #[test]
-    fn given_dependency_chain_and_no_token_when_preflight_with_micro_backends_then_stable_output() {
+    fn given_dependency_chain_and_no_token_when_preflight_then_stable_output() {
         // Given: A workspace with a dependency chain
         let td = tempdir().expect("tempdir");
         create_workspace_with_dependency_chain(td.path());
@@ -166,66 +164,6 @@ mod preflight_with_micro_backends {
         assert!(
             stdout.contains("Token Detected: ✗") || stdout.contains("\"token_detected\":false"),
             "Expected token-not-detected indicator in output, got:\n{stdout}"
-        );
-
-        // And: The exit code is 0 (verified by .success() above)
-
-        registry.join();
-    }
-
-    // Scenario: Preflight behavior stays stable with all micro crates enabled
-    //   Given a workspace with a dependency chain
-    //   And no registry token is configured
-    //   And the registry returns "not found" for all crates
-    //   When I run "shipper preflight" with "--policy fast" and "--allow-dirty"
-    //   Then the preflight report shows token not detected
-    //   And the exit code is 0
-    #[cfg(feature = "micro-all")]
-    #[test]
-    fn given_dependency_chain_and_no_token_when_preflight_with_all_micro_crates_then_stable_output()
-    {
-        // Given: A workspace with a dependency chain
-        let td = tempdir().expect("tempdir");
-        create_workspace_with_dependency_chain(td.path());
-
-        // And: No registry token is configured
-        fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
-
-        // And: The registry returns "not found" for all crates
-        // 3 crates x (version check + new crate check) = 6 requests
-        let registry = spawn_not_found_registry(6);
-
-        // When: I run "shipper preflight" with "--policy fast" and "--allow-dirty"
-        let mut cmd = shipper_cmd();
-        let out = cmd
-            .arg("--manifest-path")
-            .arg(td.path().join("Cargo.toml"))
-            .arg("--api-base")
-            .arg(&registry.base_url)
-            .arg("--allow-dirty")
-            .arg("--policy")
-            .arg("fast")
-            .arg("preflight")
-            .env("CARGO_HOME", td.path().join("cargo-home"))
-            .env_remove("CARGO_REGISTRY_TOKEN")
-            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-
-        // Then: The preflight report shows token not detected
-        let stdout = String::from_utf8(out).expect("utf8");
-        assert!(
-            stdout.contains("Token Detected: ✗") || stdout.contains("\"token_detected\":false"),
-            "Expected token-not-detected indicator in output, got:\n{stdout}"
-        );
-
-        // And: The preflight report is consistent — all 3 packages are present
-        assert!(
-            stdout.contains("Total packages: 3") || stdout.contains("\"total_packages\":3"),
-            "Expected 3 packages in preflight report, got:\n{stdout}"
         );
 
         // And: The exit code is 0 (verified by .success() above)

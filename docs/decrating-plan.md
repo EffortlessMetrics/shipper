@@ -511,15 +511,22 @@ For each absorbed microcrate, **one atomic PR** does all of the following:
 
 Within a wave, agents can work in parallel on disjoint subsystems. Between waves, validate.
 
-### Phase 3: Drop `micro-all` default + delete all `micro-*` features (one PR)
+### Phase 3: Drop `micro-all` default + delete all `micro-*` features (one PR) — **COMPLETE**
 
-After Phase 2 fully clears the absorbed microcrates, the `micro-*` feature flags are no-ops or refer to deleted deps. Now:
+**Status:** Complete. Executed after Phase 2 achieved the 13-crate target.
 
-1. In `shipper-cli/Cargo.toml`, remove `default = ["micro-all"]` and all `micro-*` feature passthrough entries
-2. In `shipper/Cargo.toml`, delete every remaining `micro-*` feature definition
-3. Grep the entire repo for `micro-` references and clean up CI workflows, README examples, `.shipper.toml` files
+After Phase 2 fully cleared the absorbed microcrates, the remaining `micro-*` feature flags were no-op transitives (they gated nothing, because the in-tree-vs-shim swap logic was gone). This phase removed them:
 
-**Validation gate:** `cargo test --workspace` passes; `cargo build -p shipper-cli` produces a binary that runs end-to-end against a test workspace.
+1. In `shipper-cli/Cargo.toml`, removed `default = ["micro-all"]` and all `micro-*` feature passthrough entries; `[features]` section deleted entirely.
+2. In `shipper/Cargo.toml`, deleted every remaining `micro-*` feature definition; `[features]` section deleted entirely.
+3. Swept the repo for `micro-` references and cleaned up:
+   - `.github/workflows/ci.yml` — dropped the BDD feature-flag matrix, replaced with a single job on the canonical build
+   - `templates/circleci-config.yml` — same cleanup
+   - `docs/architecture.md`, `docs/testing.md` — removed feature-flag discussion and matrix references
+   - `crates/shipper-cli/tests/bdd_micro_backends.rs` — dropped the `#[cfg(feature = "micro-all")]` duplicate test and rewrote module preamble
+   - `features/micro_backend_feature_flags.feature` — deleted (described behavior that no longer exists)
+
+**Validation gate (passed):** `cargo test --workspace` passes; `cargo build -p shipper-cli` produces a binary that runs end-to-end against a test workspace.
 
 ### Phase 4: Special case — fold in-tree `registry` logic into `shipper-registry` (one PR)
 
