@@ -2305,7 +2305,6 @@ dependencies = [
  "shipper-execution-core",
  "shipper-git",
  "shipper-levels",
- "shipper-lock",
  "shipper-output-sanitizer",
  "shipper-plan",
  "shipper-policy",
@@ -2554,20 +2553,6 @@ version = "0.3.0-rc.1"
 dependencies = [
  "insta",
  "proptest",
-]
-
-[[package]]
-name = "shipper-lock"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "chrono",
- "gethostname",
- "insta",
- "proptest",
- "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]

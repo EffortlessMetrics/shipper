@@ -1,5 +1,5 @@
 ---
-source: crates/shipper-lock/src/lib.rs
+source: crates/shipper/src/ops/lock/mod.rs
 expression: "\"lock already held by current process (fresh lock within timeout)\""
 ---
 lock already held by current process (fresh lock within timeout)
