@@ -113,7 +113,21 @@ fn normalize_stderr(raw: &str) -> String {
     // Also strip common GitHub Actions workspace prefixes.
     let mut normalized = stripped
         .replace("/home/runner/work/shipper/shipper/", "")
-        .replace("../", "");
+        .replace('\\', "/");
+
+    // Iteratively strip leading `../` components and any residual `..`
+    // fragments that remain after absolute-path replacement. Cargo reports
+    // paths relative to CWD in some CI environments, which yields prefixes
+    // like `../../../tmp/...`. The tempdir replacement performed by the
+    // caller can leave a stray `..` behind (e.g. `..<TMPDIR>/foo`); strip
+    // it so snapshots are stable across platforms.
+    loop {
+        let before = normalized.clone();
+        normalized = normalized.replace("../", "").replace("..<", "<");
+        if normalized == before {
+            break;
+        }
+    }
 
     normalized = normalized
         .replace("\r\n", "\n")

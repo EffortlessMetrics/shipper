@@ -6,7 +6,7 @@ Error: failed to execute cargo metadata
 
 Caused by:
     `cargo metadata` exited with an error: error: key with no value, expected `=`
-     --> <TMPDIR>\Cargo.toml:1:6
+     --> <TMPDIR>/Cargo.toml:1:6
       |
     1 | this is not valid toml {{{{
       |      ^
