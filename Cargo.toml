@@ -21,7 +21,6 @@ members = [
   "crates/shipper-environment",
   "crates/shipper-plan",
   "crates/shipper-webhook",
-  "crates/shipper-store",
   "crates/shipper-storage",
     "crates/shipper-output-sanitizer",
     "crates/shipper-levels",
