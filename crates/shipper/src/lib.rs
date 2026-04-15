@@ -150,10 +150,6 @@ pub mod git;
 pub mod git;
 
 /// Distributed lock to prevent concurrent publishes.
-#[cfg(feature = "micro-lock")]
-#[path = "lock_micro.rs"]
-pub mod lock;
-#[cfg(not(feature = "micro-lock"))]
 pub mod lock;
 
 /// Workspace analysis and topological plan generation.
