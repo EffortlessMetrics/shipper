@@ -1,0 +1,75 @@
+name: architecture-guard
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/shipper/src/**'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/shipper/src/**'
+
+jobs:
+  layer-imports:
+    name: forbid upward layer imports
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Architecture rules per docs/decrating-plan.md §4.2 R3:
+      # - engine -> may import plan, state, runtime, ops
+      # - plan   -> may import state, runtime, ops
+      # - state  -> may import runtime, ops
+      # - runtime-> may import ops
+      # - ops    -> may import nothing from above
+      #
+      # This guard becomes meaningful after Phase 3 scaffolds the layer dirs.
+      # Until then it's a no-op (the layer dirs don't exist yet).
+      - name: check ops/ does not import upward
+        run: |
+          set -e
+          if [ ! -d crates/shipper/src/ops ]; then
+            echo "ops/ layer not yet scaffolded — skipping (this is expected before Phase 3)."
+            exit 0
+          fi
+          if grep -rE 'use crate::(engine|plan|state|runtime)::' crates/shipper/src/ops/; then
+            echo "::error::ops/ layer must not import from engine, plan, state, or runtime"
+            exit 1
+          fi
+
+      - name: check runtime/ does not import upward
+        run: |
+          set -e
+          if [ ! -d crates/shipper/src/runtime ]; then
+            echo "runtime/ layer not yet scaffolded — skipping."
+            exit 0
+          fi
+          if grep -rE 'use crate::(engine|plan|state)::' crates/shipper/src/runtime/; then
+            echo "::error::runtime/ layer must not import from engine, plan, or state"
+            exit 1
+          fi
+
+      - name: check state/ does not import upward
+        run: |
+          set -e
+          if [ ! -d crates/shipper/src/state ]; then
+            echo "state/ layer not yet scaffolded — skipping."
+            exit 0
+          fi
+          if grep -rE 'use crate::(engine|plan)::' crates/shipper/src/state/; then
+            echo "::error::state/ layer must not import from engine or plan"
+            exit 1
+          fi
+
+      - name: check plan/ does not import upward
+        run: |
+          set -e
+          if [ ! -d crates/shipper/src/plan ]; then
+            echo "plan/ layer not yet scaffolded — skipping."
+            exit 0
+          fi
+          if grep -rE 'use crate::engine::' crates/shipper/src/plan/; then
+            echo "::error::plan/ layer must not import from engine"
+            exit 1
+          fi
