@@ -17,7 +17,7 @@ categories = ["development-tools", "development-tools::build-utils"]
 shipper-retry = { path = "../shipper-retry" }
 shipper-lock = { path = "../shipper-lock", optional = true }
 shipper-encrypt = { path = "../shipper-encrypt" }
-shipper-auth = { path = "../shipper-auth", optional = true }
+shipper-auth = { path = "../shipper-auth" }
 shipper-git = { path = "../shipper-git", optional = true }
 shipper-events = { path = "../shipper-events", optional = true }
 shipper-execution-core = { path = "../shipper-execution-core" }
@@ -65,7 +65,6 @@ hmac = "0.13"
 sha2 = "0.11"
 
 [features]
-micro-auth = ["dep:shipper-auth"]
 micro-git = ["dep:shipper-git"]
 micro-events = ["dep:shipper-events", "micro-types"]
 micro-lock = ["dep:shipper-lock"]
@@ -83,7 +82,7 @@ micro-config = ["micro-types", "micro-storage"]
 micro-state = ["dep:shipper-state", "micro-types", "micro-environment", "micro-encrypt"]
 micro-store = ["dep:shipper-store", "micro-types", "micro-events", "micro-state"]
 micro-parallel = ["micro-types", "micro-plan", "micro-registry", "dep:shipper-engine-parallel"]
-micro-all = ["micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-registry", "micro-process", "micro-webhook", "micro-policy", "micro-types", "micro-config", "micro-state", "micro-store", "micro-parallel"]
+micro-all = ["micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-registry", "micro-process", "micro-webhook", "micro-policy", "micro-types", "micro-config", "micro-state", "micro-store", "micro-parallel"]
 
 [lints]
 workspace = true

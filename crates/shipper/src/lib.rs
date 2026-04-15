@@ -95,10 +95,6 @@
 
 /// Token resolution: `CARGO_REGISTRY_TOKEN` → `CARGO_REGISTRIES_<NAME>_TOKEN`
 /// → `$CARGO_HOME/credentials.toml`.
-#[cfg(feature = "micro-auth")]
-#[path = "auth_micro.rs"]
-pub mod auth;
-#[cfg(not(feature = "micro-auth"))]
 pub mod auth;
 
 /// Workspace metadata and publish execution via cargo.

@@ -94,7 +94,7 @@ tests.
 cargo test -p shipper-cli --test bdd_publish
 
 # With a specific micro-backend feature set
-cargo test -p shipper-cli --test bdd_publish --features micro-auth
+cargo test -p shipper-cli --test bdd_publish --features micro-git
 
 # Other BDD suites
 cargo test -p shipper-cli --test bdd_preflight
