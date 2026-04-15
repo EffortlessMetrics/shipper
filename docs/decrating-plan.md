@@ -537,6 +537,65 @@ After Phase 2 fully clears the absorbed microcrates, the `micro-*` feature flags
 
 **Validation gate:** workspace tests pass.
 
+---
+
+## 6.A Process discipline (BINDING — added 2026-04-15 after a real incident)
+
+These rules exist because operational mistakes have already caused real damage during execution:
+
+### R-PR-1: Always `--base main` explicitly
+
+`gh pr create` defaults the base to whatever the parent branch is. When agents branch from a stacked feature branch (e.g., `feature/decrating-phase1-scaffold`), `gh pr create` without `--base` opens the PR against THAT stacked branch — not main. PRs that merge to a stacked branch never reach main, hiding completed work and confusing downstream dependency reasoning.
+
+**Real incident:** PR #56 (plan + levels + chunking absorption) was MERGED to `feature/decrating-phase1-scaffold` instead of main. Its content never reached main. Cargo and execution-core absorptions silently broke against main because shipper-plan's deletion never landed. Recovery required PR #70 (replay of #56's content onto main).
+
+**Required:** every PR command MUST specify `--base main` explicitly:
+```bash
+gh pr create --base main --head <branch-name> --title "..." --body "..."
+```
+
+**Verification:** immediately after creation, confirm:
+```bash
+gh pr view <N> --json baseRefName -q '.baseRefName'  # must print "main"
+```
+
+If the result is anything other than `main`, retarget immediately:
+```bash
+gh pr edit <N> --base main
+```
+
+### R-PR-2: Verify branch state at session start
+
+Worktree HEAD-switching is a real bug on Windows. Every agent prompt must include defensive branch verification:
+```bash
+git checkout origin/main -b <new-branch>
+git symbolic-ref HEAD refs/heads/<new-branch> 2>/dev/null
+git branch --show-current  # must print the expected branch
+```
+
+If `git branch --show-current` prints the wrong branch, repeat `git checkout` until it sticks.
+
+### R-PR-3: Use forward-slash absolute paths in Edit/Write tool calls on Windows
+
+Backslash absolute paths (`H:\Code\Rust\shipper\...`) sometimes silently report success but don't persist edits. Always use forward-slash form (`H:/Code/Rust/shipper/...`).
+
+### R-PR-4: Pre-flight dep cascade check before any absorption
+
+Before absorbing crate `shipper-X`, verify only `shipper` (and the crate itself) depend on it:
+```bash
+grep -l shipper-X crates/*/Cargo.toml fuzz/Cargo.toml 2>/dev/null
+```
+
+If any other crate depends on it, STOP and report. Either:
+- (a) reorder so the dependent crate is absorbed first, or
+- (b) use the surgical inline pattern: copy the small consumed function into the dependent crate to break the cycle (see PR #54 PolicyEffects inlining and PR #65 collect_environment_fingerprint inlining for precedent).
+
+### R-PR-5: Type-promotion fallback for cascade-heavy subsystems
+
+Per PR #56's success: when a microcrate is depended on transitively by multiple still-standalone crates, promote the truly-shared *types* into `shipper-types` and inline tiny single-consumer *helpers* in the consumer crates. This breaks cascades without waiting for a global reorder.
+
+---
+
 ### Phase 6: Resolve `shipper-schema` vs `shipper-types`
 
 Audit overlap. If schema is purely versioning constants, fold into `shipper-types::schema` and drop `shipper-schema`. Otherwise keep both. Document the decision.
