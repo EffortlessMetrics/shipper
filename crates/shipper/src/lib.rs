@@ -136,10 +136,6 @@ pub mod environment;
 pub mod environment;
 
 /// Append-only JSONL event log.
-#[cfg(feature = "micro-events")]
-#[path = "events_micro.rs"]
-pub mod events;
-#[cfg(not(feature = "micro-events"))]
 pub mod events;
 
 /// Git operations (cleanliness check, context capture).
