@@ -389,112 +389,115 @@ Each phase is committed as one or more atomic commits. Each phase has a hard val
 - Add CI check for one-direction layer imports (will be a no-op until layers exist)
 - **Validation gate:** `cargo test --workspace` passes
 
-### Phase 1: Eliminate dual implementations in `shipper` (one PR per subsystem family)
+### Phase 1: Scaffold the five-layer structure (one PR)
 
-For each subsystem in the audit table, replace the dual `<name>.rs` + `<name>_micro.rs` pair with a single canonical implementation. **No standalone microcrate is touched yet** — they remain as workspace members.
-
-**Per-subsystem steps:**
-1. Determine canonical version (per audit)
-2. If canonical is "shim+crate (merge)": reconcile differences into one file
-3. Replace `crates/shipper/src/<name>.rs` with the merged canonical content
-4. Delete `crates/shipper/src/<name>_micro.rs`
-5. In `crates/shipper/src/lib.rs`, replace the cfg-gated module decl with a single `pub mod <name>;`
-6. In `crates/shipper/Cargo.toml`, mark the corresponding `shipper-<name>` dep non-optional (no longer optional)
-7. Delete the `micro-<name>` feature definition from `shipper/Cargo.toml`
-8. Run `cargo test -p shipper`
-
-**Order:**
-- Easy first: `lock`, `events`, `plan`, `state`, `store`, `cargo`, `process`, `policy`
-- Medium: `environment`, `storage`, `git`
-- Hard: `auth`
-- Special: `registry` (move in-tree logic INTO `shipper-registry` crate; do NOT create `shipper/src/ops/registry/`)
-- Anomaly: `engine_parallel` (just delete the shim — no microcrate exists at runtime)
-
-**Validation gate:** `cargo test --workspace --all-features` and `cargo test --workspace --no-default-features` both pass.
-
-### Phase 2: Drop `micro-all` default + delete all `micro-*` features
-
-After Phase 1, the `micro-*` features are no-ops. Now:
-
-1. In `shipper-cli/Cargo.toml`, remove `default = ["micro-all"]` and all `micro-*` feature passthrough entries
-2. In `shipper/Cargo.toml`, delete every `micro-*` feature definition
-3. Grep the entire repo for `micro-` references and clean up CI workflows, README examples, `.shipper.toml` files
-4. Remove `[lib]` features from `shipper-cli`'s clap docs/help text if present
-
-**Validation gate:** `cargo test --workspace` passes; `cargo build -p shipper-cli` produces a binary that runs end-to-end against a test workspace.
-
-### Phase 3: Scaffold the new layer structure (one PR)
-
-Create the layer dirs and `mod.rs` files inside `shipper/src/`:
+Create the layer dirs and `mod.rs` + `CLAUDE.md` files inside `shipper/src/`:
 
 ```
 crates/shipper/src/
-├── engine/        (mod.rs only, no submodules yet)
+├── engine/        (mod.rs + CLAUDE.md, no submodules yet)
 ├── plan/
 ├── state/
 ├── runtime/
 └── ops/
 ```
 
-Each new folder gets a placeholder `CLAUDE.md` with its layer description and import rules.
+Each new folder gets a placeholder `CLAUDE.md` with its layer description and import rules. The `mod.rs` files are empty stubs (no `pub mod` declarations yet) — they exist so the architecture-guard CI workflow becomes active.
 
-**No code is moved yet.** This is purely structural.
+**No code is moved yet.** This is purely structural scaffolding.
 
 **Validation gate:** Workspace still compiles; CI grep-check for upward imports is now active.
 
-### Phase 4: Move flat `shipper/src/*.rs` files into their new layer folders (one PR per layer)
+### Phase 2: Per-subsystem absorption (one PR per microcrate, partially parallelizable)
 
-Now move each existing `shipper/src/<name>.rs` (the canonical version from Phase 1) into its layer:
+> **EXECUTION REVISION (2026-04-15):** The original plan had three separate phases (Phase 1 dedup, Phase 4 move into folder, Phase 5 absorb microcrate). They are now **merged into a single per-subsystem operation** because (a) the in-tree `<name>.rs` is virtually always a stale duplicate of the canonical microcrate version — confirmed by the audit and by the user, and (b) splitting into three PRs per subsystem creates 50+ PRs with mid-state stages that compile but expose meaningless intermediate APIs. One PR per subsystem keeps `git bisect` useful and PR review tractable.
 
-- `auth.rs` → `ops/auth/mod.rs` (then split into `mod.rs` + `resolver.rs` + `credentials.rs` + `oidc.rs` if size warrants)
-- `git.rs` → `ops/git/mod.rs`
-- `lock.rs` → `ops/lock/mod.rs`
-- `process.rs` → `ops/process/mod.rs`
-- `cargo.rs` → `ops/cargo/mod.rs`
-- `storage.rs` → `ops/storage/mod.rs`
-- `environment.rs` → `runtime/environment/mod.rs`
-- `policy.rs` → `runtime/policy/mod.rs`
-- `state.rs` → `state/execution_state/mod.rs`
-- `store.rs` → `state/store/mod.rs`
-- `events.rs` → `state/events/mod.rs`
-- `plan.rs` → `plan/mod.rs` (split into `mod.rs` + `filter.rs` + `topo.rs`)
-- `engine.rs` → `engine/mod.rs` (split into `mod.rs` + `preflight.rs` + `publish.rs` + `resume.rs` + `readiness.rs`)
-- `engine_parallel.rs` → `engine/parallel/mod.rs` (split into scheduler/waves/worker)
+For each absorbed microcrate, **one atomic PR** does all of the following:
 
-Per move:
-- Use `git mv` so blame survives
-- Update `lib.rs` module declarations
-- Update import sites across the workspace (mostly within `shipper`; may touch `shipper-cli` if it uses internal types)
-- Seed each folder's `CLAUDE.md` from any existing in-tree docs or the absorbed microcrate's README
+1. **Determine canonical version.** Per the audit (§5), the standalone microcrate is canonical for nearly all subsystems. The in-tree `<name>.rs` is a stale duplicate. Exceptions:
+   - Some shims (`auth_micro.rs`, `git_micro.rs`, `storage_micro.rs`, `environment_micro.rs`) wrap the microcrate with additional logic (credential fallback, env overrides, compatibility wrappers) that must be preserved into the absorbed module.
+   - `engine_parallel` has both a 3237-LOC in-tree and a 4826-LOC standalone — the standalone is canonical (larger, has `webhook.rs` submodule, snapshot tests, BDD tests). See §5.1 for special handling.
 
-**Order:** bottom-up (`ops` → `runtime` → `state` → `plan` → `engine`)
+2. **Create the target folder** under the appropriate layer (per §3.2 ownership map):
+   ```
+   crates/shipper/src/<layer>/<name>/
+   ├── CLAUDE.md       (seeded from the microcrate's README.md + shim's notes)
+   ├── mod.rs          (the public-to-crate facade — pub(crate) by default)
+   ├── <split files>   (large modules split per Rule R7: depth cap 3)
+   └── tests.rs        (or inline #[cfg(test)] mod tests)
+   ```
 
-**Validation gate after each layer:** `cargo test -p shipper` passes; `cargo run -p shipper-cli -- plan --dry-run` against a fixture workspace works.
+3. **Move the canonical source into the folder:**
+   - For pure re-export shims: copy `crates/shipper-<name>/src/lib.rs` content into `crates/shipper/src/<layer>/<name>/mod.rs`, splitting into sub-files if >500 LOC.
+   - For shims with added logic: merge the microcrate's source with the shim's added functions into the new `mod.rs` (or split sub-files).
 
-### Phase 5: Absorb the standalone microcrates into their target folders (one PR per microcrate)
+4. **Move tests** from `crates/shipper-<name>/src/lib.rs` (inline `#[cfg(test)] mod tests`) and `crates/shipper-<name>/tests/` (integration tests) into the new folder. Inline unit tests stay inline; integration tests move to `tests.rs` co-located with the module.
 
-Now copy each absorbed microcrate's source INTO the destination folder, replacing the `mod.rs` content (which was previously the in-tree version):
+5. **Move snapshots.** If the microcrate has `crates/shipper-<name>/src/snapshots/`, relocate them to the new folder. Insta paths are sensitive — run `cargo insta accept` after the move and verify diffs are only path-related.
 
-- `crates/shipper-auth/src/*` → `crates/shipper/src/ops/auth/`
-- `crates/shipper-cargo/src/*` → `crates/shipper/src/ops/cargo/`
-- ... and so on for all 17 absorbed crates
+6. **Update imports across the workspace.** All `use shipper_<name>::X` becomes `use crate::<layer>::<name>::X` inside `shipper`, or `use shipper::<layer>::<name>::X` if exported (which it shouldn't be — most absorbed modules are `pub(crate)`).
 
-Per absorption:
-1. Copy microcrate source files into the target folder (split if multiple files)
-2. Update `pub` → `pub(crate)` for items not part of `shipper`'s public API
-3. Move microcrate tests into `tests.rs` siblings or inline `#[cfg(test)] mod tests`
-4. Move snapshot files (`crates/shipper-foo/src/snapshots/*`) — Insta snapshots are path-sensitive; regenerate or carefully relocate
-5. Move doc tests; rewrite `use shipper_foo::X` → `use crate::ops::foo::X`
-6. Move the microcrate's `README.md` content into the folder's `CLAUDE.md`
-7. Delete `crates/shipper-foo/` directory
-8. Remove `shipper-foo` from `shipper/Cargo.toml` dependencies
-9. Remove `crates/shipper-foo` from root `Cargo.toml` workspace members
+7. **Delete the standalone microcrate:**
+   ```bash
+   git rm -r crates/shipper-<name>/
+   ```
 
-**One commit per absorbed microcrate.** No squashing — `git bisect` must work.
+8. **Update workspace state:**
+   - Remove `"crates/shipper-<name>"` from root `Cargo.toml` workspace members
+   - Remove `shipper-<name> = { ... }` from `crates/shipper/Cargo.toml` dependencies
+   - Delete the `micro-<name>` feature from `crates/shipper/Cargo.toml` features section
+   - Delete the `micro-<name>` feature from `crates/shipper-cli/Cargo.toml` and remove from the `micro-all` list
 
-**Validation gate after each absorption:** `cargo test --workspace` passes; `cargo build -p shipper-cli` runs.
+9. **Delete the in-tree stale duplicate** (if it still exists):
+   ```bash
+   git rm crates/shipper/src/<name>.rs
+   git rm crates/shipper/src/<name>_micro.rs
+   ```
 
-### Phase 6: Special case — fold in-tree `registry` logic into `shipper-registry` (one PR)
+10. **Update `crates/shipper/src/lib.rs`** — remove the cfg-gated module decl for `<name>` (the module now lives inside its layer's `mod.rs`).
+
+11. **Update the layer's `mod.rs`** — add `pub(crate) mod <name>;` (or `pub mod <name>;` if it's part of `shipper`'s public surface).
+
+12. **Validation per PR:**
+    ```bash
+    cargo check --workspace
+    cargo test -p shipper <name>
+    cargo test -p shipper
+    cargo test -p shipper-cli
+    cargo build -p shipper-cli
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    ```
+
+13. **One commit per microcrate.** No squashing across subsystems.
+
+**Order (parallelizable across non-overlapping layers):**
+
+| Wave | Subsystems | Layer | Notes |
+|------|------------|-------|-------|
+| 1 | `lock`, `process` | `ops/` | Easy — pure re-exports, no shim logic to merge |
+| 1 | `events` | `state/` | Easy |
+| 1 | `levels`, `chunking` | `plan/` | Easy — algorithm crates, no in-tree counterparts |
+| 2 | `cargo`, `storage`, `git` | `ops/` | Medium — shim has logic to preserve |
+| 2 | `state`, `store` | `state/` | Easy but large; needs sub-file split |
+| 2 | `policy`, `environment` | `runtime/` | Mixed |
+| 3 | `auth` | `ops/` | Hard — credential fallback |
+| 3 | `plan` | `plan/` | Large, sub-file split |
+| 3 | `execution-core` | `runtime/` | No in-tree counterpart |
+| 4 | `engine_parallel` | `engine/` | Hardest — see §5.1 + handle `fuzz` consumer |
+
+Within a wave, agents can work in parallel on disjoint subsystems. Between waves, validate.
+
+### Phase 3: Drop `micro-all` default + delete all `micro-*` features (one PR)
+
+After Phase 2 fully clears the absorbed microcrates, the `micro-*` feature flags are no-ops or refer to deleted deps. Now:
+
+1. In `shipper-cli/Cargo.toml`, remove `default = ["micro-all"]` and all `micro-*` feature passthrough entries
+2. In `shipper/Cargo.toml`, delete every remaining `micro-*` feature definition
+3. Grep the entire repo for `micro-` references and clean up CI workflows, README examples, `.shipper.toml` files
+
+**Validation gate:** `cargo test --workspace` passes; `cargo build -p shipper-cli` produces a binary that runs end-to-end against a test workspace.
+
+### Phase 4: Special case — fold in-tree `registry` logic into `shipper-registry` (one PR)
 
 1. Move logic from `crates/shipper/src/registry.rs` (which is now in some layer, possibly `ops/registry/` if Phase 4 placed it there) INTO `crates/shipper-registry/src/`, splitting into `api.rs`, `ownership.rs`, `manifest_cache.rs`, `credentials.rs`
 2. Delete the in-tree `registry/` folder (or `registry.rs`) from `shipper`
@@ -503,20 +506,20 @@ Per absorption:
 
 **Validation gate:** `cargo test -p shipper`, `cargo test -p shipper-registry`, `cargo build -p shipper-cli`.
 
-### Phase 7: Absorb adapters into config and CLI (one PR per absorption)
+### Phase 5: Absorb adapters into config and CLI (one PR per absorption)
 
 - `shipper-config-runtime` → `shipper-config/src/runtime/`
 - `shipper-progress` → `shipper-cli/src/output/progress/`
 
 **Validation gate:** workspace tests pass.
 
-### Phase 8: Resolve `shipper-schema` vs `shipper-types`
+### Phase 6: Resolve `shipper-schema` vs `shipper-types`
 
 Audit overlap. If schema is purely versioning constants, fold into `shipper-types::schema` and drop `shipper-schema`. Otherwise keep both. Document the decision.
 
 **Validation gate:** workspace tests pass; `cargo public-api --diff` shows no unintended public-API expansion.
 
-### Phase 9: Convert surviving deps to `path + version` and add `default-members`
+### Phase 7: Convert surviving deps to `path + version` and add `default-members`
 
 Root `Cargo.toml`:
 ```toml
@@ -548,7 +551,7 @@ Each member's `Cargo.toml` uses `dep.workspace = true`.
 
 **Validation gate:** `cargo package --list -p <crate>` for each public crate; inspect tarball contents; `cargo publish --dry-run -p <crate>` in topo order.
 
-### Phase 10: Publish dry-run and release (one PR)
+### Phase 8: Publish dry-run and release (one PR)
 
 - Run `cargo publish --dry-run` for all 13 crates in topo order
 - Update `RELEASE_CHECKLIST_v0.3.0.md` with the new publish sequence
