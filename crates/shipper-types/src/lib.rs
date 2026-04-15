@@ -33,7 +33,6 @@ pub use shipper_duration::{deserialize_duration, serialize_duration};
 use shipper_encrypt::EncryptionConfig as EncryptionSettings;
 use shipper_webhook::WebhookConfig;
 
-/// Storage backend configuration types (was `shipper-storage`, split).
 pub mod storage;
 
 /// Schema version parsing and compatibility validation for shipper state files.

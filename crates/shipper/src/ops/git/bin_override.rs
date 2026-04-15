@@ -1,11 +1,11 @@
 //! `SHIPPER_GIT_BIN` override support.
 //!
 //! These helpers replicate the commit/branch/tag/dirty queries that live in
-//! [`super::context`] but honor the `SHIPPER_GIT_BIN` environment variable so
+//! `super::context` but honor the `SHIPPER_GIT_BIN` environment variable so
 //! tests (and sandboxed environments) can substitute a fake git binary.
 //!
-//! The override is set up by [`collect_git_context`] (in [`super::mod`]) and
-//! [`local_is_git_clean`] (used by [`super::cleanliness::is_git_clean`]).
+//! The override is set up by `collect_git_context` (in `super`) and by
+//! `local_is_git_clean` (used by `super::cleanliness::is_git_clean`).
 //!
 //! Invariants:
 //!

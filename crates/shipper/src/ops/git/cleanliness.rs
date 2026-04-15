@@ -26,7 +26,7 @@ use super::bin_override;
 /// Check whether the git working tree is clean (no uncommitted changes).
 ///
 /// When `SHIPPER_GIT_BIN` is set, routes through the override implementation in
-/// [`super::bin_override::local_is_git_clean`]. Otherwise uses the default git
+/// `super::bin_override::local_is_git_clean`. Otherwise uses the default git
 /// invocation. In both cases, an untracked file counts as "dirty".
 pub fn is_git_clean(repo_root: &Path) -> Result<bool> {
     if let Ok(git_program) = env::var("SHIPPER_GIT_BIN") {
