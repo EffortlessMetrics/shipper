@@ -8,7 +8,7 @@ use shipper_output_sanitizer::tail_lines as sanitize_tail_lines;
 #[cfg(test)]
 use shipper_output_sanitizer::redact_sensitive as sanitize_sensitive;
 
-use crate::process;
+use crate::ops::process;
 
 #[derive(Debug, Clone)]
 pub struct CargoOutput {

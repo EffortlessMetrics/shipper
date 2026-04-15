@@ -2305,9 +2305,10 @@ dependencies = [
  "shipper-execution-core",
  "shipper-git",
  "shipper-levels",
+ "shipper-lock",
  "shipper-output-sanitizer",
  "shipper-plan",
- "shipper-process",
+ "shipper-policy",
  "shipper-registry",
  "shipper-retry",
  "shipper-schema",
@@ -2323,6 +2324,7 @@ dependencies = [
  "tiny_http",
  "tokio",
  "toml",
+ "which",
 ]
 
 [[package]]
@@ -2475,6 +2477,7 @@ dependencies = [
  "shipper-events",
  "shipper-execution-core",
  "shipper-plan",
+ "shipper-policy",
  "shipper-registry",
  "shipper-retry",
  "shipper-sparse-index",
@@ -2554,6 +2557,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "shipper-lock"
+version = "0.3.0-rc.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "gethostname",
+ "insta",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "shipper-output-sanitizer"
 version = "0.3.0-rc.1"
 dependencies = [
@@ -2581,18 +2598,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "shipper-process"
+name = "shipper-policy"
 version = "0.3.0-rc.1"
 dependencies = [
- "anyhow",
- "humantime",
  "insta",
  "proptest",
  "serde",
- "serde_json",
- "temp-env",
- "tempfile",
- "which",
+ "shipper-retry",
+ "shipper-types",
 ]
 
 [[package]]

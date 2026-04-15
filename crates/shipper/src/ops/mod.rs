@@ -7,3 +7,4 @@
 // `shipper::lock` is re-exported from `crate::ops::lock` in `lib.rs` to
 // preserve the historical public API surface.
 pub mod lock;
+pub(crate) mod process;

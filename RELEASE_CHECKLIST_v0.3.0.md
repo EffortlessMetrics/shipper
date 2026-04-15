@@ -27,7 +27,6 @@
   cargo publish -p shipper-output-sanitizer --dry-run
   cargo publish -p shipper-sparse-index --dry-run
   cargo publish -p shipper-lock --dry-run
-  cargo publish -p shipper-process --dry-run
   cargo publish -p shipper-encrypt --dry-run
   cargo publish -p shipper-auth --dry-run
   cargo publish -p shipper-progress --dry-run

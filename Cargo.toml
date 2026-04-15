@@ -20,7 +20,6 @@ members = [
   "crates/shipper-chunking",
   "crates/shipper-environment",
   "crates/shipper-plan",
-  "crates/shipper-process",
   "crates/shipper-webhook",
   "crates/shipper-store",
   "crates/shipper-storage",
