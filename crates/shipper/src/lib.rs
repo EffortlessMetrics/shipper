@@ -130,10 +130,6 @@ pub mod engine_parallel;
 pub mod engine_parallel;
 
 /// Environment fingerprinting (OS, arch, tool versions).
-#[cfg(feature = "micro-environment")]
-#[path = "environment_micro.rs"]
-pub mod environment;
-#[cfg(not(feature = "micro-environment"))]
 pub mod environment;
 
 /// Git operations (cleanliness check, context capture).
