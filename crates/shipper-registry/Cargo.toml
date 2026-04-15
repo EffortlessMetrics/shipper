@@ -17,8 +17,8 @@ serde_json = "1.0"
 reqwest = { version = "0.13", features = ["blocking", "json", "rustls"] }
 chrono = { version = "0.4", features = ["serde"] }
 rand = { version = "0.10", features = ["std"] }
-shipper-sparse-index = { path = "../shipper-sparse-index" }
-shipper-types = { path = "../shipper-types" }
+shipper-sparse-index.workspace = true
+shipper-types.workspace = true
 
 [dev-dependencies]
 insta = { workspace = true }
