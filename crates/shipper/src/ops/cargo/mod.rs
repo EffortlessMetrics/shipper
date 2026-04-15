@@ -1,12 +1,18 @@
+//! Cargo metadata loading + `cargo publish` invocation.
+//!
+//! Absorbed from the former `shipper-cargo` microcrate. See
+//! `docs/decrating-plan.md` §6 for the overall plan.
+
+use std::collections::{HashMap, HashSet};
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use cargo_metadata::{Metadata, MetadataCommand, Package};
+use serde::{Deserialize, Serialize};
+pub use shipper_output_sanitizer::redact_sensitive;
 use shipper_output_sanitizer::tail_lines as sanitize_tail_lines;
-
-#[cfg(test)]
-use shipper_output_sanitizer::redact_sensitive as sanitize_sensitive;
 
 use crate::ops::process;
 
@@ -21,13 +27,6 @@ pub struct CargoOutput {
 
 fn tail_lines(s: &str, n: usize) -> String {
     sanitize_tail_lines(s, n)
-}
-
-/// Redact sensitive patterns (tokens, credentials) from output strings.
-/// Applied to stdout/stderr tails before they are stored in receipts and event logs.
-#[cfg(test)]
-pub(crate) fn redact_sensitive(s: &str) -> String {
-    sanitize_sensitive(s)
 }
 
 pub fn cargo_publish(
@@ -158,6 +157,276 @@ pub fn cargo_publish_dry_run_package(
 
 fn cargo_program() -> String {
     env::var("SHIPPER_CARGO_BIN").unwrap_or_else(|_| "cargo".to_string())
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Workspace metadata (absorbed from shipper-cargo)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Load workspace metadata using `cargo metadata`.
+///
+/// Centralized here so plan-building (and any other consumer) share the
+/// same invocation and error-wrapping behavior.
+pub fn load_metadata(manifest_path: &Path) -> Result<Metadata> {
+    MetadataCommand::new()
+        .manifest_path(manifest_path)
+        .exec()
+        .context("failed to execute cargo metadata")
+}
+
+/// Workspace metadata wrapper.
+#[derive(Debug, Clone)]
+pub struct WorkspaceMetadata {
+    /// The underlying cargo metadata
+    metadata: Metadata,
+    /// Root directory of the workspace
+    workspace_root: PathBuf,
+}
+
+impl WorkspaceMetadata {
+    /// Load workspace metadata from a manifest path.
+    pub fn load(manifest_path: &Path) -> Result<Self> {
+        let metadata = MetadataCommand::new()
+            .manifest_path(manifest_path)
+            .exec()
+            .context("failed to load cargo metadata")?;
+
+        let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
+
+        Ok(Self {
+            metadata,
+            workspace_root,
+        })
+    }
+
+    /// Load metadata from the current directory.
+    pub fn load_from_current_dir() -> Result<Self> {
+        let manifest_path = std::env::current_dir()
+            .context("failed to get current directory")?
+            .join("Cargo.toml");
+
+        Self::load(&manifest_path)
+    }
+
+    /// Workspace root directory.
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    /// All packages in the workspace.
+    pub fn all_packages(&self) -> Vec<&Package> {
+        self.metadata.packages.iter().collect()
+    }
+
+    /// Packages that are publishable (not excluded from publishing).
+    pub fn publishable_packages(&self) -> Vec<&Package> {
+        self.metadata
+            .packages
+            .iter()
+            .filter(|p| self.is_publishable(p))
+            .collect()
+    }
+
+    /// Check if a package is publishable.
+    pub fn is_publishable(&self, package: &Package) -> bool {
+        if let Some(publish) = &package.publish
+            && publish.is_empty()
+        {
+            return false;
+        }
+
+        if package.version.to_string() == "0.0.0" {
+            return false;
+        }
+
+        true
+    }
+
+    /// Look up a package by name.
+    pub fn get_package(&self, name: &str) -> Option<&Package> {
+        self.metadata
+            .packages
+            .iter()
+            .find(|p| p.name.as_str() == name)
+    }
+
+    /// Workspace members.
+    pub fn workspace_members(&self) -> Vec<&Package> {
+        self.metadata
+            .workspace_members
+            .iter()
+            .filter_map(|id| self.metadata.packages.iter().find(|p| &p.id == id))
+            .collect()
+    }
+
+    /// Root package (if any).
+    pub fn root_package(&self) -> Option<&Package> {
+        self.metadata.root_package()
+    }
+
+    /// Workspace name (from the root package or directory name).
+    pub fn workspace_name(&self) -> &str {
+        self.root_package()
+            .map(|p| p.name.as_str())
+            .unwrap_or_else(|| {
+                self.workspace_root
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("workspace")
+            })
+    }
+
+    /// Packages in topological order (dependencies first).
+    pub fn topological_order(&self) -> Result<Vec<String>> {
+        let mut order = Vec::new();
+        let mut visited = HashSet::new();
+        let mut visiting = HashSet::new();
+
+        let dep_graph = self.build_dependency_graph();
+
+        for package in self.publishable_packages() {
+            let name = package.name.to_string();
+            self.visit_package(&name, &dep_graph, &mut visited, &mut visiting, &mut order)?;
+        }
+
+        Ok(order)
+    }
+
+    fn visit_package(
+        &self,
+        name: &str,
+        dep_graph: &HashMap<String, Vec<String>>,
+        visited: &mut HashSet<String>,
+        visiting: &mut HashSet<String>,
+        order: &mut Vec<String>,
+    ) -> Result<()> {
+        if visited.contains(name) {
+            return Ok(());
+        }
+
+        if visiting.contains(name) {
+            return Err(anyhow::anyhow!(
+                "circular dependency detected involving {}",
+                name
+            ));
+        }
+
+        visiting.insert(name.to_string());
+
+        if let Some(deps) = dep_graph.get(name) {
+            for dep in deps {
+                self.visit_package(dep, dep_graph, visited, visiting, order)?;
+            }
+        }
+
+        visiting.remove(name);
+        visited.insert(name.to_string());
+        order.push(name.to_string());
+
+        Ok(())
+    }
+
+    fn build_dependency_graph(&self) -> HashMap<String, Vec<String>> {
+        let mut graph = HashMap::new();
+
+        for package in self.publishable_packages() {
+            let deps: Vec<String> = package
+                .dependencies
+                .iter()
+                .filter_map(|dep| {
+                    self.metadata
+                        .packages
+                        .iter()
+                        .find(|p| p.name == dep.name)
+                        .map(|p| p.name.to_string())
+                })
+                .collect();
+
+            graph.insert(package.name.to_string(), deps);
+        }
+
+        graph
+    }
+}
+
+/// Simplified package information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackageInfo {
+    /// Package name
+    pub name: String,
+    /// Package version
+    pub version: String,
+    /// Path to package manifest
+    pub manifest_path: String,
+    /// Whether this is a workspace member
+    pub is_workspace_member: bool,
+    /// List of registry names this package can be published to (empty = all)
+    pub publish: Vec<String>,
+}
+
+impl From<&Package> for PackageInfo {
+    fn from(pkg: &Package) -> Self {
+        Self {
+            name: pkg.name.to_string(),
+            version: pkg.version.to_string(),
+            manifest_path: pkg.manifest_path.to_string(),
+            is_workspace_member: true, // Simplified
+            publish: pkg.publish.clone().unwrap_or_default(),
+        }
+    }
+}
+
+/// Get the version from a `Cargo.toml` file.
+pub fn get_version(manifest_path: &Path) -> Result<String> {
+    let metadata = WorkspaceMetadata::load(manifest_path)?;
+
+    if let Some(pkg) = metadata.root_package() {
+        return Ok(pkg.version.to_string());
+    }
+
+    Err(anyhow::anyhow!("no root package found"))
+}
+
+/// Get the package name from a `Cargo.toml` file.
+pub fn get_package_name(manifest_path: &Path) -> Result<String> {
+    let metadata = WorkspaceMetadata::load(manifest_path)?;
+
+    if let Some(pkg) = metadata.root_package() {
+        return Ok(pkg.name.to_string());
+    }
+
+    Err(anyhow::anyhow!("no root package found"))
+}
+
+/// Check if a package name is valid for crates.io.
+///
+/// Rules:
+/// - Non-empty
+/// - Cannot start with a digit or hyphen
+/// - Only ASCII lowercase letters, digits, hyphens, and underscores
+pub fn is_valid_package_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    let chars: Vec<char> = name.chars().collect();
+
+    if chars[0].is_ascii_digit() || chars[0] == '-' {
+        return false;
+    }
+
+    chars
+        .iter()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-' || *c == '_')
+}
+
+/// All workspace member package names.
+pub fn workspace_member_names(metadata: &WorkspaceMetadata) -> Vec<String> {
+    metadata
+        .workspace_members()
+        .iter()
+        .map(|p| p.name.to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -1171,5 +1440,528 @@ mod tests {
         let out = redact_sensitive(input);
         assert!(out.contains("[REDACTED]"));
         assert!(!out.contains("secret\\nwith"));
+    }
+
+    // ── Absorbed from shipper-cargo: is_valid_package_name ──
+
+    #[test]
+    fn is_valid_package_name_valid() {
+        assert!(is_valid_package_name("my-crate"));
+        assert!(is_valid_package_name("my_crate"));
+        assert!(is_valid_package_name("mycrate"));
+        assert!(is_valid_package_name("my-crate-123"));
+        assert!(is_valid_package_name("a"));
+    }
+
+    #[test]
+    fn is_valid_package_name_invalid() {
+        assert!(!is_valid_package_name(""));
+        assert!(!is_valid_package_name("123-crate")); // starts with digit
+        assert!(!is_valid_package_name("-crate")); // starts with hyphen
+        assert!(!is_valid_package_name("MyCrate")); // uppercase
+        assert!(!is_valid_package_name("my.crate")); // dot not allowed
+        assert!(!is_valid_package_name("my crate")); // space not allowed
+    }
+
+    #[test]
+    fn is_valid_package_name_underscore_start() {
+        assert!(is_valid_package_name("_"));
+        assert!(is_valid_package_name("__"));
+        assert!(is_valid_package_name("_my_crate"));
+    }
+
+    #[test]
+    fn is_valid_package_name_mixed_separators() {
+        assert!(is_valid_package_name("my-cool_crate"));
+        assert!(is_valid_package_name("a-b_c"));
+    }
+
+    #[test]
+    fn is_valid_package_name_numbers_after_first() {
+        assert!(is_valid_package_name("a123"));
+        assert!(is_valid_package_name("crate99"));
+        assert!(is_valid_package_name("my-123-crate"));
+    }
+
+    #[test]
+    fn is_valid_package_name_trailing_hyphen() {
+        assert!(is_valid_package_name("crate-"));
+    }
+
+    #[test]
+    fn is_valid_package_name_trailing_underscore() {
+        assert!(is_valid_package_name("crate_"));
+    }
+
+    #[test]
+    fn is_valid_package_name_rejects_uppercase_variants() {
+        assert!(!is_valid_package_name("MyPackage"));
+        assert!(!is_valid_package_name("ALLCAPS"));
+        assert!(!is_valid_package_name("camelCase"));
+    }
+
+    #[test]
+    fn is_valid_package_name_rejects_special_characters() {
+        assert!(!is_valid_package_name("my@crate"));
+        assert!(!is_valid_package_name("my!crate"));
+        assert!(!is_valid_package_name("my#crate"));
+        assert!(!is_valid_package_name("my$crate"));
+        assert!(!is_valid_package_name("my/crate"));
+        assert!(!is_valid_package_name("my\\crate"));
+        assert!(!is_valid_package_name("my+crate"));
+        assert!(!is_valid_package_name("my crate"));
+    }
+
+    #[test]
+    fn is_valid_package_name_single_underscore() {
+        assert!(is_valid_package_name("_"));
+    }
+
+    #[test]
+    fn is_valid_package_name_rejects_unicode() {
+        assert!(!is_valid_package_name("my-crête"));
+        assert!(!is_valid_package_name("日本語"));
+        assert!(!is_valid_package_name("café"));
+    }
+
+    #[test]
+    fn is_valid_package_name_max_length_valid() {
+        let name = "a".repeat(100);
+        assert!(is_valid_package_name(&name));
+    }
+
+    #[test]
+    fn is_valid_package_name_consecutive_hyphens() {
+        assert!(is_valid_package_name("my--crate"));
+    }
+
+    #[test]
+    fn is_valid_package_name_consecutive_underscores() {
+        assert!(is_valid_package_name("my__crate"));
+    }
+
+    // ── Absorbed from shipper-cargo: PackageInfo ──
+
+    #[test]
+    fn package_info_from_package() {
+        let info = PackageInfo {
+            name: "test".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: "Cargo.toml".to_string(),
+            is_workspace_member: true,
+            publish: vec![],
+        };
+
+        assert_eq!(info.name, "test");
+        assert_eq!(info.version, "1.0.0");
+    }
+
+    #[test]
+    fn package_info_serialization() {
+        let info = PackageInfo {
+            name: "my-crate".to_string(),
+            version: "2.0.0".to_string(),
+            manifest_path: "/path/to/Cargo.toml".to_string(),
+            is_workspace_member: true,
+            publish: vec!["crates-io".to_string()],
+        };
+
+        let json = serde_json::to_string(&info).expect("serialize");
+        assert!(json.contains("\"name\":\"my-crate\""));
+        assert!(json.contains("\"version\":\"2.0.0\""));
+    }
+
+    #[test]
+    fn package_info_deserialization_roundtrip() {
+        let info = PackageInfo {
+            name: "my-crate".to_string(),
+            version: "2.0.0".to_string(),
+            manifest_path: "/path/to/Cargo.toml".to_string(),
+            is_workspace_member: true,
+            publish: vec!["crates-io".to_string()],
+        };
+
+        let json = serde_json::to_string(&info).expect("serialize");
+        let deserialized: PackageInfo = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized.name, info.name);
+        assert_eq!(deserialized.version, info.version);
+        assert_eq!(deserialized.manifest_path, info.manifest_path);
+        assert_eq!(deserialized.is_workspace_member, info.is_workspace_member);
+        assert_eq!(deserialized.publish, info.publish);
+    }
+
+    #[test]
+    fn package_info_empty_publish_means_all_registries() {
+        let info = PackageInfo {
+            name: "my-crate".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: "Cargo.toml".to_string(),
+            is_workspace_member: true,
+            publish: vec![],
+        };
+        assert!(info.publish.is_empty());
+    }
+
+    #[test]
+    fn package_info_multiple_registries() {
+        let info = PackageInfo {
+            name: "my-crate".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: "Cargo.toml".to_string(),
+            is_workspace_member: false,
+            publish: vec!["crates-io".to_string(), "my-registry".to_string()],
+        };
+        assert_eq!(info.publish.len(), 2);
+        assert!(!info.is_workspace_member);
+    }
+
+    #[test]
+    fn package_info_pretty_json_roundtrip() {
+        let info = PackageInfo {
+            name: "complex-name_123".to_string(),
+            version: "0.1.0-beta.1".to_string(),
+            manifest_path: "crates/foo/Cargo.toml".to_string(),
+            is_workspace_member: true,
+            publish: vec![],
+        };
+        let pretty = serde_json::to_string_pretty(&info).expect("pretty serialize");
+        let back: PackageInfo = serde_json::from_str(&pretty).expect("deserialize");
+        assert_eq!(back.name, info.name);
+        assert_eq!(back.version, info.version);
+    }
+
+    #[test]
+    fn package_info_with_empty_fields() {
+        let info = PackageInfo {
+            name: String::new(),
+            version: String::new(),
+            manifest_path: String::new(),
+            is_workspace_member: false,
+            publish: vec![],
+        };
+        let json = serde_json::to_string(&info).expect("serialize");
+        let back: PackageInfo = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.name, "");
+        assert_eq!(back.version, "");
+    }
+
+    #[test]
+    fn package_info_json_contains_all_fields() {
+        let info = PackageInfo {
+            name: "test-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: "/some/path/Cargo.toml".to_string(),
+            is_workspace_member: false,
+            publish: vec!["custom-registry".to_string()],
+        };
+        let json = serde_json::to_string(&info).expect("serialize");
+        assert!(json.contains("\"is_workspace_member\":false"));
+        assert!(json.contains("\"publish\":[\"custom-registry\"]"));
+    }
+
+    // ── Absorbed from shipper-cargo: WorkspaceMetadata ──
+
+    #[test]
+    fn workspace_metadata_loads_current_workspace() {
+        let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
+
+        assert!(!metadata.all_packages().is_empty());
+        assert!(metadata.workspace_root().exists());
+    }
+
+    #[test]
+    fn workspace_metadata_gets_package() {
+        let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
+
+        let pkg = metadata.get_package("shipper");
+        assert!(pkg.is_some());
+    }
+
+    #[test]
+    fn workspace_metadata_topological_order() {
+        let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
+
+        let result = metadata.topological_order();
+        // Just check it doesn't panic - the result depends on the workspace structure
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn workspace_metadata_all_packages_has_multiple() {
+        let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
+        let all = metadata.all_packages();
+        assert!(all.len() > 1, "workspace should have multiple packages");
+    }
+
+    #[test]
+    fn workspace_metadata_workspace_members_nonempty() {
+        let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
+        let members = metadata.workspace_members();
+        assert!(!members.is_empty(), "workspace should have members");
+    }
+
+    #[test]
+    fn workspace_metadata_get_nonexistent_package_returns_none() {
+        let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
+        assert!(
+            metadata
+                .get_package("nonexistent-package-xyz-12345")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn workspace_metadata_workspace_name_not_empty() {
+        let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
+        assert!(!metadata.workspace_name().is_empty());
+    }
+
+    #[test]
+    fn workspace_metadata_workspace_root_is_directory() {
+        let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
+        assert!(metadata.workspace_root().is_dir());
+    }
+
+    #[test]
+    fn workspace_metadata_publishable_packages_subset_of_all() {
+        let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
+        let all = metadata.all_packages();
+        let publishable = metadata.publishable_packages();
+        assert!(
+            publishable.len() <= all.len(),
+            "publishable ({}) should be <= all ({})",
+            publishable.len(),
+            all.len()
+        );
+    }
+
+    #[test]
+    fn workspace_member_names_contains_known_crates() {
+        let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
+        let names = workspace_member_names(&metadata);
+        assert!(
+            names.contains(&"shipper".to_string()),
+            "should contain shipper, got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_metadata_topological_order_contains_publishable() {
+        let metadata = WorkspaceMetadata::load_from_current_dir().expect("load metadata");
+        if let Ok(order) = metadata.topological_order() {
+            let publishable: Vec<String> = metadata
+                .publishable_packages()
+                .iter()
+                .map(|p| p.name.to_string())
+                .collect();
+            for name in &publishable {
+                assert!(
+                    order.contains(name),
+                    "topological order should contain publishable package {name}"
+                );
+            }
+        }
+    }
+
+    // ── Absorbed from shipper-cargo: load_metadata ──
+
+    #[test]
+    fn load_metadata_returns_valid_metadata() {
+        let manifest = std::env::current_dir()
+            .unwrap()
+            .join("..")
+            .join("..")
+            .join("Cargo.toml");
+        let metadata = load_metadata(&manifest).expect("load metadata");
+        assert!(!metadata.packages.is_empty());
+    }
+
+    #[test]
+    fn load_metadata_fails_for_nonexistent_path() {
+        let result = load_metadata(Path::new("/nonexistent/Cargo.toml"));
+        assert!(result.is_err());
+    }
+
+    // ── Absorbed proptests ──
+
+    mod proptests_absorbed {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn valid_package_name_only_has_valid_chars(
+                name in "[a-z_][a-z0-9_-]{0,30}",
+            ) {
+                prop_assert!(is_valid_package_name(&name));
+            }
+
+            #[test]
+            fn package_name_starting_with_digit_is_invalid(
+                rest in "[a-z0-9_-]{0,20}",
+                digit in proptest::char::range('0', '9'),
+            ) {
+                let name = format!("{digit}{rest}");
+                prop_assert!(!is_valid_package_name(&name));
+            }
+
+            #[test]
+            fn package_name_starting_with_hyphen_is_invalid(
+                rest in "[a-z0-9_-]{0,20}",
+            ) {
+                let name = format!("-{rest}");
+                prop_assert!(!is_valid_package_name(&name));
+            }
+
+            #[test]
+            fn package_name_with_uppercase_is_invalid(
+                prefix in "[a-z_][a-z0-9_-]{0,10}",
+                upper in "[A-Z]",
+                suffix in "[a-z0-9_-]{0,10}",
+            ) {
+                let name = format!("{prefix}{upper}{suffix}");
+                prop_assert!(!is_valid_package_name(&name));
+            }
+
+            #[test]
+            fn package_info_serde_roundtrip(
+                name in "[a-z][a-z0-9_-]{0,20}",
+                version in "[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}",
+                manifest in "\\PC{1,50}",
+                is_member in any::<bool>(),
+            ) {
+                let info = PackageInfo {
+                    name: name.clone(),
+                    version: version.clone(),
+                    manifest_path: manifest.clone(),
+                    is_workspace_member: is_member,
+                    publish: vec![],
+                };
+                let json = serde_json::to_string(&info).unwrap();
+                let back: PackageInfo = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(&back.name, &name);
+                prop_assert_eq!(&back.version, &version);
+                prop_assert_eq!(&back.manifest_path, &manifest);
+                prop_assert_eq!(back.is_workspace_member, is_member);
+                prop_assert!(back.publish.is_empty());
+            }
+
+            #[test]
+            fn package_info_with_registries_roundtrip(
+                reg_count in 0usize..5,
+                name in "[a-z][a-z0-9-]{0,10}",
+            ) {
+                let registries: Vec<String> = (0..reg_count)
+                    .map(|i| format!("registry-{i}"))
+                    .collect();
+                let info = PackageInfo {
+                    name,
+                    version: "1.0.0".to_string(),
+                    manifest_path: "Cargo.toml".to_string(),
+                    is_workspace_member: true,
+                    publish: registries.clone(),
+                };
+                let json = serde_json::to_string(&info).unwrap();
+                let back: PackageInfo = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(back.publish.len(), registries.len());
+                prop_assert_eq!(&back.publish, &registries);
+            }
+
+            #[test]
+            fn is_valid_package_name_rejects_any_non_ascii(
+                prefix in "[a-z_][a-z0-9_-]{0,5}",
+                ch in proptest::char::range('\u{0080}', '\u{FFFF}'),
+                suffix in "[a-z0-9_-]{0,5}",
+            ) {
+                let name = format!("{prefix}{ch}{suffix}");
+                prop_assert!(!is_valid_package_name(&name));
+            }
+
+            #[test]
+            fn package_info_json_always_contains_name(
+                name in "[a-z][a-z0-9-]{0,15}",
+            ) {
+                let info = PackageInfo {
+                    name: name.clone(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: "Cargo.toml".to_string(),
+                    is_workspace_member: true,
+                    publish: vec![],
+                };
+                let json = serde_json::to_string(&info).unwrap();
+                prop_assert!(json.contains(&name));
+            }
+        }
+    }
+
+    // ── Absorbed snapshot tests ──
+
+    mod snapshot_tests_absorbed {
+        use super::*;
+        use insta::{assert_debug_snapshot, assert_yaml_snapshot};
+
+        #[test]
+        fn snapshot_package_info_simple() {
+            let info = PackageInfo {
+                name: "shipper-cargo".to_string(),
+                version: "0.3.0".to_string(),
+                manifest_path: "crates/shipper-cargo/Cargo.toml".to_string(),
+                is_workspace_member: true,
+                publish: vec![],
+            };
+            assert_yaml_snapshot!(info);
+        }
+
+        #[test]
+        fn snapshot_package_info_with_registries() {
+            let info = PackageInfo {
+                name: "my-private-crate".to_string(),
+                version: "1.2.3-beta.1".to_string(),
+                manifest_path: "crates/my-private-crate/Cargo.toml".to_string(),
+                is_workspace_member: false,
+                publish: vec!["crates-io".to_string(), "my-private-registry".to_string()],
+            };
+            assert_yaml_snapshot!(info);
+        }
+
+        #[test]
+        fn snapshot_valid_package_names() {
+            let names = vec!["my-crate", "my_crate", "a", "_private", "crate-with-123"];
+            let results: Vec<(&str, bool)> = names
+                .into_iter()
+                .map(|n| (n, is_valid_package_name(n)))
+                .collect();
+            assert_debug_snapshot!(results);
+        }
+
+        #[test]
+        fn snapshot_invalid_package_names() {
+            let names = vec![
+                "",
+                "123-start",
+                "-hyphen-start",
+                "MyCrate",
+                "my.crate",
+                "my crate",
+                "my@crate",
+            ];
+            let results: Vec<(&str, bool)> = names
+                .into_iter()
+                .map(|n| (n, is_valid_package_name(n)))
+                .collect();
+            assert_debug_snapshot!(results);
+        }
+
+        #[test]
+        fn snapshot_package_info_prerelease_version() {
+            let info = PackageInfo {
+                name: "my-alpha-crate".to_string(),
+                version: "0.0.1-alpha.0+build.123".to_string(),
+                manifest_path: "crates/my-alpha-crate/Cargo.toml".to_string(),
+                is_workspace_member: true,
+                publish: vec![],
+            };
+            assert_yaml_snapshot!(info);
+        }
     }
 }

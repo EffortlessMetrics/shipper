@@ -2294,7 +2294,6 @@ dependencies = [
  "serde_with",
  "serial_test",
  "sha2 0.11.0",
- "shipper-cargo",
  "shipper-cargo-failure",
  "shipper-config",
  "shipper-duration",
@@ -2314,23 +2313,6 @@ dependencies = [
  "tokio",
  "toml",
  "which",
-]
-
-[[package]]
-name = "shipper-cargo"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "cargo_metadata",
- "humantime",
- "insta",
- "proptest",
- "serde",
- "serde_json",
- "serial_test",
- "shipper-output-sanitizer",
- "temp-env",
- "tempfile",
 ]
 
 [[package]]

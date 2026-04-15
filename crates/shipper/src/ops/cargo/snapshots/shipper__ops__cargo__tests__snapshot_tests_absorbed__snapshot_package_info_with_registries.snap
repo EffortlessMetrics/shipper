@@ -1,5 +1,5 @@
 ---
-source: crates/shipper-cargo/src/lib.rs
+source: crates/shipper/src/ops/cargo/mod.rs
 assertion_line: 1128
 expression: info
 ---

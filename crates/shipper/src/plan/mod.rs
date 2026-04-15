@@ -245,7 +245,7 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
 }
 
 fn load_metadata(manifest_path: &Path) -> Result<Metadata> {
-    shipper_cargo::load_metadata(manifest_path)
+    crate::ops::cargo::load_metadata(manifest_path)
 }
 
 fn publish_allowed(pkg: &cargo_metadata::Package, registry_name: &str) -> bool {

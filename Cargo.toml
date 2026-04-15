@@ -11,7 +11,6 @@ members = [
   "crates/shipper-git",
   "crates/shipper-registry",
   "crates/shipper-sparse-index",
-  "crates/shipper-cargo",
   "crates/shipper-cargo-failure",
   "crates/shipper-webhook",
     "crates/shipper-output-sanitizer",

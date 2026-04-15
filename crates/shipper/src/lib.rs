@@ -108,11 +108,11 @@ pub mod auth {
 }
 
 /// Workspace metadata and publish execution via cargo.
-#[cfg(feature = "micro-cargo")]
-#[path = "cargo_micro.rs"]
-pub mod cargo;
-#[cfg(not(feature = "micro-cargo"))]
-pub mod cargo;
+///
+/// Absorbed from the former `shipper-cargo` microcrate into
+/// [`crate::ops::cargo`]. The historical public path `shipper::cargo`
+/// is preserved for backward compatibility.
+pub use crate::ops::cargo;
 
 /// Configuration file (`.shipper.toml`) loading and merging.
 pub mod config;
