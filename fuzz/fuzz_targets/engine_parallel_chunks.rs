@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shipper_engine_parallel::chunk_by_max_concurrent;
+use shipper::engine::parallel::chunk_by_max_concurrent;
 
 fuzz_target!(|data: (u8, Vec<u8>)| {
     let (max_hint, payload) = data;
@@ -13,7 +13,7 @@ fuzz_target!(|data: (u8, Vec<u8>)| {
         .map(|(index, byte)| format!("{index}:{byte}"))
         .collect();
 
-    let chunks = chunk_by_max_concurrent(&items, max_concurrent);
+    let chunks: Vec<Vec<String>> = chunk_by_max_concurrent(&items, max_concurrent);
 
     assert!(chunks.iter().all(|chunk| chunk.len() <= max_concurrent));
     assert_eq!(
