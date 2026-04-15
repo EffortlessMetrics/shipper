@@ -2301,7 +2301,6 @@ dependencies = [
  "shipper-output-sanitizer",
  "shipper-registry",
  "shipper-retry",
- "shipper-schema",
  "shipper-sparse-index",
  "shipper-types",
  "shipper-webhook",
@@ -2357,7 +2356,6 @@ dependencies = [
  "serde_with",
  "shipper-encrypt",
  "shipper-retry",
- "shipper-schema",
  "shipper-types",
  "shipper-webhook",
  "tempfile",
@@ -2431,15 +2429,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shipper-schema"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "insta",
- "proptest",
-]
-
-[[package]]
 name = "shipper-sparse-index"
 version = "0.3.0-rc.1"
 dependencies = [
@@ -2453,6 +2442,7 @@ dependencies = [
 name = "shipper-types"
 version = "0.3.0-rc.1"
 dependencies = [
+ "anyhow",
  "chrono",
  "insta",
  "proptest",

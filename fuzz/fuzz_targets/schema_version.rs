@@ -7,6 +7,6 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
-    let _ = shipper_schema::parse_schema_version(input);
-    let _ = shipper_schema::validate_schema_version(input, "shipper.receipt.v1", "schema");
+    let _ = shipper_types::schema::parse_schema_version(input);
+    let _ = shipper_types::schema::validate_schema_version(input, "shipper.receipt.v1", "schema");
 });

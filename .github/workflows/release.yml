@@ -126,7 +126,7 @@ jobs:
       # During Phase 2 absorption, only the still-public crates (shipper and
       # shipper-cli) are published from here; individual absorption PRs remove
       # any references to crates being folded in. Full topological publish
-      # order for remaining public crates (shipper-types, shipper-schema,
+      # order for remaining public crates (shipper-types,
       # shipper-duration, shipper-retry, shipper-encrypt, shipper-webhook,
       # shipper-registry, shipper-sparse-index, shipper-cargo-failure,
       # shipper-output-sanitizer, shipper-config, plus shipper and shipper-cli)

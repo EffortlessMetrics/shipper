@@ -1,0 +1,8 @@
+---
+source: crates/shipper-types/src/schema.rs
+assertion_line: 180
+expression: "parse_schema_version(\"shipper.receipt.v42\")"
+---
+Ok(
+    42,
+)

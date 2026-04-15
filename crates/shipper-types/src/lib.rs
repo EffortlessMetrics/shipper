@@ -36,6 +36,12 @@ use shipper_webhook::WebhookConfig;
 /// Storage backend configuration types (was `shipper-storage`, split).
 pub mod storage;
 
+/// Schema version parsing and compatibility validation for shipper state files.
+///
+/// This module was folded in from the former `shipper-schema` crate in Phase 6
+/// of the decrating effort (see `docs/decrating-plan.md`).
+pub mod schema;
+
 /// Represents a Cargo registry for publishing crates.
 ///
 /// A registry is identified by its name (used with `cargo publish --registry <name>`)

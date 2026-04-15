@@ -1,0 +1,5 @@
+---
+source: crates/shipper-types/tests/schema_snapshot_tests.rs
+expression: err.to_string()
+---
+state version shipper.state.v1 is too old. Minimum supported version is shipper.state.v3

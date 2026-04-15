@@ -12,7 +12,6 @@ libfuzzer-sys = "0.4"
 shipper = { path = "../crates/shipper" }
 shipper-duration = { path = "../crates/shipper-duration" }
 shipper-config = { path = "../crates/shipper-config" }
-shipper-schema = { path = "../crates/shipper-schema" }
 shipper-output-sanitizer = { path = "../crates/shipper-output-sanitizer" }
 shipper-cargo-failure = { path = "../crates/shipper-cargo-failure" }
 shipper-retry = { path = "../crates/shipper-retry" }

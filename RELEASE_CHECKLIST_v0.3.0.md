@@ -32,7 +32,7 @@
 - [ ] Publish to crates.io (dry-run first):
   ```bash
   # Layer 0 — no workspace dependencies
-  cargo publish -p shipper-schema --dry-run
+  # (shipper-schema folded into shipper-types::schema in Phase 6)
   cargo publish -p shipper-duration --dry-run
   cargo publish -p shipper-retry --dry-run
   cargo publish -p shipper-output-sanitizer --dry-run

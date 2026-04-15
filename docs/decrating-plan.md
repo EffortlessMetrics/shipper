@@ -88,8 +88,7 @@ These are what users should think of as "Shipper." Documentation, examples, mark
 | `shipper-cli` | Product | Installed binary entry point |
 | `shipper` | Product | Library API surface + orchestration umbrella |
 | `shipper-config` | Contract | `.shipper.toml` schema + parsing/merging |
-| `shipper-types` | Contract | Shared DTOs (ReleaseSpec, Receipt, etc.) embedders couple to |
-| `shipper-schema` | Contract | State-file schema versioning *(audit in Phase 6 — may fold into `shipper-types::schema`, dropping ring 1 to 4 crates)* |
+| `shipper-types` | Contract | Shared DTOs (ReleaseSpec, Receipt, etc.) plus `schema` module (state-file schema versioning, folded in from the former `shipper-schema` crate in Phase 6) embedders couple to |
 
 #### Ring 2: published support crates (8 crates)
 
@@ -145,9 +144,16 @@ These become folders inside `shipper`, `shipper-config`, or `shipper-cli`:
   - **Runtime storage/backend behavior** (the actual `StorageBackend` trait and the filesystem implementation) → move into `shipper/src/ops/storage/`
   - **Why split:** the crate's own `lib.rs` says only filesystem is fully implemented (S3/GCS/Azure bail out). It's not a finished standalone public product yet. Keeping config types in `shipper-types` means embedders can wire up their storage choice through the stable contract crate; keeping backend code in `shipper` means we don't make a public promise about a half-finished backend abstraction.
 
-### 3.3 Open question to resolve before publish
+### 3.3 Open question resolved in Phase 6
 
-**`shipper-schema` vs `shipper-types`.** If `shipper-schema` is purely versioning constants for the state-file format, it could be `shipper-types::schema` and we drop to **12 public crates**. Audit this before publishing.
+**`shipper-schema` vs `shipper-types`: FOLDED.** Phase 6 audit confirmed
+`shipper-schema` was only two string-parsing functions (`parse_schema_version`,
+`validate_schema_version`), ~57 lines of implementation, one `anyhow`
+dependency, and zero external consumers. The format it parses
+(`shipper.<doctype>.vN`) is hard-coded into the function itself, so the crate
+has no conceptual independence from shipper's state-file types. It is now
+`shipper_types::schema`. Public ring drops to **4 crates** (ring 1) +
+8 (ring 2) = **12 published crates total**.
 
 ---
 
@@ -603,11 +609,30 @@ Per PR #56's success: when a microcrate is depended on transitively by multiple 
 
 ---
 
-### Phase 6: Resolve `shipper-schema` vs `shipper-types`
+### Phase 6: Resolve `shipper-schema` vs `shipper-types` — **DONE (FOLD)**
 
-Audit overlap. If schema is purely versioning constants, fold into `shipper-types::schema` and drop `shipper-schema`. Otherwise keep both. Document the decision.
+**Decision: FOLD.** `shipper-schema` was collapsed into `shipper_types::schema`.
 
-**Validation gate:** workspace tests pass; `cargo public-api --diff` shows no unintended public-API expansion.
+**Rationale (from the Phase 6 audit):**
+- Public API was exactly two functions: `parse_schema_version(&str) -> anyhow::Result<u32>` and `validate_schema_version(version, minimum, label) -> anyhow::Result<()>`. No types, no traits, no constants.
+- ~57 lines of implementation (the rest of `src/lib.rs` was tests).
+- Single runtime dependency (`anyhow`).
+- All five consumers were internal: `shipper-config`, `shipper` (`state::store`, `state::execution_state`), `fuzz` targets, and tests. Zero external consumers on crates.io or elsewhere.
+- The format being parsed (`shipper.<doctype>.vN`) is hard-coded into the implementation. The crate had no conceptual independence — it couldn't be reused outside shipper without modification.
+- No migration logic, no compatibility ladder, no schema-version registry. Just string parsing plus numeric comparison.
+
+**What moved:**
+- `crates/shipper-schema/src/lib.rs` → `crates/shipper-types/src/schema.rs` (plus `pub mod schema;` in `shipper-types/src/lib.rs`).
+- Integration tests → `crates/shipper-types/tests/schema_contract_integration.rs` and `crates/shipper-types/tests/schema_snapshot_tests.rs`.
+- All inline and integration snapshots moved and renamed to match the new module path.
+- Added `anyhow = "1.0"` to `shipper-types` dependencies (same crate `shipper-config`/`shipper` already use).
+- Removed `shipper-schema` from workspace members, from `crates/shipper/Cargo.toml`, `crates/shipper-config/Cargo.toml`, and `fuzz/Cargo.toml`.
+- Updated CI references (`.github/workflows/mutation.yml`, `release.yml`).
+- Deleted `crates/shipper-schema/` directory.
+
+**Call-site migration:** `shipper_schema::X` → `shipper_types::schema::X` (one mechanical rename across `shipper-config/src/lib.rs`, `shipper/src/state/store/mod.rs`, `shipper/src/state/store/tests.rs`, `shipper/src/state/execution_state/mod.rs`, `shipper/src/state/execution_state/tests.rs`, and `fuzz/fuzz_targets/schema_version.rs`).
+
+**Validation gate:** workspace tests pass; `cargo public-api --diff` shows no unintended public-API expansion (the two fold-in items reappear one level deeper in `shipper-types`).
 
 ### Phase 7: Convert surviving deps to `path + version` and add `default-members`
 
@@ -619,7 +644,6 @@ members = [
   "crates/shipper-cli",
   "crates/shipper-types",
   "crates/shipper-config",
-  "crates/shipper-schema",        # if it survives Phase 8
   "crates/shipper-duration",
   "crates/shipper-retry",
   "crates/shipper-encrypt",
@@ -657,11 +681,10 @@ Each member's `Cargo.toml` uses `dep.workspace = true`.
 6.  shipper-sparse-index
 7.  shipper-webhook
 8.  shipper-types
-9.  shipper-schema           (if it survives Phase 8)
-10. shipper-registry
-11. shipper-config
-12. shipper
-13. shipper-cli
+9.  shipper-registry
+10. shipper-config
+11. shipper
+12. shipper-cli
 ```
 
 ---
@@ -732,7 +755,7 @@ Each phase exit requires:
 
 ## 9. Open Questions
 
-1. **`shipper-schema` vs `shipper-types`:** Resolve in Phase 8.
+1. **`shipper-schema` vs `shipper-types`:** Resolved in Phase 6 — folded into `shipper_types::schema`. See Phase 6 section above.
 2. **`shipper-engine-parallel` published status:** Audit found "no microcrate referenced" but the workspace lists `crates/shipper-engine-parallel`. Confirm whether this crate has ever been published or is purely a workspace member with no production consumer.
 3. **MSRV impact:** Workspace MSRV is 1.92. Any absorbed microcrate using newer features will fail. Verify in Phase 1.
 4. **`unsafe_code = "forbid"`:** Workspace-wide. Verify no absorbed microcrate uses unsafe.

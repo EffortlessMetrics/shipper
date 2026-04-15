@@ -181,7 +181,6 @@ cargo install cargo-mutants
 # Note: shipper-plan, shipper-policy, shipper-levels were removed during
 # decrating (PRs #54, #56) and are now modules inside shipper/.
 cargo mutants --no-shuffle \
-  -p shipper-schema \
   -p shipper-duration \
   -p shipper-types \
   -p shipper-config \
