@@ -43,6 +43,10 @@ jobs:
 
       - run:
           name: Run BDD compatibility matrix
+          # Deleted features removed via decrating PRs #52, #54, #55, #57, #58, #60, #61:
+          #   micro-lock, micro-policy, micro-process, micro-store, micro-events,
+          #   micro-state, micro-registry
+          # In-flight absorptions (auth, environment, git, storage) left intact.
           command: |
             for feature_set in "" "micro-auth" "micro-git" "micro-encrypt" "micro-environment" "micro-storage" "micro-cargo" "micro-webhook" "micro-types" "micro-config" "micro-all"; do
             if [ -z "$feature_set" ]; then

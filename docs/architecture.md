@@ -21,39 +21,53 @@ CLI binary, and 29 focused microcrates that each own a single responsibility.
 
 ### Microcrates
 
+> **Note:** The project is consolidating many single-responsibility microcrates
+> into module folders under `shipper`, `shipper-config`, and `shipper-cli`
+> (the "decrating" effort). Entries below marked _Absorbed_ are no longer
+> published as standalone crates. A post-absorption refresh will rewrite this
+> section around the final module layout (`engine/`, `plan/`, `ops/`,
+> `runtime/`, `store/`).
+
 | Crate | Purpose |
 |-------|---------|
 | `shipper-auth` | Token resolution (`CARGO_REGISTRY_TOKEN`, credentials.toml) |
 | `shipper-cargo` | Workspace metadata via `cargo_metadata` |
 | `shipper-cargo-failure` | Classify `cargo publish` stderr into typed failure categories |
-| `shipper-chunking` | Split items into bounded-size chunks for parallel execution |
+| `shipper-chunking` | _Absorbed — now `shipper::plan::chunking` module (PR #56)_ |
 | `shipper-config` | Load, merge, and validate `.shipper.toml` configuration files; `runtime` submodule converts `ShipperConfig` + CLI overrides into `RuntimeOptions` |
+| `shipper-config-runtime` | _Absorbed — now `shipper-config::runtime` module (PR #58)_ |
 | `shipper-duration` | Human-friendly duration parsing and serde codecs |
 | `shipper-encrypt` | AES-256-GCM encryption for state files |
 | `shipper-engine-parallel` | Wave-based parallel publish engine (dependency-level concurrency) |
 | `shipper-environment` | Environment fingerprinting (OS, arch, CI, tool versions) |
-| `shipper-events` | Append-only JSONL event log for audit trails |
+| `shipper-events` | _Absorbed — now `shipper::state::events` module (PR #60)_ |
 | `shipper-execution-core` | Shared helpers for state updates, error classification, and backoff |
 | `shipper-git` | Git operations (cleanliness check, branch/commit context) |
-| `shipper-levels` | Group packages by dependency depth for parallel plans |
-| `shipper-lock` | File-based advisory lock to prevent concurrent publishes |
+| `shipper-levels` | _Absorbed — now `shipper::plan::levels` module (PR #56)_ |
+| `shipper-lock` | _Absorbed — now `shipper::ops::lock` module (PR #52)_ |
 | `shipper-output-sanitizer` | Redact tokens and secrets from captured cargo output |
-| `shipper-plan` | Topological sort of publishable crates into a deterministic plan |
-| `shipper-process` | Cross-platform command execution with timeout support |
+| `shipper-plan` | _Absorbed — now `shipper::plan` module (PR #56)_ |
+| `shipper-policy` | _Absorbed — now `shipper::runtime::policy` module (PR #54)_ |
+| `shipper-process` | _Absorbed — now `shipper::ops::process` module (PR #55)_ |
 | `shipper-progress` | TTY-aware progress bars for CLI publish workflows |
 | `shipper-registry` | HTTP client for registry REST API (version check, owners) |
 | `shipper-retry` | Configurable retry strategies (exponential, linear, constant) with jitter |
 | `shipper-schema` | Schema-version parsing and compatibility validation |
 | `shipper-sparse-index` | Cargo sparse-index path derivation and version lookup |
-| `shipper-state` | Persistence of `state.json` (resumable execution state) |
+| `shipper-state` | _Absorbed — now `shipper::state::execution_state` module (PR #60)_ |
 | `shipper-storage` | Pluggable storage backends (filesystem, S3, GCS, Azure) |
-| `shipper-store` | `StateStore` trait — high-level persistence abstraction |
+| `shipper-store` | _Absorbed — now `shipper::state::store` module (PR #57)_ |
 | `shipper-types` | Core domain types (specs, plans, options, receipts, errors) |
 | `shipper-webhook` | Webhook notifications for publish lifecycle events |
 
 ---
 
 ## Dependency Graph
+
+> **Note:** The graph below reflects the pre-decrating layout. Crates marked
+> _Absorbed_ above no longer exist as standalone nodes — their edges are now
+> intra-crate module edges inside `shipper`, `shipper-config`, or `shipper-cli`.
+> A full redraw is deferred to the post-Phase-2 doc refresh.
 
 Arrows read as "depends on". Only shipper-\* edges are shown.
 
@@ -291,6 +305,11 @@ and readiness polling.
 ---
 
 ## Module Responsibilities
+
+> **Note:** Entries for _Absorbed_ crates (see the Microcrates table above)
+> describe their pre-decrating roles. Those responsibilities now live in
+> modules inside `shipper`, `shipper-config`, or `shipper-cli`. A full
+> rewrite of this section is deferred to the post-Phase-2 doc refresh.
 
 ### Configuration layer
 

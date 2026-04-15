@@ -1,5 +1,16 @@
 # Release Checklist for v0.3.0-rc.1
 
+> **Decrating note:** The following crates have been absorbed into
+> `shipper` / `shipper-config` / `shipper-cli` as module folders and no
+> longer need to be published separately:
+> `shipper-lock`, `shipper-process`, `shipper-levels`, `shipper-chunking`,
+> `shipper-policy`, `shipper-config-runtime`, `shipper-plan`, `shipper-store`,
+> `shipper-events`, `shipper-state`.
+> In-flight absorptions (`shipper-auth`, `shipper-environment`, `shipper-git`,
+> `shipper-storage`, `shipper-engine-parallel`, `shipper-progress`) may also
+> be removed from the publish order before v0.3.0 GA. The final publish
+> order will be codified in Phase 8 of the decrating plan.
+
 ## Pre-Release Tasks
 
 - [x] Run `cargo test --workspace --all-features` — all passing
@@ -26,14 +37,11 @@
   cargo publish -p shipper-retry --dry-run
   cargo publish -p shipper-output-sanitizer --dry-run
   cargo publish -p shipper-sparse-index --dry-run
-  cargo publish -p shipper-lock --dry-run
   cargo publish -p shipper-encrypt --dry-run
   cargo publish -p shipper-auth --dry-run
   cargo publish -p shipper-progress --dry-run
   cargo publish -p shipper-cargo-failure --dry-run
   cargo publish -p shipper-webhook --dry-run
-  cargo publish -p shipper-levels --dry-run
-  cargo publish -p shipper-chunking --dry-run
   cargo publish -p shipper-storage --dry-run
   cargo publish -p shipper-git --dry-run
 
@@ -44,16 +52,10 @@
 
   # Layer 2
   cargo publish -p shipper-environment --dry-run
-  cargo publish -p shipper-events --dry-run
   cargo publish -p shipper-config --dry-run
-
-  # Layer 3
-  cargo publish -p shipper-state --dry-run
 
   # Layer 4
   cargo publish -p shipper-execution-core --dry-run
-  cargo publish -p shipper-plan --dry-run
-  cargo publish -p shipper-store --dry-run
 
   # Layer 5
   cargo publish -p shipper-engine-parallel --dry-run
@@ -64,6 +66,13 @@
   # Layer 7
   cargo publish -p shipper-cli --dry-run
   ```
+
+  _Removed during decrating: `shipper-lock`, `shipper-process`,
+  `shipper-levels`, `shipper-chunking`, `shipper-policy`,
+  `shipper-config-runtime`, `shipper-plan`, `shipper-store`,
+  `shipper-events`, `shipper-state`._
+  The remaining order is provisional and will be finalized in Phase 8 once
+  in-flight absorptions settle.
 
 ## Post-Release
 

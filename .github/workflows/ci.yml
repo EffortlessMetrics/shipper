@@ -211,10 +211,17 @@ jobs:
       fail-fast: false
       matrix:
 <<<<<<< HEAD
+<<<<<<< HEAD
         feature-set: ["", "micro-auth", "micro-git", "micro-events", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-policy", "micro-registry", "micro-process", "micro-webhook", "micro-types", "micro-config", "micro-state", "micro-store", "micro-all"]
 =======
         feature-set: ["", "micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-policy", "micro-process", "micro-webhook", "micro-types", "micro-config", "micro-state", "micro-store", "micro-all"]
 >>>>>>> 8c34573 (decrating: fold in-tree registry logic into shipper-registry crate)
+=======
+        # Deleted features removed via decrating PRs #52, #54, #55, #56, #57:
+        #   micro-lock, micro-plan, micro-policy, micro-process, micro-store
+        # In-flight absorptions (auth, environment, git, storage) kept pending their PRs.
+        feature-set: ["", "micro-auth", "micro-git", "micro-events", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-registry", "micro-webhook", "micro-types", "micro-config", "micro-state", "micro-all"]
+>>>>>>> 22fcbbd (decrating: consolidated CI + docs stale-reference cleanup)
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable

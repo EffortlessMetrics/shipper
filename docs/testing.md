@@ -41,9 +41,7 @@ cargo nextest run --workspace --all-features --profile ci
 ```bash
 cargo test -p shipper           # core library
 cargo test -p shipper-cli       # CLI + integration tests
-cargo test -p shipper-plan      # any microcrate
-cargo test -p shipper-levels    # release-level grouping
-cargo test -p shipper-cargo-failure  # failure classifier
+cargo test -p shipper-cargo-failure  # example microcrate (failure classifier)
 ```
 
 ### Specific test binary or name
@@ -183,9 +181,9 @@ Mutation testing uses [cargo-mutants](https://mutants.rs/) and runs weekly in CI
 cargo install cargo-mutants
 
 # Run against the same crates as CI
+# Note: shipper-plan, shipper-policy, shipper-levels were removed during
+# decrating (PRs #54, #56) and are now modules inside shipper/.
 cargo mutants --no-shuffle \
-  -p shipper-plan \
-  -p shipper-levels \
   -p shipper-schema \
   -p shipper-duration \
   -p shipper-types \
