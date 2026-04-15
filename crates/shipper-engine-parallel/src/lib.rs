@@ -10,7 +10,7 @@ use shipper_cargo as cargo;
 use shipper_execution_core::{backoff_delay, classify_cargo_failure, pkg_key, update_state_locked};
 
 use shipper_events as events;
-use shipper_registry::RegistryClient;
+use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_state as state;
 use shipper_types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, PackageEvidence,

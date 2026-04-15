@@ -5,7 +5,7 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 
-use crate::types::{ReadinessConfig, ReadinessEvidence, ReadinessMethod, Registry};
+use shipper_types::{ReadinessConfig, ReadinessEvidence, ReadinessMethod, Registry};
 
 #[derive(Debug, Clone)]
 pub struct RegistryClient {

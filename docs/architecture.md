@@ -85,7 +85,7 @@ shipper  (facade — re-exports all microcrates)
   ├── shipper-lock            (optional)
   ├── shipper-plan            (optional)
   ├── shipper-process         (optional)
-  ├── shipper-registry        (optional)
+  ├── shipper-registry
   ├── shipper-state           (optional)
   ├── shipper-storage         (optional)
   └── shipper-store           (optional)
@@ -392,7 +392,7 @@ The facade crate uses Cargo features to gate microcrate dependencies:
 ```
 micro-auth, micro-git, micro-events, micro-lock, micro-encrypt,
 micro-environment, micro-storage, micro-cargo, micro-plan,
-micro-registry, micro-process, micro-policy, micro-webhook,
+micro-process, micro-policy, micro-webhook,
 micro-types, micro-config, micro-state, micro-store, micro-parallel
 ```
 

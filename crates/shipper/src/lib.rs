@@ -154,12 +154,9 @@ pub mod plan;
 #[cfg(not(feature = "micro-plan"))]
 pub mod plan;
 
-/// Registry API and sparse-index client.
-#[cfg(feature = "micro-registry")]
-#[path = "registry_micro.rs"]
-pub mod registry;
-#[cfg(not(feature = "micro-registry"))]
-pub mod registry;
+/// Cargo registry API and sparse-index client.
+/// Re-exported from the [`shipper_registry`] crate (see [`crate::registry`]).
+pub use shipper_registry as registry;
 
 /// Layer 2: runtime context (pure data). Houses `runtime::policy`, etc.
 pub(crate) mod runtime;
