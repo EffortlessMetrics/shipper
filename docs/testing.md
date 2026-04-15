@@ -185,7 +185,6 @@ cargo install cargo-mutants
 # Run against the same crates as CI
 cargo mutants --no-shuffle \
   -p shipper-plan \
-  -p shipper-policy \
   -p shipper-levels \
   -p shipper-schema \
   -p shipper-duration \

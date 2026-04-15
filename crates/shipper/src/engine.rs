@@ -31,8 +31,8 @@ pub trait Reporter {
     fn error(&mut self, msg: &str);
 }
 
-pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::policy::PolicyEffects {
-    crate::policy::policy_effects(opts)
+pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::runtime::policy::PolicyEffects {
+    crate::runtime::policy::policy_effects(opts)
 }
 
 /// Run preflight verification checks before publishing.

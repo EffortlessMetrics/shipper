@@ -40,7 +40,6 @@ CLI binary, and 29 focused microcrates that each own a single responsibility.
 | `shipper-lock` | File-based advisory lock to prevent concurrent publishes |
 | `shipper-output-sanitizer` | Redact tokens and secrets from captured cargo output |
 | `shipper-plan` | Topological sort of publishable crates into a deterministic plan |
-| `shipper-policy` | Evaluate publish-policy presets (Safe / Balanced / Fast) |
 | `shipper-process` | Cross-platform command execution with timeout support |
 | `shipper-progress` | TTY-aware progress bars for CLI publish workflows |
 | `shipper-registry` | HTTP client for registry REST API (version check, owners) |
@@ -87,7 +86,6 @@ shipper  (facade — re-exports all microcrates)
   ├── shipper-git             (optional)
   ├── shipper-lock            (optional)
   ├── shipper-plan            (optional)
-  ├── shipper-policy          (optional)
   ├── shipper-process         (optional)
   ├── shipper-registry        (optional)
   ├── shipper-state           (optional)
@@ -135,7 +133,6 @@ shipper-engine-parallel
   ├── shipper-cargo
   ├── shipper-events
   ├── shipper-plan
-  ├── shipper-policy
   ├── shipper-registry
   ├── shipper-retry
   ├── shipper-state
@@ -157,7 +154,6 @@ shipper-store
 
 shipper-events ──► shipper-types
 shipper-environment ──► shipper-types
-shipper-policy ──► shipper-types
 shipper-registry ──► shipper-sparse-index
 shipper-cargo ──► shipper-output-sanitizer
 
@@ -336,7 +332,6 @@ wave concurrency.
 | `shipper-plan` | Read workspace, filter publishable crates, topological sort |
 | `shipper-levels` | Group packages by dependency depth for parallel wave planning |
 | `shipper-chunking` | Subdivide waves into bounded-size chunks (`--max-concurrent`) |
-| `shipper-policy` | Evaluate policy presets and derive effective check/verify flags |
 
 ### State & persistence layer
 

@@ -1,5 +1,0 @@
----
-source: crates/shipper-policy/tests/snapshot_tests.rs
-expression: "format!(\"{:?}\", PolicyKind::Fast)"
----
-Fast

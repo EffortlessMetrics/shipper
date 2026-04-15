@@ -1019,20 +1019,40 @@ pub fn run_publish_parallel(
     Ok(all_receipts)
 }
 
-fn policy_effects(opts: &RuntimeOptions) -> shipper_policy::PolicyEffects {
-    let policy = match opts.policy {
-        shipper_types::PublishPolicy::Safe => shipper_policy::PolicyKind::Safe,
-        shipper_types::PublishPolicy::Balanced => shipper_policy::PolicyKind::Balanced,
-        shipper_types::PublishPolicy::Fast => shipper_policy::PolicyKind::Fast,
-    };
+/// Derived policy behavior for the parallel engine.
+///
+/// Mirrors the policy evaluation that previously lived in the `shipper-policy`
+/// microcrate. Inlined here so this crate no longer depends on `shipper-policy`
+/// after Phase 2 of the decrating plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PolicyEffects {
+    pub run_dry_run: bool,
+    pub check_ownership: bool,
+    pub strict_ownership: bool,
+    pub readiness_enabled: bool,
+}
 
-    shipper_policy::evaluate(
-        policy,
-        opts.no_verify,
-        opts.skip_ownership_check,
-        opts.strict_ownership,
-        opts.readiness.enabled,
-    )
+fn policy_effects(opts: &RuntimeOptions) -> PolicyEffects {
+    match opts.policy {
+        shipper_types::PublishPolicy::Safe => PolicyEffects {
+            run_dry_run: !opts.no_verify,
+            check_ownership: !opts.skip_ownership_check,
+            strict_ownership: opts.strict_ownership,
+            readiness_enabled: opts.readiness.enabled,
+        },
+        shipper_types::PublishPolicy::Balanced => PolicyEffects {
+            run_dry_run: !opts.no_verify,
+            check_ownership: false,
+            strict_ownership: false,
+            readiness_enabled: opts.readiness.enabled,
+        },
+        shipper_types::PublishPolicy::Fast => PolicyEffects {
+            run_dry_run: false,
+            check_ownership: false,
+            strict_ownership: false,
+            readiness_enabled: false,
+        },
+    }
 }
 
 #[cfg(test)]

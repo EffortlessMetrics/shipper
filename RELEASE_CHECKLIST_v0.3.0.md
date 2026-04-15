@@ -46,7 +46,6 @@
   # Layer 2
   cargo publish -p shipper-environment --dry-run
   cargo publish -p shipper-events --dry-run
-  cargo publish -p shipper-policy --dry-run
   cargo publish -p shipper-config --dry-run
 
   # Layer 3
