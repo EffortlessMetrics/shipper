@@ -1,69 +1,31 @@
-//! Git operations for shipper.
+//! Git context queries — commit/branch/tag/changed-files/remote.
 //!
-//! This crate provides git operations needed for publish verification
-//! and context capture, including cleanliness checks and commit info.
+//! This module aggregates the repo-introspection helpers that were previously
+//! in the standalone `shipper-git` crate. The [`GitContext`] data type is
+//! defined in [`shipper_types`]; this file only provides query functions that
+//! populate it.
 //!
-//! # Example
-//!
-//! ```
-//! use shipper_git::{GitContext, is_git_clean, get_git_context};
-//! use std::path::Path;
-//!
-//! // Check if the git working tree is clean
-//! let clean = is_git_clean(Path::new(".")).unwrap_or(false);
-//!
-//! // Get git context for audit trail
-//! let context = get_git_context(Path::new("."));
-//! if let Some(commit) = context.commit {
-//!     println!("Current commit: {}", commit);
-//! }
-//! ```
+//! Cleanliness checks live in the sibling [`super::cleanliness`] module.
+//! `SHIPPER_GIT_BIN` override variants live in [`super::bin_override`].
 
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 
-/// Git context information for audit trail
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GitContext {
-    /// Current commit hash
-    pub commit: Option<String>,
-    /// Current branch name
-    pub branch: Option<String>,
-    /// Current tag (if on a tag)
-    pub tag: Option<String>,
-    /// Whether the working tree is dirty
-    pub dirty: Option<bool>,
-}
+use crate::types::GitContext;
 
-impl GitContext {
-    /// Create a new empty git context
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Check if we have commit information
-    pub fn has_commit(&self) -> bool {
-        self.commit.is_some()
-    }
-
-    /// Check if the working tree is dirty
-    pub fn is_dirty(&self) -> bool {
-        self.dirty.unwrap_or(true)
-    }
-
-    /// Get a short commit hash (first 7 characters)
-    pub fn short_commit(&self) -> Option<&str> {
-        self.commit
-            .as_ref()
-            .map(|c| if c.len() > 7 { &c[..7] } else { c.as_str() })
-    }
-}
-
-/// Check if the git working tree is clean (no uncommitted changes)
-pub fn is_git_clean(path: &Path) -> Result<bool> {
+/// Default-path porcelain cleanliness check with the ORIGINAL `shipper-git`
+/// error phrasing.
+///
+/// Exposed `pub(super)` so that:
+///   1) [`super::cleanliness::is_git_clean_default`] can delegate to it, and
+///   2) the legacy tests in this module keep their error-text assertions.
+///
+/// Note: `super::cleanliness::is_git_clean` wraps this again with a
+/// `git status failed:` prefix for CLI backward-compatibility.
+#[allow(dead_code)]
+pub(super) fn is_git_clean(path: &Path) -> Result<bool> {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(path)
@@ -81,8 +43,8 @@ pub fn is_git_clean(path: &Path) -> Result<bool> {
     Ok(output.stdout.is_empty())
 }
 
-/// Check if we're inside a git repository
-pub fn is_git_repo(path: &Path) -> bool {
+/// Check if `path` is inside a git repository.
+pub(super) fn is_git_repo(path: &Path) -> bool {
     Command::new("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(path)
@@ -91,8 +53,8 @@ pub fn is_git_repo(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Get the current git commit hash
-pub fn get_commit_hash(path: &Path) -> Result<String> {
+/// Get the current git commit hash.
+pub(super) fn get_commit_hash(path: &Path) -> Result<String> {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(path)
@@ -110,8 +72,8 @@ pub fn get_commit_hash(path: &Path) -> Result<String> {
     Ok(hash)
 }
 
-/// Get the current branch name
-pub fn get_branch(path: &Path) -> Result<Option<String>> {
+/// Get the current branch name. Returns `Ok(None)` for detached HEAD.
+pub(super) fn get_branch(path: &Path) -> Result<Option<String>> {
     let output = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(path)
@@ -132,8 +94,8 @@ pub fn get_branch(path: &Path) -> Result<Option<String>> {
     Ok(Some(branch))
 }
 
-/// Get the current tag (if on a tag)
-pub fn get_tag(path: &Path) -> Result<Option<String>> {
+/// Get the current exact-match tag, if any.
+pub(super) fn get_tag(path: &Path) -> Result<Option<String>> {
     let output = Command::new("git")
         .args(["describe", "--exact-match", "--tags"])
         .current_dir(path)
@@ -148,8 +110,11 @@ pub fn get_tag(path: &Path) -> Result<Option<String>> {
     Ok(Some(tag))
 }
 
-/// Get complete git context
-pub fn get_git_context(path: &Path) -> GitContext {
+/// Assemble a [`GitContext`] from the default-path queries.
+///
+/// Uses the shipper-git-crate semantics: `dirty` is set from [`is_git_clean`]
+/// (i.e. the ORIGINAL error phrasing path — not the CLI-wrapped one).
+pub(super) fn get_git_context(path: &Path) -> GitContext {
     let commit = get_commit_hash(path).ok();
     let branch = get_branch(path).ok().flatten();
     let tag = get_tag(path).ok().flatten();
@@ -163,8 +128,14 @@ pub fn get_git_context(path: &Path) -> GitContext {
     }
 }
 
-/// Ensure git working tree is clean (returns error if dirty)
-pub fn ensure_git_clean(path: &Path) -> Result<()> {
+/// Legacy cleanliness gate with the `shipper-git` ORIGINAL error phrasing.
+///
+/// The external-facing equivalent (with CLI-compatible phrasing) is
+/// [`super::cleanliness::ensure_git_clean`]. This function is retained only so
+/// the snapshot tests in this module and the legacy error-text-string tests
+/// keep working.
+#[allow(dead_code)]
+pub(super) fn ensure_git_clean(path: &Path) -> Result<()> {
     if !is_git_clean(path)? {
         return Err(anyhow::anyhow!(
             "git working tree has uncommitted changes. Use --allow-dirty to bypass."
@@ -173,13 +144,15 @@ pub fn ensure_git_clean(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Check if a tag exists for the current commit
-pub fn has_tag_for_commit(path: &Path) -> bool {
+/// Is there an exact-match tag on the current commit?
+#[allow(dead_code)]
+pub(super) fn has_tag_for_commit(path: &Path) -> bool {
     get_tag(path).ok().flatten().is_some()
 }
 
-/// Get the list of changed files (staged + unstaged)
-pub fn get_changed_files(path: &Path) -> Result<Vec<String>> {
+/// Get the list of changed files (staged + unstaged), parsed from `git status --porcelain`.
+#[allow(dead_code)]
+pub(super) fn get_changed_files(path: &Path) -> Result<Vec<String>> {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(path)
@@ -205,8 +178,9 @@ pub fn get_changed_files(path: &Path) -> Result<Vec<String>> {
     Ok(files)
 }
 
-/// Get remote URL for a given remote name
-pub fn get_remote_url(path: &Path, remote: &str) -> Result<Option<String>> {
+/// Get the URL configured for a named remote.
+#[allow(dead_code)]
+pub(super) fn get_remote_url(path: &Path, remote: &str) -> Result<Option<String>> {
     let output = Command::new("git")
         .args(["remote", "get-url", remote])
         .current_dir(path)
@@ -221,8 +195,9 @@ pub fn get_remote_url(path: &Path, remote: &str) -> Result<Option<String>> {
     Ok(Some(url))
 }
 
-/// Check if we're on a specific branch
-pub fn is_on_branch(path: &Path, branch_name: &str) -> bool {
+/// Are we on a specific branch by name?
+#[allow(dead_code)]
+pub(super) fn is_on_branch(path: &Path, branch_name: &str) -> bool {
     get_branch(path)
         .ok()
         .flatten()
@@ -230,8 +205,9 @@ pub fn is_on_branch(path: &Path, branch_name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Check if the current commit is tagged
-pub fn is_on_tag(path: &Path) -> bool {
+/// Is the current commit tagged?
+#[allow(dead_code)]
+pub(super) fn is_on_tag(path: &Path) -> bool {
     get_tag(path).ok().flatten().is_some()
 }
 
@@ -1761,7 +1737,7 @@ mod snapshot_tests {
     fn cleanliness_is_dirty_defaults_true() {
         let ctx = GitContext::new();
         // dirty=None => is_dirty() returns true
-        #[derive(Serialize)]
+        #[derive(serde::Serialize)]
         struct DirtyDefault {
             dirty_field: Option<bool>,
             is_dirty_result: bool,

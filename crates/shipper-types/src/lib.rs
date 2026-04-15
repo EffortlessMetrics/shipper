@@ -1163,12 +1163,43 @@ pub struct EnvironmentFingerprint {
 ///     dirty: Some(false),
 /// };
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GitContext {
     pub commit: Option<String>,
     pub branch: Option<String>,
     pub tag: Option<String>,
     pub dirty: Option<bool>,
+}
+
+impl GitContext {
+    /// Create a new empty git context.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether the context has commit information.
+    pub fn has_commit(&self) -> bool {
+        self.commit.is_some()
+    }
+
+    /// Whether the working tree is dirty.
+    ///
+    /// When `dirty` is `None`, this defaults to `true` (treat unknown as dirty) to
+    /// preserve the safe-by-default semantics of the original `shipper-git` crate.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.unwrap_or(true)
+    }
+
+    /// Get a short commit hash (first 7 bytes).
+    ///
+    /// Returns `None` if the context has no commit. The original `shipper-git`
+    /// implementation sliced by byte index assuming ASCII hex; we preserve the
+    /// same behavior here (input shorter than 7 bytes is returned verbatim).
+    pub fn short_commit(&self) -> Option<&str> {
+        self.commit
+            .as_ref()
+            .map(|c| if c.len() > 7 { &c[..7] } else { c.as_str() })
+    }
 }
 
 /// Complete receipt for a publish operation.

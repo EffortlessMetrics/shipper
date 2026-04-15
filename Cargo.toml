@@ -8,7 +8,6 @@ members = [
   "crates/shipper-encrypt",
   "crates/shipper-types",
   "crates/shipper-config",
-  "crates/shipper-git",
   "crates/shipper-registry",
   "crates/shipper-sparse-index",
   "crates/shipper-cargo-failure",

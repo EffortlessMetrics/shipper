@@ -11,6 +11,7 @@
 
 pub(crate) mod auth;
 pub mod cargo;
+pub(crate) mod git;
 pub mod lock;
 pub(crate) mod process;
 

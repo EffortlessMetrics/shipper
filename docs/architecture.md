@@ -40,7 +40,7 @@ CLI binary, and 29 focused microcrates that each own a single responsibility.
 | `shipper-environment` | _Absorbed — now `shipper::runtime::environment` module (PR #65)_ |
 | `shipper-events` | _Absorbed — now `shipper::state::events` module (PR #60)_ |
 | `shipper-execution-core` | _Absorbed — now `shipper::runtime::execution` module (PR #69)_ |
-| `shipper-git` | Git operations (cleanliness check, branch/commit context) |
+| `shipper-git` | _Absorbed — now `shipper::ops::git` module (decrating Phase 2)_ |
 | `shipper-levels` | _Absorbed — now `shipper::plan::levels` module (PR #56)_ |
 | `shipper-lock` | _Absorbed — now `shipper::ops::lock` module (PR #52)_ |
 | `shipper-output-sanitizer` | Redact tokens and secrets from captured cargo output |
@@ -88,7 +88,6 @@ shipper  (facade — re-exports all microcrates)
   ├── shipper-output-sanitizer
   ├── shipper-sparse-index
   ├── shipper-cargo           (optional)
-  ├── shipper-git             (optional)
   ├── shipper-registry
   └── shipper-sparse-index
 ```
@@ -115,7 +114,7 @@ shipper-cargo ──► shipper-output-sanitizer
 
 Leaf crates (zero shipper-* dependencies):
   shipper-cargo-failure, shipper-chunking,
-  shipper-duration, shipper-encrypt, shipper-git, shipper-levels,
+  shipper-duration, shipper-encrypt, shipper-levels,
   shipper-lock, shipper-output-sanitizer, shipper-process,
   shipper-retry, shipper-schema,
   shipper-sparse-index, shipper-webhook
@@ -206,12 +205,12 @@ restarted.
 Each concern lives in its own crate with a minimal public API. This provides:
 
 - **Fast incremental builds** — changing `shipper-retry` does not recompile
-  `shipper-git`.
+  unrelated microcrates like `shipper-webhook`.
 - **Independent testability** — each crate has its own unit tests with no
   reliance on the full workspace.
-- **Optional composition** — the facade uses Cargo features (`micro-git`,
-  `micro-events`, etc.) to make most microcrates optional, enabling slim builds
-  for downstream consumers.
+- **Optional composition** — the facade uses Cargo features (`micro-encrypt`,
+  `micro-webhook`, etc.) to make most microcrates optional, enabling slim
+  builds for downstream consumers.
 
 Fifteen of the 29 microcrates are **leaf crates** with zero internal
 dependencies, enforcing loose coupling.
@@ -308,7 +307,6 @@ wave concurrency.
 |-------|------|
 | `shipper-registry` | HTTP client for registry API (version existence, owner queries) |
 | `shipper-sparse-index` | Derive sparse-index paths and check index content for versions |
-| `shipper-git` | Check working-tree cleanliness, capture branch/commit context |
 | `shipper-lock` | File-based advisory lock with configurable staleness timeout |
 
 ### Types & utilities

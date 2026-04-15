@@ -16,7 +16,6 @@ categories = ["development-tools", "development-tools::build-utils"]
 # Workspace microcrates
 shipper-retry = { path = "../shipper-retry" }
 shipper-encrypt = { path = "../shipper-encrypt" }
-shipper-git = { path = "../shipper-git" }
 shipper-registry = { path = "../shipper-registry" }
 shipper-webhook = { path = "../shipper-webhook" }
 shipper-types = { path = "../shipper-types" }
