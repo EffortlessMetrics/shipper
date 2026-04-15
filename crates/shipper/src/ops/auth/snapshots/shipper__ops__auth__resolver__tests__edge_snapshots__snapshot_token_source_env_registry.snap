@@ -1,0 +1,5 @@
+---
+source: crates/shipper/src/ops/auth/resolver.rs
+expression: "TokenSource::EnvRegistry"
+---
+EnvRegistry

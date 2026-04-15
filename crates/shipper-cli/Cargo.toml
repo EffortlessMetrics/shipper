@@ -31,7 +31,6 @@ workspace = true
 
 [features]
 default = ["micro-all"]
-micro-auth = ["shipper/micro-auth"]
 micro-git = ["shipper/micro-git"]
 micro-encrypt = ["shipper/micro-encrypt"]
 micro-environment = ["shipper/micro-environment"]

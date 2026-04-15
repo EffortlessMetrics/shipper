@@ -91,13 +91,23 @@
 //!
 //! For command-line usage, see the [shipper-cli crate](https://crates.io/crates/shipper-cli).
 
+/// Layer-1 absorbed building blocks (previously standalone microcrates).
+pub(crate) mod ops;
+
 /// Token resolution: `CARGO_REGISTRY_TOKEN` → `CARGO_REGISTRIES_<NAME>_TOKEN`
 /// → `$CARGO_HOME/credentials.toml`.
-#[cfg(feature = "micro-auth")]
-#[path = "auth_micro.rs"]
-pub mod auth;
-#[cfg(not(feature = "micro-auth"))]
-pub mod auth;
+///
+/// Facade re-exporting the crate-private `ops::auth` module so external
+/// consumers keep using `shipper::auth::*` after the `shipper-auth`
+/// microcrate absorption.
+pub mod auth {
+    pub use crate::ops::auth::{
+        AuthInfo, CARGO_HOME_ENV, CARGO_REGISTRIES_TOKEN_PREFIX, CARGO_REGISTRY_TOKEN_ENV,
+        CRATES_IO_REGISTRY, CREDENTIALS_FILE, TokenSource, cargo_home_path, detect_auth_type,
+        has_token, is_trusted_publishing_available, list_configured_registries, mask_token,
+        resolve_auth_info, resolve_token,
+    };
+}
 
 /// Workspace metadata and publish execution via cargo.
 #[cfg(feature = "micro-cargo")]
@@ -132,12 +142,6 @@ pub mod environment;
 pub mod git;
 #[cfg(not(feature = "micro-git"))]
 pub mod git;
-
-/// Layer 1: I/O primitives (filesystem, git, cargo, OS, network).
-///
-/// Scaffolded in PR #49 and progressively populated as microcrates are
-/// absorbed. See `crates/shipper/src/ops/CLAUDE.md` for layer rules.
-pub(crate) mod ops;
 
 /// Distributed lock to prevent concurrent publishes.
 ///

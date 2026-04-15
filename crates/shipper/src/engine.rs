@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
-use crate::auth;
 use crate::cargo;
 use crate::environment;
 use crate::state::events;
 use crate::git;
 use crate::lock;
+use crate::ops::auth;
 use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
 use crate::state::execution_state as state;

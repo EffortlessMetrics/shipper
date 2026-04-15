@@ -30,7 +30,6 @@ CLI binary, and 29 focused microcrates that each own a single responsibility.
 
 | Crate | Purpose |
 |-------|---------|
-| `shipper-auth` | Token resolution (`CARGO_REGISTRY_TOKEN`, credentials.toml) |
 | `shipper-cargo` | Workspace metadata via `cargo_metadata` |
 | `shipper-cargo-failure` | Classify `cargo publish` stderr into typed failure categories |
 | `shipper-chunking` | _Absorbed — now `shipper::plan::chunking` module (PR #56)_ |
@@ -90,7 +89,6 @@ shipper  (facade — re-exports all microcrates)
   ├── shipper-execution-core
   ├── shipper-output-sanitizer
   ├── shipper-sparse-index
-  ├── shipper-auth            (optional, feature-gated)
   ├── shipper-cargo           (optional)
   ├── shipper-engine-parallel (optional)
   ├── shipper-environment     (optional)
@@ -165,7 +163,7 @@ shipper-registry ──► shipper-sparse-index
 shipper-cargo ──► shipper-output-sanitizer
 
 Leaf crates (zero shipper-* dependencies):
-  shipper-auth, shipper-cargo-failure, shipper-chunking,
+  shipper-cargo-failure, shipper-chunking,
   shipper-duration, shipper-encrypt, shipper-git, shipper-levels,
   shipper-lock, shipper-output-sanitizer, shipper-process,
   shipper-progress, shipper-retry, shipper-schema,
@@ -260,8 +258,8 @@ Each concern lives in its own crate with a minimal public API. This provides:
   `shipper-git`.
 - **Independent testability** — each crate has its own unit tests with no
   reliance on the full workspace.
-- **Optional composition** — the facade uses Cargo features (`micro-auth`,
-  `micro-git`, etc.) to make most microcrates optional, enabling slim builds
+- **Optional composition** — the facade uses Cargo features (`micro-git`,
+  `micro-events`, etc.) to make most microcrates optional, enabling slim builds
   for downstream consumers.
 
 Fifteen of the 29 microcrates are **leaf crates** with zero internal
@@ -358,7 +356,6 @@ wave concurrency.
 
 | Crate | Role |
 |-------|------|
-| `shipper-auth` | Resolve registry tokens from env vars and credentials.toml |
 | `shipper-registry` | HTTP client for registry API (version existence, owner queries) |
 | `shipper-sparse-index` | Derive sparse-index paths and check index content for versions |
 | `shipper-git` | Check working-tree cleanliness, capture branch/commit context |
@@ -409,11 +406,15 @@ encryption, webhooks, and output format. CLI flags always override
 The facade crate uses Cargo features to gate microcrate dependencies:
 
 ```
-micro-auth, micro-git, micro-events, micro-lock, micro-encrypt,
+micro-git, micro-events, micro-lock, micro-encrypt,
 micro-environment, micro-storage, micro-cargo, micro-plan,
 micro-process, micro-policy, micro-webhook,
 micro-types, micro-config, micro-state, micro-store, micro-parallel
 ```
+
+Token resolution is provided in-crate by `crate::ops::auth`
+(re-exported as `shipper::auth::*`); previously this was the
+standalone `shipper-auth` microcrate.
 
 `micro-all` enables everything and is the default for `shipper-cli`. Downstream
 library consumers can depend on `shipper` with only the features they need,

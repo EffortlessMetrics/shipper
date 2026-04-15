@@ -1,0 +1,5 @@
+---
+source: crates/shipper/src/ops/auth/resolver.rs
+expression: "format!(\"detected={}, source={}, has_token={}\", auth.detected, auth.source,\nauth.token.is_some())"
+---
+detected=false, source=none, has_token=false

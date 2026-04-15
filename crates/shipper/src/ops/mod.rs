@@ -2,9 +2,13 @@
 //!
 //! This layer must not import from `engine`, `plan`, `state`, or `runtime`.
 //! See `CLAUDE.md` in this folder for the architectural rules.
+//!
+//! Modules here were previously standalone microcrates (e.g. `shipper-auth`)
+//! and have been pulled into the core `shipper` crate as crate-private
+//! modules. External consumers can still reach the public surface via
+//! re-exports at the crate root (e.g. `pub use crate::ops::auth;` in
+//! `lib.rs`).
 
-// Subsystem modules are added here as they are absorbed from microcrates.
-// `shipper::lock` is re-exported from `crate::ops::lock` in `lib.rs` to
-// preserve the historical public API surface.
+pub(crate) mod auth;
 pub mod lock;
 pub(crate) mod process;

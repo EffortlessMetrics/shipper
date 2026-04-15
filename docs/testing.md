@@ -92,7 +92,7 @@ tests.
 cargo test -p shipper-cli --test bdd_publish
 
 # With a specific micro-backend feature set
-cargo test -p shipper-cli --test bdd_publish --features micro-auth
+cargo test -p shipper-cli --test bdd_publish --features micro-git
 
 # Other BDD suites
 cargo test -p shipper-cli --test bdd_preflight
@@ -188,7 +188,6 @@ cargo mutants --no-shuffle \
   -p shipper-duration \
   -p shipper-types \
   -p shipper-config \
-  -p shipper-auth \
   -- --all-features
 ```
 

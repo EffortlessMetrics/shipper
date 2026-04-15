@@ -9,7 +9,6 @@ members = [
   "crates/shipper-encrypt",
   "crates/shipper-types",
   "crates/shipper-events",
-  "crates/shipper-auth",
   "crates/shipper-state",
   "crates/shipper-config",
   "crates/shipper-git",
