@@ -26,49 +26,56 @@
 
 ## Release Execution
 
-- [ ] Commit all changes with message "release: v0.3.0-rc.1"
-- [ ] Tag the commit: `git tag -a v0.3.0-rc.1 -m "Release v0.3.0-rc.1"`
-- [ ] Push commit and tag: `git push origin main --tags`
-- [ ] Publish to crates.io (dry-run first):
-  ```bash
-  # Layer 0 — no workspace dependencies
-  # (shipper-schema folded into shipper-types::schema in Phase 6)
-  cargo publish -p shipper-duration --dry-run
-  cargo publish -p shipper-retry --dry-run
-  cargo publish -p shipper-output-sanitizer --dry-run
-  cargo publish -p shipper-sparse-index --dry-run
-  cargo publish -p shipper-encrypt --dry-run
-  cargo publish -p shipper-cargo-failure --dry-run
-  cargo publish -p shipper-webhook --dry-run
-  cargo publish -p shipper-git --dry-run
+The release is driven by `.github/workflows/release.yml`, which dogfoods
+Shipper itself (`shipper plan` → `shipper preflight` → `shipper publish`).
 
-  # Layer 1 — depend only on Layer 0
-  cargo publish -p shipper-types --dry-run
-  cargo publish -p shipper-cargo --dry-run
-  cargo publish -p shipper-registry --dry-run
+### Pre-tag rehearsal
 
-  # Layer 2
-  cargo publish -p shipper-config --dry-run
+- [ ] Trigger the `release-rehearse` workflow_dispatch job from the ref that
+      is about to be tagged. It runs `shipper plan --verbose` and
+      `shipper preflight` with no publishing.
+- [ ] Download the `shipper-rehearse-<run_id>` artifact and review
+      `.shipper/plan.txt`. Confirm the topological order matches
+      `docs/release-v0.3.0-rc.1-manifest.md`:
+      `shipper-duration, shipper-retry, shipper-encrypt,
+      shipper-output-sanitizer, shipper-cargo-failure, shipper-sparse-index,
+      shipper-webhook, shipper-types, shipper-registry, shipper-config,
+      shipper, shipper-cli`.
 
-  # Layer 5 (engine-parallel was absorbed into shipper::engine::parallel)
+### Tag & release
 
-  # Layer 6
-  cargo publish -p shipper --dry-run
+- [ ] Commit all changes with message `release: v0.3.0-rc.1`.
+- [ ] Tag the commit: `git tag -a v0.3.0-rc.1 -m "Release v0.3.0-rc.1"`.
+- [ ] Push commit and tag: `git push origin main --tags`.
+- [ ] The `v*.*.*` tag push triggers `.github/workflows/release.yml`:
+    - `msrv-gate` + `build-binaries` run in parallel.
+    - `publish-crates-io` runs after `msrv-gate`:
+      `shipper plan` → upload `.shipper/` → `shipper preflight`
+      → upload `.shipper/` → `shipper publish` → `cargo search` verification
+      → upload final `.shipper/` state.
+    - `create-release` runs only after `publish-crates-io` succeeds and
+      attaches platform binaries + the final `.shipper/` state tarball.
+- [ ] Do **not** run `cargo publish` by hand. The engine handles rate-limit
+      backoff, readiness checks, and state persistence; manual publishes
+      desync the ledger.
 
-  # Layer 7
-  cargo publish -p shipper-cli --dry-run
-  ```
+### If the publish train is interrupted
 
-  _Removed during decrating: `shipper-lock`, `shipper-process`,
-  `shipper-levels`, `shipper-chunking`, `shipper-policy`,
-  `shipper-config-runtime`, `shipper-plan`, `shipper-store`,
-  `shipper-events`, `shipper-state`, `shipper-execution-core`,
-  `shipper-environment`, `shipper-progress`, `shipper-storage`._
-  The remaining order is provisional and will be finalized in Phase 8 once
-  in-flight absorptions settle.
+- [ ] Identify the failed run ID (GitHub Actions UI).
+- [ ] Confirm the `shipper-state-final` (or `shipper-state-preflight`)
+      artifact was uploaded by that run.
+- [ ] Trigger the `release-resume` workflow_dispatch job with:
+    - `mode = resume`
+    - `ref = <the tag that failed>` (MUST be identical; plan-ID check
+       guards against workspace drift)
+    - `artifact_run_id = <failed run ID>`
+- [ ] Shipper skips already-published crates and continues from the first
+      pending/failed entry.
 
 ## Post-Release
 
-- [ ] Create GitHub release with release notes
-- [ ] Verify `cargo install shipper-cli` works
-- [ ] Monitor for issues
+- [ ] GitHub Release is created automatically after publish succeeds; verify
+      it lists all platform binaries and the `shipper-release-state.tar.gz`
+      evidence bundle.
+- [ ] Verify `cargo install shipper-cli` works from the published crate.
+- [ ] Monitor for issues.

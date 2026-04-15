@@ -670,6 +670,14 @@ Each member's `Cargo.toml` uses `dep.workspace = true`.
 - Run `cargo publish --dry-run` for all 13 crates in topo order
 - Update `RELEASE_CHECKLIST_v0.3.0.md` with the new publish sequence
 - Cargo 1.90 multi-package publish is available (`cargo publish --workspace`) but is **non-atomic** — partial publish failures must be recoverable. Document the recovery procedure in the release checklist.
+- **Release workflow (done):** `.github/workflows/release.yml` now dogfoods
+  Shipper itself. The tag-push path runs `shipper plan` → `shipper preflight`
+  → `shipper publish` instead of raw `cargo publish`, persists `.shipper/`
+  as an artifact at every stage, and gates the GitHub Release on crates.io
+  publish success. Two `workflow_dispatch` jobs complement the main path:
+  `release-rehearse` (plan + preflight only — use before tagging) and
+  `release-resume` (downloads a prior `.shipper/` artifact and runs
+  `shipper resume`). See §6 of `release-v0.3.0-rc.1-manifest.md`.
 
 **Topological publish order:**
 ```

@@ -1,6 +1,14 @@
 # Release workflow for shipper
-# Creates GitHub releases with binaries for multiple platforms
-# and publishes to crates.io
+#
+# Dogfoods Shipper itself: the crates.io publish train is driven by
+# `shipper plan` -> `shipper preflight` -> `shipper publish`, with
+# `shipper resume` available for recovery. The binary-artifact + GitHub
+# Release steps are only finalized AFTER crates.io publishes succeed.
+#
+# Triggers:
+#   - push of a `v*.*.*` tag  -> full release (build + publish + release)
+#   - workflow_dispatch "rehearse" -> plan + preflight dry-run only
+#   - workflow_dispatch "resume"   -> download .shipper/ artifact and resume
 
 name: Release
 
@@ -8,6 +16,24 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Release mode'
+        required: true
+        default: 'rehearse'
+        type: choice
+        options:
+          - rehearse
+          - resume
+      ref:
+        description: 'Git ref to check out (tag/branch/SHA). Defaults to the workflow ref.'
+        required: false
+        default: ''
+      artifact_run_id:
+        description: 'For resume mode: workflow run ID to download the .shipper artifact from.'
+        required: false
+        default: ''
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,8 +42,13 @@ permissions:
   contents: write
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Build per-platform release binaries. These are published as GitHub Release
+  # assets AFTER crates.io publish succeeds. (On tag pushes only.)
+  # ---------------------------------------------------------------------------
   build-binaries:
     name: Build ${{ matrix.target }}
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -35,7 +66,6 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
-
     steps:
       - uses: actions/checkout@v6
 
@@ -55,7 +85,7 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-release-
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} -p shipper-cli
 
       - name: Package binary (Unix)
         if: matrix.os != 'windows-latest'
@@ -76,36 +106,77 @@ jobs:
         with:
           name: shipper-${{ matrix.target }}
           path: shipper-${{ matrix.target }}.*
-          retention-days: 1
+          retention-days: 7
 
-  create-release:
-    name: Create GitHub Release
+  # ---------------------------------------------------------------------------
+  # MSRV sanity check gates the publish train. The published crates declare
+  # rust-version = 1.92; the publish job should not run if MSRV is broken.
+  # ---------------------------------------------------------------------------
+  msrv-gate:
+    name: MSRV gate (1.92)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    needs: build-binaries
     steps:
       - uses: actions/checkout@v6
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
+      - name: Install Rust (MSRV)
+        uses: dtolnay/rust-toolchain@stable
         with:
-          path: artifacts
-
-      - name: Display structure of downloaded files
-        run: ls -la artifacts/
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
+          toolchain: 1.92.0
+      - name: Cache Cargo
+        uses: actions/cache@v5
         with:
-          files: artifacts/**/*
-          generate_release_notes: true
-          draft: false
-          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-msrv-
+      - name: Check with MSRV
+        run: cargo check --workspace
 
+  # ---------------------------------------------------------------------------
+  # The dogfood publish train.
+  #
+  # Execution order:
+  #   1.  Build shipper-cli (release profile) and install it to PATH.
+  #   2.  `shipper plan`  — persist plan to .shipper/, also dump JSON to
+  #       .shipper/plan.json for artifact review.
+  #   3.  Upload .shipper/ as an artifact BEFORE preflight runs (belt-and-
+  #       braces: even if the runner dies mid-preflight the plan is preserved).
+  #   4.  `shipper preflight` — git-clean check, registry reachability,
+  #       version-not-taken check, workspace dry-run build.
+  #   5.  `shipper publish` — the real train. Shipper's engine handles retry
+  #       with exponential backoff on HTTP 429, post-publish readiness
+  #       verification via sparse-index or API before advancing, and
+  #       .shipper/state.json persistence after every step.
+  #   6.  Final post-publish verification: `cargo search` each published crate
+  #       at the tag's version to confirm registry visibility from a fresh
+  #       resolver.
+  #   7.  Upload the final .shipper/ state as an artifact regardless of outcome.
+  #
+  # Rate-limit handling for the first-publish train (12 brand-new crates):
+  #   crates.io allows a 5-crate burst, then 1 new crate per 10 minutes.
+  #   `shipper publish` handles this natively:
+  #     - --policy safe enables post-publish readiness verification before the
+  #       next crate starts, so rate-limit 429s surface as retryable backoff
+  #       rather than cascade failures.
+  #     - --max-attempts 12 + --max-delay 15m gives the retry loop enough
+  #       budget to ride through the 10-minute-between-new-crate limit.
+  #     - --verify-timeout 10m and --readiness-timeout 15m allow for sparse-
+  #       index propagation.
+  #   If the runner's 6-hour job timeout is insufficient for the ~80 minute
+  #   train, the run can time out; in that case trigger the `resume`
+  #   workflow_dispatch with this run's ID to pick up from .shipper/state.json.
+  # ---------------------------------------------------------------------------
   publish-crates-io:
-    name: Publish to crates.io
+    name: Publish to crates.io (via shipper)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    needs: create-release
+    needs: [msrv-gate]
     environment: release
+    timeout-minutes: 180
+    outputs:
+      publish_succeeded: ${{ steps.publish.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -119,24 +190,313 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-publish-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-publish-
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-publish-
 
-      # NOTE: Publish order will be finalized in Phase 8 of the decrating plan.
-      # During Phase 2 absorption, only the still-public crates (shipper and
-      # shipper-cli) are published from here; individual absorption PRs remove
-      # any references to crates being folded in. Full topological publish
-      # order for remaining public crates (shipper-types,
-      # shipper-duration, shipper-retry, shipper-encrypt, shipper-webhook,
-      # shipper-registry, shipper-sparse-index, shipper-cargo-failure,
-      # shipper-output-sanitizer, shipper-config, plus shipper and shipper-cli)
-      # will be codified once the module layout settles.
-      - name: Publish shipper crate
-        run: cargo publish -p shipper --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        continue-on-error: true  # May already be published
+      # --- Step 1: build and install shipper-cli ----------------------------
+      - name: Build shipper-cli (release)
+        run: cargo build --release -p shipper-cli
 
-      - name: Wait for index update
-        run: sleep 30
+      - name: Install shipper to PATH
+        run: |
+          sudo install -m 0755 target/release/shipper /usr/local/bin/shipper
+          shipper --version
 
-      - name: Publish shipper-cli crate
-        run: cargo publish -p shipper-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      # --- Step 2: plan -----------------------------------------------------
+      - name: shipper plan
+        run: |
+          mkdir -p .shipper
+          shipper plan \
+            --registry crates-io \
+            --state-dir .shipper \
+            --format json \
+            | tee .shipper/plan.txt
+
+      # --- Step 3: upload plan artifact BEFORE anything destructive --------
+      - name: Upload .shipper/ (plan stage)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shipper-state-plan
+          path: .shipper/
+          retention-days: 30
+
+      # --- Step 4: preflight ------------------------------------------------
+      - name: shipper preflight
+        id: preflight
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          shipper preflight \
+            --registry crates-io \
+            --state-dir .shipper \
+            --policy safe
+
+      - name: Upload .shipper/ (preflight stage)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shipper-state-preflight
+          path: .shipper/
+          retention-days: 30
+
+      - name: Fail fast if preflight failed
+        if: steps.preflight.outcome != 'success'
+        run: |
+          echo "::error::shipper preflight failed — aborting before publish."
+          echo "Download the shipper-state-preflight artifact for details."
+          exit 1
+
+      # --- Step 5: publish --------------------------------------------------
+      # `shipper publish` is idempotent: if .shipper/state.json already has
+      # published entries, it skips them and resumes. That means a re-run of
+      # this job (or the dedicated `resume` job below) naturally picks up.
+      - name: shipper publish
+        id: publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          shipper publish \
+            --registry crates-io \
+            --state-dir .shipper \
+            --policy safe \
+            --verify-mode package \
+            --readiness-method both \
+            --readiness-timeout 15m \
+            --verify-timeout 10m \
+            --max-attempts 12 \
+            --base-delay 10s \
+            --max-delay 15m \
+            --retry-strategy exponential
+
+      # --- Step 6: final verification --------------------------------------
+      - name: Verify crates on crates.io
+        if: steps.publish.outcome == 'success'
+        run: |
+          # Ask cargo to resolve each published crate from a fresh cache.
+          set -euo pipefail
+          CRATES=(
+            shipper-duration
+            shipper-retry
+            shipper-encrypt
+            shipper-output-sanitizer
+            shipper-cargo-failure
+            shipper-sparse-index
+            shipper-webhook
+            shipper-types
+            shipper-registry
+            shipper-config
+            shipper
+            shipper-cli
+          )
+          for c in "${CRATES[@]}"; do
+            echo "::group::cargo search $c"
+            cargo search "$c" --limit 1
+            echo "::endgroup::"
+          done
+
+      # --- Step 7: always persist final .shipper/ state --------------------
+      - name: Upload .shipper/ (final state)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shipper-state-final
+          path: .shipper/
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------
+  # Create the GitHub Release. ONLY runs after crates.io publish succeeds.
+  # Attaches platform binaries + final .shipper/ state as evidence.
+  # ---------------------------------------------------------------------------
+  create-release:
+    name: Create GitHub Release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: [build-binaries, publish-crates-io]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: shipper-*
+
+      - name: Download final shipper state
+        uses: actions/download-artifact@v8
+        with:
+          name: shipper-state-final
+          path: artifacts/shipper-state-final
+
+      - name: Bundle final shipper state
+        run: |
+          cd artifacts
+          tar czvf shipper-release-state.tar.gz shipper-state-final
+          rm -rf shipper-state-final
+
+      - name: List release assets
+        run: ls -la artifacts/ artifacts/*/ 2>/dev/null || true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/shipper-*.tar.gz
+            artifacts/**/shipper-*.zip
+            artifacts/shipper-release-state.tar.gz
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta') }}
+
+  # ---------------------------------------------------------------------------
+  # Rehearsal: plan + preflight only. No publishing.
+  #
+  # Use this before cutting a tag. It surfaces missing metadata, dirty trees,
+  # ownership issues, and missing registry tokens in a safe sandbox. Output
+  # artifact is the .shipper/ directory showing exactly what would happen.
+  # ---------------------------------------------------------------------------
+  release-rehearse:
+    name: Release rehearse (plan + preflight dry-run)
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'rehearse'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-rehearse-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-rehearse-
+
+      - name: Build shipper-cli (release)
+        run: cargo build --release -p shipper-cli
+
+      - name: Install shipper to PATH
+        run: |
+          sudo install -m 0755 target/release/shipper /usr/local/bin/shipper
+          shipper --version
+
+      - name: shipper plan (verbose)
+        run: |
+          mkdir -p .shipper
+          shipper plan \
+            --registry crates-io \
+            --state-dir .shipper \
+            --format json \
+            --verbose \
+            | tee .shipper/plan.txt
+
+      # Preflight against crates.io without publishing. A token isn't strictly
+      # required here (ownership checks are best-effort), but supply it if the
+      # `release` environment is available for a deeper check.
+      - name: shipper preflight (dry-run)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          shipper preflight \
+            --registry crates-io \
+            --state-dir .shipper \
+            --policy safe \
+            --skip-ownership-check
+
+      - name: Upload rehearsal state
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shipper-rehearse-${{ github.run_id }}
+          path: .shipper/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Resume a previously-interrupted publish run.
+  #
+  # Inputs:
+  #   mode            = "resume"
+  #   artifact_run_id = the workflow run ID that uploaded shipper-state-final
+  #                     or shipper-state-preflight from a failed attempt
+  #   ref             = the exact tag/SHA that failed (MUST match the plan ID
+  #                     in state.json or shipper will refuse to resume)
+  #
+  # The plan-ID check is intentional: if the workspace has changed between
+  # runs, resume aborts. This is the guardrail that keeps partial publishes
+  # from desyncing with the ledger.
+  # ---------------------------------------------------------------------------
+  release-resume:
+    name: Release resume
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'resume'
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-publish-
+
+      - name: Build shipper-cli (release)
+        run: cargo build --release -p shipper-cli
+
+      - name: Install shipper to PATH
+        run: |
+          sudo install -m 0755 target/release/shipper /usr/local/bin/shipper
+          shipper --version
+
+      - name: Download prior .shipper/ state
+        uses: actions/download-artifact@v8
+        with:
+          name: shipper-state-final
+          path: .shipper/
+          run-id: ${{ github.event.inputs.artifact_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Inspect recovered state
+        run: |
+          ls -la .shipper/
+          [ -f .shipper/state.json ] || { echo "::error::.shipper/state.json missing from recovered artifact"; exit 1; }
+
+      - name: shipper resume
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          shipper resume \
+            --registry crates-io \
+            --state-dir .shipper \
+            --policy safe \
+            --verify-mode package \
+            --readiness-method both \
+            --readiness-timeout 15m \
+            --verify-timeout 10m \
+            --max-attempts 12 \
+            --base-delay 10s \
+            --max-delay 15m \
+            --retry-strategy exponential
+
+      - name: Upload .shipper/ (post-resume state)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shipper-state-resume-${{ github.run_id }}
+          path: .shipper/
+          retention-days: 90

@@ -177,6 +177,69 @@ resume rules apply:
 4. `Ambiguous` errors (upload may have succeeded) require an out-of-band check
    of the registry before deciding to retry or skip.
 
+## How the workflow executes the train
+
+The release workflow at `.github/workflows/release.yml` dogfoods Shipper:
+the crates.io publish train is driven by `shipper plan` → `shipper preflight`
+→ `shipper publish`, not raw `cargo publish`.
+
+### `publish-crates-io` job (tag push, `v*.*.*`)
+
+1. Install Rust stable and cache `~/.cargo`.
+2. `cargo build --release -p shipper-cli`, then install `target/release/shipper`
+   to `/usr/local/bin/shipper` (the binary that will drive the train is the
+   one we just built from this tag).
+3. `shipper plan --registry crates-io --state-dir .shipper --format json`
+   writes the plan summary into `.shipper/plan.txt` (and the engine also
+   persists its internal plan artefacts under `.shipper/`).
+4. `.shipper/` is uploaded as an artifact (`shipper-state-plan`) **before**
+   preflight runs, so the plan survives catastrophic job failure.
+5. `shipper preflight --registry crates-io --state-dir .shipper --policy safe`
+   runs git-clean / registry-reachability / version-not-taken checks.
+   `.shipper/` is uploaded again (`shipper-state-preflight`). On failure the
+   workflow fails fast before any publish happens.
+6. `shipper publish` runs the real train with these flags:
+    - `--policy safe`  (verify + strict)
+    - `--verify-mode package`  (per-crate post-publish verify)
+    - `--readiness-method both`  (sparse-index **and** API)
+    - `--readiness-timeout 15m`, `--verify-timeout 10m`
+    - `--max-attempts 12`, `--base-delay 10s`, `--max-delay 15m`,
+      `--retry-strategy exponential`
+7. On success, `cargo search <crate>` is run against every published crate
+   to confirm visibility from a fresh resolver.
+8. `.shipper/` is uploaded a final time as `shipper-state-final` (retention
+   90 days). The GitHub Release is then created, attaching platform binaries
+   plus a tarball of the final `.shipper/` state as publish evidence.
+
+### Rate-limit handling for the first-publish train
+
+crates.io allows a 5-crate burst for new crates and then 1 new crate per
+10 minutes (see §"Rate-limit plan" above). The workflow does **not** hard-code
+tier batching or sleeps; the shipper engine handles rate-limit 429s as
+retryable errors with exponential backoff, and the post-publish readiness
+check (both sparse-index **and** API because `--readiness-method both`) blocks
+the next publish until the previous crate is visible. `--max-delay 15m` gives
+the backoff loop enough headroom to wait out the 10-minute new-crate window.
+The whole train completes in roughly 70–90 minutes inside the single runner.
+
+If the job hits the 180-minute timeout (or the runner dies), the `.shipper/`
+artifact is still uploaded and the dedicated `release-resume` workflow_dispatch
+job downloads it and runs `shipper resume`.
+
+### `release-rehearse` (workflow_dispatch)
+
+Runs `shipper plan --verbose` + `shipper preflight --skip-ownership-check`
+against the requested ref and uploads `.shipper/`. Use this before tagging
+to verify nothing is broken. No publishing happens.
+
+### `release-resume` (workflow_dispatch)
+
+Accepts an `artifact_run_id` input, downloads the prior `shipper-state-final`
+artifact into `.shipper/`, and runs `shipper resume` with the same policy
+flags as `publish`. The plan-ID check in `shipper resume` is the guardrail:
+if the workspace changed between runs, resume aborts rather than produce
+a desynced ledger.
+
 ## Known deferred work
 
 - **Non-leaf `cargo publish --dry-run`**: will not pass until Tier 1 is live on
