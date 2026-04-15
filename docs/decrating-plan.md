@@ -75,15 +75,28 @@ Independent of the publish question, having `auth.rs` (1212 LOC) AND `auth_micro
        └────→ shipper-types ←──────┴──────────┴──┴──────────────┴─┴──────────────┘
 ```
 
-### 3.1 The 13 surviving crates
+### 3.1 The 13 surviving crates — organized as TWO RINGS
+
+The 13 published crates fall into two conceptually distinct rings. This separation matters for how we document, market, and support them: ring 1 is "the product story you tell users," ring 2 is "useful narrow seams that happen to be on crates.io."
+
+#### Ring 1: real supported product surface (5 crates)
+
+These are what users should think of as "Shipper." Documentation, examples, marketing, and the CLI's `--help` output should center on these.
 
 | Crate | Class | Why it stays public |
 |-------|-------|---------------------|
-| `shipper` | Product | Library API surface + orchestration umbrella |
 | `shipper-cli` | Product | Installed binary entry point |
+| `shipper` | Product | Library API surface + orchestration umbrella |
 | `shipper-config` | Contract | `.shipper.toml` schema + parsing/merging |
 | `shipper-types` | Contract | Shared DTOs (ReleaseSpec, Receipt, etc.) embedders couple to |
-| `shipper-schema` | Contract | State-file schema versioning (verify isn't subsumed by `shipper-types`) |
+| `shipper-schema` | Contract | State-file schema versioning *(audit in Phase 6 — may fold into `shipper-types::schema`, dropping ring 1 to 4 crates)* |
+
+#### Ring 2: published support crates (8 crates)
+
+These stay published because the boundary is narrow, useful, and cheap to keep stable — but they are NOT the product story. Users may pull them transitively or pick them up individually if they have a focused need. They get docs.rs pages and semver promises, but README narrative around them is minimal.
+
+| Crate | Class | Why it stays public |
+|-------|-------|---------------------|
 | `shipper-duration` | Utility | Generic duration parsing — reusable |
 | `shipper-retry` | Utility | Generic retry/backoff with jitter — reusable |
 | `shipper-encrypt` | Utility | State file encryption — narrow, stable |
@@ -92,6 +105,12 @@ Independent of the publish question, having `auth.rs` (1212 LOC) AND `auth_micro
 | `shipper-sparse-index` | Integration | Sparse-index protocol — narrow, reusable |
 | `shipper-cargo-failure` | Leaf | Cargo error classification — stable, reusable |
 | `shipper-output-sanitizer` | Leaf | ANSI strip / output normalization — narrow leaf |
+
+### 3.1.1 Why two rings, not one flat list
+
+A boundary deserves to be a published crate when it is worth **a crates.io page, a semver promise, a permanently-owned name, and ongoing support**. Ring 1 crates clear that bar AND form the product narrative. Ring 2 crates clear the support bar but don't carry product narrative. Everything not in either ring becomes an SRP module under an owner crate — folder boundary instead of crate boundary, `pub(crate)` instead of `pub`, no semver tax.
+
+The two-ring framing also satisfies the "slightly too microcrated" instinct in a healthy way: we keep 8 narrow leaves as published seams (more than a strict-minimum design would), but we stop pretending orchestration shards (`shipper-engine-parallel`, `shipper-plan`, `shipper-state`, `shipper-store`, etc.) are products.
 
 ### 3.2 The 17 absorbed crates
 
@@ -103,7 +122,6 @@ These become folders inside `shipper`, `shipper-config`, or `shipper-cli`:
 - `shipper-process` → `shipper/src/ops/process/`
 - `shipper-git` → `shipper/src/ops/git/`
 - `shipper-lock` → `shipper/src/ops/lock/`
-- `shipper-storage` → `shipper/src/ops/storage/`
 - `shipper-environment` → `shipper/src/runtime/environment/`
 - `shipper-policy` → `shipper/src/runtime/policy/`
 - `shipper-execution-core` → `shipper/src/runtime/execution/`
@@ -120,6 +138,12 @@ These become folders inside `shipper`, `shipper-config`, or `shipper-cli`:
 
 **Into `shipper-cli`:**
 - `shipper-progress` → `shipper-cli/src/output/progress/`
+
+**SPLIT (NOT absorbed wholesale):**
+- `shipper-storage` is **split by concern**, not collapsed into one folder:
+  - **Storage config/data shapes** (e.g., `StorageConfig`, `BackendKind` enum, the public types embedders use to specify their storage backend) → move into `shipper-types::storage`
+  - **Runtime storage/backend behavior** (the actual `StorageBackend` trait and the filesystem implementation) → move into `shipper/src/ops/storage/`
+  - **Why split:** the crate's own `lib.rs` says only filesystem is fully implemented (S3/GCS/Azure bail out). It's not a finished standalone public product yet. Keeping config types in `shipper-types` means embedders can wire up their storage choice through the stable contract crate; keeping backend code in `shipper` means we don't make a public promise about a half-finished backend abstraction.
 
 ### 3.3 Open question to resolve before publish
 
