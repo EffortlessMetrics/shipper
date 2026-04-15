@@ -38,7 +38,6 @@
   cargo publish -p shipper-output-sanitizer --dry-run
   cargo publish -p shipper-sparse-index --dry-run
   cargo publish -p shipper-encrypt --dry-run
-  cargo publish -p shipper-progress --dry-run
   cargo publish -p shipper-cargo-failure --dry-run
   cargo publish -p shipper-webhook --dry-run
   cargo publish -p shipper-storage --dry-run
@@ -65,7 +64,7 @@
   `shipper-levels`, `shipper-chunking`, `shipper-policy`,
   `shipper-config-runtime`, `shipper-plan`, `shipper-store`,
   `shipper-events`, `shipper-state`, `shipper-execution-core`,
-  `shipper-environment`._
+  `shipper-environment`, `shipper-progress`._
   The remaining order is provisional and will be finalized in Phase 8 once
   in-flight absorptions settle.
 

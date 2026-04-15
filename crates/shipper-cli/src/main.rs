@@ -10,7 +10,10 @@ use shipper::config::{CliOverrides, ShipperConfig};
 use shipper::engine::{self, Reporter};
 use shipper::plan;
 use shipper::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
-use shipper_progress::ProgressReporter;
+
+mod output;
+
+use crate::output::progress::ProgressReporter;
 
 #[derive(Parser, Debug)]
 #[command(name = "shipper", version)]

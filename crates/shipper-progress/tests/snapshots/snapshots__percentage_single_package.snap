@@ -1,6 +1,0 @@
----
-source: crates/shipper-progress/tests/snapshots.rs
-expression: "lines.join(\"\\n\")"
----
-0/1 = 0.0%
-1/1 = 100.0%
