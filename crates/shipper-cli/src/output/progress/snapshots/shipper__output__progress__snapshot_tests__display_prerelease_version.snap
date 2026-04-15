@@ -1,0 +1,5 @@
+---
+source: crates/shipper-cli/src/output/progress/snapshot_tests.rs
+expression: output
+---
+[1/1] Publishing my-lib@2.0.0-beta.3...

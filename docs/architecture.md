@@ -47,7 +47,7 @@ CLI binary, and 29 focused microcrates that each own a single responsibility.
 | `shipper-plan` | _Absorbed — now `shipper::plan` module (PR #56)_ |
 | `shipper-policy` | _Absorbed — now `shipper::runtime::policy` module (PR #54)_ |
 | `shipper-process` | _Absorbed — now `shipper::ops::process` module (PR #55)_ |
-| `shipper-progress` | TTY-aware progress bars for CLI publish workflows |
+| `shipper-progress` | _Absorbed — now `shipper-cli::output::progress` module (PR #67)_ |
 | `shipper-registry` | HTTP client for registry REST API (version check, owners) |
 | `shipper-retry` | Configurable retry strategies (exponential, linear, constant) with jitter |
 | `shipper-schema` | Schema-version parsing and compatibility validation |
@@ -72,8 +72,8 @@ Arrows read as "depends on". Only shipper-\* edges are shown.
 ```
 shipper-cli
   ├── shipper  (facade)
-  ├── shipper-duration
-  └── shipper-progress
+  └── shipper-duration
+  (progress UI lives inline at shipper-cli::output::progress)
 
 shipper  (facade — re-exports all microcrates)
   ├── shipper-types
@@ -141,7 +141,7 @@ Leaf crates (zero shipper-* dependencies):
   shipper-cargo-failure, shipper-chunking,
   shipper-duration, shipper-encrypt, shipper-git, shipper-levels,
   shipper-lock, shipper-output-sanitizer, shipper-process,
-  shipper-progress, shipper-retry, shipper-schema,
+  shipper-retry, shipper-schema,
   shipper-sparse-index, shipper-webhook
 ```
 
@@ -247,7 +247,8 @@ re-exports each microcrate as a module (e.g., `shipper::auth`, `shipper::plan`)
 and provides `cfg`-gated module declarations that swap between local
 implementations and microcrate re-exports based on the active feature set.
 The CLI depends only on `shipper`, never on individual microcrates directly
-(except `shipper-progress` and `shipper-duration`).
+(except `shipper-duration`). Progress-bar UI lives inside `shipper-cli` itself
+at `shipper-cli::output::progress`.
 
 ### State persistence for resumability
 
@@ -344,7 +345,6 @@ wave concurrency.
 | `shipper-retry` | Retry strategies (exponential / linear / constant) with jitter |
 | `shipper-levels` | Dependency-level grouping data structure |
 | `shipper-webhook` | Webhook payload types and HTTP delivery |
-| `shipper-progress` | TTY-aware progress reporting for the CLI |
 
 ---
 

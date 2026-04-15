@@ -24,7 +24,6 @@ hmac = "0.12"
 sha2 = "0.10"
 url = "2"
 shipper-types = { path = "../crates/shipper-types" }
-shipper-progress = { path = "../crates/shipper-progress" }
 shipper-events = { path = "../crates/shipper-events" }
 tempfile = "3"
 temp-env = "0.3"
@@ -223,13 +222,6 @@ bench = false
 [[bin]]
 name = "retry_strategy"
 path = "fuzz_targets/retry_strategy.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "progress_reporter"
-path = "fuzz_targets/progress_reporter.rs"
 test = false
 doc = false
 bench = false

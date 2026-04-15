@@ -1,8 +1,0 @@
----
-source: crates/shipper-progress/src/lib.rs
-expression: "lines.join(\"\\n\")"
----
-total=5
-current_package=3
-current_name="macros@0.1.0"
-completed_pct=40.0%

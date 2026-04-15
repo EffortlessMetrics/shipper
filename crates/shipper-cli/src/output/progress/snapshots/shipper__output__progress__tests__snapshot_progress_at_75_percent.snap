@@ -1,0 +1,11 @@
+---
+source: crates/shipper-cli/src/output/progress/tests.rs
+assertion_line: 625
+expression: state
+---
+(
+    4,
+    3,
+    "gamma@0.1.0",
+    75.0,
+)
