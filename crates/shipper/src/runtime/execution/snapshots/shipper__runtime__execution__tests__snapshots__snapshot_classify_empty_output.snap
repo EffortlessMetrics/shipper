@@ -1,0 +1,6 @@
+---
+source: crates/shipper/src/runtime/execution/mod.rs
+expression: snap
+---
+class: ambiguous
+message: publish outcome ambiguous; registry did not show version

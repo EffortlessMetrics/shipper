@@ -160,7 +160,7 @@ pub(crate) fn run_publish_parallel_inner(
                 {
                     let st_guard = st_arc.lock().unwrap();
                     for p in &level.packages {
-                        let key = shipper_execution_core::pkg_key(&p.name, &p.version);
+                        let key = crate::runtime::execution::pkg_key(&p.name, &p.version);
                         if let Some(progress) = st_guard.packages.get(&key) {
                             if !matches!(
                                 progress.state,
@@ -191,7 +191,7 @@ pub(crate) fn run_publish_parallel_inner(
 
                 // Still need to "collect" receipts for these skipped packages so they appear in final receipt
                 for p in &level.packages {
-                    let key = shipper_execution_core::pkg_key(&p.name, &p.version);
+                    let key = crate::runtime::execution::pkg_key(&p.name, &p.version);
                     let st_guard = st_arc.lock().unwrap();
                     if let Some(progress) = st_guard.packages.get(&key) {
                         all_receipts.push(PackageReceipt {

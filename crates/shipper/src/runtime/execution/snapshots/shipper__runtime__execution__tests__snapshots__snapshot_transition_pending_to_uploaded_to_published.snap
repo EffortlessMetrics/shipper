@@ -1,0 +1,9 @@
+---
+source: crates/shipper/src/runtime/execution/mod.rs
+expression: steps
+---
+[
+    "initial: Pending",
+    "after upload: Uploaded",
+    "after publish: Published",
+]

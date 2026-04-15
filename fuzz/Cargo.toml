@@ -16,7 +16,6 @@ shipper-schema = { path = "../crates/shipper-schema" }
 shipper-output-sanitizer = { path = "../crates/shipper-output-sanitizer" }
 shipper-cargo-failure = { path = "../crates/shipper-cargo-failure" }
 shipper-git = { path = "../crates/shipper-git" }
-shipper-execution-core = { path = "../crates/shipper-execution-core" }
 shipper-retry = { path = "../crates/shipper-retry" }
 shipper-sparse-index = { path = "../crates/shipper-sparse-index" }
 shipper-webhook = { path = "../crates/shipper-webhook" }

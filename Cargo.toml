@@ -19,7 +19,6 @@ members = [
   "crates/shipper-webhook",
   "crates/shipper-storage",
     "crates/shipper-output-sanitizer",
-    "crates/shipper-execution-core",
 ]
 exclude = ["fuzz"]
 resolver = "3"

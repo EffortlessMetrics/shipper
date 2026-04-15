@@ -1,0 +1,9 @@
+---
+source: crates/shipper/src/runtime/execution/mod.rs
+expression: config
+---
+strategy: immediate
+max_attempts: 3
+base_delay: 100ms
+max_delay: 10s
+jitter: 0

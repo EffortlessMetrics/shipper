@@ -143,8 +143,8 @@ pub mod plan;
 /// Re-exported from the [`shipper_registry`] crate (see [`crate::registry`]).
 pub use shipper_registry as registry;
 
-/// Layer 2: runtime context (pure data). Houses `runtime::policy`, etc.
-pub(crate) mod runtime;
+/// Layer 2: runtime context (pure data). Houses `runtime::policy`, `runtime::execution`, etc.
+pub mod runtime;
 
 /// Layer 3: persistence. State, events, receipts.
 pub mod state;
