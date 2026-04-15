@@ -130,17 +130,9 @@ pub mod engine_parallel;
 pub mod engine_parallel;
 
 /// Environment fingerprinting (OS, arch, tool versions).
-#[cfg(feature = "micro-environment")]
-#[path = "environment_micro.rs"]
-pub mod environment;
-#[cfg(not(feature = "micro-environment"))]
 pub mod environment;
 
 /// Git operations (cleanliness check, context capture).
-#[cfg(feature = "micro-git")]
-#[path = "git_micro.rs"]
-pub mod git;
-#[cfg(not(feature = "micro-git"))]
 pub mod git;
 
 /// Distributed lock to prevent concurrent publishes.
@@ -177,10 +169,6 @@ pub mod state;
 pub mod store;
 
 /// Storage backends with pluggable `StorageBackend` trait.
-#[cfg(feature = "micro-storage")]
-#[path = "storage_micro.rs"]
-pub mod storage;
-#[cfg(not(feature = "micro-storage"))]
 pub mod storage;
 
 /// Domain types: specs, plans, options, receipts, errors.

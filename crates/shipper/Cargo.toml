@@ -16,11 +16,11 @@ categories = ["development-tools", "development-tools::build-utils"]
 # Workspace microcrates
 shipper-retry = { path = "../shipper-retry" }
 shipper-encrypt = { path = "../shipper-encrypt" }
-shipper-git = { path = "../shipper-git", optional = true }
+shipper-git = { path = "../shipper-git" }
 shipper-events = { path = "../shipper-events" }
 shipper-execution-core = { path = "../shipper-execution-core" }
-shipper-environment = { path = "../shipper-environment", optional = true }
-shipper-storage = { path = "../shipper-storage", optional = true }
+shipper-environment = { path = "../shipper-environment" }
+shipper-storage = { path = "../shipper-storage" }
 shipper-cargo = { path = "../shipper-cargo", optional = true }
 shipper-engine-parallel = { path = "../shipper-engine-parallel", optional = true }
 shipper-plan = { path = "../shipper-plan", optional = true }
@@ -61,17 +61,14 @@ hmac = "0.13"
 sha2 = "0.11"
 
 [features]
-micro-git = ["dep:shipper-git"]
 micro-encrypt = []
-micro-environment = ["dep:shipper-environment", "micro-types"]
-micro-storage = ["dep:shipper-storage"]
 micro-cargo = ["dep:shipper-cargo"]
 micro-plan = ["dep:shipper-plan", "micro-types"]
 micro-webhook = []
 micro-types = ["micro-webhook", "micro-encrypt", "micro-config"]
-micro-config = ["micro-types", "micro-storage"]
+micro-config = ["micro-types"]
 micro-parallel = ["micro-types", "micro-plan", "dep:shipper-engine-parallel"]
-micro-all = ["micro-git", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-webhook", "micro-types", "micro-config", "micro-parallel"]
+micro-all = ["micro-encrypt", "micro-cargo", "micro-plan", "micro-webhook", "micro-types", "micro-config", "micro-parallel"]
 
 [lints]
 workspace = true
