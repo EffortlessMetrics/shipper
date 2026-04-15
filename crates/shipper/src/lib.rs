@@ -105,10 +105,6 @@ pub mod auth;
 pub mod cargo;
 
 /// Process execution with optional timeout support.
-#[cfg(feature = "micro-process")]
-#[path = "process_micro.rs"]
-pub mod process;
-#[cfg(not(feature = "micro-process"))]
 pub mod process;
 
 /// Configuration file (`.shipper.toml`) loading and merging.
