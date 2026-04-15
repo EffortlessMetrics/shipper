@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use chrono::Utc;
 
-use shipper_registry::RegistryClient;
+use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{ReadinessConfig, ReadinessEvidence, ReadinessMethod};
 
 /// Check readiness visibility with exponential backoff and optional sparse-index fallback.

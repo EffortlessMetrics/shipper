@@ -13,7 +13,7 @@ use anyhow::Result;
 
 use shipper_events as events;
 use shipper_plan::PlannedWorkspace;
-use shipper_registry::RegistryClient;
+use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
     ExecutionResult, ExecutionState, PackageEvidence, PackageReceipt, PackageState, RuntimeOptions,
 };
@@ -74,7 +74,7 @@ pub fn run_publish_parallel(
     reporter: &mut dyn crate::engine::Reporter,
 ) -> Result<Vec<PackageReceipt>> {
     let api_base = reg.registry().api_base.trim_end_matches('/');
-    let reg_inner = shipper_registry::RegistryClient::new(api_base);
+    let reg_inner = shipper_registry::HttpRegistryClient::new(api_base);
     let ws_inner = shipper_plan::PlannedWorkspace {
         workspace_root: ws.workspace_root.clone(),
         plan: ws.plan.clone(),
