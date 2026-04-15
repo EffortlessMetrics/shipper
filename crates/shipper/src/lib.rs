@@ -173,10 +173,6 @@ pub mod state;
 pub mod store;
 
 /// Storage backends with pluggable `StorageBackend` trait.
-#[cfg(feature = "micro-storage")]
-#[path = "storage_micro.rs"]
-pub mod storage;
-#[cfg(not(feature = "micro-storage"))]
 pub mod storage;
 
 /// Domain types: specs, plans, options, receipts, errors.
