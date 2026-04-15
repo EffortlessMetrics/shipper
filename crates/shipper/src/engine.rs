@@ -9,12 +9,12 @@ use chrono::Utc;
 use crate::auth;
 use crate::cargo;
 use crate::environment;
-use crate::events;
+use crate::state::events;
 use crate::git;
 use crate::lock;
 use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
-use crate::state;
+use crate::state::execution_state as state;
 use crate::types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, Finishability,
     PackageProgress, PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent,
@@ -1048,7 +1048,7 @@ pub(crate) fn init_state(ws: &PlannedWorkspace, state_dir: &Path) -> Result<Exec
     }
 
     let st = ExecutionState {
-        state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -1811,7 +1811,7 @@ mod tests {
             let _ = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
             let events_path = td.path().join(".shipper").join("events.jsonl");
-            let log = crate::events::EventLog::read_from_file(&events_path).expect("read events");
+            let log = crate::state::events::EventLog::read_from_file(&events_path).expect("read events");
             let events = log.all_events();
 
             assert!(
@@ -2013,7 +2013,7 @@ mod tests {
             let ws = planned_workspace(td.path(), server.base_url.clone());
             let state_dir = td.path().join(".shipper");
             let existing = ExecutionState {
-                state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+                state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
                 plan_id: ws.plan.plan_id.clone(),
                 registry: ws.plan.registry.clone(),
                 created_at: Utc::now(),
@@ -2346,7 +2346,7 @@ mod tests {
             },
         );
         let st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "different-plan".to_string(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -2379,7 +2379,7 @@ mod tests {
             },
         );
         let st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "different-plan".to_string(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -2431,7 +2431,7 @@ mod tests {
             },
         );
         let st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -3112,7 +3112,7 @@ mod tests {
                 },
             );
             let st = ExecutionState {
-                state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+                state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
                 plan_id: ws.plan.plan_id.clone(),
                 registry: ws.plan.registry.clone(),
                 created_at: Utc::now(),
@@ -3336,7 +3336,7 @@ mod tests {
             let _ = run_publish(&ws, &opts, &mut reporter).expect("publish");
 
             let events_path = td.path().join(".shipper").join("events.jsonl");
-            let log = crate::events::EventLog::read_from_file(&events_path).expect("read events");
+            let log = crate::state::events::EventLog::read_from_file(&events_path).expect("read events");
             let events = log.all_events();
 
             assert!(
@@ -3535,7 +3535,7 @@ mod tests {
 
                 let events_path = td.path().join(".shipper").join("events.jsonl");
                 let log =
-                    crate::events::EventLog::read_from_file(&events_path).expect("read events");
+                    crate::state::events::EventLog::read_from_file(&events_path).expect("read events");
                 let events = log.all_events();
 
                 assert!(
@@ -3815,7 +3815,7 @@ mod tests {
             // Check that the receipt event log was written
             assert!(receipt.event_log_path.exists());
             let log =
-                crate::events::EventLog::read_from_file(&receipt.event_log_path).expect("events");
+                crate::state::events::EventLog::read_from_file(&receipt.event_log_path).expect("events");
             let finish_events: Vec<_> = log
                 .all_events()
                 .iter()
@@ -3853,7 +3853,7 @@ mod tests {
             },
         );
         let st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -3974,7 +3974,7 @@ mod tests {
                 },
             );
             let st = ExecutionState {
-                state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+                state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
                 plan_id: ws.plan.plan_id.clone(),
                 registry: ws.plan.registry.clone(),
                 created_at: Utc::now(),
@@ -4177,7 +4177,7 @@ mod tests {
             },
         );
         let st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "plan-serde-test".to_string(),
             registry: Registry {
                 name: "crates-io".to_string(),
@@ -4910,7 +4910,7 @@ mod tests {
                     },
                 );
                 let st = ExecutionState {
-                    state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+                    state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
                     plan_id: ws.plan.plan_id.clone(),
                     registry: ws.plan.registry.clone(),
                     created_at: Utc::now(),
@@ -4972,7 +4972,7 @@ mod tests {
             },
         );
         let st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "completely-different-plan".to_string(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -5272,7 +5272,7 @@ mod tests {
                     },
                 );
                 let st = ExecutionState {
-                    state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+                    state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
                     plan_id: ws.plan.plan_id.clone(),
                     registry: ws.plan.registry.clone(),
                     created_at: Utc::now(),
@@ -5339,7 +5339,7 @@ mod tests {
 
                 let events_path = td.path().join(".shipper").join("events.jsonl");
                 let log =
-                    crate::events::EventLog::read_from_file(&events_path).expect("read events");
+                    crate::state::events::EventLog::read_from_file(&events_path).expect("read events");
                 let events = log.all_events();
 
                 // Must have: ExecutionStarted, PlanCreated, PackageStarted, PackageAttempted, PackageFailed
@@ -5385,7 +5385,7 @@ mod tests {
         );
 
         let mut st = init_state(&ws, &state_dir).expect("init");
-        assert_eq!(st.state_version, crate::state::CURRENT_STATE_VERSION);
+        assert_eq!(st.state_version, crate::state::execution_state::CURRENT_STATE_VERSION);
 
         // Transition alpha: Pending → Uploaded → Published
         update_state(&mut st, &state_dir, "alpha@1.0.0", PackageState::Uploaded).expect("update");
@@ -5406,7 +5406,7 @@ mod tests {
         let loaded = state::load_state(&state_dir)
             .expect("load")
             .expect("exists");
-        assert_eq!(loaded.state_version, crate::state::CURRENT_STATE_VERSION);
+        assert_eq!(loaded.state_version, crate::state::execution_state::CURRENT_STATE_VERSION);
         assert!(matches!(
             loaded.packages.get("alpha@1.0.0").unwrap().state,
             PackageState::Published
@@ -5527,7 +5527,7 @@ mod tests {
             },
         );
         let st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "old-plan-id".to_string(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -5813,7 +5813,7 @@ mod tests {
                     },
                 );
                 let st = ExecutionState {
-                    state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+                    state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
                     plan_id: "plan-proptest".to_string(),
                     registry: Registry {
                         name: "crates-io".to_string(),

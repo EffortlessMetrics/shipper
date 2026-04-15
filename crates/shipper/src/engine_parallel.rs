@@ -10,9 +10,9 @@ use shipper_execution_core::{backoff_delay, classify_cargo_failure, pkg_key, upd
 
 use crate::cargo;
 use crate::engine::Reporter;
-use crate::events;
+use crate::state::events;
 use crate::registry::RegistryClient;
-use crate::state;
+use crate::state::execution_state as state;
 use crate::types::{
     self, AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, PackageReceipt,
     PackageState, PlannedPackage, PublishEvent, ReadinessEvidence, RuntimeOptions,
@@ -1076,7 +1076,7 @@ mod tests {
             },
         );
         ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: plan_id.to_string(),
             registry: registry.clone(),
             created_at: Utc::now(),
@@ -1411,7 +1411,7 @@ mod tests {
             );
         }
         let st = Arc::new(Mutex::new(ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -1457,7 +1457,7 @@ mod tests {
     #[test]
     fn test_update_state_locked_sets_state() {
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "plan-test".to_string(),
             registry: Registry::crates_io(),
             created_at: Utc::now(),
@@ -1599,7 +1599,7 @@ mod tests {
             );
         }
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -1677,7 +1677,7 @@ mod tests {
             },
         );
         let st = Arc::new(Mutex::new(ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -1880,7 +1880,7 @@ mod tests {
             );
         }
         let st = Arc::new(Mutex::new(ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -1943,7 +1943,7 @@ mod tests {
     #[test]
     fn test_concurrent_state_access() {
         let st = Arc::new(Mutex::new(ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "plan-concurrent-state".to_string(),
             registry: Registry::crates_io(),
             created_at: Utc::now(),
@@ -2009,7 +2009,7 @@ mod tests {
     #[test]
     fn test_update_state_locked_missing_key() {
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "plan-missing".to_string(),
             registry: Registry::crates_io(),
             created_at: Utc::now(),
@@ -2105,7 +2105,7 @@ mod tests {
             );
         }
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -2223,7 +2223,7 @@ mod tests {
             );
         }
         let st = Arc::new(Mutex::new(ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -2425,7 +2425,7 @@ mod tests {
             );
         }
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -2488,7 +2488,7 @@ mod tests {
         let state_dir = td.path().join(".shipper");
         let opts = default_opts(state_dir.clone());
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -2644,7 +2644,7 @@ mod tests {
     #[test]
     fn test_state_transition_sequence() {
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "plan-transitions".to_string(),
             registry: Registry::crates_io(),
             created_at: Utc::now(),
@@ -2680,7 +2680,7 @@ mod tests {
     #[test]
     fn test_state_transition_to_failed() {
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "plan-fail".to_string(),
             registry: Registry::crates_io(),
             created_at: Utc::now(),
@@ -2841,7 +2841,7 @@ mod tests {
             );
         }
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -2946,7 +2946,7 @@ mod tests {
         );
 
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -3177,7 +3177,7 @@ mod tests {
             );
         }
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: ws.plan.plan_id.clone(),
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
@@ -3210,7 +3210,7 @@ mod tests {
     fn test_update_state_locked_updates_timestamps() {
         let initial_time = Utc::now();
         let mut st = ExecutionState {
-            state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
             plan_id: "plan-ts".to_string(),
             registry: Registry::crates_io(),
             created_at: initial_time,

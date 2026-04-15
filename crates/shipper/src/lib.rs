@@ -72,8 +72,7 @@
 //! - [`config`] — Configuration file (`.shipper.toml`) loading and merging
 //! - [`auth`] — Token resolution and authentication detection
 //! - [`registry`] — Registry API and sparse-index client
-//! - [`state`] — State and receipt persistence
-//! - [`events`] — Append-only JSONL event log
+//! - [`state`] — Layer 3 persistence: state, events, receipts
 //! - [`git`] — Git operations (cleanliness check, context capture)
 //! - [`lock`] — Distributed lock to prevent concurrent publishes
 //! - [`environment`] — Environment fingerprinting (OS, arch, tool versions)
@@ -127,13 +126,6 @@ pub mod environment;
 #[cfg(not(feature = "micro-environment"))]
 pub mod environment;
 
-/// Append-only JSONL event log.
-#[cfg(feature = "micro-events")]
-#[path = "events_micro.rs"]
-pub mod events;
-#[cfg(not(feature = "micro-events"))]
-pub mod events;
-
 /// Git operations (cleanliness check, context capture).
 #[cfg(feature = "micro-git")]
 #[path = "git_micro.rs"]
@@ -172,11 +164,7 @@ pub mod registry;
 /// Layer 2: runtime context (pure data). Houses `runtime::policy`, etc.
 pub(crate) mod runtime;
 
-/// State and receipt persistence.
-#[cfg(feature = "micro-state")]
-#[path = "state_micro.rs"]
-pub mod state;
-#[cfg(not(feature = "micro-state"))]
+/// Layer 3: persistence. State, events, receipts.
 pub mod state;
 
 /// `StateStore` trait for pluggable persistence backends.

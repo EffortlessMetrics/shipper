@@ -21,7 +21,7 @@ fn sample_state() -> ExecutionState {
         },
     );
     ExecutionState {
-        state_version: crate::state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: "p1".to_string(),
         registry: Registry::crates_io(),
         created_at: Utc::now(),

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, TimeZone, Utc};
 
-use crate::events::EventLog;
+use crate::state::events::EventLog;
 use crate::types::{
     EnvironmentFingerprint, ErrorClass, EventType, ExecutionResult, ExecutionState, GitContext,
     PackageEvidence, PackageProgress, PackageReceipt, PackageState, PublishEvent, Receipt,
@@ -342,7 +342,7 @@ fn snapshot_state_persisted_json() {
     };
 
     store.save_state(&state).expect("save");
-    let raw = std::fs::read_to_string(crate::state::state_path(td.path())).expect("read");
+    let raw = std::fs::read_to_string(crate::state::execution_state::state_path(td.path())).expect("read");
     let roundtrip: serde_json::Value = serde_json::from_str(&raw).expect("parse");
     let pretty = serde_json::to_string_pretty(&roundtrip).expect("pretty");
     insta::assert_snapshot!("state_persisted_json", pretty);
@@ -385,7 +385,7 @@ fn snapshot_receipt_persisted_json() {
     };
 
     store.save_receipt(&receipt).expect("save");
-    let raw = std::fs::read_to_string(crate::state::receipt_path(td.path())).expect("read");
+    let raw = std::fs::read_to_string(crate::state::execution_state::receipt_path(td.path())).expect("read");
     let roundtrip: serde_json::Value = serde_json::from_str(&raw).expect("parse");
     let pretty = serde_json::to_string_pretty(&roundtrip).expect("pretty");
     insta::assert_snapshot!("receipt_persisted_json", pretty);
@@ -565,7 +565,7 @@ fn snapshot_events_persisted_jsonl() {
     });
 
     store.save_events(&events).expect("save");
-    let raw = std::fs::read_to_string(crate::events::events_path(td.path())).expect("read");
+    let raw = std::fs::read_to_string(crate::state::events::events_path(td.path())).expect("read");
     // Normalize each line to pretty JSON for readable snapshot
     let pretty_lines: Vec<String> = raw
         .lines()

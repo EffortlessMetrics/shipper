@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::events::EventLog;
-use crate::state;
+use crate::state::events::EventLog;
+use crate::state::execution_state as state;
 use crate::types::{ExecutionState, Receipt};
 
 use super::StateStore;
@@ -47,12 +47,12 @@ impl StateStore for FileStore {
     }
 
     fn save_events(&self, events: &EventLog) -> Result<()> {
-        let path = crate::events::events_path(&self.state_dir);
+        let path = crate::state::events::events_path(&self.state_dir);
         events.write_to_file(&path)
     }
 
     fn load_events(&self) -> Result<Option<EventLog>> {
-        let path = crate::events::events_path(&self.state_dir);
+        let path = crate::state::events::events_path(&self.state_dir);
         if !path.exists() {
             return Ok(None);
         }
@@ -62,7 +62,7 @@ impl StateStore for FileStore {
     fn clear(&self) -> Result<()> {
         let state_path = state::state_path(&self.state_dir);
         let receipt_path = state::receipt_path(&self.state_dir);
-        let events_path = crate::events::events_path(&self.state_dir);
+        let events_path = crate::state::events::events_path(&self.state_dir);
 
         // Remove files if they exist
         if state_path.exists() {

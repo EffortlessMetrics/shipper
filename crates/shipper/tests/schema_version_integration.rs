@@ -1,4 +1,5 @@
-use shipper::{state, store};
+use shipper::state::execution_state as state;
+use shipper::store;
 
 #[test]
 fn state_and_store_accept_current_and_minimum_receipt_schema_versions() {
