@@ -15,7 +15,7 @@ use super::run_publish_parallel_inner as run_publish_parallel;
 use super::*;
 use shipper_events as events;
 use shipper_execution_core::{pkg_key, update_state_locked};
-use shipper_plan::PlannedWorkspace;
+use crate::plan::PlannedWorkspace;
 use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
     ErrorClass, ExecutionState, PackageEvidence, PackageProgress, PackageReceipt, PackageState,

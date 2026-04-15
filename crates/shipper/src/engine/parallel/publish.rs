@@ -16,7 +16,7 @@ use chrono::Utc;
 use shipper_cargo as cargo;
 use shipper_events as events;
 use shipper_execution_core::{backoff_delay, classify_cargo_failure, pkg_key, update_state_locked};
-use shipper_plan::PlannedWorkspace;
+use crate::plan::PlannedWorkspace;
 use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_state as state;
 use shipper_types::{
@@ -30,7 +30,7 @@ use super::policy::policy_effects;
 use super::readiness::is_version_visible_with_backoff;
 use super::webhook::{WebhookEvent, maybe_send_event};
 
-use shipper_chunking::chunk_by_max_concurrent;
+use crate::plan::chunking::chunk_by_max_concurrent;
 
 /// Result of publishing a single package (for parallel execution)
 #[derive(Debug)]

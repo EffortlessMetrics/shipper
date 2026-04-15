@@ -18,15 +18,12 @@ shipper-cargo-failure = { path = "../crates/shipper-cargo-failure" }
 shipper-git = { path = "../crates/shipper-git" }
 shipper-execution-core = { path = "../crates/shipper-execution-core" }
 shipper-retry = { path = "../crates/shipper-retry" }
-shipper-levels = { path = "../crates/shipper-levels" }
-shipper-chunking = { path = "../crates/shipper-chunking" }
 shipper-sparse-index = { path = "../crates/shipper-sparse-index" }
 shipper-webhook = { path = "../crates/shipper-webhook" }
 chrono = "0.4.44"
 hmac = "0.12"
 sha2 = "0.10"
 url = "2"
-shipper-plan = { path = "../crates/shipper-plan" }
 shipper-types = { path = "../crates/shipper-types" }
 shipper-progress = { path = "../crates/shipper-progress" }
 shipper-events = { path = "../crates/shipper-events" }

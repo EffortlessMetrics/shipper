@@ -4,7 +4,7 @@
 //!
 //! This crate reads workspace metadata via `cargo_metadata`, filters
 //! publishable crates, and produces a topologically-sorted
-//! [`ReleasePlan`] that guarantees
+//! [`ReleasePlan`](shipper_types::ReleasePlan) that guarantees
 //! dependencies are published before their dependents.
 //!
 //! ## Workflow
@@ -14,46 +14,18 @@
 //! 3. Optionally narrow the set to user-selected packages (plus transitive deps).
 //! 4. Topologically sort the remaining crates and compute a stable plan ID.
 //!
-//! The resulting [`PlannedWorkspace`] is the input to preflight and publish
-//! operations in the engine crate.
+//! The resulting [`PlannedWorkspace`](shipper_types::PlannedWorkspace) is the
+//! input to preflight and publish operations in the engine crate.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use cargo_metadata::{DependencyKind, Metadata, PackageId};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use shipper_types::{PlannedPackage, ReleasePlan, ReleaseSpec};
-
-/// A workspace package that was excluded from the publish plan.
-///
-/// Packages are skipped when their `publish` field in `Cargo.toml`
-/// is `false` or does not include the target registry.
-#[derive(Debug, Clone)]
-#[cfg_attr(test, derive(serde::Serialize))]
-pub struct SkippedPackage {
-    /// Crate name as declared in `Cargo.toml`.
-    pub name: String,
-    /// Crate version string.
-    pub version: String,
-    /// Human-readable reason the package was excluded.
-    pub reason: String,
-}
-
-/// The output of [`build_plan`]: a publish plan plus context.
-///
-/// Contains the workspace root path, the deterministic [`ReleasePlan`],
-/// and a list of packages that were skipped (with reasons).
-#[derive(Debug, Clone)]
-pub struct PlannedWorkspace {
-    /// Absolute path to the workspace root directory.
-    pub workspace_root: PathBuf,
-    /// The deterministic, SHA256-identified publish plan.
-    pub plan: ReleasePlan,
-    /// Packages that were excluded from the plan.
-    pub skipped: Vec<SkippedPackage>,
-}
+pub use shipper_types::{PlannedWorkspace, SkippedPackage};
 
 /// Build a deterministic publish plan from a [`ReleaseSpec`].
 ///
@@ -261,7 +233,7 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     Ok(PlannedWorkspace {
         workspace_root,
         plan: ReleasePlan {
-            plan_version: shipper_state::CURRENT_PLAN_VERSION.to_string(),
+            plan_version: crate::state::execution_state::CURRENT_PLAN_VERSION.to_string(),
             plan_id,
             created_at: Utc::now(),
             registry: spec.registry.clone(),
@@ -356,10 +328,13 @@ fn compute_plan_id(registry_api_base: &str, packages: &[PlannedPackage]) -> Stri
     hex::encode(digest)
 }
 
+pub(crate) mod chunking;
+pub(crate) mod levels;
+
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use cargo_metadata::{MetadataCommand, PackageId};
     use proptest::prelude::*;
@@ -809,7 +784,7 @@ edition = "2021"
         create_single_crate_workspace(td.path());
 
         let ws = build_plan(&spec_for(td.path())).expect("plan");
-        assert_eq!(ws.plan.plan_version, shipper_state::CURRENT_PLAN_VERSION);
+        assert_eq!(ws.plan.plan_version, crate::state::execution_state::CURRENT_PLAN_VERSION);
     }
 
     // --- publish_allowed unit tests ---

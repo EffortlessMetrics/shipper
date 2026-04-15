@@ -11,8 +11,8 @@
 ///
 /// # Examples
 ///
-/// ```
-/// use shipper_chunking::chunk_by_max_concurrent;
+/// ```ignore
+/// use shipper::plan::chunking::chunk_by_max_concurrent;
 ///
 /// let items = vec!["a", "b", "c", "d", "e"];
 /// let chunks = chunk_by_max_concurrent(&items, 2);

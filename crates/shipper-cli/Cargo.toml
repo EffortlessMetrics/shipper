@@ -33,7 +33,6 @@ workspace = true
 default = ["micro-all"]
 micro-encrypt = ["shipper/micro-encrypt"]
 micro-cargo = ["shipper/micro-cargo"]
-micro-plan = ["shipper/micro-plan"]
 micro-webhook = ["shipper/micro-webhook"]
 micro-types = ["shipper/micro-types"]
 micro-config = ["shipper/micro-config"]
