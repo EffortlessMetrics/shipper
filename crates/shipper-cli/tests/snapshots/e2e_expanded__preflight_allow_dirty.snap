@@ -9,7 +9,7 @@ Preflight Report
 plan_id: <PLAN_ID>
 Timestamp: <TIMESTAMP>
 
-Token Detected: ✓
+Token Detected: ✗
 
 Finishability: NOT PROVEN
 
@@ -17,7 +17,7 @@ Packages:
 ┌─────────────────────┬─────────┬──────────┬──────────┬───────────────┬─────────────┬─────────────┐
 │ Package             │ Version │ Published│ New Crate │ Auth Type     │ Ownership   │ Dry-run     │
 ├─────────────────────┼─────────┼──────────┼──────────┼───────────────┼─────────────┼─────────────┤
-│ demo                │ 0.1.0   │ No       │ Yes      │ Token         │ ✗           │ ✓           │
+│ demo                │ 0.1.0   │ No       │ Yes      │ -             │ ✗           │ ✓           │
 └─────────────────────┴─────────┴──────────┴──────────┴───────────────┴─────────────┴─────────────┘
 
 Summary:

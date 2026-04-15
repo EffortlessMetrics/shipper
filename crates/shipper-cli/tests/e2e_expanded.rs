@@ -2210,6 +2210,11 @@ fn preflight_allow_dirty_snapshot() {
     // check_new_crate (which calls crate_exists under the hood).
     let registry = spawn_registry_not_found(2);
 
+    // Isolate CARGO_HOME to the empty tempdir so the token-resolution
+    // fallback (credentials.toml) can't pick up ambient credentials from
+    // the host. Without this, the snapshot varies between developer
+    // machines (which have a real credentials.toml) and CI runners
+    // (which don't), causing a Token Detected: ✓/✗ drift.
     let output = shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
@@ -2218,6 +2223,7 @@ fn preflight_allow_dirty_snapshot() {
         .arg("--allow-dirty")
         .arg("--skip-ownership-check")
         .arg("preflight")
+        .env("CARGO_HOME", td.path())
         .env_remove("CARGO_REGISTRY_TOKEN")
         .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
         .output()
