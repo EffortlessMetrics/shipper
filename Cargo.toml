@@ -11,8 +11,9 @@ members = [
   "crates/shipper-sparse-index",
   "crates/shipper-cargo-failure",
   "crates/shipper-webhook",
-    "crates/shipper-output-sanitizer",
+  "crates/shipper-output-sanitizer",
 ]
+default-members = ["crates/shipper-cli", "crates/shipper"]
 exclude = ["fuzz"]
 resolver = "3"
 
@@ -26,6 +27,21 @@ rust-version = "1.92"
 unsafe_code = "forbid"
 
 [workspace.dependencies]
+# Intra-workspace crates (path + version for publish-readiness).
+shipper = { path = "crates/shipper", version = "0.3.0-rc.1" }
+shipper-cli = { path = "crates/shipper-cli", version = "0.3.0-rc.1" }
+shipper-config = { path = "crates/shipper-config", version = "0.3.0-rc.1" }
+shipper-types = { path = "crates/shipper-types", version = "0.3.0-rc.1" }
+shipper-duration = { path = "crates/shipper-duration", version = "0.3.0-rc.1" }
+shipper-retry = { path = "crates/shipper-retry", version = "0.3.0-rc.1" }
+shipper-encrypt = { path = "crates/shipper-encrypt", version = "0.3.0-rc.1" }
+shipper-webhook = { path = "crates/shipper-webhook", version = "0.3.0-rc.1" }
+shipper-registry = { path = "crates/shipper-registry", version = "0.3.0-rc.1" }
+shipper-sparse-index = { path = "crates/shipper-sparse-index", version = "0.3.0-rc.1" }
+shipper-cargo-failure = { path = "crates/shipper-cargo-failure", version = "0.3.0-rc.1" }
+shipper-output-sanitizer = { path = "crates/shipper-output-sanitizer", version = "0.3.0-rc.1" }
+
+# External crates.
 serde = { version = "1.0.228", features = ["derive"] }
 proptest = "1.11.0"
 insta = { version = "1.47.2", features = ["yaml"] }

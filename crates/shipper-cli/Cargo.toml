@@ -17,8 +17,8 @@ name = "shipper"
 path = "src/main.rs"
 
 [dependencies]
-shipper = { path = "../shipper", version = "0.3.0-rc.1" }
-shipper-duration = { path = "../shipper-duration" }
+shipper.workspace = true
+shipper-duration.workspace = true
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

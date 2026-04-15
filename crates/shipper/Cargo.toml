@@ -14,16 +14,16 @@ categories = ["development-tools", "development-tools::build-utils"]
 
 [dependencies]
 # Workspace microcrates
-shipper-retry = { path = "../shipper-retry" }
-shipper-encrypt = { path = "../shipper-encrypt" }
-shipper-registry = { path = "../shipper-registry" }
-shipper-webhook = { path = "../shipper-webhook" }
-shipper-types = { path = "../shipper-types" }
-shipper-config = { path = "../shipper-config" }
-shipper-duration = { path = "../shipper-duration" }
-shipper-cargo-failure = { path = "../shipper-cargo-failure" }
-shipper-sparse-index = { path = "../shipper-sparse-index" }
-shipper-output-sanitizer = { path = "../shipper-output-sanitizer" }
+shipper-retry.workspace = true
+shipper-encrypt.workspace = true
+shipper-registry.workspace = true
+shipper-webhook.workspace = true
+shipper-types.workspace = true
+shipper-config.workspace = true
+shipper-duration.workspace = true
+shipper-cargo-failure.workspace = true
+shipper-sparse-index.workspace = true
+shipper-output-sanitizer.workspace = true
 
 anyhow = "1.0.102"
 thiserror = "2.0.18"
