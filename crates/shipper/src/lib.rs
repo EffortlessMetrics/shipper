@@ -102,10 +102,6 @@ pub mod auth;
 pub mod auth;
 
 /// Workspace metadata and publish execution via cargo.
-#[cfg(feature = "micro-cargo")]
-#[path = "cargo_micro.rs"]
-pub mod cargo;
-#[cfg(not(feature = "micro-cargo"))]
 pub mod cargo;
 
 /// Process execution with optional timeout support.
