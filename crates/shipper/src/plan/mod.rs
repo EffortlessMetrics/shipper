@@ -4,7 +4,7 @@
 //!
 //! This crate reads workspace metadata via `cargo_metadata`, filters
 //! publishable crates, and produces a topologically-sorted
-//! [`ReleasePlan`] that guarantees
+//! [`ReleasePlan`](shipper_types::ReleasePlan) that guarantees
 //! dependencies are published before their dependents.
 //!
 //! ## Workflow
@@ -14,8 +14,8 @@
 //! 3. Optionally narrow the set to user-selected packages (plus transitive deps).
 //! 4. Topologically sort the remaining crates and compute a stable plan ID.
 //!
-//! The resulting [`PlannedWorkspace`] is the input to preflight and publish
-//! operations in the engine crate.
+//! The resulting [`PlannedWorkspace`](shipper_types::PlannedWorkspace) is the
+//! input to preflight and publish operations in the engine crate.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
@@ -24,8 +24,8 @@ use anyhow::{Context, Result, bail};
 use cargo_metadata::{DependencyKind, Metadata, PackageId};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-pub use shipper_types::{PlannedWorkspace, SkippedPackage};
 use shipper_types::{PlannedPackage, ReleasePlan, ReleaseSpec};
+pub use shipper_types::{PlannedWorkspace, SkippedPackage};
 
 /// Build a deterministic publish plan from a [`ReleaseSpec`].
 ///
