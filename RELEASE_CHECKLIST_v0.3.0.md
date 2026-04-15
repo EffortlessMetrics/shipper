@@ -50,7 +50,6 @@
   cargo publish -p shipper-registry --dry-run
 
   # Layer 2
-  cargo publish -p shipper-environment --dry-run
   cargo publish -p shipper-config --dry-run
 
   # Layer 5 (engine-parallel was absorbed into shipper::engine::parallel)
@@ -65,7 +64,8 @@
   _Removed during decrating: `shipper-lock`, `shipper-process`,
   `shipper-levels`, `shipper-chunking`, `shipper-policy`,
   `shipper-config-runtime`, `shipper-plan`, `shipper-store`,
-  `shipper-events`, `shipper-state`, `shipper-execution-core`._
+  `shipper-events`, `shipper-state`, `shipper-execution-core`,
+  `shipper-environment`._
   The remaining order is provisional and will be finalized in Phase 8 once
   in-flight absorptions settle.
 

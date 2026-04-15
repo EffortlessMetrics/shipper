@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
 use crate::cargo;
-use crate::environment;
+use crate::runtime::environment;
 use crate::state::events;
 use crate::git;
 use crate::lock;

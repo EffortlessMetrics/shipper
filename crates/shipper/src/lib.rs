@@ -75,7 +75,6 @@
 //! - [`state`] — Layer 3 persistence: state, events, receipts
 //! - [`git`] — Git operations (cleanliness check, context capture)
 //! - [`lock`] — Distributed lock to prevent concurrent publishes
-//! - [`environment`] — Environment fingerprinting (OS, arch, tool versions)
 //! - [`store`] — `StateStore` trait for pluggable persistence backends
 //! - [`storage`] — Storage backends with pluggable `StorageBackend` trait
 //! - [`cargo`] — Workspace metadata via `cargo_metadata`
@@ -121,9 +120,6 @@ pub mod config;
 
 /// Core publish, preflight, and resume logic.
 pub mod engine;
-
-/// Environment fingerprinting (OS, arch, tool versions).
-pub mod environment;
 
 /// Git operations (cleanliness check, context capture).
 pub mod git;

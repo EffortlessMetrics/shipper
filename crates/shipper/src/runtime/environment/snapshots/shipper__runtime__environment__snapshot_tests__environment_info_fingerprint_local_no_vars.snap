@@ -1,5 +1,5 @@
 ---
-source: crates/shipper-environment/src/lib.rs
+source: crates/shipper/src/runtime/environment/mod.rs
 expression: info
 ---
 ci_environment: Local

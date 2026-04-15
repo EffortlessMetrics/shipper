@@ -15,7 +15,6 @@ members = [
   "crates/shipper-sparse-index",
   "crates/shipper-cargo",
   "crates/shipper-cargo-failure",
-  "crates/shipper-environment",
   "crates/shipper-webhook",
   "crates/shipper-storage",
     "crates/shipper-output-sanitizer",

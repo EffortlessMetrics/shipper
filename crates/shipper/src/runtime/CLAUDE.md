@@ -9,14 +9,14 @@ Pure-data descriptions of the runtime context: environment fingerprint, policy c
 ## Import rules
 
 `runtime` modules MAY import from:
-- ✅ `crate::ops::*` (the layer below)
-- ✅ `crate::types` (re-exports of `shipper-types`)
-- ✅ External pure-data crates (`serde`, `chrono`, etc.)
+- `crate::ops::*` (the layer below)
+- `crate::types` (re-exports of `shipper-types`)
+- External pure-data crates (`serde`, `chrono`, etc.)
 
 `runtime` modules MUST NOT import from:
-- ❌ `crate::engine::...`
-- ❌ `crate::plan::...`
-- ❌ `crate::state::...`
+- `crate::engine::...`
+- `crate::plan::...`
+- `crate::state::...`
 
 These are enforced by `.github/workflows/architecture-guard.yml`.
 

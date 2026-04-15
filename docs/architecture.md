@@ -37,7 +37,7 @@ CLI binary, and 29 focused microcrates that each own a single responsibility.
 | `shipper-config-runtime` | _Absorbed — now `shipper-config::runtime` module (PR #58)_ |
 | `shipper-duration` | Human-friendly duration parsing and serde codecs |
 | `shipper-encrypt` | AES-256-GCM encryption for state files |
-| `shipper-environment` | Environment fingerprinting (OS, arch, CI, tool versions) |
+| `shipper-environment` | _Absorbed — now `shipper::runtime::environment` module (PR #65)_ |
 | `shipper-events` | _Absorbed — now `shipper::state::events` module (PR #60)_ |
 | `shipper-execution-core` | _Absorbed — now `shipper::runtime::execution` module (PR #69)_ |
 | `shipper-git` | Git operations (cleanliness check, branch/commit context) |
@@ -88,7 +88,6 @@ shipper  (facade — re-exports all microcrates)
   ├── shipper-output-sanitizer
   ├── shipper-sparse-index
   ├── shipper-cargo           (optional)
-  ├── shipper-environment     (optional)
   ├── shipper-events          (optional)
   ├── shipper-git             (optional)
   ├── shipper-lock            (optional)
@@ -125,7 +124,6 @@ shipper-plan
 
 shipper-state
   ├── shipper-types
-  ├── shipper-environment
   ├── shipper-encrypt
   └── shipper-schema
 
@@ -136,7 +134,6 @@ shipper-store
   └── shipper-schema
 
 shipper-events ──► shipper-types
-shipper-environment ──► shipper-types
 shipper-registry ──► shipper-sparse-index
 shipper-cargo ──► shipper-output-sanitizer
 
@@ -337,7 +334,6 @@ wave concurrency.
 | `shipper-sparse-index` | Derive sparse-index paths and check index content for versions |
 | `shipper-git` | Check working-tree cleanliness, capture branch/commit context |
 | `shipper-lock` | File-based advisory lock with configurable staleness timeout |
-| `shipper-environment` | Fingerprint the runtime environment (OS, arch, CI provider) |
 
 ### Types & utilities
 
