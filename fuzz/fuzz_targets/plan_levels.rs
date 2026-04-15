@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use libfuzzer_sys::fuzz_target;
-use shipper_levels::group_packages_by_levels;
+use shipper_types::levels::group_packages_by_levels;
 
 // Fuzz the level assignment algorithm with arbitrary byte-driven dependency
 // graphs, including cyclic and inconsistent topologies that the existing

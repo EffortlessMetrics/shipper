@@ -33,6 +33,9 @@ pub use shipper_duration::{deserialize_duration, serialize_duration};
 use shipper_encrypt::EncryptionConfig as EncryptionSettings;
 use shipper_webhook::WebhookConfig;
 
+/// Dependency-level grouping algorithm (was `shipper-levels`).
+pub mod levels;
+
 /// Represents a Cargo registry for publishing crates.
 ///
 /// A registry is identified by its name (used with `cargo publish --registry <name>`)
@@ -685,7 +688,7 @@ impl ReleasePlan {
     /// Packages at the same level have no dependencies on each other and can
     /// be published concurrently.
     pub fn group_by_levels(&self) -> Vec<PublishLevel> {
-        shipper_levels::group_packages_by_levels(
+        crate::levels::group_packages_by_levels(
             &self.packages,
             |pkg| pkg.name.as_str(),
             &self.dependencies,

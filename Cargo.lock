@@ -2304,7 +2304,6 @@ dependencies = [
  "shipper-events",
  "shipper-execution-core",
  "shipper-git",
- "shipper-levels",
  "shipper-lock",
  "shipper-output-sanitizer",
  "shipper-plan",
@@ -2549,14 +2548,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shipper-levels"
-version = "0.3.0-rc.1"
-dependencies = [
- "insta",
- "proptest",
-]
-
-[[package]]
 name = "shipper-lock"
 version = "0.3.0-rc.1"
 dependencies = [
@@ -2736,7 +2727,6 @@ dependencies = [
  "serde_with",
  "shipper-duration",
  "shipper-encrypt",
- "shipper-levels",
  "shipper-retry",
  "shipper-webhook",
 ]

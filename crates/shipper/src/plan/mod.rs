@@ -1,3 +1,11 @@
+//! Workspace analysis and topological plan generation.
+//!
+//! Note: this file is the unchanged historical `plan.rs`, relocated to
+//! `plan/mod.rs` to enable the `plan/` layer directory. A later PR will
+//! replace its contents with the absorbed `shipper-plan` microcrate code.
+
+pub mod levels;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 

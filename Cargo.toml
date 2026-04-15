@@ -27,7 +27,6 @@ members = [
   "crates/shipper-storage",
   "crates/shipper-policy",
     "crates/shipper-output-sanitizer",
-    "crates/shipper-levels",
     "crates/shipper-execution-core",
     "crates/shipper-config-runtime",
 ]

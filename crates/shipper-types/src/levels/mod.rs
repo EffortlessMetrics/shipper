@@ -1,7 +1,9 @@
 //! Dependency-level grouping for ordered publish plans.
 //!
-//! This crate extracts the "what can run in parallel" logic into a focused,
-//! reusable component used by both monolithic and microcrate code paths.
+//! This module implements the "what can run in parallel" logic used by
+//! [`crate::ReleasePlan::group_by_levels`]. It was previously the standalone
+//! `shipper-levels` crate and was absorbed into `shipper-types` because
+//! `ReleasePlan` (which lives here) is its primary consumer.
 
 use std::collections::{BTreeMap, BTreeSet};
 

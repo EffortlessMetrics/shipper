@@ -21,7 +21,6 @@ shipper-cargo-failure = { path = "../crates/shipper-cargo-failure" }
 shipper-git = { path = "../crates/shipper-git" }
 shipper-execution-core = { path = "../crates/shipper-execution-core" }
 shipper-retry = { path = "../crates/shipper-retry" }
-shipper-levels = { path = "../crates/shipper-levels" }
 shipper-chunking = { path = "../crates/shipper-chunking" }
 shipper-sparse-index = { path = "../crates/shipper-sparse-index" }
 shipper-webhook = { path = "../crates/shipper-webhook" }

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use libfuzzer_sys::fuzz_target;
-use shipper_levels::group_packages_by_levels;
+use shipper_types::levels::group_packages_by_levels;
 
 fuzz_target!(|data: (u8, Vec<(u8, u8)>)| {
     let package_count = (data.0 as usize % 16) + 1;
