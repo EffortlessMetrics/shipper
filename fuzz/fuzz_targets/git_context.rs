@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shipper_git::GitContext;
+use shipper_types::GitContext;
 
 fuzz_target!(|data: &[u8]| {
     // Fuzz GitContext deserialization from arbitrary bytes

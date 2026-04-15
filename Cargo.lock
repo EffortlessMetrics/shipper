@@ -2298,7 +2298,6 @@ dependencies = [
  "shipper-config",
  "shipper-duration",
  "shipper-encrypt",
- "shipper-git",
  "shipper-output-sanitizer",
  "shipper-registry",
  "shipper-retry",
@@ -2390,19 +2389,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "temp-env",
- "tempfile",
-]
-
-[[package]]
-name = "shipper-git"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "insta",
- "proptest",
- "serde",
- "serde_json",
  "temp-env",
  "tempfile",
 ]
