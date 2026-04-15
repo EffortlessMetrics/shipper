@@ -2278,6 +2278,7 @@ dependencies = [
  "base64",
  "cargo_metadata",
  "chrono",
+ "console",
  "dirs",
  "gethostname",
  "hex",
@@ -2295,7 +2296,6 @@ dependencies = [
  "sha2 0.11.0",
  "shipper-cargo",
  "shipper-cargo-failure",
- "shipper-chunking",
  "shipper-config",
  "shipper-duration",
  "shipper-encrypt",
@@ -2303,9 +2303,7 @@ dependencies = [
  "shipper-events",
  "shipper-execution-core",
  "shipper-git",
- "shipper-levels",
  "shipper-output-sanitizer",
- "shipper-plan",
  "shipper-registry",
  "shipper-retry",
  "shipper-schema",
@@ -2342,14 +2340,6 @@ dependencies = [
 
 [[package]]
 name = "shipper-cargo-failure"
-version = "0.3.0-rc.1"
-dependencies = [
- "insta",
- "proptest",
-]
-
-[[package]]
-name = "shipper-chunking"
 version = "0.3.0-rc.1"
 dependencies = [
  "insta",
@@ -2487,38 +2477,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "shipper-levels"
-version = "0.3.0-rc.1"
-dependencies = [
- "insta",
- "proptest",
-]
-
-[[package]]
 name = "shipper-output-sanitizer"
 version = "0.3.0-rc.1"
 dependencies = [
  "insta",
  "proptest",
-]
-
-[[package]]
-name = "shipper-plan"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "cargo_metadata",
- "chrono",
- "console",
- "hex",
- "insta",
- "proptest",
- "serde",
- "sha2 0.11.0",
- "shipper-cargo",
- "shipper-state",
- "shipper-types",
- "tempfile",
 ]
 
 [[package]]
@@ -2620,7 +2583,6 @@ dependencies = [
  "serde_with",
  "shipper-duration",
  "shipper-encrypt",
- "shipper-levels",
  "shipper-retry",
  "shipper-webhook",
 ]

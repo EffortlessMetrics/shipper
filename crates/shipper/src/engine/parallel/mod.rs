@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use shipper_events as events;
-use shipper_plan::PlannedWorkspace;
+use crate::plan::PlannedWorkspace;
 use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
     ExecutionResult, ExecutionState, PackageEvidence, PackageReceipt, PackageState, RuntimeOptions,
@@ -22,6 +22,9 @@ mod policy;
 mod publish;
 mod readiness;
 mod webhook;
+
+/// Re-exported for parallel publish wave planning.
+pub use crate::plan::chunking::chunk_by_max_concurrent;
 
 use publish::run_publish_level;
 use webhook::{WebhookEvent, maybe_send_event};
@@ -33,9 +36,6 @@ pub trait Reporter {
     fn warn(&mut self, msg: &str);
     fn error(&mut self, msg: &str);
 }
-
-/// Re-exported from the chunking microcrate for parallel publish wave planning.
-pub use shipper_chunking::chunk_by_max_concurrent;
 
 /// Adapter that bridges the host crate's `crate::engine::Reporter` trait into
 /// this module's local `Reporter` trait. Allows callers inside `shipper` to
@@ -75,21 +75,8 @@ pub fn run_publish_parallel(
 ) -> Result<Vec<PackageReceipt>> {
     let api_base = reg.registry().api_base.trim_end_matches('/');
     let reg_inner = shipper_registry::HttpRegistryClient::new(api_base);
-    let ws_inner = shipper_plan::PlannedWorkspace {
-        workspace_root: ws.workspace_root.clone(),
-        plan: ws.plan.clone(),
-        skipped: ws
-            .skipped
-            .iter()
-            .map(|s| shipper_plan::SkippedPackage {
-                name: s.name.clone(),
-                version: s.version.clone(),
-                reason: s.reason.clone(),
-            })
-            .collect(),
-    };
     let mut adapter = HostReporterAdapter { inner: reporter };
-    run_publish_parallel_inner(&ws_inner, opts, st, state_dir, &reg_inner, &mut adapter)
+    run_publish_parallel_inner(ws, opts, st, state_dir, &reg_inner, &mut adapter)
 }
 
 /// Inner entry point operating on `shipper_registry::RegistryClient` and the
