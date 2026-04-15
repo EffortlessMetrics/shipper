@@ -7,8 +7,6 @@ members = [
   "crates/shipper-retry",
   "crates/shipper-encrypt",
   "crates/shipper-types",
-  "crates/shipper-events",
-  "crates/shipper-state",
   "crates/shipper-config",
   "crates/shipper-git",
   "crates/shipper-registry",

@@ -88,14 +88,9 @@ shipper  (facade — re-exports all microcrates)
   ├── shipper-output-sanitizer
   ├── shipper-sparse-index
   ├── shipper-cargo           (optional)
-  ├── shipper-events          (optional)
   ├── shipper-git             (optional)
-  ├── shipper-lock            (optional)
-  ├── shipper-plan            (optional)
-  ├── shipper-process         (optional)
   ├── shipper-registry
-  ├── shipper-state           (optional)
-  └── shipper-store           (optional)
+  └── shipper-sparse-index
 ```
 
 ### Microcrate internal edges
@@ -115,23 +110,6 @@ shipper-config  (contains `runtime` submodule for config→RuntimeOptions conver
   ├── shipper-retry
   └── shipper-schema
 
-shipper-plan
-  ├── shipper-cargo
-  ├── shipper-state
-  └── shipper-types
-
-shipper-state
-  ├── shipper-types
-  ├── shipper-encrypt
-  └── shipper-schema
-
-shipper-store
-  ├── shipper-events
-  ├── shipper-types
-  ├── shipper-state
-  └── shipper-schema
-
-shipper-events ──► shipper-types
 shipper-registry ──► shipper-sparse-index
 shipper-cargo ──► shipper-output-sanitizer
 
@@ -319,10 +297,10 @@ wave concurrency.
 
 | Crate | Role |
 |-------|------|
-| `shipper-state` | Read/write `state.json` with optional encryption |
-| `shipper-store` | `StateStore` trait — high-level read/write/list for state + events |
+| `shipper::state::execution_state` | Read/write `state.json` with optional encryption (absorbed) |
+| `shipper::state::store` | `StateStore` trait — high-level read/write/list for state + events (absorbed) |
 | `shipper-encrypt` | AES-256-GCM encrypt/decrypt primitives |
-| `shipper-events` | Append-only JSONL event log writer |
+| `shipper::state::events` | Append-only JSONL event log writer (absorbed) |
 
 ### Infrastructure layer
 

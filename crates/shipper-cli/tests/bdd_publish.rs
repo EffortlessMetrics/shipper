@@ -999,8 +999,10 @@ mod error_handling {
     // Scenario: Supported schema versions pass shared store validation
     #[test]
     fn given_supported_schema_version_when_store_validation_runs_then_ok() {
-        shipper::store::validate_schema_version(shipper::state::execution_state::CURRENT_RECEIPT_VERSION)
-            .expect("schema version should be accepted");
+        shipper::store::validate_schema_version(
+            shipper::state::execution_state::CURRENT_RECEIPT_VERSION,
+        )
+        .expect("schema version should be accepted");
     }
 
     // Scenario: Missing manifest is rejected

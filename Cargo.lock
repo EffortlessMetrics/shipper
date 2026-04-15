@@ -2299,14 +2299,12 @@ dependencies = [
  "shipper-config",
  "shipper-duration",
  "shipper-encrypt",
- "shipper-events",
  "shipper-git",
  "shipper-output-sanitizer",
  "shipper-registry",
  "shipper-retry",
  "shipper-schema",
  "shipper-sparse-index",
- "shipper-state",
  "shipper-types",
  "shipper-webhook",
  "temp-env",
@@ -2415,20 +2413,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shipper-events"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "chrono",
- "insta",
- "proptest",
- "serde",
- "serde_json",
- "shipper-types",
- "tempfile",
-]
-
-[[package]]
 name = "shipper-git"
 version = "0.3.0-rc.1"
 dependencies = [
@@ -2495,22 +2479,6 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "shipper-state"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "chrono",
- "insta",
- "proptest",
- "serde",
- "serde_json",
- "shipper-encrypt",
- "shipper-schema",
- "shipper-types",
- "tempfile",
 ]
 
 [[package]]

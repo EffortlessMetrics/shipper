@@ -2,7 +2,8 @@
 
 **Layer:** state (layer 3)
 **Single responsibility:** Persist `ExecutionState` and `Receipt` to disk (atomic write, durable rename, schema-versioned migration).
-**Was:** standalone crate `shipper-state` (partial absorption in this PR)
+**Was:** standalone crate `shipper-state` (physically absorbed in PR #60 shim +
+physical move)
 
 ## Public-to-crate API
 
@@ -15,14 +16,11 @@
 
 ## Status
 
-This module is the canonical path (`crate::state::execution_state::X`) that all
-internal and CLI code now uses. The implementation currently re-exports from
-the standalone `shipper-state` crate because `shipper-store` and
-`shipper-engine-parallel` still depend on it via their own `shipper_state`
-path-dep — changing that would require absorbing those crates too. When they
-are absorbed in a future PR, the full implementation (currently at
-`crates/shipper-state/src/lib.rs`) will move here and `shipper-state` will be
-deleted from the workspace.
+Physically absorbed: the full implementation lives in `mod.rs` (production
+code) and `tests.rs` (unit + snapshot tests, including two nested proptest
+modules). Snapshots live in `snapshots/`. Integration tests moved to
+`crates/shipper/tests/state_integration.rs`. The standalone `shipper-state`
+crate has been deleted from the workspace.
 
 ## Invariants
 

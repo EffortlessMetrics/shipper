@@ -13,9 +13,9 @@ use super::policy::policy_effects;
 use super::publish::{publish_package, run_publish_level};
 use super::run_publish_parallel_inner as run_publish_parallel;
 use super::*;
-use crate::runtime::execution::{pkg_key, update_state_locked};
-use shipper_events as events;
 use crate::plan::PlannedWorkspace;
+use crate::runtime::execution::{pkg_key, update_state_locked};
+use crate::state::events;
 use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
     ErrorClass, ExecutionState, PackageEvidence, PackageProgress, PackageReceipt, PackageState,
@@ -217,7 +217,7 @@ fn init_state_for_package(
         },
     );
     ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: plan_id.to_string(),
         registry: registry.clone(),
         created_at: Utc::now(),
@@ -552,7 +552,7 @@ fn test_run_publish_level_processes_packages() {
         );
     }
     let st = Arc::new(Mutex::new(ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -598,7 +598,7 @@ fn test_run_publish_level_processes_packages() {
 #[test]
 fn test_update_state_locked_sets_state() {
     let mut st = ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: "plan-test".to_string(),
         registry: Registry::crates_io(),
         created_at: Utc::now(),
@@ -740,7 +740,7 @@ fn test_run_publish_parallel_multiple_levels() {
         );
     }
     let mut st = ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -818,7 +818,7 @@ fn test_publish_package_handles_uploaded_resume() {
         },
     );
     let st = Arc::new(Mutex::new(ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -1021,7 +1021,7 @@ fn test_run_publish_level_respects_max_concurrent() {
         );
     }
     let st = Arc::new(Mutex::new(ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -1166,7 +1166,7 @@ fn test_levels_execute_in_dependency_order() {
         );
     }
     let mut st = ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -1272,7 +1272,7 @@ fn test_failed_level_stops_subsequent_levels() {
         );
     }
     let mut st = ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -1390,7 +1390,7 @@ fn test_partial_success_within_level() {
         );
     }
     let st = Arc::new(Mutex::new(ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -1608,7 +1608,7 @@ fn test_resume_from_skips_earlier_levels() {
         },
     );
     let mut st = ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -1741,7 +1741,7 @@ fn test_all_packages_already_published() {
         );
     }
     let mut st = ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -1863,7 +1863,7 @@ fn test_max_concurrency_one_serializes_execution() {
         );
     }
     let st = Arc::new(Mutex::new(ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -2713,7 +2713,7 @@ fn test_error_in_first_level_prevents_all_subsequent() {
         );
     }
     let mut st = ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -2787,7 +2787,7 @@ fn test_empty_plan_produces_no_receipts() {
     let state_dir = td.path().join(".shipper");
     let opts = default_opts(state_dir.clone());
     let mut st = ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -2985,7 +2985,7 @@ fn test_max_concurrent_exceeds_package_count() {
         );
     }
     let st = Arc::new(Mutex::new(ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -3096,7 +3096,7 @@ fn test_independent_failures_both_reported() {
         );
     }
     let st = Arc::new(Mutex::new(ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -3209,7 +3209,7 @@ fn test_concurrent_state_updates_consistent() {
         );
     }
     let st = Arc::new(Mutex::new(ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
@@ -3496,7 +3496,7 @@ fn test_level_message_includes_max_concurrent() {
         );
     }
     let mut st = ExecutionState {
-        state_version: shipper_state::CURRENT_STATE_VERSION.to_string(),
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
         plan_id: ws.plan.plan_id.clone(),
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),

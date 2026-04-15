@@ -2,7 +2,8 @@
 
 **Layer:** state (layer 3)
 **Single responsibility:** Append-only JSONL event log for publish operations.
-**Was:** standalone crate `shipper-events` (partial absorption in this PR)
+**Was:** standalone crate `shipper-events` (physically absorbed in PR #60 shim +
+physical move)
 
 ## Public-to-crate API
 
@@ -12,14 +13,10 @@
 
 ## Status
 
-This module is the canonical path (`crate::state::events::X`) that all internal
-and CLI code now uses. The implementation currently re-exports from the
-standalone `shipper-events` crate because `shipper-store` and
-`shipper-engine-parallel` still depend on it via their own `shipper_events`
-path-dep — changing that would require absorbing those crates too. When they
-are absorbed in a future PR, the full implementation (currently at
-`crates/shipper-events/src/lib.rs`) will move here and `shipper-events` will
-be deleted from the workspace.
+Physically absorbed: the full implementation lives in `mod.rs` (production
+code), `tests.rs` (unit + snapshot tests), and `proptests.rs` (property-based
+tests). Snapshots live in `snapshots/`. The standalone `shipper-events` crate
+has been deleted from the workspace.
 
 ## Invariants
 

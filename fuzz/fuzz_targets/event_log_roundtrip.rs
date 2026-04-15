@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shipper_events::EventLog;
+use shipper::state::events::EventLog;
 use shipper_types::{EventType, PublishEvent};
 use tempfile::tempdir;
 
