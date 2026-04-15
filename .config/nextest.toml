@@ -9,7 +9,7 @@ fail-fast = false
 retries = { count = 2, backoff = "exponential", delay = "1s" }
 
 # JUnit output for CI reporting
-junit = { path = "target/nextest/ci/junit.xml", report-successful = true }
+junit = { path = "target/nextest/ci/junit.xml" }
 
 # Timeout for individual tests
 test-threads = "num-cpus"

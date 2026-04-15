@@ -33,6 +33,8 @@ fn normalize_output(raw: &str) -> String {
         .map(|line| {
             if line.starts_with("plan_id: ") || line.starts_with("Plan ID: ") {
                 "plan_id: <PLAN_ID>".to_string()
+            } else if line.starts_with("Timestamp: ") {
+                "Timestamp: <TIMESTAMP>".to_string()
             } else if line.starts_with("workspace_root: ") {
                 "workspace_root: <WORKSPACE_ROOT>".to_string()
             } else if line.starts_with("state_dir: ") {
@@ -2204,7 +2206,9 @@ fn preflight_allow_dirty_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let registry = spawn_registry_not_found(1);
+    // preflight issues two registry calls per crate: version_exists and
+    // check_new_crate (which calls crate_exists under the hood).
+    let registry = spawn_registry_not_found(2);
 
     let output = shipper_cmd()
         .arg("--manifest-path")
