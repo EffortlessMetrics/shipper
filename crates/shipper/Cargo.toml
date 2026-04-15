@@ -25,7 +25,7 @@ shipper-environment = { path = "../shipper-environment", optional = true }
 shipper-storage = { path = "../shipper-storage", optional = true }
 shipper-cargo = { path = "../shipper-cargo", optional = true }
 shipper-engine-parallel = { path = "../shipper-engine-parallel", optional = true }
-shipper-plan = { path = "../shipper-plan", optional = true }
+shipper-plan = { path = "../shipper-plan" }
 shipper-registry = { path = "../shipper-registry", optional = true }
 shipper-process = { path = "../shipper-process", optional = true }
 shipper-webhook = { path = "../shipper-webhook" }
@@ -71,7 +71,6 @@ micro-encrypt = []
 micro-environment = ["dep:shipper-environment", "micro-types"]
 micro-storage = ["dep:shipper-storage"]
 micro-cargo = ["dep:shipper-cargo"]
-micro-plan = ["dep:shipper-plan", "micro-types"]
 micro-registry = ["dep:shipper-registry"]
 micro-process = ["dep:shipper-process"]
 micro-policy = ["dep:shipper-policy"]
@@ -80,8 +79,8 @@ micro-types = ["micro-webhook", "micro-encrypt", "micro-config"]
 micro-config = ["micro-types", "micro-storage"]
 micro-state = ["dep:shipper-state", "micro-types", "micro-environment", "micro-encrypt"]
 micro-store = ["dep:shipper-store", "micro-types", "micro-state"]
-micro-parallel = ["micro-types", "micro-plan", "micro-registry", "dep:shipper-engine-parallel"]
-micro-all = ["micro-auth", "micro-git", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-registry", "micro-process", "micro-webhook", "micro-policy", "micro-types", "micro-config", "micro-state", "micro-store", "micro-parallel"]
+micro-parallel = ["micro-types", "micro-registry", "dep:shipper-engine-parallel"]
+micro-all = ["micro-auth", "micro-git", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-registry", "micro-process", "micro-webhook", "micro-policy", "micro-types", "micro-config", "micro-state", "micro-store", "micro-parallel"]
 
 [lints]
 workspace = true
