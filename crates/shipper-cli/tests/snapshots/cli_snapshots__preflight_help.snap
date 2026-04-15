@@ -1,10 +1,10 @@
 ---
 source: crates/shipper-cli/tests/cli_snapshots.rs
-expression: redact_version(&stdout)
+expression: normalize_help_output(&stdout)
 ---
 Run preflight checks without publishing
 
-Usage: shipper.exe preflight [OPTIONS]
+Usage: shipper preflight [OPTIONS]
 
 Options:
       --config <CONFIG>

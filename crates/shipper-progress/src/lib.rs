@@ -3,14 +3,14 @@
 //! This microcrate extracts the publish progress output behavior from
 //! `shipper-cli` so it can be tested, fuzzed, and reused independently.
 
+use std::io::IsTerminal;
 use std::time::Instant;
 
-use atty::Stream;
 use indicatif::{ProgressBar, ProgressStyle};
 
 /// Returns `true` when standard output is connected to a terminal.
 pub fn is_tty() -> bool {
-    atty::is(Stream::Stdout)
+    std::io::stdout().is_terminal()
 }
 
 /// Progress reporter that emits an interactive progress bar in TTY mode and

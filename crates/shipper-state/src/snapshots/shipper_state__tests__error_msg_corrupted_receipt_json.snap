@@ -2,4 +2,4 @@
 source: crates/shipper-state/src/lib.rs
 expression: "normalize_error(&format!(\"{err:#}\"), state_dir)"
 ---
-failed to parse receipt JSON <STATE_DIR>\receipt.json: expected ident at line 1 column 2
+failed to parse receipt JSON <STATE_DIR>/receipt.json: expected ident at line 1 column 2
