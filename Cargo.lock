@@ -2580,12 +2580,15 @@ name = "shipper-registry"
 version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "insta",
  "proptest",
+ "rand 0.10.1",
  "reqwest",
  "serde",
  "serde_json",
  "shipper-sparse-index",
+ "shipper-types",
  "tempfile",
  "tiny_http",
 ]

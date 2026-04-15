@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::plan::PlannedWorkspace;
-use crate::registry::RegistryClient;
+use crate::registry::{HttpRegistryClient, RegistryClient};
 use crate::types::{ExecutionState, PackageReceipt, RuntimeOptions};
 use shipper_engine_parallel as micro;
 
@@ -35,7 +35,7 @@ pub fn run_publish_parallel(
     reg: &RegistryClient,
     reporter: &mut dyn crate::engine::Reporter,
 ) -> anyhow::Result<Vec<PackageReceipt>> {
-    let reg = reg.inner();
+    let http_reg = HttpRegistryClient::new(reg.registry().api_base.as_str());
     let mut adapter = ReporterAdapter { inner: reporter };
-    micro::run_publish_parallel(ws, opts, st, state_dir, reg, &mut adapter)
+    micro::run_publish_parallel(ws, opts, st, state_dir, &http_reg, &mut adapter)
 }
