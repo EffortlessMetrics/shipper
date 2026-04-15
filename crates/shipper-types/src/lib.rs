@@ -679,24 +679,168 @@ pub struct ReleasePlan {
     pub dependencies: BTreeMap<String, Vec<String>>,
 }
 
+/// A workspace package that was excluded from the publish plan.
+///
+/// Packages are skipped when their `publish` field in `Cargo.toml`
+/// is `false` or does not include the target registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkippedPackage {
+    /// Crate name as declared in `Cargo.toml`.
+    pub name: String,
+    /// Crate version string.
+    pub version: String,
+    /// Human-readable reason the package was excluded.
+    pub reason: String,
+}
+
+/// The output of `shipper::plan::build_plan`: a publish plan plus context.
+///
+/// Contains the workspace root path, the deterministic [`ReleasePlan`],
+/// and a list of packages that were skipped (with reasons).
+#[derive(Debug, Clone)]
+pub struct PlannedWorkspace {
+    /// Absolute path to the workspace root directory.
+    pub workspace_root: PathBuf,
+    /// The deterministic, SHA256-identified publish plan.
+    pub plan: ReleasePlan,
+    /// Packages that were excluded from the plan.
+    pub skipped: Vec<SkippedPackage>,
+}
+
 impl ReleasePlan {
     /// Group packages by dependency level for parallel publishing.
     ///
     /// Packages at the same level have no dependencies on each other and can
     /// be published concurrently.
     pub fn group_by_levels(&self) -> Vec<PublishLevel> {
-        shipper_levels::group_packages_by_levels(
-            &self.packages,
-            |pkg| pkg.name.as_str(),
-            &self.dependencies,
-        )
-        .into_iter()
-        .map(|level| PublishLevel {
-            level: level.level,
-            packages: level.packages,
-        })
-        .collect()
+        group_packages_by_levels(&self.packages, |pkg| pkg.name.as_str(), &self.dependencies)
+            .into_iter()
+            .map(|l| PublishLevel {
+                level: l.level,
+                packages: l.packages,
+            })
+            .collect()
     }
+}
+
+/// A group of packages that can be processed in parallel.
+///
+/// Generic counterpart of [`PublishLevel`] used by [`group_packages_by_levels`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenericPublishLevel<T> {
+    /// Zero-based level number.
+    pub level: usize,
+    /// Packages assigned to this level.
+    pub packages: Vec<T>,
+}
+
+/// Group packages into dependency levels.
+///
+/// `ordered_packages` should be deterministic. Dependencies that are not part
+/// of `ordered_packages` are ignored. If cyclic/inconsistent dependencies are
+/// encountered, the function falls back to deterministic singleton progress so
+/// every package still appears exactly once.
+pub fn group_packages_by_levels<T, F>(
+    ordered_packages: &[T],
+    package_name: F,
+    dependencies: &BTreeMap<String, Vec<String>>,
+) -> Vec<GenericPublishLevel<T>>
+where
+    T: Clone,
+    F: Fn(&T) -> &str,
+{
+    use std::collections::BTreeSet;
+
+    let mut ordered_names: Vec<String> = Vec::new();
+    let mut package_lookup: BTreeMap<String, T> = BTreeMap::new();
+
+    for package in ordered_packages {
+        let name = package_name(package).to_string();
+        if package_lookup.contains_key(&name) {
+            continue;
+        }
+        ordered_names.push(name.clone());
+        package_lookup.insert(name, package.clone());
+    }
+
+    if ordered_names.is_empty() {
+        return Vec::new();
+    }
+
+    let package_set: BTreeSet<String> = ordered_names.iter().cloned().collect();
+    let mut indegree: BTreeMap<String, usize> = package_set
+        .iter()
+        .map(|name| (name.clone(), 0usize))
+        .collect();
+    let mut dependents: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for name in &ordered_names {
+        if let Some(deps) = dependencies.get(name) {
+            for dep in deps {
+                if !package_set.contains(dep) {
+                    continue;
+                }
+                if let Some(degree) = indegree.get_mut(name) {
+                    *degree += 1;
+                }
+                dependents
+                    .entry(dep.clone())
+                    .or_default()
+                    .push(name.clone());
+            }
+        }
+    }
+
+    let mut remaining: BTreeSet<String> = package_set;
+    let mut levels: Vec<GenericPublishLevel<T>> = Vec::new();
+
+    while !remaining.is_empty() {
+        let mut current: Vec<String> = ordered_names
+            .iter()
+            .filter(|name| {
+                remaining.contains(*name) && indegree.get(*name).copied().unwrap_or(0) == 0
+            })
+            .cloned()
+            .collect();
+
+        if current.is_empty() {
+            if let Some(name) = ordered_names
+                .iter()
+                .find(|name| remaining.contains(*name))
+                .cloned()
+            {
+                current.push(name);
+            } else {
+                break;
+            }
+        }
+
+        let packages = current
+            .iter()
+            .filter_map(|name| package_lookup.get(name).cloned())
+            .collect();
+
+        levels.push(GenericPublishLevel {
+            level: levels.len(),
+            packages,
+        });
+
+        for name in current {
+            remaining.remove(&name);
+            if let Some(children) = dependents.get(&name) {
+                for child in children {
+                    if !remaining.contains(child) {
+                        continue;
+                    }
+                    if let Some(degree) = indegree.get_mut(child) {
+                        *degree = degree.saturating_sub(1);
+                    }
+                }
+            }
+        }
+    }
+
+    levels
 }
 
 /// The state of a package in the publish pipeline.

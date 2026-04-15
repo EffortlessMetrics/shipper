@@ -33,8 +33,6 @@
   cargo publish -p shipper-progress --dry-run
   cargo publish -p shipper-cargo-failure --dry-run
   cargo publish -p shipper-webhook --dry-run
-  cargo publish -p shipper-levels --dry-run
-  cargo publish -p shipper-chunking --dry-run
   cargo publish -p shipper-storage --dry-run
   cargo publish -p shipper-git --dry-run
 
@@ -55,7 +53,6 @@
 
   # Layer 4
   cargo publish -p shipper-execution-core --dry-run
-  cargo publish -p shipper-plan --dry-run
   cargo publish -p shipper-store --dry-run
 
   # Layer 5

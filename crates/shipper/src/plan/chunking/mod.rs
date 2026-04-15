@@ -11,8 +11,8 @@
 ///
 /// # Examples
 ///
-/// ```
-/// use shipper_chunking::chunk_by_max_concurrent;
+/// ```ignore
+/// use shipper::plan::chunking::chunk_by_max_concurrent;
 ///
 /// let items = vec!["a", "b", "c", "d", "e"];
 /// let chunks = chunk_by_max_concurrent(&items, 2);
@@ -22,7 +22,8 @@
 /// let empty: Vec<i32> = vec![];
 /// assert!(chunk_by_max_concurrent(&empty, 3).is_empty());
 /// ```
-pub fn chunk_by_max_concurrent<T: Clone>(items: &[T], max_concurrent: usize) -> Vec<Vec<T>> {
+#[allow(dead_code)]
+pub(crate) fn chunk_by_max_concurrent<T: Clone>(items: &[T], max_concurrent: usize) -> Vec<Vec<T>> {
     let batch_size = max_concurrent.max(1);
     if items.is_empty() {
         return Vec::new();

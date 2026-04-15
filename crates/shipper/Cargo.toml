@@ -23,22 +23,20 @@ shipper-events = { path = "../shipper-events", optional = true }
 shipper-execution-core = { path = "../shipper-execution-core" }
 shipper-environment = { path = "../shipper-environment", optional = true }
 shipper-storage = { path = "../shipper-storage", optional = true }
-shipper-cargo = { path = "../shipper-cargo", optional = true }
+shipper-cargo = { path = "../shipper-cargo" }
 shipper-engine-parallel = { path = "../shipper-engine-parallel", optional = true }
-shipper-plan = { path = "../shipper-plan", optional = true }
 shipper-registry = { path = "../shipper-registry", optional = true }
 shipper-process = { path = "../shipper-process", optional = true }
 shipper-webhook = { path = "../shipper-webhook" }
 shipper-types = { path = "../shipper-types" }
 shipper-config = { path = "../shipper-config" }
-shipper-state = { path = "../shipper-state", optional = true }
+shipper-state = { path = "../shipper-state" }
 shipper-config-runtime = { path = "../shipper-config-runtime" }
 shipper-store = { path = "../shipper-store", optional = true }
 shipper-duration = { path = "../shipper-duration" }
 shipper-schema = { path = "../shipper-schema" }
 shipper-policy = { path = "../shipper-policy", optional = true }
 shipper-cargo-failure = { path = "../shipper-cargo-failure" }
-shipper-levels = { path = "../shipper-levels" }
 shipper-sparse-index = { path = "../shipper-sparse-index" }
 shipper-output-sanitizer = { path = "../shipper-output-sanitizer" }
 
@@ -72,27 +70,27 @@ micro-lock = ["dep:shipper-lock"]
 micro-encrypt = []
 micro-environment = ["dep:shipper-environment", "micro-types"]
 micro-storage = ["dep:shipper-storage"]
-micro-cargo = ["dep:shipper-cargo"]
-micro-plan = ["dep:shipper-plan", "micro-types"]
+micro-cargo = []
 micro-registry = ["dep:shipper-registry"]
 micro-process = ["dep:shipper-process"]
 micro-policy = ["dep:shipper-policy"]
 micro-webhook = []
 micro-types = ["micro-webhook", "micro-encrypt", "micro-config"]
 micro-config = ["micro-types", "micro-storage"]
-micro-state = ["dep:shipper-state", "micro-types", "micro-environment", "micro-encrypt"]
+micro-state = ["micro-types", "micro-environment", "micro-encrypt"]
 micro-store = ["dep:shipper-store", "micro-types", "micro-events", "micro-state"]
-micro-parallel = ["micro-types", "micro-plan", "micro-registry", "dep:shipper-engine-parallel"]
-micro-all = ["micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-plan", "micro-registry", "micro-process", "micro-webhook", "micro-policy", "micro-types", "micro-config", "micro-state", "micro-store", "micro-parallel"]
+micro-parallel = ["micro-types", "micro-registry", "dep:shipper-engine-parallel"]
+micro-all = ["micro-auth", "micro-git", "micro-events", "micro-lock", "micro-encrypt", "micro-environment", "micro-storage", "micro-cargo", "micro-registry", "micro-process", "micro-webhook", "micro-policy", "micro-types", "micro-config", "micro-state", "micro-store", "micro-parallel"]
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 tempfile = "3.26.0"
-insta = "1.46.3"
+insta = { version = "1.46.3", features = ["yaml"] }
 proptest = "1.10.0"
 serial_test = "3.4.0"
 tiny_http = "0.12.0"
 temp-env = "0.3"
+console = "0.16.3"
 
