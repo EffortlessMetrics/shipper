@@ -14,13 +14,11 @@ use shipper_registry::RegistryClient;
 use shipper_state as state;
 use shipper_types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, PackageEvidence,
-    PackageReceipt, PackageState, PlannedPackage, PublishEvent, PublishLevel, ReadinessConfig,
-    ReadinessEvidence, ReadinessMethod, RuntimeOptions,
+    PackageReceipt, PackageState, PlannedPackage, PlannedWorkspace, PublishEvent, PublishLevel,
+    ReadinessConfig, ReadinessEvidence, ReadinessMethod, RuntimeOptions,
 };
 mod webhook;
 use webhook::{WebhookEvent, maybe_send_event};
-
-use shipper_plan::PlannedWorkspace;
 
 /// Reporter interface shared with the host crate. Parallel publish forwards
 /// status updates and warnings through this trait.
@@ -30,8 +28,28 @@ pub trait Reporter {
     fn error(&mut self, msg: &str);
 }
 
-/// Re-exported from the chunking microcrate for parallel publish wave planning.
-pub use shipper_chunking::chunk_by_max_concurrent;
+/// Split a list of items into contiguous chunks bounded by `max_concurrent`.
+///
+/// - `max_concurrent <= 0` is treated as `1`.
+/// - Empty input returns an empty list of chunks.
+/// - Item order is preserved across chunks.
+pub fn chunk_by_max_concurrent<T: Clone>(items: &[T], max_concurrent: usize) -> Vec<Vec<T>> {
+    let batch_size = max_concurrent.max(1);
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    let mut chunks = Vec::new();
+    let mut index = 0usize;
+
+    while index < items.len() {
+        let next = (index + batch_size).min(items.len());
+        chunks.push(items[index..next].to_vec());
+        index = next;
+    }
+
+    chunks
+}
 
 /// Check readiness visibility with exponential backoff and optional sparse-index fallback.
 fn is_version_visible_with_backoff(
@@ -1049,7 +1067,7 @@ mod tests {
     use tiny_http::{Header, Response, Server, StatusCode};
 
     use super::*;
-    use shipper_plan::PlannedWorkspace;
+    use shipper_types::PlannedWorkspace;
     use shipper_types::{
         PackageProgress, PlannedPackage, PublishLevel, ReadinessConfig, Registry, ReleasePlan,
     };

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// A group of packages that can be processed in parallel.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PublishLevel<T> {
+pub(crate) struct PublishLevel<T> {
     /// Zero-based level number.
     pub level: usize,
     /// Packages assigned to this level.
@@ -20,7 +20,8 @@ pub struct PublishLevel<T> {
 /// of `ordered_packages` are ignored. If cyclic/inconsistent dependencies are
 /// encountered, the function falls back to deterministic singleton progress so
 /// every package still appears exactly once.
-pub fn group_packages_by_levels<T, F>(
+#[allow(dead_code)]
+pub(crate) fn group_packages_by_levels<T, F>(
     ordered_packages: &[T],
     package_name: F,
     dependencies: &BTreeMap<String, Vec<String>>,

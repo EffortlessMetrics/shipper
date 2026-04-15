@@ -14,7 +14,6 @@ categories = ["development-tools", "development-tools::build-utils"]
 anyhow = "1.0.101"
 chrono = { version = "0.4.44", features = ["serde"] }
 humantime = "2.3.0"
-shipper-chunking = { path = "../shipper-chunking" }
 shipper-execution-core = { path = "../shipper-execution-core" }
 rand = { version = "0.10.0", features = ["std"] }
 serde = "1.0.228"
@@ -22,7 +21,6 @@ serde_json = "1.0.149"
 
 shipper-cargo = { path = "../shipper-cargo" }
 shipper-events = { path = "../shipper-events" }
-shipper-plan = { path = "../shipper-plan" }
 shipper-policy = { path = "../shipper-policy" }
 shipper-registry = { path = "../shipper-registry" }
 shipper-retry = { path = "../shipper-retry" }

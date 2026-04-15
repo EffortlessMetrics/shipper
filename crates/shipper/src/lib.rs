@@ -157,10 +157,6 @@ pub mod lock;
 pub mod lock;
 
 /// Workspace analysis and topological plan generation.
-#[cfg(feature = "micro-plan")]
-#[path = "plan_micro.rs"]
-pub mod plan;
-#[cfg(not(feature = "micro-plan"))]
 pub mod plan;
 
 /// Registry API and sparse-index client.

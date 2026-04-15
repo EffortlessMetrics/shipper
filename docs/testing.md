@@ -41,8 +41,6 @@ cargo nextest run --workspace --all-features --profile ci
 ```bash
 cargo test -p shipper           # core library
 cargo test -p shipper-cli       # CLI + integration tests
-cargo test -p shipper-plan      # any microcrate
-cargo test -p shipper-levels    # release-level grouping
 cargo test -p shipper-cargo-failure  # failure classifier
 ```
 
@@ -184,9 +182,7 @@ cargo install cargo-mutants
 
 # Run against the same crates as CI
 cargo mutants --no-shuffle \
-  -p shipper-plan \
   -p shipper-policy \
-  -p shipper-levels \
   -p shipper-schema \
   -p shipper-duration \
   -p shipper-types \

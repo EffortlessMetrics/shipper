@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shipper_chunking::chunk_by_max_concurrent;
+use shipper_engine_parallel::chunk_by_max_concurrent;
 
 fuzz_target!(|data: (u8, Vec<u8>)| {
     let (max_hint, payload) = data;
