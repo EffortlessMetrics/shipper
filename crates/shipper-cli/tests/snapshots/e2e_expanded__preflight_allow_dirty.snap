@@ -3,8 +3,34 @@ source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: normalize_output(&normalize_stderr(&combined))
 ---
 --- stdout ---
+Preflight Report
+===============
+
+plan_id: <PLAN_ID>
+Timestamp: <TIMESTAMP>
+
+Token Detected: ✓
+
+Finishability: NOT PROVEN
+
+Packages:
+┌─────────────────────┬─────────┬──────────┬──────────┬───────────────┬─────────────┬─────────────┐
+│ Package             │ Version │ Published│ New Crate │ Auth Type     │ Ownership   │ Dry-run     │
+├─────────────────────┼─────────┼──────────┼──────────┼───────────────┼─────────────┼─────────────┤
+│ demo                │ 0.1.0   │ No       │ Yes      │ Token         │ ✗           │ ✓           │
+└─────────────────────┴─────────┴──────────┴──────────┴───────────────┴─────────────┴─────────────┘
+
+Summary:
+  Total packages: 1
+  Already published: 0
+  New crates: 1
+  Ownership verified: 0
+  Dry-run passed: 1
+
+What to do next:
+-----------------
+⚠ Some checks could not be verified. You can still publish, but may encounter permission issues. Use `shipper publish --policy fast` to proceed.
 --- stderr ---
 [info] initializing registry client...
 [info] running workspace dry-run verification...
 [info] checking packages against registry...
-Error: unexpected status while checking crate existence: failed to send request to registry
