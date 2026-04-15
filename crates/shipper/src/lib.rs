@@ -150,10 +150,6 @@ pub mod registry;
 #[cfg(not(feature = "micro-registry"))]
 pub mod registry;
 
-#[cfg(feature = "micro-policy")]
-#[path = "policy_micro.rs"]
-pub(crate) mod policy;
-#[cfg(not(feature = "micro-policy"))]
 pub(crate) mod policy;
 
 /// State and receipt persistence.
