@@ -180,10 +180,11 @@ pub mod state;
 pub mod state;
 
 /// `StateStore` trait for pluggable persistence backends.
-#[cfg(feature = "micro-store")]
-#[path = "store_micro.rs"]
-pub mod store;
-#[cfg(not(feature = "micro-store"))]
+///
+/// Absorbed from the former `shipper-store` microcrate. The implementation
+/// now lives under `state/store/` to reflect the layered architecture;
+/// the public path `shipper::store` is preserved for backward compatibility.
+#[path = "state/store/mod.rs"]
 pub mod store;
 
 /// Storage backends with pluggable `StorageBackend` trait.
