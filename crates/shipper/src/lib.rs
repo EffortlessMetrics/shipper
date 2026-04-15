@@ -168,10 +168,6 @@ pub(crate) mod policy;
 pub mod state;
 
 /// `StateStore` trait for pluggable persistence backends.
-#[cfg(feature = "micro-store")]
-#[path = "store_micro.rs"]
-pub mod store;
-#[cfg(not(feature = "micro-store"))]
 pub mod store;
 
 /// Storage backends with pluggable `StorageBackend` trait.

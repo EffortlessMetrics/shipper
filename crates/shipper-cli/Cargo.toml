@@ -43,7 +43,6 @@ micro-policy = ["shipper/micro-policy"]
 micro-webhook = ["shipper/micro-webhook"]
 micro-types = ["shipper/micro-types"]
 micro-config = ["shipper/micro-config"]
-micro-store = ["shipper/micro-store"]
 micro-all = ["shipper/micro-all"]
 
 [dev-dependencies]
