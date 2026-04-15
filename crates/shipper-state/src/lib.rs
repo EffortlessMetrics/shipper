@@ -4,8 +4,44 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use shipper_environment::collect_environment_fingerprint;
-use shipper_types::{ExecutionState, Receipt};
+use shipper_types::{EnvironmentFingerprint, ExecutionState, Receipt};
+
+// Inlined from shipper-environment to break a transitional dep cycle during the
+// decrating effort (shipper-state is a dep of shipper, which will own the
+// environment module after absorption; shipper-state cannot depend on shipper).
+// Will be replaced with a direct call to
+// `shipper::runtime::environment::collect_environment_fingerprint` after
+// shipper-state is itself absorbed into `shipper::state`.
+#[doc(hidden)]
+fn collect_environment_fingerprint() -> EnvironmentFingerprint {
+    fn normalize_tool_version(raw: &str) -> Option<String> {
+        raw.split_whitespace().nth(1).map(ToOwned::to_owned)
+    }
+
+    fn run_version(tool: &str) -> Option<String> {
+        let output = std::process::Command::new(tool)
+            .args(["--version"])
+            .output()
+            .ok()?;
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            None
+        }
+    }
+
+    EnvironmentFingerprint {
+        shipper_version: env!("CARGO_PKG_VERSION").to_string(),
+        cargo_version: run_version("cargo")
+            .as_deref()
+            .and_then(normalize_tool_version),
+        rust_version: run_version("rustc")
+            .as_deref()
+            .and_then(normalize_tool_version),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+    }
+}
 
 /// Current receipt schema version
 pub const CURRENT_RECEIPT_VERSION: &str = "shipper.receipt.v2";

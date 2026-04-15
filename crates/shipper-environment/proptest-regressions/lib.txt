@@ -1,9 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 235ac942932f478d1eae49e6d7896c6150cbe7316f78ac8a2f7749729c811f19 # shrinks to key = "AA___", value = "\0"
-cc 0e24d7286c80329d4357257fd1a294f761ac2edd7e98a50aeedf96c441ccdccb # shrinks to single = "!\n\u{e}"
-cc a793b32b71d66302adb7d12eb64754f3ec1b10c57fd4291fb0eeb398d2b4a36c # shrinks to ci_env = GitHubActions, value = "\0"

@@ -1,5 +1,5 @@
 ---
-source: crates/shipper-environment/src/lib.rs
+source: crates/shipper/src/runtime/environment/mod.rs
 expression: info.fingerprint()
 ---
 "ci:Local|os:macos|arch:aarch64|rust:1.82.0|cargo:1.82.0"
