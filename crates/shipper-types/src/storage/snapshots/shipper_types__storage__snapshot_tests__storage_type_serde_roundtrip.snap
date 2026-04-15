@@ -1,0 +1,8 @@
+---
+source: crates/shipper-types/src/storage/mod.rs
+expression: types
+---
+- File
+- S3
+- Gcs
+- Azure

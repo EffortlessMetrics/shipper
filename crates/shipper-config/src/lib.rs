@@ -47,7 +47,7 @@ pub use shipper_types::{
 pub use shipper_webhook::WebhookConfig;
 
 use shipper_retry::{PerErrorConfig, RetryPolicy, RetryStrategyType};
-use shipper_storage::{CloudStorageConfig, StorageType};
+use shipper_types::storage::{CloudStorageConfig, StorageType};
 
 /// Runtime-options conversion helpers (previously `shipper-config-runtime`).
 pub mod runtime;

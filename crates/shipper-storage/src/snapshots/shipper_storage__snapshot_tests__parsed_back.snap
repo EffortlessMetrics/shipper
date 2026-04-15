@@ -1,8 +1,0 @@
----
-source: crates/shipper-storage/src/lib.rs
-expression: parsed
----
-storage_type: S3
-bucket: my-bucket
-region: ap-southeast-1
-base_path: releases

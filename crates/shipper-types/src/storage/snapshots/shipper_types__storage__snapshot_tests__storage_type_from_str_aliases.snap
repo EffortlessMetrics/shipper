@@ -1,0 +1,18 @@
+---
+source: crates/shipper-types/src/storage/mod.rs
+expression: cases
+---
+- - file
+  - file
+- - local
+  - file
+- - s3
+  - s3
+- - gcs
+  - gcs
+- - gs
+  - gcs
+- - azure
+  - azure
+- - blob
+  - azure

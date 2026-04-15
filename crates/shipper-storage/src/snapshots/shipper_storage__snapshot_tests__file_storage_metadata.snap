@@ -1,6 +1,0 @@
----
-source: crates/shipper-storage/src/lib.rs
-expression: meta
----
-- file
-- local

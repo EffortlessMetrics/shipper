@@ -1,0 +1,24 @@
+---
+source: crates/shipper-types/src/storage/mod.rs
+expression: config
+---
+CloudStorageConfig {
+    storage_type: S3,
+    bucket: "release-artifacts",
+    region: Some(
+        "eu-central-1",
+    ),
+    base_path: "shipper/state",
+    endpoint: Some(
+        "https://minio.internal:9000",
+    ),
+    access_key_id: Some(
+        "ACCESS_KEY",
+    ),
+    secret_access_key: Some(
+        "SECRET_KEY",
+    ),
+    session_token: Some(
+        "session-token-xyz",
+    ),
+}

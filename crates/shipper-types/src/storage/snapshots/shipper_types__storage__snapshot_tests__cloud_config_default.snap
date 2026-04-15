@@ -1,0 +1,7 @@
+---
+source: crates/shipper-types/src/storage/mod.rs
+expression: "CloudStorageConfig::default()"
+---
+storage_type: File
+bucket: ""
+base_path: ""

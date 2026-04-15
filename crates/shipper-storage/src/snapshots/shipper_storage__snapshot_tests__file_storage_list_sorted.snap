@@ -1,8 +1,0 @@
----
-source: crates/shipper-storage/src/lib.rs
-expression: files
----
-- a.txt
-- b.txt
-- c.txt
-- sub/d.txt

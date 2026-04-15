@@ -1,5 +1,0 @@
----
-source: crates/shipper-storage/src/lib.rs
-expression: "backend.storage_type()"
----
-File
