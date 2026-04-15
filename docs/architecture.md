@@ -27,8 +27,7 @@ CLI binary, and 29 focused microcrates that each own a single responsibility.
 | `shipper-cargo` | Workspace metadata via `cargo_metadata` |
 | `shipper-cargo-failure` | Classify `cargo publish` stderr into typed failure categories |
 | `shipper-chunking` | Split items into bounded-size chunks for parallel execution |
-| `shipper-config` | Load, merge, and validate `.shipper.toml` configuration files |
-| `shipper-config-runtime` | Convert `ShipperConfig` + CLI overrides into `RuntimeOptions` |
+| `shipper-config` | Load, merge, and validate `.shipper.toml` configuration files; `runtime` submodule converts `ShipperConfig` + CLI overrides into `RuntimeOptions` |
 | `shipper-duration` | Human-friendly duration parsing and serde codecs |
 | `shipper-encrypt` | AES-256-GCM encryption for state files |
 | `shipper-engine-parallel` | Wave-based parallel publish engine (dependency-level concurrency) |
@@ -66,8 +65,7 @@ shipper-cli
 
 shipper  (facade — re-exports all microcrates)
   ├── shipper-types
-  ├── shipper-config
-  ├── shipper-config-runtime
+  ├── shipper-config           (runtime conversion helpers live in `shipper_config::runtime`)
   ├── shipper-schema
   ├── shipper-retry
   ├── shipper-duration
@@ -103,18 +101,13 @@ shipper-types
   ├── shipper-duration
   └── shipper-levels
 
-shipper-config
+shipper-config  (contains `runtime` submodule for config→RuntimeOptions conversion)
   ├── shipper-types
   ├── shipper-encrypt
   ├── shipper-storage
   ├── shipper-webhook
   ├── shipper-retry
   └── shipper-schema
-
-shipper-config-runtime
-  ├── shipper-config
-  ├── shipper-types
-  └── shipper-retry
 
 shipper-plan
   ├── shipper-cargo
@@ -303,8 +296,7 @@ and readiness polling.
 
 | Crate | Role |
 |-------|------|
-| `shipper-config` | Parse `.shipper.toml`, merge sections, validate constraints |
-| `shipper-config-runtime` | Convert `ShipperConfig` + `CliOverrides` → `RuntimeOptions` |
+| `shipper-config` | Parse `.shipper.toml`, merge sections, validate constraints; `runtime` submodule converts `ShipperConfig` + `CliOverrides` → `RuntimeOptions` |
 | `shipper-schema` | Parse and validate schema version identifiers in state files |
 
 Configuration flows: CLI flags → `CliOverrides` → merged with `ShipperConfig`

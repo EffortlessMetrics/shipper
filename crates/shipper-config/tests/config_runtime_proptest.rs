@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use proptest::prelude::*;
 
+use shipper_config::runtime::into_runtime_options;
 use shipper_config::{
     CliOverrides, EncryptionConfigInner, FlagsConfig, LockConfig, MultiRegistryConfig,
     OutputConfig, PolicyConfig, ReadinessConfig, ReadinessMethod, RegistryConfig, RetryConfig,
     ShipperConfig, VerifyConfig, WebhookConfig,
 };
-use shipper_config_runtime::into_runtime_options;
 use shipper_retry::{RetryPolicy, RetryStrategyType};
 use shipper_types::{ParallelConfig, PublishPolicy, VerifyMode};
 

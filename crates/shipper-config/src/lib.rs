@@ -49,6 +49,9 @@ pub use shipper_webhook::WebhookConfig;
 use shipper_retry::{PerErrorConfig, RetryPolicy, RetryStrategyType};
 use shipper_storage::{CloudStorageConfig, StorageType};
 
+/// Runtime-options conversion helpers (previously `shipper-config-runtime`).
+pub mod runtime;
+
 /// Nested policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PolicyConfig {

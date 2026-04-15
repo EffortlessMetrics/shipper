@@ -1,9 +1,12 @@
 //! Conversion layer from `shipper_config` model types to shared `shipper_types`.
 //!
-//! This crate isolates config/runtime mapping so that callers can reuse a
+//! This module isolates config/runtime mapping so that callers can reuse a
 //! single conversion surface instead of duplicating this logic.
+//!
+//! Was previously the standalone crate `shipper-config-runtime`; absorbed into
+//! `shipper-config::runtime` (Phase 5 of the decrating effort).
 
-use shipper_config::RuntimeOptions;
+use crate::RuntimeOptions;
 
 /// Convert a `shipper_config::RuntimeOptions` value into `shipper_types::RuntimeOptions`.
 ///
@@ -42,11 +45,11 @@ pub fn into_runtime_options(value: RuntimeOptions) -> shipper_types::RuntimeOpti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
-    use shipper_config::{
+    use crate::{
         EncryptionConfig, ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod,
         Registry, VerifyMode, WebhookConfig,
     };
+    use proptest::prelude::*;
     use shipper_types as expected_types;
     use std::path::PathBuf;
     use std::time::Duration;

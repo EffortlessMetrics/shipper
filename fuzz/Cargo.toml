@@ -15,7 +15,6 @@ shipper-duration = { path = "../crates/shipper-duration" }
 shipper-config = { path = "../crates/shipper-config" }
 shipper-schema = { path = "../crates/shipper-schema" }
 shipper-output-sanitizer = { path = "../crates/shipper-output-sanitizer" }
-shipper-config-runtime = { path = "../crates/shipper-config-runtime" }
 shipper-cargo-failure = { path = "../crates/shipper-cargo-failure" }
 shipper-git = { path = "../crates/shipper-git" }
 shipper-execution-core = { path = "../crates/shipper-execution-core" }

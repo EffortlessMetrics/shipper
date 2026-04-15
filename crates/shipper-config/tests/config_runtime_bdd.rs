@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use shipper_config::runtime::into_runtime_options;
 use shipper_config::{
     EncryptionConfig, ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, Registry,
     RuntimeOptions, VerifyMode, WebhookConfig,
 };
-use shipper_config_runtime::into_runtime_options;
 
 fn sample_runtime_options(base_url: &str, registry_count: usize) -> RuntimeOptions {
     RuntimeOptions {

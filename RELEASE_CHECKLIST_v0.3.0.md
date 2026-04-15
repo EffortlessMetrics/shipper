@@ -49,7 +49,6 @@
 
   # Layer 3
   cargo publish -p shipper-state --dry-run
-  cargo publish -p shipper-config-runtime --dry-run
 
   # Layer 4
   cargo publish -p shipper-execution-core --dry-run

@@ -6,7 +6,7 @@ use libfuzzer_sys::fuzz_target;
 use shipper_config::{
     CliOverrides, PublishPolicy, ReadinessMethod, Registry, ShipperConfig, VerifyMode,
 };
-use shipper_config_runtime::into_runtime_options;
+use shipper_config::runtime::into_runtime_options;
 
 fn next_u8(data: &[u8], idx: &mut usize) -> u8 {
     let value = *data.get(*idx).unwrap_or(&0);
