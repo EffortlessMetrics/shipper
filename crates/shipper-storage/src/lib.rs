@@ -293,8 +293,25 @@ impl StorageBackend for FileStorage {
                 .with_context(|| format!("failed to create directory: {}", parent.display()))?;
         }
 
-        // Write to a temp file first, then rename for atomicity
-        let tmp_path = full_path.with_extension("tmp");
+        // Write to a unique temp file first, then rename for atomicity.
+        // The temp filename must be unique per-call so concurrent writes to
+        // the same destination do not race: with a shared temp name, one
+        // thread's rename can move the file away before another thread's
+        // rename runs, causing spurious ENOENT.
+        let tid = std::thread::current().id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let pid = std::process::id();
+        let tmp_name = format!(
+            "{}.{pid}.{tid:?}.{nanos}.tmp",
+            full_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("shipper-storage")
+        );
+        let tmp_path = full_path.with_file_name(tmp_name);
         std::fs::write(&tmp_path, data)
             .with_context(|| format!("failed to write file: {}", tmp_path.display()))?;
 
@@ -773,10 +790,16 @@ mod tests {
 
         storage.write("atomic.txt", b"content").expect("write");
 
-        let tmp_path = td.path().join("atomic.tmp");
+        // No files with a `.tmp` extension should remain after successful write.
+        let leftover: Vec<_> = std::fs::read_dir(td.path())
+            .expect("read_dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "tmp").unwrap_or(false))
+            .collect();
         assert!(
-            !tmp_path.exists(),
-            ".tmp file should not remain after successful write"
+            leftover.is_empty(),
+            ".tmp file should not remain after successful write: {leftover:?}"
         );
         assert!(td.path().join("atomic.txt").exists());
     }
@@ -1061,13 +1084,13 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let storage = FileStorage::new(td.path().to_path_buf());
 
-        // Simulate a stale .tmp from a prior crash
+        // Simulate a stale .tmp from a prior crash. Writes now use a unique
+        // temp name per-call, so they do not collide with (and do not rely
+        // on cleaning up) any pre-existing stale temp file from a prior run.
         std::fs::write(td.path().join("state.tmp"), b"stale").unwrap();
 
         storage.write("state.json", b"fresh").expect("write");
         assert_eq!(storage.read("state.json").unwrap(), b"fresh");
-        // .tmp for "state.json" is "state.tmp" — it should be gone after rename
-        assert!(!td.path().join("state.tmp").exists());
     }
 
     // -----------------------------------------------------------------------
