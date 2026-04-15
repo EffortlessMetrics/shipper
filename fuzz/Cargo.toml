@@ -9,7 +9,6 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-shipper-engine-parallel = { path = "../crates/shipper-engine-parallel" }
 shipper = { path = "../crates/shipper" }
 shipper-duration = { path = "../crates/shipper-duration" }
 shipper-config = { path = "../crates/shipper-config" }

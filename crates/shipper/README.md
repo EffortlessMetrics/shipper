@@ -19,7 +19,7 @@ into custom release tooling.
 - `engine::run_preflight` - run checks without publishing.
 - `engine::run_publish` - execute publish with state persistence.
 - `engine::run_resume` - continue interrupted runs.
-- `engine_parallel::run_publish_parallel` - publish dependency levels concurrently.
+- `engine::parallel::run_publish_parallel` - publish dependency levels concurrently.
 - `config` - load and merge `.shipper.toml` settings.
 - `types` - domain types for plans, options, state, events, and receipts.
 

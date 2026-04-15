@@ -1,0 +1,11 @@
+---
+source: crates/shipper/src/engine/parallel/mod.rs
+assertion_line: 3169
+expression: effects
+---
+PolicyEffects {
+    run_dry_run: true,
+    check_ownership: false,
+    strict_ownership: false,
+    readiness_enabled: true,
+}

@@ -60,7 +60,7 @@ Key modules:
   - preflight finishability (`Proven`/`NotProven`/`Failed`)
   - retry classification and backoff
   - Uploaded-state resume semantics
-- `crates/shipper/src/engine_parallel.rs`
+- `crates/shipper/src/engine/parallel/`
   - wave/level parallel publishing
   - shared state/event coordination via `Arc<Mutex<...>>`
   - per-package timeout support

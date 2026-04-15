@@ -37,7 +37,6 @@ CLI binary, and 29 focused microcrates that each own a single responsibility.
 | `shipper-config-runtime` | _Absorbed — now `shipper-config::runtime` module (PR #58)_ |
 | `shipper-duration` | Human-friendly duration parsing and serde codecs |
 | `shipper-encrypt` | AES-256-GCM encryption for state files |
-| `shipper-engine-parallel` | Wave-based parallel publish engine (dependency-level concurrency) |
 | `shipper-environment` | Environment fingerprinting (OS, arch, CI, tool versions) |
 | `shipper-events` | _Absorbed — now `shipper::state::events` module (PR #60)_ |
 | `shipper-execution-core` | Shared helpers for state updates, error classification, and backoff |
@@ -90,7 +89,6 @@ shipper  (facade — re-exports all microcrates)
   ├── shipper-output-sanitizer
   ├── shipper-sparse-index
   ├── shipper-cargo           (optional)
-  ├── shipper-engine-parallel (optional)
   ├── shipper-environment     (optional)
   ├── shipper-events          (optional)
   ├── shipper-git             (optional)
@@ -131,19 +129,6 @@ shipper-execution-core
   ├── shipper-retry
   ├── shipper-state
   └── shipper-types
-
-shipper-engine-parallel
-  ├── shipper-chunking
-  ├── shipper-execution-core
-  ├── shipper-cargo
-  ├── shipper-events
-  ├── shipper-plan
-  ├── shipper-registry
-  ├── shipper-retry
-  ├── shipper-state
-  ├── shipper-types
-  ├── shipper-sparse-index
-  └── shipper-webhook
 
 shipper-state
   ├── shipper-types
@@ -209,7 +194,7 @@ warnings-only, or blocking issues).
 ### 3. Publish (`shipper publish`)
 
 `engine::run_publish` executes the plan crate-by-crate (or wave-by-wave in
-parallel mode via `engine_parallel`):
+parallel mode via `engine::parallel`):
 
 - Runs `cargo publish -p <crate>` with `--no-verify` passthrough if requested.
 - On failure, classifies the error (`cargo_failure`) and applies retry with
@@ -323,7 +308,6 @@ from disk → produces `RuntimeOptions` consumed by the engine.
 
 | Crate | Role |
 |-------|------|
-| `shipper-engine-parallel` | Orchestrate wave-based parallel publish across dependency levels |
 | `shipper-execution-core` | Shared helpers: state updates, failure classification, backoff delay |
 | `shipper-cargo` | Run `cargo metadata` / `cargo publish` via subprocess |
 | `shipper-cargo-failure` | Pattern-match `cargo publish` stderr into failure categories |
@@ -331,7 +315,8 @@ from disk → produces `RuntimeOptions` consumed by the engine.
 | `shipper-output-sanitizer` | Strip tokens and secrets from captured subprocess output |
 
 The `engine` module inside the `shipper` facade implements the sequential
-publish loop; `shipper-engine-parallel` extends this with dependency-level
+publish loop; `engine::parallel` (absorbed from the former
+`shipper-engine-parallel` microcrate) extends this with dependency-level
 wave concurrency.
 
 ### Planning layer
@@ -409,7 +394,7 @@ The facade crate uses Cargo features to gate microcrate dependencies:
 micro-git, micro-events, micro-lock, micro-encrypt,
 micro-environment, micro-storage, micro-cargo, micro-plan,
 micro-process, micro-policy, micro-webhook,
-micro-types, micro-config, micro-state, micro-store, micro-parallel
+micro-types, micro-config, micro-state, micro-store
 ```
 
 Token resolution is provided in-crate by `crate::ops::auth`

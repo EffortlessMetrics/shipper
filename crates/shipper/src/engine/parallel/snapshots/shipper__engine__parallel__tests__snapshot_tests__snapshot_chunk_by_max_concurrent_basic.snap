@@ -1,0 +1,18 @@
+---
+source: crates/shipper/src/engine/parallel/mod.rs
+assertion_line: 3139
+expression: chunks
+---
+[
+    [
+        "a",
+        "b",
+    ],
+    [
+        "c",
+        "d",
+    ],
+    [
+        "e",
+    ],
+]

@@ -56,8 +56,7 @@
   # Layer 4
   cargo publish -p shipper-execution-core --dry-run
 
-  # Layer 5
-  cargo publish -p shipper-engine-parallel --dry-run
+  # Layer 5 (engine-parallel was absorbed into shipper::engine::parallel)
 
   # Layer 6
   cargo publish -p shipper --dry-run
