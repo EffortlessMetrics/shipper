@@ -1,0 +1,9 @@
+---
+source: crates/shipper-types/tests/schema_snapshot_tests.rs
+expression: results
+---
+- "shipper.receipt.v1 >= shipper.receipt.v1: ok"
+- "shipper.receipt.v2 >= shipper.receipt.v1: ok"
+- "shipper.receipt.v0 >= shipper.receipt.v1: test version shipper.receipt.v0 is too old. Minimum supported version is shipper.receipt.v1"
+- "shipper.state.v3 >= shipper.state.v2: ok"
+- "shipper.state.v1 >= shipper.state.v5: test version shipper.state.v1 is too old. Minimum supported version is shipper.state.v5"

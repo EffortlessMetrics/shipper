@@ -1,0 +1,8 @@
+---
+source: crates/shipper-types/src/schema.rs
+assertion_line: 202
+expression: "validate_schema_version(\"shipper.state.v0\", \"shipper.state.v5\",\n\"state\").map_err(|e| e.to_string())"
+---
+Err(
+    "state version shipper.state.v0 is too old. Minimum supported version is shipper.state.v5",
+)

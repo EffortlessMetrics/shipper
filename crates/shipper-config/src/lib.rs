@@ -550,7 +550,7 @@ impl ShipperConfig {
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
         // Validate schema version
-        if let Err(e) = shipper_schema::validate_schema_version(
+        if let Err(e) = shipper_types::schema::validate_schema_version(
             &config.schema_version,
             "shipper.config.v1",
             "config",
@@ -564,7 +564,7 @@ impl ShipperConfig {
     /// Validate the configuration
     pub fn validate(&self) -> Result<()> {
         // Validate schema version format
-        shipper_schema::parse_schema_version(&self.schema_version)
+        shipper_types::schema::parse_schema_version(&self.schema_version)
             .context("invalid schema_version format")?;
 
         // Validate output_lines

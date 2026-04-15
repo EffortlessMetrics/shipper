@@ -48,7 +48,7 @@ pub trait StateStore: Send + Sync {
 
 /// Validate any schema version
 pub fn validate_schema_version(version: &str) -> Result<()> {
-    shipper_schema::validate_schema_version(
+    shipper_types::schema::validate_schema_version(
         version,
         crate::state::execution_state::MINIMUM_SUPPORTED_VERSION,
         "schema",

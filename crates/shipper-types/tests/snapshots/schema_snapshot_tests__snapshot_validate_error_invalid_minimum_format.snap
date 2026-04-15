@@ -1,0 +1,5 @@
+---
+source: crates/shipper-types/tests/schema_snapshot_tests.rs
+expression: "format!(\"{err:?}\")"
+---
+"invalid minimum version format: bad-minimum\n\nCaused by:\n    invalid schema version format: bad-minimum"

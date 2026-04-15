@@ -207,7 +207,7 @@ fn migrate_receipt_encrypted(
 
 /// Validate receipt schema version
 pub fn validate_receipt_version(version: &str) -> Result<()> {
-    shipper_schema::validate_schema_version(version, MINIMUM_SUPPORTED_VERSION, "receipt")
+    shipper_types::schema::validate_schema_version(version, MINIMUM_SUPPORTED_VERSION, "receipt")
 }
 
 /// Migrate a receipt from an older schema version to the current version

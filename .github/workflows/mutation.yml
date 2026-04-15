@@ -44,7 +44,6 @@ jobs:
         # under the new module paths in shipper/ once absorptions settle.
         run: |
           cargo mutants --no-shuffle \
-            -p shipper-schema \
             -p shipper-duration \
             -p shipper-types \
             -p shipper-config \

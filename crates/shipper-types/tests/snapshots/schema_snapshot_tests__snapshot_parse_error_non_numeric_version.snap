@@ -1,0 +1,5 @@
+---
+source: crates/shipper-types/tests/schema_snapshot_tests.rs
+expression: err.to_string()
+---
+"invalid version number in schema version: shipper.receipt.vx"

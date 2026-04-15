@@ -1,8 +1,0 @@
----
-source: crates/shipper-schema/src/lib.rs
-assertion_line: 195
-expression: "validate_schema_version(\"shipper.state.v3\", \"shipper.state.v1\", \"state\")"
----
-Ok(
-    (),
-)

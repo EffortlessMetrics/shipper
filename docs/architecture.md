@@ -50,7 +50,7 @@ CLI binary, and 29 focused microcrates that each own a single responsibility.
 | `shipper-progress` | _Absorbed — now `shipper-cli::output::progress` module (PR #67)_ |
 | `shipper-registry` | HTTP client for registry REST API (version check, owners) |
 | `shipper-retry` | Configurable retry strategies (exponential, linear, constant) with jitter |
-| `shipper-schema` | Schema-version parsing and compatibility validation |
+| `shipper-schema` | _Folded into `shipper-types::schema` — schema-version parsing and validation now lives in `shipper-types` (Phase 6)_ |
 | `shipper-sparse-index` | Cargo sparse-index path derivation and version lookup |
 | `shipper-state` | _Absorbed — now `shipper::state::execution_state` module (PR #60)_ |
 | `shipper-storage` | _SPLIT — config types to `shipper-types::storage`, backend to `shipper::ops::storage` (PR #68)_ |
@@ -76,9 +76,8 @@ shipper-cli
   (progress UI lives inline at shipper-cli::output::progress)
 
 shipper  (facade — re-exports all microcrates)
-  ├── shipper-types
+  ├── shipper-types            (includes schema module, formerly `shipper-schema`)
   ├── shipper-config           (runtime conversion helpers live in `shipper_config::runtime`)
-  ├── shipper-schema
   ├── shipper-retry
   ├── shipper-duration
   ├── shipper-levels
@@ -103,11 +102,10 @@ shipper-types
   └── shipper-levels
 
 shipper-config  (contains `runtime` submodule for config→RuntimeOptions conversion)
-  ├── shipper-types
+  ├── shipper-types            (for schema-version helpers + domain types)
   ├── shipper-encrypt
   ├── shipper-webhook
-  ├── shipper-retry
-  └── shipper-schema
+  └── shipper-retry
 
 shipper-registry ──► shipper-sparse-index
 shipper-cargo ──► shipper-output-sanitizer
@@ -116,7 +114,7 @@ Leaf crates (zero shipper-* dependencies):
   shipper-cargo-failure, shipper-chunking,
   shipper-duration, shipper-encrypt, shipper-levels,
   shipper-lock, shipper-output-sanitizer, shipper-process,
-  shipper-retry, shipper-schema,
+  shipper-retry,
   shipper-sparse-index, shipper-webhook
 ```
 
@@ -265,7 +263,7 @@ and readiness polling.
 | Crate | Role |
 |-------|------|
 | `shipper-config` | Parse `.shipper.toml`, merge sections, validate constraints; `runtime` submodule converts `ShipperConfig` + `CliOverrides` → `RuntimeOptions` |
-| `shipper-schema` | Parse and validate schema version identifiers in state files |
+| `shipper-types::schema` | Parse and validate schema version identifiers in state files (formerly the standalone `shipper-schema` crate, folded in during Phase 6) |
 
 Configuration flows: CLI flags → `CliOverrides` → merged with `ShipperConfig`
 from disk → produces `RuntimeOptions` consumed by the engine.

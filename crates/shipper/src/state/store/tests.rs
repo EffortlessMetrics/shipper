@@ -200,38 +200,40 @@ fn validate_schema_version_rejects_missing_version_number() {
 
 #[test]
 fn parse_schema_version_in_store_extracts_number_from_v1() {
-    let result = shipper_schema::parse_schema_version("shipper.receipt.v1").expect("should parse");
+    let result =
+        shipper_types::schema::parse_schema_version("shipper.receipt.v1").expect("should parse");
     assert_eq!(result, 1);
 }
 
 #[test]
 fn parse_schema_version_in_store_extracts_number_from_v2() {
-    let result = shipper_schema::parse_schema_version("shipper.receipt.v2").expect("should parse");
+    let result =
+        shipper_types::schema::parse_schema_version("shipper.receipt.v2").expect("should parse");
     assert_eq!(result, 2);
 }
 
 #[test]
 fn parse_schema_version_in_store_handles_large_version() {
     let result =
-        shipper_schema::parse_schema_version("shipper.receipt.v100").expect("should parse");
+        shipper_types::schema::parse_schema_version("shipper.receipt.v100").expect("should parse");
     assert_eq!(result, 100);
 }
 
 #[test]
 fn parse_schema_version_in_store_rejects_invalid_format_no_prefix() {
-    let result = shipper_schema::parse_schema_version("receipt.v2");
+    let result = shipper_types::schema::parse_schema_version("receipt.v2");
     assert!(result.is_err());
 }
 
 #[test]
 fn parse_schema_version_in_store_rejects_invalid_format_no_version() {
-    let result = shipper_schema::parse_schema_version("shipper.receipt");
+    let result = shipper_types::schema::parse_schema_version("shipper.receipt");
     assert!(result.is_err());
 }
 
 #[test]
 fn parse_schema_version_in_store_rejects_invalid_format_missing_v() {
-    let result = shipper_schema::parse_schema_version("shipper.receipt.2");
+    let result = shipper_types::schema::parse_schema_version("shipper.receipt.2");
     assert!(result.is_err());
 }
 

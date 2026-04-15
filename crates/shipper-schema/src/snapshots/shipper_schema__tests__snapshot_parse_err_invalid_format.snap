@@ -1,8 +1,0 @@
----
-source: crates/shipper-schema/src/lib.rs
-assertion_line: 185
-expression: "parse_schema_version(\"invalid\").map_err(|e| e.to_string())"
----
-Err(
-    "invalid schema version format: invalid",
-)
