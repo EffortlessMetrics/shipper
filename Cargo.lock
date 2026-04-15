@@ -2470,7 +2470,7 @@ name = "shipper-webhook"
 version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "insta",
  "proptest",
  "reqwest",
