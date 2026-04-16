@@ -37,6 +37,8 @@
 - **Error Handling:** Uses `anyhow::Result` for flexible error reporting across the library and CLI.
 - **Reporting:** Uses a `Reporter` trait to abstract logging/output, allowing the CLI to provide formatted eprints while keeping the library agnostic.
 - **State Management:** Execution state is persisted atomically as JSON. The `plan_id` is used to ensure that resumes match the intended plan.
+- **Events-as-Truth Invariant:** `events.jsonl` is the authoritative source of truth; `state.json` is a projection over events for fast resume; `receipt.json` is a summary at end-of-run. See `docs/INVARIANTS.md`.
+- **Product Thesis:** Shipper's value is organized as nine competencies (Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics). See `ROADMAP.md` and master tracking issue #109. The biggest open gap is Reconcile (#102 / #99).
 - **Testing Pattern:** 
     - Extensive use of `tempfile` for filesystem isolation.
     - Registry interactions are mocked in tests using a local `tiny_http` server.

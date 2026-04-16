@@ -57,10 +57,20 @@ The core flow is: **plan → preflight → publish → (resume if interrupted)**
 ### State Files
 
 Written to `.shipper/` (configurable via `--state-dir`):
-- `state.json` — resumable execution state (schema-versioned)
-- `receipt.json` — audit receipt with evidence (stdout/stderr, exit codes, git context, environment fingerprint)
-- `events.jsonl` — append-only event log
+- `state.json` — resumable execution state (schema-versioned). **Projection** of events.
+- `receipt.json` — audit receipt with evidence (stdout/stderr, exit codes, git context, environment fingerprint). **Summary** derived at end-of-run.
+- `events.jsonl` — append-only event log. **Authoritative truth.**
 - `lock` — distributed lock preventing concurrent publishes
+
+### Events-as-truth invariant
+
+`events.jsonl` is authoritative; `state.json` is a projection; `receipt.json` is a summary. See [docs/INVARIANTS.md](docs/INVARIANTS.md). When the three disagree, events win — and a drift is a bug. Tooling that needs ground truth should read events; tooling that needs fast "what's done" can read state.
+
+In `state.json`, package status is at `.packages[].state.state`, not `.packages[].status` — common source of misreads.
+
+## Product thesis (nine competencies)
+
+Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is what Cargo still doesn't do, organized as nine competencies: **Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics**. See [ROADMAP.md](ROADMAP.md) and master tracking issue [#109](https://github.com/EffortlessMetrics/shipper/issues/109). The biggest open gap is **Reconcile** ([#102](https://github.com/EffortlessMetrics/shipper/issues/102) / [#99](https://github.com/EffortlessMetrics/shipper/issues/99)): when `cargo publish` exits ambiguously, Shipper currently blind-retries instead of reconciling against the registry. Use this thesis as the north star when scoping work.
 
 ## Conventions
 

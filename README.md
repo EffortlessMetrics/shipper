@@ -12,10 +12,14 @@ Cargo already knows how to package and upload crates. What tends to break in rea
 
 Shipper is intentionally narrow: it focuses on making publishing **safe to start** and **safe to re-run**.
 
+## Status
+
+**v0.3.0-rc.1 shipped 2026-04-16** — first real-world crates.io publish, 12 crates live, driven by Shipper itself. See [ROADMAP.md](ROADMAP.md) for the post-rc.1 product thesis (nine competencies) and master tracking issue [#109](https://github.com/EffortlessMetrics/shipper/issues/109).
+
 ## Workspace crates
 
-- [`shipper-cli`](crates/shipper-cli/README.md) - installs the `shipper` binary and exposes the command-line workflow.
-- [`shipper`](crates/shipper/README.md) - reusable library for planning, preflight checks, publish execution, resume, and receipts.
+- [`shipper-cli`](crates/shipper-cli/README.md) — installs the `shipper` binary and exposes the command-line workflow.
+- [`shipper`](crates/shipper/README.md) — reusable library for planning, preflight checks, publish execution, resume, and receipts.
 
 ## What shipper does
 
@@ -39,6 +43,14 @@ Shipper is intentionally narrow: it focuses on making publishing **safe to start
   Shipper focuses on *getting those versions published reliably*.
 
 ## Build / install
+
+From crates.io:
+
+```bash
+cargo install shipper-cli --locked
+```
+
+> Note: the binary is named `shipper` but the crate is `shipper-cli`. Tracking [#95](https://github.com/EffortlessMetrics/shipper/issues/95) to make `cargo install shipper` work.
 
 From this repository:
 
@@ -319,10 +331,13 @@ shipper ci gitlab
 
 ## Documentation
 
-- [Configuration](docs/configuration.md) - Configuration file reference
-- [Preflight Verification](docs/preflight.md) - Pre-flight verification guide
-- [Readiness Checking](docs/readiness.md) - Readiness verification guide
-- [Failure Modes](docs/failure-modes.md) - Common failure scenarios and solutions
+- [ROADMAP.md](ROADMAP.md) — product thesis, nine-competency scorecard, now/next/later
+- [docs/INVARIANTS.md](docs/INVARIANTS.md) — events-as-truth / state-as-projection contract
+- [docs/configuration.md](docs/configuration.md) — configuration file reference
+- [docs/preflight.md](docs/preflight.md) — pre-flight verification guide
+- [docs/readiness.md](docs/readiness.md) — readiness verification guide
+- [docs/failure-modes.md](docs/failure-modes.md) — common failure scenarios and solutions
+- [docs/release-runbook.md](docs/release-runbook.md) — operator release runbook
 
 ## License
 
