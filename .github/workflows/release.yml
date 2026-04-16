@@ -219,6 +219,7 @@ jobs:
         with:
           name: shipper-state-plan
           path: .shipper/
+          include-hidden-files: true
           retention-days: 30
 
       # --- Step 4: preflight ------------------------------------------------
@@ -238,6 +239,7 @@ jobs:
         with:
           name: shipper-state-preflight
           path: .shipper/
+          include-hidden-files: true
           retention-days: 30
 
       - name: Fail fast if preflight failed
@@ -302,6 +304,7 @@ jobs:
         with:
           name: shipper-state-final
           path: .shipper/
+          include-hidden-files: true
           retention-days: 90
 
   # ---------------------------------------------------------------------------
@@ -415,6 +418,7 @@ jobs:
         with:
           name: shipper-rehearse-${{ github.run_id }}
           path: .shipper/
+          include-hidden-files: true
           retention-days: 30
 
   # ---------------------------------------------------------------------------
@@ -499,4 +503,5 @@ jobs:
         with:
           name: shipper-state-resume-${{ github.run_id }}
           path: .shipper/
+          include-hidden-files: true
           retention-days: 90
