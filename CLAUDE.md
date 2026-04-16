@@ -5,10 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Orientation
 
 - [**MISSION.md**](MISSION.md) — north star: mission, vision, audience, beliefs. Read before scoping non-trivial work.
-- [**ROADMAP.md**](ROADMAP.md) — nine-competency thesis, current status, now/next/later sequencing.
-- [**docs/product.md**](docs/product.md) — product overview at a glance.
-- [**docs/structure.md**](docs/structure.md) — repository and crate structure.
-- [**docs/tech.md**](docs/tech.md) — tech stack and conventions.
+- [**ROADMAP.md**](ROADMAP.md) — five pillars + nine-competency thesis, current status, now/next/later sequencing.
+- [**docs/README.md**](docs/README.md) — documentation index (Diátaxis: tutorials/how-to/reference/explanation).
+- [**docs/explanation/why-shipper.md**](docs/explanation/why-shipper.md) — the *why*, distilled.
+- [**docs/product.md**](docs/product.md), [**docs/structure.md**](docs/structure.md), [**docs/tech.md**](docs/tech.md) — steering docs.
 - [**docs/INVARIANTS.md**](docs/INVARIANTS.md) — events-as-truth contract.
 
 ## Build & Test Commands

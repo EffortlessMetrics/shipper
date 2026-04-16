@@ -47,6 +47,8 @@ shipper resume      # if interrupted, continue from the last state
 
 `shipper --help` and `shipper <subcommand> --help` are the canonical command/flag reference.
 
+For a walkthrough, see the [first-publish tutorial](docs/tutorials/first-publish.md). For the full docs tree (tutorials / how-to / reference / explanation), see [docs/README.md](docs/README.md).
+
 ## How it works
 
 The core flow is **plan → preflight → publish → (resume if interrupted)**.
@@ -174,17 +176,20 @@ The full crate map is in [docs/structure.md](docs/structure.md).
 
 ## Documentation
 
-- [MISSION.md](MISSION.md) — mission, vision, audience, and what we believe
-- [ROADMAP.md](ROADMAP.md) — product thesis, nine-competency scorecard, now/next/later
-- [docs/product.md](docs/product.md) — product overview at a glance
-- [docs/structure.md](docs/structure.md) — repository and crate structure
-- [docs/tech.md](docs/tech.md) — tech stack and conventions
-- [docs/INVARIANTS.md](docs/INVARIANTS.md) — events-as-truth / state-as-projection contract
-- [docs/configuration.md](docs/configuration.md) — `.shipper.toml` reference
-- [docs/preflight.md](docs/preflight.md) — pre-flight verification guide
-- [docs/readiness.md](docs/readiness.md) — readiness verification guide
-- [docs/failure-modes.md](docs/failure-modes.md) — common failure scenarios and solutions
-- [docs/release-runbook.md](docs/release-runbook.md) — operator release runbook
+The full docs tree is organized by reader purpose ([Diátaxis](https://diataxis.fr/)): tutorials, how-to guides, reference, explanation. Start at **[docs/README.md](docs/README.md)**.
+
+Top of the repo:
+
+- [MISSION.md](MISSION.md) — mission, vision, audience, beliefs
+- [ROADMAP.md](ROADMAP.md) — five pillars, nine-competency scorecard, now/next/later
+- [docs/README.md](docs/README.md) — documentation index
+
+Quick links:
+
+- **Learn:** [First publish tutorial](docs/tutorials/first-publish.md) • [Recover from interruption](docs/tutorials/recover-from-interruption.md)
+- **Do:** [Run in GitHub Actions](docs/how-to/run-in-github-actions.md) • [Inspect state & receipts](docs/how-to/inspect-state-and-receipts.md)
+- **Look up:** [CLI reference](docs/reference/cli.md) • [`.shipper.toml`](docs/configuration.md) • [Failure modes](docs/failure-modes.md)
+- **Understand:** [Why Shipper](docs/explanation/why-shipper.md) • [Architecture](docs/architecture.md) • [Invariants](docs/INVARIANTS.md)
 
 ## License
 

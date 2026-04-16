@@ -5,7 +5,9 @@
 ## Orientation
 
 - `MISSION.md` — north star: mission, vision, audience, beliefs.
-- `ROADMAP.md` — nine-competency thesis and sequencing.
+- `ROADMAP.md` — five pillars + nine-competency thesis and sequencing.
+- `docs/README.md` — documentation index (Diátaxis: tutorials/how-to/reference/explanation).
+- `docs/explanation/why-shipper.md` — the *why*, distilled.
 - `docs/product.md`, `docs/structure.md`, `docs/tech.md` — product overview, code structure, tech stack.
 - `docs/INVARIANTS.md` — events-as-truth contract.
 
