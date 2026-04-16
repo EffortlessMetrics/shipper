@@ -82,8 +82,9 @@ jobs:
         env:
           # Keep snapshots from updating in CI
           INSTA_UPDATE: "no"
-          # Keep property tests productive but bounded
-          PROPTEST_CASES: "256"
+          # PR/push: fast-path proptests (Argon2-heavy crypto cases dominate wall clock).
+          # Nightly schedule + manual dispatch: full strength.
+          PROPTEST_CASES: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '256' || '16' }}
 
       - name: Run doc tests
         run: cargo test --workspace --doc
@@ -188,6 +189,11 @@ jobs:
 
       - name: Generate coverage (lcov)
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+        env:
+          INSTA_UPDATE: "no"
+          # llvm-cov instrumentation + Argon2 proptests is a bad combination.
+          # Coverage signal does not need max-strength property exploration.
+          PROPTEST_CASES: "16"
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v7
