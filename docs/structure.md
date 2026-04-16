@@ -18,10 +18,7 @@ shipper/
 │   ├── shipper-output-sanitizer/      # ANSI strip + token redaction
 │   ├── shipper-retry/                 # Retry/backoff strategies
 │   ├── shipper-sparse-index/          # Sparse index protocol client
-│   ├── shipper-webhook/               # Webhook delivery
-│   ├── shipper-events/                # (workspace-internal)
-│   ├── shipper-state/                 # (workspace-internal)
-│   └── shipper-storage/               # (workspace-internal)
+│   └── shipper-webhook/               # Webhook delivery
 ├── docs/                              # User & contributor documentation
 │   ├── product.md                     # This area: orientation
 │   ├── structure.md                   # This file
@@ -48,7 +45,7 @@ shipper/
 └── CHANGELOG.md
 ```
 
-12 of the 15 crates are published to crates.io as part of v0.3.0-rc.1. The remaining 3 (`shipper-events`, `shipper-state`, `shipper-storage`) are workspace-internal.
+All 12 workspace crates are published to crates.io as part of v0.3.0-rc.1. There is no separate "workspace-internal" tier — when a concern needs ownership, it lives as a module inside an owner crate (see [architecture.md](architecture.md)).
 
 ## `crates/shipper` module map
 

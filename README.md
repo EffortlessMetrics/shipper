@@ -4,6 +4,8 @@
 
 Cargo packages and uploads. The workflow around it — planning a multi-crate release, surviving rate limits, recovering when CI dies, knowing what actually shipped when the upload was ambiguous — is where things tend to break. Shipper makes a workspace publish **safe to start** and **safe to re-run**.
 
+> **The single test:** you can start a release train, stop staring at the terminal, and still trust the outcome.
+
 > **Why this exists:** see [MISSION.md](MISSION.md) for mission, vision, audience, and the convictions that shape every default.
 
 ## Status

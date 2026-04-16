@@ -4,7 +4,13 @@ This document is Shipper's north star. When the [roadmap](ROADMAP.md) ages or sp
 
 ## Mission
 
-Shipper makes publishing Rust crates to a registry **safe to start and safe to re-run**. We encode what Cargo doesn't: pre-flight proof, ambiguity reconciliation, mechanical recovery, and operator-grade observability — so a multi-crate workspace publish becomes a boring, auditable operation instead of a manual coordination dance.
+Shipper makes publishing Rust crates to a registry **safe to start and safe to re-run**. We encode what Cargo doesn't — pre-flight proof, ambiguity reconciliation, mechanical recovery, and operator-grade observability — so a multi-crate workspace publish becomes a boring, auditable operation instead of a manual coordination dance.
+
+The single-sentence test of whether we are succeeding:
+
+> **You can start a release train, stop staring at the terminal, and still trust the outcome.**
+
+If that's true, we've done our job. If it isn't, no amount of mechanism makes us valuable.
 
 ## Vision
 

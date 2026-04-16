@@ -8,9 +8,23 @@
 
 The post-release retrospective produced a product thesis organized around nine competencies. This document is structured around them. Each competency has a tracking issue (#100–#108); the master roadmap is **#109**.
 
-## Product thesis: nine competencies
+## Five existential pillars (the safety claim)
 
-Cargo 1.90 stabilized multi-package workspace publishing, so "publish several crates at once" is no longer Shipper's differentiator. Shipper exists to do what Cargo still doesn't:
+Cargo 1.90 stabilized multi-package workspace publishing. "Publish several crates at once" is no longer a differentiator. Shipper is only worth existing if it owns five guarantees Cargo still does not give you — together they are the **release-closure system** that the engine is moving toward:
+
+| Pillar | Question it answers | Status |
+|---|---|---|
+| **Prove** | Can I show this release is safe *before* the irreversible step? | Partial — workspace dry-run + ownership; rehearsal-registry pending ([#97](https://github.com/EffortlessMetrics/shipper/issues/97)) |
+| **Dispatch** | Is the publish executed in a registry-aware, paced way? | Partial — generic exponential backoff; documented-constraint + Retry-After layering pending ([#94](https://github.com/EffortlessMetrics/shipper/issues/94)) |
+| **Reconcile** | When the result is ambiguous, do I check registry truth before retrying? | **Missing** ([#99](https://github.com/EffortlessMetrics/shipper/issues/99) / [#102](https://github.com/EffortlessMetrics/shipper/issues/102)) — biggest open gap |
+| **Recover** | If the runner dies mid-train, can I converge from durable state without losing or duplicating work? | Partial — implemented; verification under real interruption pending ([#90](https://github.com/EffortlessMetrics/shipper/issues/90)) |
+| **Remediate** | If a partial release goes bad, can I contain or fix-forward it mechanically? | **Missing** ([#98](https://github.com/EffortlessMetrics/shipper/issues/98) / [#104](https://github.com/EffortlessMetrics/shipper/issues/104)) |
+
+These five are the existential pillars: a publishing tool that doesn't own them is a publishing tool that asks too much trust from the operator. Today Shipper is two-thirds of the way through pillars 1, 2, and 4; pillars 3 and 5 are the work that turns "useful release executor" into "trustworthy release-closure system."
+
+## Nine competencies (the full scorecard)
+
+The five pillars cover the safety story. Four more competencies — narrate, harden, integrate, ergonomics — make the tool legible, securable, embeddable, and approachable. Together they form the full scorecard each tracking issue maps to:
 
 | # | Competency | Definition | Status | Issue |
 |---|---|---|---|---|
