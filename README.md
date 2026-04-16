@@ -2,47 +2,23 @@
 
 `shipper` is a **publishing reliability layer** for Rust workspaces.
 
-Cargo already knows how to package and upload crates. What tends to break in real life is the workflow around it:
+Cargo packages and uploads. The workflow around it — planning a multi-crate release, surviving rate limits, recovering when CI dies, knowing what actually shipped when the upload was ambiguous — is where things tend to break. Shipper makes a workspace publish **safe to start** and **safe to re-run**.
 
-- publishing is **irreversible** (versions can't be overwritten)
-- multi-crate publishing can be **non-atomic** (partial publishes)
-- CI runs get cancelled or time out
-- registries apply **backpressure** (HTTP 429)
-- some failures are **ambiguous** (upload may have succeeded even when the client errors)
-
-Shipper is intentionally narrow: it focuses on making publishing **safe to start** and **safe to re-run**.
+> **Why this exists:** see [MISSION.md](MISSION.md) for mission, vision, audience, and the convictions that shape every default.
 
 ## Status
 
-**v0.3.0-rc.1 shipped 2026-04-16** — first real-world crates.io publish, 12 crates live, driven by Shipper itself. See [ROADMAP.md](ROADMAP.md) for the post-rc.1 product thesis (nine competencies) and master tracking issue [#109](https://github.com/EffortlessMetrics/shipper/issues/109).
+**v0.3.0-rc.1 shipped 2026-04-16** — first real-world crates.io publish, 12 crates live, driven by Shipper itself. The publish absorbed 41 retries silently across a 69-minute run. See [ROADMAP.md](ROADMAP.md) for the post-rc.1 product thesis (nine competencies) and master tracking issue [#109](https://github.com/EffortlessMetrics/shipper/issues/109).
 
-## Workspace crates
+| Audience | Start here |
+|---|---|
+| New user | This README → [docs/release-runbook.md](docs/release-runbook.md) |
+| Operator | [docs/release-runbook.md](docs/release-runbook.md), [docs/configuration.md](docs/configuration.md) |
+| Contributor | [MISSION.md](MISSION.md) → [ROADMAP.md](ROADMAP.md) → [CONTRIBUTING.md](CONTRIBUTING.md) → an issue from #100–#109 |
+| AI assistant | [CLAUDE.md](CLAUDE.md) or [GEMINI.md](GEMINI.md) |
+| Auditing receipts/events | [docs/INVARIANTS.md](docs/INVARIANTS.md) |
 
-- [`shipper-cli`](crates/shipper-cli/README.md) — installs the `shipper` binary and exposes the command-line workflow.
-- [`shipper`](crates/shipper/README.md) — reusable library for planning, preflight checks, publish execution, resume, and receipts.
-
-## What shipper does
-
-- Builds a deterministic **publish plan** for workspace crates (dependency-first ordering).
-- Runs **preflight checks** (git cleanliness, publishability, registry reachability, version existence).
-- Optionally verifies **crate ownership/permissions** up front (when a token is available).
-- Publishes **one crate at a time** using `cargo publish -p <crate>`.
-- Applies retry/backoff for retryable failures.
-- Verifies publish completion via the registry API before declaring success.
-- Persists progress to disk so you can **resume** after interruption.
-- Captures **evidence** for each operation (stdout, stderr, exit codes).
-- Maintains an **event log** for complete audit trails.
-- Performs **readiness checks** to ensure registry visibility before publishing dependent crates.
-- Supports **parallel publishing** for independent packages within the dependency graph.
-- Supports configurable **publish policies** for different safety levels.
-
-## What shipper does not do (yet)
-
-- It does not bump versions, generate changelogs, create git tags, or create GitHub releases.
-  Use `cargo-release`, `release-plz`, or your own workflow to decide *what* version to publish.
-  Shipper focuses on *getting those versions published reliably*.
-
-## Build / install
+## Install
 
 From crates.io:
 
@@ -50,12 +26,11 @@ From crates.io:
 cargo install shipper-cli --locked
 ```
 
-> Note: the binary is named `shipper` but the crate is `shipper-cli`. Tracking [#95](https://github.com/EffortlessMetrics/shipper/issues/95) to make `cargo install shipper` work.
+> The binary is named `shipper` but the published crate is `shipper-cli`. [#95](https://github.com/EffortlessMetrics/shipper/issues/95) tracks making `cargo install shipper` work.
 
 From this repository:
 
 ```bash
-cargo build --release
 cargo install --path crates/shipper-cli --locked
 ```
 
@@ -65,275 +40,145 @@ cargo install --path crates/shipper-cli --locked
 shipper plan        # preview the publish order
 shipper preflight   # verify everything is ready
 shipper publish     # execute the plan
+shipper resume      # if interrupted, continue from the last state
 ```
 
-If the publish is interrupted (CI cancellation, network issues):
+`shipper --help` and `shipper <subcommand> --help` are the canonical command/flag reference.
 
-```bash
-shipper resume
-```
+## How it works
+
+The core flow is **plan → preflight → publish → (resume if interrupted)**.
+
+1. **Plan.** Reads the workspace via `cargo_metadata`, filters publishable crates, topologically sorts them by intra-workspace dependencies, and computes a SHA256-based `plan_id`. Same workspace state always produces the same `plan_id`.
+2. **Preflight.** Validates git cleanliness, registry reachability, performs a workspace dry-run, checks version-not-taken, optionally verifies ownership. Produces a `Finishability` assessment (Proven / NotProven / Failed).
+3. **Publish.** Executes the plan one crate at a time with retry/backoff. After each `cargo publish`, verifies registry visibility (sparse index and/or API) before advancing to a dependent crate. Persists state to disk after every step.
+4. **Resume.** Reloads `.shipper/state.json`, validates the `plan_id` matches the current workspace, skips already-published packages, continues from the first pending crate.
+
+State lives in `.shipper/`:
+
+- **`events.jsonl`** — append-only event stream. **The authoritative record.**
+- **`state.json`** — projection over events for fast resume.
+- **`receipt.json`** — end-of-run summary with evidence.
+- **`lock`** — concurrent-publish guard.
+
+The truth/projection/summary contract is documented in [docs/INVARIANTS.md](docs/INVARIANTS.md). Use `--state-dir <path>` to redirect (e.g. into a CI artifacts directory).
+
+## What shipper does
+
+- Deterministic, dependency-ordered publish plan.
+- Pre-flight checks (git, registry, dry-run, version, ownership).
+- Per-crate publish with retry/backoff for retryable failures.
+- Post-publish readiness verification before advancing to dependents.
+- Resumable state after every step.
+- Append-only audit event log + machine-readable receipt with evidence (stdout/stderr, exit codes, git context, environment fingerprint).
+- Multi-registry orchestration in a single run (state segregated per registry).
+- Parallel publishing for independent crates within the dependency graph.
+- Configurable safety/speed tradeoff via publish policies (`safe`, `balanced`, `fast`).
+
+## What shipper does not do
+
+- Bump versions, generate changelogs, create git tags, or write release notes. Use [cargo-release](https://github.com/crate-ci/cargo-release) or [release-plz](https://github.com/MarcoIeni/release-plz) for those. Shipper picks up *after* the version is decided.
 
 ## Authentication
 
-Publishing itself is performed by Cargo.
+Publishing itself is performed by Cargo. Shipper resolves a registry token from the same places Cargo does:
 
-Shipper's registry API checks (version existence, optional owners preflight) resolve a token using the same places people already use for Cargo:
+1. `CARGO_REGISTRY_TOKEN` (crates.io)
+2. `CARGO_REGISTRIES_<NAME>_TOKEN` (alternative registries; `<NAME>` uppercased, `-` replaced with `_`)
+3. `$CARGO_HOME/credentials.toml`
 
-- `CARGO_REGISTRY_TOKEN` (crates.io)
-- `CARGO_REGISTRIES_<NAME>_TOKEN` (other registries; `<NAME>` uppercased, `-` replaced with `_`)
-- `$CARGO_HOME/credentials.toml` (created by `cargo login`)
+The token is opaque, never logged, sanitized from receipts.
 
-The token is treated as an **opaque string** and sent as the value of the `Authorization` header, matching Cargo's registry web API model.
+`shipper doctor` reports `auth_type`:
 
-`shipper doctor` reports both `token_detected` and an `auth_type` value:
-- `token` (Cargo token found)
-- `trusted` (GitHub OIDC trusted publishing env detected)
-- `unknown` (partial auth env detected)
-- `-` (no known auth detected)
+- `token` — Cargo token detected
+- `trusted` — GitHub OIDC trusted-publishing env detected
+- `unknown` — partial auth env detected
+- `-` — none
 
-## State + receipts
+> Trusted Publishing detection exists today; making it the default (with OIDC token exchange) is tracked at [#96](https://github.com/EffortlessMetrics/shipper/issues/96).
 
-By default Shipper writes:
+## Configuration
 
-- `.shipper/state.json` — resumable execution state
-- `.shipper/receipt.json` — machine-readable receipt for CI/auditing
-- `.shipper/events.jsonl` — detailed event log for debugging
-
-Use `--state-dir <path>` to redirect these elsewhere (for example, a CI artifacts directory).
-
-## Commands
-
-### Core commands
-
-- `shipper plan` — print the publish order and what will be skipped
-- `shipper preflight` — run checks without publishing
-- `shipper publish` — execute the plan (writes state + receipt + events)
-- `shipper resume` — continue from the last state
-- `shipper status` — compare local versions to the registry
-- `shipper doctor` — environment and auth diagnostics
-
-### Inspection commands
-
-- `shipper inspect-events` — view detailed event log with timestamps and evidence
-- `shipper inspect-receipt` — view detailed receipt with captured evidence
-- `shipper clean` — clean state files (state.json, receipt.json, events.jsonl)
-
-### CI commands
-
-- `shipper ci github-actions` — print GitHub Actions workflow snippet
-- `shipper ci gitlab` — print GitLab CI workflow snippet
-- `shipper ci circleci` — print CircleCI configuration snippet
-- `shipper ci azure-devops` — print Azure DevOps pipeline snippet
-
-### Utility commands
-
-- `shipper completion <shell>` — generate shell completion scripts (bash, zsh, fish, powershell, elvish)
-- `shipper config init` — generate a default `.shipper.toml` configuration file
-- `shipper config validate` — validate a configuration file
-
-## Options
-
-### Global options
-
-- `--config <path>` — Path to a custom `.shipper.toml` configuration file
-- `--manifest-path <path>` — Path to the workspace Cargo.toml (default: Cargo.toml)
-- `--registry <name>` — Cargo registry name (default: crates-io)
-- `--api-base <url>` — Registry API base URL (default: https://crates.io)
-- `--package <name>` — Restrict to specific packages (repeatable)
-- `--format <format>` — Output format: text (default) or json
-- `--verbose` — Show detailed output (e.g., dependency analysis for plan)
-- `-q` / `--quiet` — Suppress informational output
-
-### State options
-
-- `--state-dir <path>` — Directory for shipper state and receipts (default: .shipper)
-- `--force` — Force override of existing locks (use with caution)
-- `--lock-timeout <duration>` — Lock timeout duration (default: 1h)
-
-### Verification options
-
-- `--policy <policy>` — Publish policy: safe (verify+strict), balanced (verify when needed), fast (no verify) (default: safe)
-- `--verify-mode <mode>` — Verify mode: workspace (default), package (per-crate), none (no verify)
-- `--no-verify` — Pass --no-verify to cargo publish
-
-### Readiness options
-
-- `--readiness-method <method>` — Readiness check method: api (default, fast), index (slower, more accurate), both (slowest, most reliable)
-- `--readiness-timeout <duration>` — How long to wait for registry visibility during readiness checks (default: 5m)
-- `--readiness-poll <duration>` — Poll interval for readiness checks (default: 2s)
-- `--no-readiness` — Disable readiness checks (for advanced users)
-
-### Preflight options
-
-- `--allow-dirty` — Allow publishing from a dirty git working tree
-- `--skip-ownership-check` — Skip owners/permissions preflight
-- `--strict-ownership` — Fail preflight if ownership checks fail or if no token is available
-
-### Retry options
-
-- `--max-attempts <number>` — Max attempts per crate publish step (default: 6)
-- `--base-delay <duration>` — Base backoff delay (default: 2s)
-- `--max-delay <duration>` — Max backoff delay (default: 2m)
-- `--retry-strategy <strategy>` — Retry strategy: immediate, exponential (default), linear, constant
-- `--retry-jitter <factor>` — Jitter factor for retry delays (0.0 = no jitter, 1.0 = full jitter; default: 0.5)
-- `--verify-timeout <duration>` — How long to wait for registry visibility after a successful publish (default: 2m)
-- `--verify-poll <duration>` — Poll interval for checking registry visibility (default: 5s)
-
-### Evidence options
-
-- `--output-lines <number>` — Number of output lines to capture for evidence (default: 50)
-
-### Parallel options
-
-- `--parallel` — Enable parallel publishing (packages at the same dependency level published concurrently)
-- `--max-concurrent <number>` — Maximum concurrent publish operations (default: 4, implies --parallel)
-- `--per-package-timeout <duration>` — Timeout per package in parallel mode (default: 30m)
-
-### Resume options
-
-- `--force-resume` — Force resume even if the computed plan differs from the state file
-
-## Configuration file
-
-Shipper supports project-specific configuration via a `.shipper.toml` file in your workspace root. CLI flags always take precedence over configuration file values.
+Project-specific configuration via `.shipper.toml` in the workspace root. CLI flags always take precedence.
 
 ```bash
 shipper config init       # generate a default config file
-shipper config validate   # validate an existing config file
+shipper config validate   # validate a configuration file
 ```
 
 See [docs/configuration.md](docs/configuration.md) for the full reference.
 
+## CI integration
+
+Generate a workflow snippet for your platform:
+
+```bash
+shipper ci github-actions
+shipper ci gitlab
+shipper ci circleci
+shipper ci azure-devops
+```
+
+Or browse `templates/` for reference workflows.
+
 ## Examples
 
-### Basic publish workflow
+### Choosing a publish policy
 
 ```bash
-shipper plan
-shipper preflight
-shipper publish
+shipper publish --policy safe       # default: verify every step
+shipper publish --policy balanced   # verify when needed
+shipper publish --policy fast       # skip verification (with caution)
 ```
 
-### Publish policies
+### Choosing a readiness method
 
 ```bash
-# Safe mode (default): verify every publish with strict checks
-shipper publish --policy safe
-
-# Balanced mode: verify only when needed
-shipper publish --policy balanced
-
-# Fast mode: skip verification (use with caution)
-shipper publish --policy fast
+shipper publish --readiness-method api    # fast (default)
+shipper publish --readiness-method index  # more accurate
+shipper publish --readiness-method both   # most reliable
 ```
 
-### Readiness checks
+### Multi-registry publishing
 
 ```bash
-# API-based readiness (fast, default)
-shipper publish --readiness-method api
-
-# Index-based readiness (slower but more accurate)
-shipper publish --readiness-method index
-
-# Both methods (slowest but most reliable)
-shipper publish --readiness-method both
-
-# Custom timeout and poll interval
-shipper publish --readiness-timeout 10m --readiness-poll 5s
-
-# Disable readiness checks (advanced users only)
-shipper publish --no-readiness
+shipper publish --registries crates-io,internal-mirror
+shipper publish --all-registries
 ```
 
-### Verify modes
+### Inspecting state and receipts
 
 ```bash
-# Verify at workspace level (default)
-shipper publish --verify-mode workspace
-
-# Verify each package individually
-shipper publish --verify-mode package
-
-# Skip verification
-shipper publish --verify-mode none
-```
-
-### Inspecting events and receipts
-
-```bash
-# View the event log
-shipper inspect-events
-
-# View the detailed receipt with evidence
-shipper inspect-receipt
-
-# Get JSON output for CI integration
-shipper inspect-receipt --format json
+shipper inspect-events                  # human-readable event log
+shipper inspect-receipt --format json   # JSON receipt for CI consumption
+shipper status                          # compare local versions to the registry
 ```
 
 ### Resuming after interruption
 
 ```bash
-# Resume normally from where it left off
 shipper resume
-
-# Force resume if plan has changed
-shipper resume --force-resume
-
-# Resume from a specific package (skipping previous ones)
-shipper publish --resume-from my-crate
+shipper resume --force-resume           # if the workspace plan has changed
+shipper publish --resume-from my-crate  # restart from a specific crate
 ```
 
-### Multi-registry publishing
+## Workspace crates
 
-Shipper can publish to multiple registries in a single run. State and receipts are segregated by registry name.
+- [`shipper-cli`](crates/shipper-cli/README.md) — installs the `shipper` binary.
+- [`shipper`](crates/shipper/README.md) — reusable library: planning, preflight, publish, resume, receipts.
 
-```bash
-# Publish to all registries defined in .shipper.toml
-shipper publish --all-registries
-
-# Publish to specific registries
-shipper publish --registries crates-io,internal-mirror
-```
-
-### Parallel publishing
-
-```bash
-# Publish independent packages concurrently
-shipper publish --parallel
-
-# Limit to 2 concurrent operations
-shipper publish --parallel --max-concurrent 2
-
-# With per-package timeout
-shipper publish --parallel --per-package-timeout 10m
-```
-
-### Cleaning state files
-
-```bash
-# Clean all state files
-shipper clean
-
-# Keep the receipt but clean state and events
-shipper clean --keep-receipt
-```
-
-## CI templates
-
-See `templates/` for example workflows, or generate snippets:
-
-```bash
-shipper ci github-actions
-shipper ci gitlab
-```
+The full crate map is in [docs/structure.md](docs/structure.md).
 
 ## Documentation
 
+- [MISSION.md](MISSION.md) — mission, vision, audience, and what we believe
 - [ROADMAP.md](ROADMAP.md) — product thesis, nine-competency scorecard, now/next/later
+- [docs/product.md](docs/product.md) — product overview at a glance
+- [docs/structure.md](docs/structure.md) — repository and crate structure
+- [docs/tech.md](docs/tech.md) — tech stack and conventions
 - [docs/INVARIANTS.md](docs/INVARIANTS.md) — events-as-truth / state-as-projection contract
-- [docs/configuration.md](docs/configuration.md) — configuration file reference
+- [docs/configuration.md](docs/configuration.md) — `.shipper.toml` reference
 - [docs/preflight.md](docs/preflight.md) — pre-flight verification guide
 - [docs/readiness.md](docs/readiness.md) — readiness verification guide
 - [docs/failure-modes.md](docs/failure-modes.md) — common failure scenarios and solutions

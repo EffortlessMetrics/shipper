@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Orientation
+
+- [**MISSION.md**](MISSION.md) — north star: mission, vision, audience, beliefs. Read before scoping non-trivial work.
+- [**ROADMAP.md**](ROADMAP.md) — nine-competency thesis, current status, now/next/later sequencing.
+- [**docs/product.md**](docs/product.md) — product overview at a glance.
+- [**docs/structure.md**](docs/structure.md) — repository and crate structure.
+- [**docs/tech.md**](docs/tech.md) — tech stack and conventions.
+- [**docs/INVARIANTS.md**](docs/INVARIANTS.md) — events-as-truth contract.
+
 ## Build & Test Commands
 
 ```bash
@@ -68,9 +77,11 @@ Written to `.shipper/` (configurable via `--state-dir`):
 
 In `state.json`, package status is at `.packages[].state.state`, not `.packages[].status` — common source of misreads.
 
-## Product thesis (nine competencies)
+## Product context
 
-Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is what Cargo still doesn't do, organized as nine competencies: **Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics**. See [ROADMAP.md](ROADMAP.md) and master tracking issue [#109](https://github.com/EffortlessMetrics/shipper/issues/109). The biggest open gap is **Reconcile** ([#102](https://github.com/EffortlessMetrics/shipper/issues/102) / [#99](https://github.com/EffortlessMetrics/shipper/issues/99)): when `cargo publish` exits ambiguously, Shipper currently blind-retries instead of reconciling against the registry. Use this thesis as the north star when scoping work.
+[**MISSION.md**](MISSION.md) is the north star — mission, vision, audience, and the nine convictions that produce every design decision. Read it before scoping non-trivial work.
+
+Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is what Cargo still doesn't do, organized as nine competencies: **Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics**. See [ROADMAP.md](ROADMAP.md) and master tracking issue [#109](https://github.com/EffortlessMetrics/shipper/issues/109). The biggest open gap is **Reconcile** ([#102](https://github.com/EffortlessMetrics/shipper/issues/102) / [#99](https://github.com/EffortlessMetrics/shipper/issues/99)): when `cargo publish` exits ambiguously, Shipper currently blind-retries instead of reconciling against the registry.
 
 ## Conventions
 

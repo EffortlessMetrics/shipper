@@ -2,6 +2,13 @@
 
 `shipper` is a **publishing reliability layer** for Rust workspaces. It is designed to make the process of publishing multiple crates safer, deterministic, and resumable, addressing common real-world failures like partial publishes, CI cancellations, and registry backpressure.
 
+## Orientation
+
+- `MISSION.md` — north star: mission, vision, audience, beliefs.
+- `ROADMAP.md` — nine-competency thesis and sequencing.
+- `docs/product.md`, `docs/structure.md`, `docs/tech.md` — product overview, code structure, tech stack.
+- `docs/INVARIANTS.md` — events-as-truth contract.
+
 ## Project Overview
 
 - **Core Purpose:** Enhances `cargo publish` by adding a reliability layer that handles planning, preflight checks, retries, and state persistence.
@@ -39,6 +46,7 @@
 - **State Management:** Execution state is persisted atomically as JSON. The `plan_id` is used to ensure that resumes match the intended plan.
 - **Events-as-Truth Invariant:** `events.jsonl` is the authoritative source of truth; `state.json` is a projection over events for fast resume; `receipt.json` is a summary at end-of-run. See `docs/INVARIANTS.md`.
 - **Product Thesis:** Shipper's value is organized as nine competencies (Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics). See `ROADMAP.md` and master tracking issue #109. The biggest open gap is Reconcile (#102 / #99).
+- **North Star:** `MISSION.md` is the canonical mission/vision/beliefs document. Read it before scoping non-trivial work.
 - **Testing Pattern:** 
     - Extensive use of `tempfile` for filesystem isolation.
     - Registry interactions are mocked in tests using a local `tiny_http` server.

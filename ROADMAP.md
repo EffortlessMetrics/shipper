@@ -1,5 +1,7 @@
 # Shipper Roadmap
 
+> See [MISSION.md](MISSION.md) for the mission, vision, audience, and beliefs that produce the priorities below.
+
 ## Where we are
 
 **v0.3.0-rc.1 shipped 2026-04-16.** Twelve crates went live on crates.io: `shipper`, `shipper-cli`, `shipper-config`, `shipper-types`, `shipper-registry`, `shipper-duration`, `shipper-retry`, `shipper-encrypt`, `shipper-output-sanitizer`, `shipper-cargo-failure`, `shipper-sparse-index`, `shipper-webhook`. The publish train was driven by Shipper itself — first real-world dogfooding under crates.io rate limits, with 41 retries silently absorbed across a 69-minute run.
