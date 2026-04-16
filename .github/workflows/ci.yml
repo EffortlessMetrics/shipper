@@ -82,8 +82,11 @@ jobs:
         env:
           # Keep snapshots from updating in CI
           INSTA_UPDATE: "no"
-          # Keep property tests productive but bounded
-          PROPTEST_CASES: "256"
+          # Matrix lane runs reduced proptest intensity on every trigger.
+          # Full-strength crypto proving lives in the `crypto-proptests-heavy`
+          # job below (Ubuntu-only, schedule + push-main + dispatch).
+          PROPTEST_CASES: "16"
+          PROPTEST_MAX_SHRINK_ITERS: "1000"
 
       - name: Run doc tests
         run: cargo test --workspace --doc
@@ -93,6 +96,55 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: junit-${{ matrix.os }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
+
+  crypto-proptests-heavy:
+    name: Crypto Proptests (full strength, ubuntu)
+    # Deep crypto proving lane. The PR matrix above runs proptests with
+    # reduced intensity (PROPTEST_CASES=16) so that `shipper-encrypt`'s
+    # Argon2-bound property tests don't dominate wall clock on every PR.
+    # This job restores full-strength coverage on:
+    #   - nightly schedule (0 3 * * *)
+    #   - direct pushes to main
+    #   - manual workflow_dispatch
+    # It intentionally does NOT run on pull_request to keep developer
+    # feedback fast; if you want a specific PR to exercise it, use the
+    # workflow_dispatch trigger on the PR's branch.
+    if: github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-crypto-heavy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-crypto-heavy-
+
+      - name: Run shipper-encrypt proptests at full strength
+        run: cargo nextest run -p shipper-encrypt --all-features --profile ci
+        env:
+          INSTA_UPDATE: "no"
+          PROPTEST_CASES: "256"
+
+      - name: Upload JUnit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-crypto-heavy
           path: target/nextest/ci/junit.xml
           retention-days: 14
 
@@ -188,6 +240,11 @@ jobs:
 
       - name: Generate coverage (lcov)
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+        env:
+          INSTA_UPDATE: "no"
+          # llvm-cov instrumentation + Argon2 proptests is a bad combination.
+          # Coverage signal does not need max-strength property exploration.
+          PROPTEST_CASES: "16"
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v7
