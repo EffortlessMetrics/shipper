@@ -187,9 +187,9 @@ Top of the repo:
 Quick links:
 
 - **Learn:** [First publish tutorial](docs/tutorials/first-publish.md) • [Recover from interruption](docs/tutorials/recover-from-interruption.md)
-- **Do:** [Run in GitHub Actions](docs/how-to/run-in-github-actions.md) • [Inspect state & receipts](docs/how-to/inspect-state-and-receipts.md)
-- **Look up:** [CLI reference](docs/reference/cli.md) • [`.shipper.toml`](docs/configuration.md) • [Failure modes](docs/failure-modes.md)
-- **Understand:** [Why Shipper](docs/explanation/why-shipper.md) • [Architecture](docs/architecture.md) • [Invariants](docs/INVARIANTS.md)
+- **Do:** [Run in GitHub Actions](docs/how-to/run-in-github-actions.md) • [Inspect state & receipts](docs/how-to/inspect-state-and-receipts.md) • [Inspect a stalled run](docs/how-to/inspect-a-stalled-run.md)
+- **Look up:** [CLI reference](docs/reference/cli.md) • [State files cheat sheet](docs/reference/state-files.md) • [`.shipper.toml`](docs/configuration.md) • [Failure modes](docs/failure-modes.md)
+- **Understand:** [Why Shipper](docs/explanation/why-shipper.md) • [`not_proven` explained](docs/explanation/finishability.md) • [Architecture](docs/architecture.md) • [Invariants](docs/INVARIANTS.md)
 
 ## License
 

@@ -23,7 +23,8 @@ Step-by-step learning paths. Start here if you've never used Shipper before.
 Task-oriented recipes. Each solves one focused problem.
 
 - [Run a release in GitHub Actions](how-to/run-in-github-actions.md)
-- [Inspect state, events, and receipts](how-to/inspect-state-and-receipts.md)
+- [Inspect state, events, and receipts](how-to/inspect-state-and-receipts.md) — post-hoc inspection ("what happened")
+- [Inspect a stalled or interrupted run](how-to/inspect-a-stalled-run.md) — live triage ("is it alive?")
 
 Operator runbook (promotion to how-to pending): [release-runbook.md](release-runbook.md)
 
@@ -32,6 +33,7 @@ Operator runbook (promotion to how-to pending): [release-runbook.md](release-run
 Exhaustive, precise, stable specs.
 
 - [CLI reference](reference/cli.md) (canonical source: `shipper --help` / `shipper <cmd> --help`)
+- [State files cheat sheet](reference/state-files.md) — `.shipper/` file roles, authority order, jq recipes
 - [`.shipper.toml` configuration](configuration.md)
 - [Preflight checks](preflight.md)
 - [Readiness verification](readiness.md)
@@ -42,6 +44,7 @@ Exhaustive, precise, stable specs.
 Design decisions and reasoning. Read these to understand *why* things are the way they are.
 
 - [Why Shipper exists](explanation/why-shipper.md)
+- [Understanding `finishability` (especially `not_proven`)](explanation/finishability.md)
 - [Architecture](architecture.md)
 - [Events-as-truth invariant](INVARIANTS.md)
 - [Product overview](product.md)
