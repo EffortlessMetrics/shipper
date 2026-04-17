@@ -24,12 +24,13 @@ use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionState, PackageEvidence, PackageReceipt,
     PackageState, PlannedPackage, PublishEvent, PublishLevel, ReadinessConfig, ReadinessEvidence,
-    RuntimeOptions,
+    ReconciliationOutcome, RuntimeOptions,
 };
 
 use super::Reporter;
 use super::policy::policy_effects;
 use super::readiness::is_version_visible_with_backoff;
+use super::reconcile::reconcile_ambiguous_upload;
 use super::webhook::{WebhookEvent, maybe_send_event};
 
 use crate::plan::chunking::chunk_by_max_concurrent;
@@ -287,6 +288,121 @@ pub(super) fn publish_package(
                     });
                 }
 
+                // On Ambiguous: never blind-retry. Reconcile against registry
+                // truth first so we don't risk a duplicate upload. See #99.
+                if class == ErrorClass::Ambiguous {
+                    {
+                        let mut log = event_log.lock().unwrap();
+                        log.record(PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::PublishReconciling {
+                                method: readiness_config.method,
+                            },
+                            package: pkg_label.clone(),
+                        });
+                    }
+                    {
+                        let mut rep = reporter.lock().unwrap();
+                        rep.warn(&format!(
+                            "{}@{}: cargo exit ambiguous; reconciling against registry",
+                            p.name, p.version
+                        ));
+                    }
+
+                    let (outcome, reconcile_evidence) =
+                        reconcile_ambiguous_upload(reg, &p.name, &p.version, &readiness_config);
+
+                    {
+                        let mut log = event_log.lock().unwrap();
+                        log.record(PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::PublishReconciled {
+                                outcome: outcome.clone(),
+                            },
+                            package: pkg_label.clone(),
+                        });
+                    }
+
+                    match outcome {
+                        ReconciliationOutcome::Published { .. } => {
+                            {
+                                let mut rep = reporter.lock().unwrap();
+                                rep.info(&format!(
+                                    "{}@{}: reconciled as published; no retry",
+                                    p.name, p.version
+                                ));
+                            }
+                            {
+                                let mut state = st.lock().unwrap();
+                                update_state_locked(&mut state, &key, PackageState::Published);
+                                let _ = state::save_state(state_dir, &state);
+                            }
+                            {
+                                let mut log = event_log.lock().unwrap();
+                                log.record(PublishEvent {
+                                    timestamp: Utc::now(),
+                                    event_type: EventType::PackagePublished {
+                                        duration_ms: start_instant.elapsed().as_millis() as u64,
+                                    },
+                                    package: pkg_label.clone(),
+                                });
+                                let _ = log.write_to_file(events_path);
+                                log.clear();
+                            }
+
+                            // Preserve reconciliation evidence in the receipt.
+                            // Do NOT emit PublishSucceeded webhook here — the
+                            // end-of-function success path (below) handles that.
+                            readiness_evidence = reconcile_evidence;
+                            last_err = None;
+                            break;
+                        }
+                        ReconciliationOutcome::NotPublished { .. } => {
+                            // Safe to enter the normal Retryable path below;
+                            // registry confirms no duplicate-upload risk.
+                            // Preserve negative-polling evidence for the receipt.
+                            readiness_evidence = reconcile_evidence;
+                        }
+                        ReconciliationOutcome::StillUnknown { reason, .. } => {
+                            let ambiguous_state = PackageState::Ambiguous {
+                                message: reason.clone(),
+                            };
+                            {
+                                let mut state = st.lock().unwrap();
+                                update_state_locked(&mut state, &key, ambiguous_state);
+                                let _ = state::save_state(state_dir, &state);
+                            }
+                            {
+                                let mut log = event_log.lock().unwrap();
+                                let _ = log.write_to_file(events_path);
+                                log.clear();
+                            }
+
+                            // Notify operators: reconciliation was inconclusive
+                            // and human judgment is required.
+                            maybe_send_event(
+                                &opts.webhook,
+                                WebhookEvent::PublishFailed {
+                                    plan_id: ws.plan.plan_id.clone(),
+                                    package_name: p.name.clone(),
+                                    package_version: p.version.clone(),
+                                    error_class: format!("{:?}", ErrorClass::Ambiguous),
+                                    message: format!("reconciliation inconclusive: {reason}"),
+                                },
+                            );
+
+                            return PackagePublishResult {
+                                result: Err(anyhow::anyhow!(
+                                    "{}@{}: reconciliation inconclusive: {}",
+                                    p.name,
+                                    p.version,
+                                    reason
+                                )),
+                            };
+                        }
+                    }
+                }
+
                 match class {
                     ErrorClass::Permanent => {
                         let failed = PackageState::Failed {
@@ -326,6 +442,9 @@ pub(super) fn publish_package(
                         };
                     }
                     ErrorClass::Retryable | ErrorClass::Ambiguous => {
+                        // Ambiguous can only reach here if reconciliation
+                        // returned NotPublished — registry confirms no
+                        // duplicate-upload risk, so cargo retry is safe.
                         let delay = backoff_delay(
                             opts.base_delay,
                             opts.max_delay,

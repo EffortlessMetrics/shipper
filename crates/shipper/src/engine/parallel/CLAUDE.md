@@ -30,6 +30,11 @@ in-tree duplicate, including the webhook submodule and BDD tests).
   (`publish_package`, `run_publish_level`, `PackagePublishResult`).
 - `readiness.rs` — readiness-visibility polling with backoff/jitter and
   sparse-index fallback.
+- `reconcile.rs` — ambiguous-publish reconciliation against registry truth.
+  Wraps `readiness::is_version_visible_with_backoff` into a three-outcome
+  state machine (`Published` / `NotPublished` / `StillUnknown`) so the
+  publish retry loop can avoid blind retries after an ambiguous `cargo
+  publish` exit. See `shipper-types::ReconciliationOutcome` and issue #99.
 - `policy.rs` — `policy_effects` adapter (translates `PublishPolicy` into
   resolved effects).
 - `webhook.rs` — engine-specific webhook glue wrapping `shipper_webhook`.
