@@ -86,6 +86,10 @@ Options:
           Publish to all configured registries
       --resume-from <RESUME_FROM>
           Optional package name to resume from
+      --rehearsal-registry <REHEARSAL_REGISTRY>
+          Name of a registry (from `[[registries]]` in `.shipper.toml`) to rehearse the publish against before live dispatch
+      --skip-rehearsal
+          Skip rehearsal even if `.shipper.toml` enables it
       --format <FORMAT>
           Output format: text (default) or json [default: text] [possible values: text, json]
       --verbose
