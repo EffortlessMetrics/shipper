@@ -309,12 +309,8 @@ pub(super) fn publish_package(
                         ));
                     }
 
-                    let outcome = reconcile_ambiguous_upload(
-                        reg,
-                        &p.name,
-                        &p.version,
-                        &readiness_config,
-                    );
+                    let (outcome, reconcile_evidence) =
+                        reconcile_ambiguous_upload(reg, &p.name, &p.version, &readiness_config);
 
                     {
                         let mut log = event_log.lock().unwrap();
@@ -354,22 +350,18 @@ pub(super) fn publish_package(
                                 log.clear();
                             }
 
-                            maybe_send_event(
-                                &opts.webhook,
-                                WebhookEvent::PublishSucceeded {
-                                    plan_id: ws.plan.plan_id.clone(),
-                                    package_name: p.name.clone(),
-                                    package_version: p.version.clone(),
-                                    duration_ms: start_instant.elapsed().as_millis() as u64,
-                                },
-                            );
-
+                            // Preserve reconciliation evidence in the receipt.
+                            // Do NOT emit PublishSucceeded webhook here — the
+                            // end-of-function success path (below) handles that.
+                            readiness_evidence = reconcile_evidence;
                             last_err = None;
                             break;
                         }
                         ReconciliationOutcome::NotPublished { .. } => {
                             // Safe to enter the normal Retryable path below;
                             // registry confirms no duplicate-upload risk.
+                            // Preserve negative-polling evidence for the receipt.
+                            readiness_evidence = reconcile_evidence;
                         }
                         ReconciliationOutcome::StillUnknown { reason, .. } => {
                             let ambiguous_state = PackageState::Ambiguous {
@@ -385,6 +377,19 @@ pub(super) fn publish_package(
                                 let _ = log.write_to_file(events_path);
                                 log.clear();
                             }
+
+                            // Notify operators: reconciliation was inconclusive
+                            // and human judgment is required.
+                            maybe_send_event(
+                                &opts.webhook,
+                                WebhookEvent::PublishFailed {
+                                    plan_id: ws.plan.plan_id.clone(),
+                                    package_name: p.name.clone(),
+                                    package_version: p.version.clone(),
+                                    error_class: format!("{:?}", ErrorClass::Ambiguous),
+                                    message: format!("reconciliation inconclusive: {reason}"),
+                                },
+                            );
 
                             return PackagePublishResult {
                                 result: Err(anyhow::anyhow!(

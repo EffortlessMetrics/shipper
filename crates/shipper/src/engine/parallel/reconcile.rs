@@ -26,14 +26,16 @@
 use std::time::Instant;
 
 use shipper_registry::HttpRegistryClient as RegistryClient;
-use shipper_types::{ReadinessConfig, ReconciliationOutcome};
+use shipper_types::{ReadinessConfig, ReadinessEvidence, ReconciliationOutcome};
 
 use super::readiness::is_version_visible_with_backoff;
 
 /// Reconcile an ambiguous `cargo publish` outcome against registry truth.
 ///
 /// Polls the registry (sparse index + API per `config.method`) with bounded
-/// patience. Returns a [`ReconciliationOutcome`] classifying the real state.
+/// patience. Returns a [`ReconciliationOutcome`] classifying the real state
+/// plus the accumulated [`ReadinessEvidence`] so the caller can attach it to
+/// the package receipt for audit.
 ///
 /// Callers (the retry loop in [`super::publish`]) MUST honor the outcome:
 /// - `Published` → advance; no further retry of `cargo publish` for this crate.
@@ -45,23 +47,32 @@ pub(super) fn reconcile_ambiguous_upload(
     crate_name: &str,
     version: &str,
     config: &ReadinessConfig,
-) -> ReconciliationOutcome {
+) -> (ReconciliationOutcome, Vec<ReadinessEvidence>) {
     let start = Instant::now();
 
     match is_version_visible_with_backoff(reg, crate_name, version, config) {
-        Ok((true, evidence)) => ReconciliationOutcome::Published {
-            attempts: evidence.len() as u32,
-            elapsed_ms: start.elapsed().as_millis() as u64,
-        },
-        Ok((false, evidence)) => ReconciliationOutcome::NotPublished {
-            attempts: evidence.len() as u32,
-            elapsed_ms: start.elapsed().as_millis() as u64,
-        },
-        Err(e) => ReconciliationOutcome::StillUnknown {
-            attempts: 0,
-            elapsed_ms: start.elapsed().as_millis() as u64,
-            reason: format!("reconciliation query failed: {e}"),
-        },
+        Ok((true, evidence)) => (
+            ReconciliationOutcome::Published {
+                attempts: evidence.len() as u32,
+                elapsed_ms: start.elapsed().as_millis() as u64,
+            },
+            evidence,
+        ),
+        Ok((false, evidence)) => (
+            ReconciliationOutcome::NotPublished {
+                attempts: evidence.len() as u32,
+                elapsed_ms: start.elapsed().as_millis() as u64,
+            },
+            evidence,
+        ),
+        Err(e) => (
+            ReconciliationOutcome::StillUnknown {
+                attempts: 0,
+                elapsed_ms: start.elapsed().as_millis() as u64,
+                reason: format!("reconciliation query failed: {e}"),
+            },
+            Vec::new(),
+        ),
     }
 }
 
