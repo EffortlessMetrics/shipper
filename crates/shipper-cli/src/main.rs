@@ -230,6 +230,32 @@ enum Commands {
         #[arg(long)]
         keep_receipt: bool,
     },
+    /// Yank a crate@version from the registry — containment, not undo.
+    ///
+    /// `cargo yank` marks a specific version as not-installable for NEW
+    /// dependency resolves. Existing lockfile pins and already-downloaded
+    /// copies are unaffected. See
+    /// [cargo yank docs](https://doc.rust-lang.org/cargo/commands/cargo-yank.html).
+    ///
+    /// Part of [#98 Remediate](https://github.com/EffortlessMetrics/shipper/issues/98).
+    /// Follow-on commands (`shipper plan-yank`, `shipper fix-forward`)
+    /// compose this primitive into reverse-topological containment and
+    /// fix-forward plans.
+    Yank {
+        /// Name of the crate to yank (e.g., `shipper-types`).
+        #[arg(long = "crate", value_name = "NAME")]
+        crate_name: String,
+        /// Version to yank (e.g., `0.3.0-rc.1`).
+        #[arg(long, value_name = "VERSION")]
+        version: String,
+        /// Operator-supplied reason (recorded in the event log, audit
+        /// trails, and any future receipts that reference this yank).
+        ///
+        /// Example: `"CVE-2026-0001 disclosed; containing while patch
+        /// released"`.
+        #[arg(long)]
+        reason: String,
+    },
     /// Configuration file management.
     #[command(subcommand)]
     Config(ConfigCommands),
@@ -594,6 +620,75 @@ fn main() -> Result<()> {
         }
         Commands::Ci(ci_cmd) => {
             run_ci(ci_cmd, &opts.state_dir, &planned.workspace_root)?;
+        }
+        Commands::Yank {
+            crate_name,
+            version,
+            reason,
+        } => {
+            use shipper::cargo;
+            use shipper::state::events::{EventLog, events_path};
+            use shipper::types::{EventType, PublishEvent};
+
+            reporter.warn(&format!(
+                "yanking {crate_name}@{version} from registry \
+                 (containment, not undo) — reason: {reason}"
+            ));
+
+            let workspace_root =
+                std::env::current_dir().context("failed to resolve current dir for cargo yank")?;
+            let registry_name = opts
+                .registries
+                .first()
+                .map(|r| r.name.clone())
+                .unwrap_or_else(|| "crates-io".to_string());
+
+            let out = cargo::cargo_yank(
+                &workspace_root,
+                crate_name.as_str(),
+                version.as_str(),
+                registry_name.as_str(),
+                opts.output_lines,
+                None,
+            )?;
+
+            let mut log = EventLog::new();
+            log.record(PublishEvent {
+                timestamp: chrono::Utc::now(),
+                event_type: EventType::PackageYanked {
+                    crate_name: crate_name.clone(),
+                    version: version.clone(),
+                    reason: reason.clone(),
+                    exit_code: out.exit_code,
+                },
+                package: format!("{crate_name}@{version}"),
+            });
+            let events_file = events_path(&opts.state_dir);
+            if let Err(err) = log.write_to_file(&events_file) {
+                reporter.warn(&format!(
+                    "failed to append PackageYanked event to {}: {err:#}",
+                    events_file.display()
+                ));
+            }
+
+            if out.exit_code == 0 {
+                reporter.info(&format!(
+                    "yanked {crate_name}@{version} successfully. \
+                     existing lockfile pins are NOT invalidated; \
+                     downstream consumers should `cargo update -p {crate_name}` \
+                     to pick up the next available version."
+                ));
+            } else {
+                reporter.error(&format!(
+                    "cargo yank exited {} for {crate_name}@{version}. \
+                     stderr tail:\n{}",
+                    out.exit_code, out.stderr_tail
+                ));
+                anyhow::bail!(
+                    "yank failed for {crate_name}@{version} (cargo exit {})",
+                    out.exit_code
+                );
+            }
         }
         Commands::Clean { keep_receipt } => {
             run_clean(
