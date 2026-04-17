@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 Print GitHub Actions workflow snippet
 
-Usage: shipper ci github-actions [OPTIONS]
+Usage: shipper-cli.exe ci github-actions [OPTIONS]
 
 Options:
       --config <CONFIG>

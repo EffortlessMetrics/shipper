@@ -1,0 +1,13 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: summary
+---
+Registry: crates-io
+Packages to publish (4):
+  1. a v0.1.0
+  2. alpha v0.1.0
+  3. b v0.1.0 (depends on: a)
+  4. zeta v0.1.0
+Skipped (2):
+  - c v0.1.0: publish = false
+  - d v0.1.0: publish = private-reg (registry not in list)

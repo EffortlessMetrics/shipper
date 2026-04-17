@@ -1,7 +1,0 @@
----
-source: crates/shipper/src/ops/process/snapshot_tests.rs
-expression: args
----
-- publish
-- "--manifest-path"
-- crates/foo/Cargo.toml

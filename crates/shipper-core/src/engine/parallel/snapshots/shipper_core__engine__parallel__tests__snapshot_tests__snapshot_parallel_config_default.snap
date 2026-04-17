@@ -1,0 +1,9 @@
+---
+source: crates/shipper-core/src/engine/parallel/tests.rs
+expression: config
+---
+ParallelConfig {
+    enabled: false,
+    max_concurrent: 4,
+    per_package_timeout: 1800s,
+}

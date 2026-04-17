@@ -1,8 +1,0 @@
----
-source: crates/shipper-git/src/lib.rs
-expression: ctx
----
-commit: abc1234567890abc1234567890abc1234567890ab
-branch: main
-tag: ~
-dirty: false

@@ -178,7 +178,7 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
 }
 
 fn shipper_cmd() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("shipper"))
+    Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
 // ============================================================================

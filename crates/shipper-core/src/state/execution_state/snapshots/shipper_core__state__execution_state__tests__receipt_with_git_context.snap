@@ -1,0 +1,46 @@
+---
+source: crates/shipper-core/src/state/execution_state/tests.rs
+expression: json
+---
+{
+  "receipt_version": "shipper.receipt.v2",
+  "plan_id": "git-ctx-plan",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io",
+    "index_base": "https://index.crates.io"
+  },
+  "started_at": "2025-01-15T12:00:00Z",
+  "finished_at": "2025-01-15T12:05:00Z",
+  "packages": [
+    {
+      "name": "my-lib",
+      "version": "2.0.0",
+      "attempts": 1,
+      "state": {
+        "state": "published"
+      },
+      "started_at": "2025-01-15T12:00:00Z",
+      "finished_at": "2025-01-15T12:05:00Z",
+      "duration_ms": 60000,
+      "evidence": {
+        "attempts": [],
+        "readiness_checks": []
+      }
+    }
+  ],
+  "event_log_path": ".shipper/events.jsonl",
+  "git_context": {
+    "commit": "a1b2c3d4e5f6",
+    "branch": "release/v2.0.0",
+    "tag": "v2.0.0",
+    "dirty": false
+  },
+  "environment": {
+    "shipper_version": "0.3.0",
+    "cargo_version": "1.82.0",
+    "rust_version": "1.82.0",
+    "os": "linux",
+    "arch": "x86_64"
+  }
+}

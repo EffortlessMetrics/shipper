@@ -1,0 +1,5 @@
+---
+source: crates/shipper-core/src/state/execution_state/tests.rs
+expression: "normalize_error(&format!(\"{err:#}\"), state_dir)"
+---
+failed to parse state JSON <STATE_DIR>/state.json: EOF while parsing an object at line 1 column 17

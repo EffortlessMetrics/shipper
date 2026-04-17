@@ -1,0 +1,8 @@
+---
+source: crates/shipper-core/src/ops/git/context.rs
+expression: ctx
+---
+commit: "3333333333333333333333333333333333333333"
+branch: develop
+tag: ~
+dirty: false

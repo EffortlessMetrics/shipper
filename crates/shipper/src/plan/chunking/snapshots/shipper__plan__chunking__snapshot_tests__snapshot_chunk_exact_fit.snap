@@ -1,8 +1,0 @@
----
-source: crates/shipper-chunking/src/lib.rs
-assertion_line: 140
-expression: "chunk_by_max_concurrent(&items, 3)"
----
-- - x
-  - y
-  - z

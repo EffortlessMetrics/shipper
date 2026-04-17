@@ -1,0 +1,10 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: "&ws.skipped"
+---
+- name: c
+  version: 0.1.0
+  reason: publish = false
+- name: d
+  version: 0.1.0
+  reason: publish = private-reg (registry not in list)

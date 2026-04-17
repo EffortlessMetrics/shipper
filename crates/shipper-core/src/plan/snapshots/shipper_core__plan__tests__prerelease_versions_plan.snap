@@ -1,0 +1,15 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: snapshot_of(&ws)
+---
+packages:
+  - name: pre-alpha
+    version: 0.1.0-alpha.1
+  - name: pre-beta
+    version: 2.0.0-rc.3
+dependencies:
+  pre-alpha: []
+  pre-beta:
+    - pre-alpha
+skipped: []
+registry_name: crates-io

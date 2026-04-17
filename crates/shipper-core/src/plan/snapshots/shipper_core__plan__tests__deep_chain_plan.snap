@@ -1,0 +1,19 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: snapshot_of(&ws)
+---
+packages:
+  - name: x
+    version: 0.1.0
+  - name: y
+    version: 0.1.0
+  - name: z
+    version: 0.1.0
+dependencies:
+  x: []
+  y:
+    - x
+  z:
+    - y
+skipped: []
+registry_name: crates-io

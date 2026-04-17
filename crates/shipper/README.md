@@ -1,78 +1,34 @@
-# shipper (library)
+# shipper
 
-`shipper` is the core library for reliable, resumable Rust workspace publishing.
-It powers `shipper-cli` and is useful when you want to embed publish orchestration
-into custom release tooling.
+Reliable, resumable `cargo publish` for Rust workspaces.
 
-## What this crate does
-
-- Builds deterministic publish plans from workspace metadata.
-- Runs preflight checks (git state, publishability, registry visibility, ownership checks).
-- Executes publish flows with retry and backoff.
-- Verifies registry visibility and readiness between dependency levels.
-- Persists state, receipts, and event logs for resumable execution.
-- Supports sequential and parallel publishing engines.
-
-## Public API map
-
-- `plan::build_plan` - build the dependency-first publish plan.
-- `engine::run_preflight` - run checks without publishing.
-- `engine::run_publish` - execute publish with state persistence.
-- `engine::run_resume` - continue interrupted runs.
-- `engine::parallel::run_publish_parallel` - publish dependency levels concurrently.
-- `config` - load and merge `.shipper.toml` settings.
-- `types` - domain types for plans, options, state, events, and receipts.
-
-## Minimal integration example
-
-```rust,no_run
-use anyhow::Result;
-use shipper::config::{CliOverrides, ShipperConfig};
-use shipper::engine::{self, Reporter};
-use shipper::plan;
-use shipper::types::{Registry, ReleaseSpec};
-
-struct StdReporter;
-
-impl Reporter for StdReporter {
-    fn info(&mut self, msg: &str) {
-        eprintln!("[info] {msg}");
-    }
-
-    fn warn(&mut self, msg: &str) {
-        eprintln!("[warn] {msg}");
-    }
-
-    fn error(&mut self, msg: &str) {
-        eprintln!("[error] {msg}");
-    }
-}
-
-fn main() -> Result<()> {
-    let spec = ReleaseSpec {
-        manifest_path: "Cargo.toml".into(),
-        registry: Registry::crates_io(),
-        selected_packages: None,
-    };
-
-    let planned = plan::build_plan(&spec)?;
-    let opts = ShipperConfig::default().build_runtime_options(CliOverrides::default());
-    let mut reporter = StdReporter;
-
-    let report = engine::run_preflight(&planned, &opts, &mut reporter)?;
-    println!("Finishability: {:?}", report.finishability);
-    Ok(())
-}
+```bash
+cargo install shipper --locked
+shipper plan
+shipper preflight
+shipper publish
 ```
 
-## Not in scope
+The `shipper` crate is the install façade: it owns the CLI binary that
+users invoke, and re-exports the public library API from
+[`shipper-core`](https://docs.rs/shipper-core) so `use shipper::…`
+keeps working for library consumers.
 
-`shipper` does not decide version numbers, generate changelogs, tag releases,
-or create GitHub releases. Pair it with your preferred versioning/release
-workflow and use this crate to make publishing reliable.
+- **CLI users**: `cargo install shipper --locked`. See the main
+  [README](https://github.com/EffortlessMetrics/shipper) for tutorials
+  and the runbook.
+- **Library users**: `shipper = "0.3"` as a dependency; everything
+  that used to live in the standalone `shipper` crate is still here
+  at the same paths (`shipper::engine`, `shipper::plan`,
+  `shipper::types`, ...).
 
-## More documentation
+Related crates:
 
-- Project overview: <https://github.com/EffortlessMetrics/shipper#readme>
-- Configuration reference: <https://github.com/EffortlessMetrics/shipper/blob/main/docs/configuration.md>
-- Failure modes: <https://github.com/EffortlessMetrics/shipper/blob/main/docs/failure-modes.md>
+- [`shipper-core`](https://crates.io/crates/shipper-core) — the
+  publishable library.
+- [`shipper-cli`](https://crates.io/crates/shipper-cli) — the CLI
+  argument parsing + command dispatch.
+
+## License
+
+Dual-licensed under MIT OR Apache-2.0.

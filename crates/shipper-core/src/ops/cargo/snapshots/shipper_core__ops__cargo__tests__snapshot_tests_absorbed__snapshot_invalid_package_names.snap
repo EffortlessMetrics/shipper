@@ -1,0 +1,34 @@
+---
+source: crates/shipper-core/src/ops/cargo/mod.rs
+expression: results
+---
+[
+    (
+        "",
+        false,
+    ),
+    (
+        "123-start",
+        false,
+    ),
+    (
+        "-hyphen-start",
+        false,
+    ),
+    (
+        "MyCrate",
+        false,
+    ),
+    (
+        "my.crate",
+        false,
+    ),
+    (
+        "my crate",
+        false,
+    ),
+    (
+        "my@crate",
+        false,
+    ),
+]

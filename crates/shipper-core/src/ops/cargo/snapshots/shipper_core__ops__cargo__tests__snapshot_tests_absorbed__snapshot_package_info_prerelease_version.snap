@@ -1,0 +1,9 @@
+---
+source: crates/shipper-core/src/ops/cargo/mod.rs
+expression: info
+---
+name: my-alpha-crate
+version: 0.0.1-alpha.0+build.123
+manifest_path: crates/my-alpha-crate/Cargo.toml
+is_workspace_member: true
+publish: []

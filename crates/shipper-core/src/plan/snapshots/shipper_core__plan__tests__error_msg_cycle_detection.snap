@@ -1,0 +1,5 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: "format!(\"{err:#}\")"
+---
+dependency cycle detected within workspace publish set

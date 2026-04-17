@@ -1,9 +1,0 @@
----
-source: crates/shipper/src/runtime/environment/mod.rs
-expression: fp
----
-shipper_version: 0.3.0
-cargo_version: 1.80.0
-rust_version: 1.80.0
-os: linux
-arch: x86_64

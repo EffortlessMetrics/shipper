@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 Validate a configuration file
 
-Usage: shipper config validate [OPTIONS]
+Usage: shipper-cli.exe config validate [OPTIONS]
 
 Options:
       --config <CONFIG>

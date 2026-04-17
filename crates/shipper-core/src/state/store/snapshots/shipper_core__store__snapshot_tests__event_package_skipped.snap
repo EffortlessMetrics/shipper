@@ -1,0 +1,12 @@
+---
+source: crates/shipper-core/src/state/store/snapshot_tests.rs
+expression: json
+---
+{
+  "timestamp": "2025-01-15T12:00:00Z",
+  "event_type": {
+    "type": "package_skipped",
+    "reason": "version already exists on registry"
+  },
+  "package": "my-crate@1.0.0"
+}

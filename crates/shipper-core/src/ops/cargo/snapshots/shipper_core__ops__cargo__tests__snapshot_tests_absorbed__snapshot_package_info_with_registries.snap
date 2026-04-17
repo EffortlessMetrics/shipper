@@ -1,0 +1,11 @@
+---
+source: crates/shipper-core/src/ops/cargo/mod.rs
+expression: info
+---
+name: my-private-crate
+version: 1.2.3-beta.1
+manifest_path: crates/my-private-crate/Cargo.toml
+is_workspace_member: false
+publish:
+  - crates-io
+  - my-private-registry

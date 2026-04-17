@@ -1,0 +1,39 @@
+---
+source: crates/shipper-core/src/state/store/snapshot_tests.rs
+expression: snapshot
+---
+{
+  "event_type": {
+    "type": "execution_started"
+  },
+  "package": "all",
+  "timestamp": "2025-01-15T12:00:00Z"
+}
+---
+{
+  "event_type": {
+    "name": "demo",
+    "type": "package_started",
+    "version": "0.1.0"
+  },
+  "package": "demo@0.1.0",
+  "timestamp": "2025-01-15T12:00:00Z"
+}
+---
+{
+  "event_type": {
+    "duration_ms": 2500,
+    "type": "package_published"
+  },
+  "package": "demo@0.1.0",
+  "timestamp": "2025-01-15T12:00:00Z"
+}
+---
+{
+  "event_type": {
+    "result": "success",
+    "type": "execution_finished"
+  },
+  "package": "all",
+  "timestamp": "2025-01-15T12:00:00Z"
+}

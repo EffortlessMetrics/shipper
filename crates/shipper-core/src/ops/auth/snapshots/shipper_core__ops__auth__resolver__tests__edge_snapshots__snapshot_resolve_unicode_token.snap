@@ -1,0 +1,11 @@
+---
+source: crates/shipper-core/src/ops/auth/resolver.rs
+expression: auth
+---
+AuthInfo {
+    token: Some(
+        "tök€n_πλ∞",
+    ),
+    source: EnvDefault,
+    detected: true,
+}

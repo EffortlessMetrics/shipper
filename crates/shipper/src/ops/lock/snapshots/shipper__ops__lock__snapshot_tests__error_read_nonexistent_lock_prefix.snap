@@ -1,5 +1,0 @@
----
-source: crates/shipper/src/ops/lock/mod.rs
-expression: "\"failed to read lock file\""
----
-failed to read lock file

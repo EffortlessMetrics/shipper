@@ -1,0 +1,15 @@
+---
+source: crates/shipper-core/src/engine/parallel/tests.rs
+expression: chunks
+---
+[
+    [
+        "x",
+    ],
+    [
+        "y",
+    ],
+    [
+        "z",
+    ],
+]

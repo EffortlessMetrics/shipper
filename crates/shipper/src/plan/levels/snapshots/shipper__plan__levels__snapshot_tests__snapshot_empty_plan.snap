@@ -1,5 +1,0 @@
----
-source: crates/shipper-levels/src/lib.rs
-expression: level_summary(&levels)
----
-[]

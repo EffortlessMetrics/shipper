@@ -1,0 +1,22 @@
+---
+source: crates/shipper-core/src/ops/git/context.rs
+expression: variants
+---
+[
+    DirtyVariant {
+        input: None,
+        result: true,
+    },
+    DirtyVariant {
+        input: Some(
+            true,
+        ),
+        result: true,
+    },
+    DirtyVariant {
+        input: Some(
+            false,
+        ),
+        result: false,
+    },
+]

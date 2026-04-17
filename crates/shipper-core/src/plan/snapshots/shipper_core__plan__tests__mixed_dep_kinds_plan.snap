@@ -1,0 +1,19 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: snapshot_of(&ws)
+---
+packages:
+  - name: build-tool
+    version: 0.1.0
+  - name: runtime-lib
+    version: 0.1.0
+  - name: app-mixed
+    version: 0.1.0
+dependencies:
+  app-mixed:
+    - build-tool
+    - runtime-lib
+  build-tool: []
+  runtime-lib: []
+skipped: []
+registry_name: crates-io

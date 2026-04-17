@@ -1,8 +1,0 @@
----
-source: crates/shipper-levels/src/lib.rs
-expression: level_summary(&levels)
----
-- - 0
-  - - alpha
-    - beta
-    - gamma

@@ -1,0 +1,58 @@
+---
+source: crates/shipper-core/src/state/execution_state/tests.rs
+expression: json
+---
+{
+  "receipt_version": "shipper.receipt.v2",
+  "plan_id": "plan-abc123",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io",
+    "index_base": "https://index.crates.io"
+  },
+  "started_at": "2025-01-15T12:00:00Z",
+  "finished_at": "2025-01-15T12:05:00Z",
+  "packages": [
+    {
+      "name": "alpha",
+      "version": "0.1.0",
+      "attempts": 1,
+      "state": {
+        "state": "published"
+      },
+      "started_at": "2025-01-15T12:00:00Z",
+      "finished_at": "2025-01-15T12:05:00Z",
+      "duration_ms": 300000,
+      "evidence": {
+        "attempts": [],
+        "readiness_checks": []
+      }
+    },
+    {
+      "name": "beta",
+      "version": "0.2.0",
+      "attempts": 2,
+      "state": {
+        "state": "failed",
+        "class": "retryable",
+        "message": "registry timeout"
+      },
+      "started_at": "2025-01-15T12:00:00Z",
+      "finished_at": "2025-01-15T12:05:00Z",
+      "duration_ms": 120000,
+      "evidence": {
+        "attempts": [],
+        "readiness_checks": []
+      }
+    }
+  ],
+  "event_log_path": ".shipper/events.jsonl",
+  "git_context": null,
+  "environment": {
+    "shipper_version": "0.3.0",
+    "cargo_version": "1.82.0",
+    "rust_version": "1.82.0",
+    "os": "linux",
+    "arch": "x86_64"
+  }
+}

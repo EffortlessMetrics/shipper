@@ -12,12 +12,25 @@ repository = "https://github.com/EffortlessMetrics/shipper"
 keywords = ["cargo", "publish", "workspace", "cli", "ci"]
 categories = ["command-line-utilities", "development-tools"]
 
+# The `shipper-cli` crate is the CLI implementation — argument parsing,
+# command dispatch, progress reporting. It exposes `run()` as its sole
+# public API; the `shipper` façade crate's binary target forwards to it.
+#
+# We keep a `[[bin]] name = "shipper-cli"` target so `cargo install
+# shipper-cli --locked` still works for operators who want to pin to
+# the CLI crate directly. The `[package.name]` → binary-name mapping
+# is 1:1, so the binary is `shipper-cli` on $PATH — the façade's
+# `shipper` is the name we point new users at.
 [[bin]]
-name = "shipper"
+name = "shipper-cli"
 path = "src/main.rs"
 
 [dependencies]
-shipper.workspace = true
+# Dep alias: `use shipper::…` continues to work inside this crate
+# after the upstream rename to `shipper-core` (#95). `workspace = true`
+# can't combine with `package = "..."`, so pin path + version
+# explicitly. Library API is re-exported unchanged.
+shipper = { package = "shipper-core", path = "../shipper-core", version = "0.3.0-rc.1" }
 shipper-duration.workspace = true
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

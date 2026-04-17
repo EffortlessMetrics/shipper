@@ -1,0 +1,10 @@
+---
+source: crates/shipper-core/src/runtime/policy/mod.rs
+expression: effects
+---
+PolicyEffects {
+    run_dry_run: true,
+    check_ownership: true,
+    strict_ownership: false,
+    readiness_enabled: false,
+}

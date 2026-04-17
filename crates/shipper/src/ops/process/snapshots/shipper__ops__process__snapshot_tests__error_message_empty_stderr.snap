@@ -1,5 +1,0 @@
----
-source: crates/shipper/src/ops/process/snapshot_tests.rs
-expression: err.to_string()
----
-"command failed with exit code Some(2): "

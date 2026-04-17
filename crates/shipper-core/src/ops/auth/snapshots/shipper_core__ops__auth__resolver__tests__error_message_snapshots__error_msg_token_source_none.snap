@@ -1,0 +1,5 @@
+---
+source: crates/shipper-core/src/ops/auth/resolver.rs
+expression: "format!(\"Token source: {}\", TokenSource::None)"
+---
+Token source: none

@@ -1,0 +1,5 @@
+---
+source: crates/shipper-core/src/state/store/snapshot_tests.rs
+expression: err
+---
+schema version shipper.receipt.v0 is too old. Minimum supported version is shipper.receipt.v1

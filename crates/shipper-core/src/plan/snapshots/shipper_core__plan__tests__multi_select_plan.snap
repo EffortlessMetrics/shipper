@@ -1,0 +1,24 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: snapshot_of(&ws)
+---
+packages:
+  - name: a
+    version: 0.1.0
+  - name: b
+    version: 0.1.0
+  - name: zeta
+    version: 0.1.0
+dependencies:
+  a: []
+  b:
+    - a
+  zeta: []
+skipped:
+  - name: c
+    version: 0.1.0
+    reason: publish = false
+  - name: d
+    version: 0.1.0
+    reason: publish = private-reg (registry not in list)
+registry_name: crates-io

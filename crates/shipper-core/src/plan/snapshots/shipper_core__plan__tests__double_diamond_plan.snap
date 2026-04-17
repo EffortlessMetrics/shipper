@@ -1,0 +1,37 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: snapshot_of(&ws)
+---
+packages:
+  - name: dd-base
+    version: 0.1.0
+  - name: dd-m1
+    version: 0.1.0
+  - name: dd-m2
+    version: 0.1.0
+  - name: dd-mid
+    version: 0.1.0
+  - name: dd-t1
+    version: 0.1.0
+  - name: dd-t2
+    version: 0.1.0
+  - name: dd-top
+    version: 0.1.0
+dependencies:
+  dd-base: []
+  dd-m1:
+    - dd-base
+  dd-m2:
+    - dd-base
+  dd-mid:
+    - dd-m1
+    - dd-m2
+  dd-t1:
+    - dd-mid
+  dd-t2:
+    - dd-mid
+  dd-top:
+    - dd-t1
+    - dd-t2
+skipped: []
+registry_name: crates-io

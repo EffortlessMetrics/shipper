@@ -1,9 +1,0 @@
----
-source: crates/shipper/src/ops/process/snapshot_tests.rs
-expression: result
----
-success: true
-exit_code: 0
-stdout: "line 1\nline 2\nline 3\n"
-stderr: "warning: unused variable\n"
-duration_ms: 200

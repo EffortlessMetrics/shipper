@@ -1,0 +1,5 @@
+---
+source: crates/shipper-core/src/ops/git/context.rs
+expression: ctx.short_commit()
+---
+abc

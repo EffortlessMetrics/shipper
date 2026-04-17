@@ -1,0 +1,11 @@
+---
+source: crates/shipper-core/src/state/store/snapshot_tests.rs
+expression: json
+---
+{
+  "timestamp": "2025-01-15T12:00:00Z",
+  "event_type": {
+    "type": "execution_started"
+  },
+  "package": "all"
+}

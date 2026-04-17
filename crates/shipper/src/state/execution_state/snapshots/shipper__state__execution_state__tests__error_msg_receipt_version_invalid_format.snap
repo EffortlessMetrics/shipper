@@ -1,5 +1,0 @@
----
-source: crates/shipper-state/src/lib.rs
-expression: err.to_string()
----
-invalid receipt version format: not-a-version

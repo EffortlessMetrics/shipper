@@ -1,5 +1,0 @@
----
-source: crates/shipper-state/src/lib.rs
-expression: err.to_string()
----
-receipt version shipper.receipt.v0 is too old. Minimum supported version is shipper.receipt.v1

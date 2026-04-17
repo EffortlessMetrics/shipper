@@ -1,0 +1,7 @@
+---
+source: crates/shipper-core/src/ops/git/context.rs
+expression: result
+---
+Ok(
+    (),
+)

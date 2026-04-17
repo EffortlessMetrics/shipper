@@ -1,5 +1,0 @@
----
-source: crates/shipper/src/ops/lock/mod.rs
-expression: "\"lock file does not exist\""
----
-lock file does not exist

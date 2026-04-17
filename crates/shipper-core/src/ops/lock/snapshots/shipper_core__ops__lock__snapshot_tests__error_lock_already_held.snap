@@ -1,0 +1,5 @@
+---
+source: crates/shipper-core/src/ops/lock/mod.rs
+expression: err.to_string()
+---
+lock already held by pid 42 on build-host since 2025-01-15 12:00:00 UTC (plan_id: None)

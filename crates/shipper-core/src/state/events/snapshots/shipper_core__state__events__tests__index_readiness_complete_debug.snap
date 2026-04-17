@@ -1,0 +1,13 @@
+---
+source: crates/shipper-core/src/state/events/tests.rs
+expression: event
+---
+PublishEvent {
+    timestamp: 2025-01-15T12:00:00Z,
+    event_type: IndexReadinessComplete {
+        crate_name: "my-crate",
+        version: "1.0.0",
+        visible: true,
+    },
+    package: "my-crate@1.0.0",
+}

@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 Compare local workspace versions to the registry
 
-Usage: shipper status [OPTIONS]
+Usage: shipper-cli.exe status [OPTIONS]
 
 Options:
       --config <CONFIG>

@@ -10,7 +10,7 @@ use predicates::str::contains;
 use tempfile::tempdir;
 
 fn shipper_cmd() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("shipper"))
+    Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
 // ============================================================================

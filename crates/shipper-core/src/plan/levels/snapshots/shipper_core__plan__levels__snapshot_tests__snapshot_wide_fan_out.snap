@@ -1,0 +1,11 @@
+---
+source: crates/shipper-core/src/plan/levels/mod.rs
+expression: level_summary(&levels)
+---
+- - 0
+  - - root
+- - 1
+  - - a
+    - b
+    - c
+    - d

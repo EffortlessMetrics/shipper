@@ -1,0 +1,5 @@
+---
+source: crates/shipper-core/src/state/store/snapshot_tests.rs
+expression: err
+---
+invalid schema version format: shipper.receipt.vx

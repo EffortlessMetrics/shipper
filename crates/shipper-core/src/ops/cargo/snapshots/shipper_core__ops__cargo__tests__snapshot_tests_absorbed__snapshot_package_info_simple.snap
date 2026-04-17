@@ -1,0 +1,9 @@
+---
+source: crates/shipper-core/src/ops/cargo/mod.rs
+expression: info
+---
+name: shipper-cargo
+version: 0.3.0
+manifest_path: crates/shipper-cargo/Cargo.toml
+is_workspace_member: true
+publish: []

@@ -1,0 +1,9 @@
+---
+source: crates/shipper-core/src/plan/chunking/mod.rs
+expression: "chunk_by_max_concurrent(&items, 2)"
+---
+- - a
+  - b
+- - c
+  - d
+- - e

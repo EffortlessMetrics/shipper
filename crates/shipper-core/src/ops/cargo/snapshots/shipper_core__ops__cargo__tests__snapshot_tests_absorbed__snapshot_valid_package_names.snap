@@ -1,0 +1,26 @@
+---
+source: crates/shipper-core/src/ops/cargo/mod.rs
+expression: results
+---
+[
+    (
+        "my-crate",
+        true,
+    ),
+    (
+        "my_crate",
+        true,
+    ),
+    (
+        "a",
+        true,
+    ),
+    (
+        "_private",
+        true,
+    ),
+    (
+        "crate-with-123",
+        true,
+    ),
+]

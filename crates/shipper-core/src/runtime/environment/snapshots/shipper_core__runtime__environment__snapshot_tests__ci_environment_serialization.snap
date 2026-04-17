@@ -1,0 +1,12 @@
+---
+source: crates/shipper-core/src/runtime/environment/mod.rs
+expression: serialized
+---
+- "\"GitHubActions\""
+- "\"GitLabCI\""
+- "\"CircleCI\""
+- "\"TravisCI\""
+- "\"AzurePipelines\""
+- "\"Jenkins\""
+- "\"BitbucketPipelines\""
+- "\"Local\""

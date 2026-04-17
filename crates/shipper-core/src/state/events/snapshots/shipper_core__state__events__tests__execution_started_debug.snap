@@ -1,0 +1,9 @@
+---
+source: crates/shipper-core/src/state/events/tests.rs
+expression: event
+---
+PublishEvent {
+    timestamp: 2025-01-15T12:00:00Z,
+    event_type: ExecutionStarted,
+    package: "workspace",
+}

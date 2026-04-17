@@ -1,9 +1,0 @@
----
-source: crates/shipper/src/engine/mod.rs
-expression: snapshot
----
-[
-    "key=alpha@1.0.0 attempts=0 state=published",
-    "key=beta@2.0.0 attempts=0 state=uploaded",
-    "key=gamma@3.0.0 attempts=0 state=pending",
-]

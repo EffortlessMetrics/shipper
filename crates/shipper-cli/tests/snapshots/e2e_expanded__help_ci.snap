@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 Print CI configuration snippets for various platforms
 
-Usage: shipper ci [OPTIONS] <COMMAND>
+Usage: shipper-cli.exe ci [OPTIONS] <COMMAND>
 
 Commands:
   github-actions  Print GitHub Actions workflow snippet

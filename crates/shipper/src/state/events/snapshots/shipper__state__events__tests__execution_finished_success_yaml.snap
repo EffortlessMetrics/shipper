@@ -1,9 +1,0 @@
----
-source: crates/shipper-events/src/lib.rs
-expression: event
----
-timestamp: "2025-01-15T12:00:00Z"
-event_type:
-  type: execution_finished
-  result: success
-package: workspace

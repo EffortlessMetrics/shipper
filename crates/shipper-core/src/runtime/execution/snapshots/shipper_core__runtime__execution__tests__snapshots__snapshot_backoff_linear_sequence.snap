@@ -1,0 +1,17 @@
+---
+source: crates/shipper-core/src/runtime/execution/mod.rs
+expression: seq
+---
+strategy: Linear
+base_ms: 200
+max_ms: 5000
+jitter: 0
+delays_ms:
+  - 200
+  - 400
+  - 600
+  - 800
+  - 1000
+  - 1200
+  - 1400
+  - 1600

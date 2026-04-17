@@ -1,0 +1,15 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: snapshot_of(&ws)
+---
+packages:
+  - name: codegen
+    version: 0.1.0
+  - name: app
+    version: 0.1.0
+dependencies:
+  app:
+    - codegen
+  codegen: []
+skipped: []
+registry_name: crates-io

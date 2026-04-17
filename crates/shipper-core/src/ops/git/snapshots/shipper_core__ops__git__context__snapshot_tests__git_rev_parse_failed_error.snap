@@ -1,0 +1,5 @@
+---
+source: crates/shipper-core/src/ops/git/context.rs
+expression: err.to_string()
+---
+"git rev-parse failed: fatal: ambiguous argument 'HEAD': unknown revision"

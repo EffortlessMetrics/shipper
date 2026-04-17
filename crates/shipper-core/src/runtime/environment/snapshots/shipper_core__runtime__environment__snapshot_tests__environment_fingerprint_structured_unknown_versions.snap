@@ -1,0 +1,9 @@
+---
+source: crates/shipper-core/src/runtime/environment/mod.rs
+expression: fp
+---
+shipper_version: 0.3.0
+cargo_version: ~
+rust_version: ~
+os: windows
+arch: aarch64

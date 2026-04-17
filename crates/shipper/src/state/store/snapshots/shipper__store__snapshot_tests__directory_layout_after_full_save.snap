@@ -1,7 +1,0 @@
----
-source: crates/shipper-store/src/lib.rs
-expression: layout
----
-events.jsonl (size: >0)
-receipt.json (size: >0)
-state.json (size: >0)

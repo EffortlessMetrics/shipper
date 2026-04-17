@@ -1,5 +1,0 @@
----
-source: crates/shipper-plan/src/lib.rs
-expression: "format!(\"{err:#}\")"
----
-publishable package 'npdep' depends on non-publishable workspace member 'c'

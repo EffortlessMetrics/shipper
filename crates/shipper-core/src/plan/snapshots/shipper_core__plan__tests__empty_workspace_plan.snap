@@ -1,0 +1,14 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: snapshot_of(&ws)
+---
+packages: []
+dependencies: {}
+skipped:
+  - name: priv-a
+    version: 0.1.0
+    reason: publish = false
+  - name: priv-b
+    version: 0.1.0
+    reason: publish = false
+registry_name: crates-io

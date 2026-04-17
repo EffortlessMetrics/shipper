@@ -1,0 +1,10 @@
+---
+source: crates/shipper-core/src/ops/git/context.rs
+expression: ctx
+---
+GitContext {
+    commit: None,
+    branch: None,
+    tag: None,
+    dirty: None,
+}

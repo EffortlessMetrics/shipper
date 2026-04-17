@@ -1,0 +1,5 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: "format!(\"{err:#}\")"
+---
+selected package not found or not publishable: c

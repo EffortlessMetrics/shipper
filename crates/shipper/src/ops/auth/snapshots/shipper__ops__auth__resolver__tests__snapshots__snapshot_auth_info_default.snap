@@ -1,9 +1,0 @@
----
-source: crates/shipper/src/ops/auth/resolver.rs
-expression: info
----
-AuthInfo {
-    token: None,
-    source: None,
-    detected: false,
-}

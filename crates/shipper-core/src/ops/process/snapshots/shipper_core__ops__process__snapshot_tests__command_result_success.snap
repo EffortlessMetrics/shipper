@@ -1,0 +1,9 @@
+---
+source: crates/shipper-core/src/ops/process/snapshot_tests.rs
+expression: result
+---
+success: true
+exit_code: 0
+stdout: "hello world\n"
+stderr: ""
+duration_ms: 42

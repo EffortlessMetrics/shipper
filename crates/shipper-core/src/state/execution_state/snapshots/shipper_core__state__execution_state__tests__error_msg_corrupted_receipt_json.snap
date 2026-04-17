@@ -1,0 +1,5 @@
+---
+source: crates/shipper-core/src/state/execution_state/tests.rs
+expression: "normalize_error(&format!(\"{err:#}\"), state_dir)"
+---
+failed to parse receipt JSON <STATE_DIR>/receipt.json: expected ident at line 1 column 2

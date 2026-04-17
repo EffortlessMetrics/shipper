@@ -1,0 +1,13 @@
+---
+source: crates/shipper-core/src/plan/chunking/mod.rs
+expression: lens
+---
+[
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    1,
+]

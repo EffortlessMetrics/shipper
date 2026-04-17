@@ -1,9 +1,0 @@
----
-source: crates/shipper/src/ops/process/snapshot_tests.rs
-expression: json
----
-duration_ms: 100
-exit_code: 0
-stderr: ""
-stdout: ok
-success: true

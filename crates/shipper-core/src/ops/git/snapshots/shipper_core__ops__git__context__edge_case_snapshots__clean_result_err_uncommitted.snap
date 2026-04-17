@@ -1,0 +1,7 @@
+---
+source: crates/shipper-core/src/ops/git/context.rs
+expression: result
+---
+Err(
+    "git working tree has uncommitted changes. Use --allow-dirty to bypass.",
+)

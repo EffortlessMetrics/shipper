@@ -1,0 +1,12 @@
+---
+source: crates/shipper-core/src/runtime/environment/mod.rs
+expression: variants
+---
+- GitHub Actions
+- GitLab CI
+- CircleCI
+- Travis CI
+- Azure Pipelines
+- Jenkins
+- Bitbucket Pipelines
+- Local

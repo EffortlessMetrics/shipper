@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-shipper = { path = "../crates/shipper" }
+shipper = { package = "shipper-core", path = "../crates/shipper-core" }
 shipper-duration = { path = "../crates/shipper-duration" }
 shipper-config = { path = "../crates/shipper-config" }
 shipper-output-sanitizer = { path = "../crates/shipper-output-sanitizer" }

@@ -1,0 +1,16 @@
+---
+source: crates/shipper-core/src/state/execution_state/tests.rs
+expression: json
+---
+{
+  "state_version": "shipper.state.v1",
+  "plan_id": "empty-plan",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io",
+    "index_base": "https://index.crates.io"
+  },
+  "created_at": "2025-01-15T12:00:00Z",
+  "updated_at": "2025-01-15T12:00:00Z",
+  "packages": {}
+}

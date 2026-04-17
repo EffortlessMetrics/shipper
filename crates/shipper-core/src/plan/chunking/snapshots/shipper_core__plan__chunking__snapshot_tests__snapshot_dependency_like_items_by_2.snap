@@ -1,0 +1,42 @@
+---
+source: crates/shipper-core/src/plan/chunking/mod.rs
+expression: "chunk_by_max_concurrent(&items, 2)"
+---
+[
+    [
+        (
+            "core",
+            [],
+        ),
+        (
+            "utils",
+            [
+                "core",
+            ],
+        ),
+    ],
+    [
+        (
+            "api",
+            [
+                "core",
+                "utils",
+            ],
+        ),
+        (
+            "cli",
+            [
+                "api",
+            ],
+        ),
+    ],
+    [
+        (
+            "web",
+            [
+                "api",
+                "utils",
+            ],
+        ),
+    ],
+]

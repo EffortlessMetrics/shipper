@@ -2273,6 +2273,64 @@ dependencies = [
 name = "shipper"
 version = "0.3.0-rc.1"
 dependencies = [
+ "anyhow",
+ "shipper-cli",
+ "shipper-core",
+]
+
+[[package]]
+name = "shipper-cargo-failure"
+version = "0.3.0-rc.1"
+dependencies = [
+ "insta",
+ "proptest",
+]
+
+[[package]]
+name = "shipper-cli"
+version = "0.3.0-rc.1"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "console",
+ "indicatif",
+ "insta",
+ "predicates",
+ "proptest",
+ "serde_json",
+ "serde_yaml",
+ "serial_test",
+ "shipper-core",
+ "shipper-duration",
+ "temp-env",
+ "tempfile",
+ "tiny_http",
+]
+
+[[package]]
+name = "shipper-config"
+version = "0.3.0-rc.1"
+dependencies = [
+ "anyhow",
+ "insta",
+ "proptest",
+ "serde",
+ "serde_with",
+ "shipper-encrypt",
+ "shipper-retry",
+ "shipper-types",
+ "shipper-webhook",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "shipper-core"
+version = "0.3.0-rc.1"
+dependencies = [
  "aes-gcm",
  "anyhow",
  "base64",
@@ -2311,55 +2369,6 @@ dependencies = [
  "tokio",
  "toml",
  "which",
-]
-
-[[package]]
-name = "shipper-cargo-failure"
-version = "0.3.0-rc.1"
-dependencies = [
- "insta",
- "proptest",
-]
-
-[[package]]
-name = "shipper-cli"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "chrono",
- "clap",
- "clap_complete",
- "console",
- "indicatif",
- "insta",
- "predicates",
- "proptest",
- "serde_json",
- "serde_yaml",
- "serial_test",
- "shipper",
- "shipper-duration",
- "temp-env",
- "tempfile",
- "tiny_http",
-]
-
-[[package]]
-name = "shipper-config"
-version = "0.3.0-rc.1"
-dependencies = [
- "anyhow",
- "insta",
- "proptest",
- "serde",
- "serde_with",
- "shipper-encrypt",
- "shipper-retry",
- "shipper-types",
- "shipper-webhook",
- "tempfile",
- "toml",
 ]
 
 [[package]]

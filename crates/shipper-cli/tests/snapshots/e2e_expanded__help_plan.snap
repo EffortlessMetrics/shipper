@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 Print the deterministic publish plan (dependency-first ordering)
 
-Usage: shipper plan [OPTIONS]
+Usage: shipper-cli.exe plan [OPTIONS]
 
 Options:
       --config <CONFIG>

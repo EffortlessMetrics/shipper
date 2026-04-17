@@ -1,0 +1,11 @@
+---
+source: crates/shipper-core/src/ops/auth/resolver.rs
+expression: info
+---
+AuthInfo {
+    token: Some(
+        "tok-from-env",
+    ),
+    source: EnvDefault,
+    detected: true,
+}

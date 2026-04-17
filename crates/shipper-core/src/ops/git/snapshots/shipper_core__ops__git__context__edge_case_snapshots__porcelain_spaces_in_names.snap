@@ -1,0 +1,9 @@
+---
+source: crates/shipper-core/src/ops/git/context.rs
+expression: files
+---
+[
+    "my file.txt",
+    "ath with spaces/file.rs",
+    "\"quoted name.txt\"",
+]

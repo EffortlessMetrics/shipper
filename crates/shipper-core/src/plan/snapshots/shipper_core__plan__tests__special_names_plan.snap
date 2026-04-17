@@ -1,0 +1,18 @@
+---
+source: crates/shipper-core/src/plan/mod.rs
+expression: snapshot_of(&ws)
+---
+packages:
+  - name: a-b_c-d_e
+    version: 0.2.0
+  - name: my-hyphen-pkg
+    version: 0.1.0
+  - name: my_underscore_pkg
+    version: 0.1.0
+dependencies:
+  a-b_c-d_e: []
+  my-hyphen-pkg: []
+  my_underscore_pkg:
+    - my-hyphen-pkg
+skipped: []
+registry_name: crates-io

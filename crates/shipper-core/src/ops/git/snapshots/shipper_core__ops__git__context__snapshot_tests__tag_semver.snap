@@ -1,0 +1,8 @@
+---
+source: crates/shipper-core/src/ops/git/context.rs
+expression: ctx
+---
+commit: "1111111111111111111111111111111111111111"
+branch: main
+tag: v2.0.0
+dirty: false

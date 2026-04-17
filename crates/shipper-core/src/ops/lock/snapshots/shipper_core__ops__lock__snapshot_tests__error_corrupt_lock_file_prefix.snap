@@ -1,0 +1,5 @@
+---
+source: crates/shipper-core/src/ops/lock/mod.rs
+expression: "\"failed to parse lock JSON\""
+---
+failed to parse lock JSON

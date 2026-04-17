@@ -1,0 +1,67 @@
+---
+source: crates/shipper-core/src/state/execution_state/tests.rs
+expression: json
+---
+{
+  "receipt_version": "shipper.receipt.v2",
+  "plan_id": "evidence-plan",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io",
+    "index_base": "https://index.crates.io"
+  },
+  "started_at": "2025-01-15T12:00:00Z",
+  "finished_at": "2025-01-15T12:05:00Z",
+  "packages": [
+    {
+      "name": "retried-crate",
+      "version": "1.0.0",
+      "attempts": 2,
+      "state": {
+        "state": "published"
+      },
+      "started_at": "2025-01-15T12:00:00Z",
+      "finished_at": "2025-01-15T12:05:00Z",
+      "duration_ms": 8000,
+      "evidence": {
+        "attempts": [
+          {
+            "attempt_number": 1,
+            "command": "cargo publish -p retried-crate",
+            "exit_code": 1,
+            "stdout_tail": "",
+            "stderr_tail": "error: network timeout",
+            "timestamp": "2025-01-15T12:00:00Z",
+            "duration": 3000
+          },
+          {
+            "attempt_number": 2,
+            "command": "cargo publish -p retried-crate",
+            "exit_code": 0,
+            "stdout_tail": "Uploading retried-crate v1.0.0",
+            "stderr_tail": "",
+            "timestamp": "2025-01-15T12:00:00Z",
+            "duration": 2000
+          }
+        ],
+        "readiness_checks": [
+          {
+            "attempt": 1,
+            "visible": true,
+            "timestamp": "2025-01-15T12:00:00Z",
+            "delay_before": 500
+          }
+        ]
+      }
+    }
+  ],
+  "event_log_path": ".shipper/events.jsonl",
+  "git_context": null,
+  "environment": {
+    "shipper_version": "0.3.0",
+    "cargo_version": "1.82.0",
+    "rust_version": "1.82.0",
+    "os": "linux",
+    "arch": "x86_64"
+  }
+}

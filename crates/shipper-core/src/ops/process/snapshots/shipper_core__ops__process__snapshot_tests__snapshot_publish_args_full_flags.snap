@@ -1,0 +1,12 @@
+---
+source: crates/shipper-core/src/ops/process/snapshot_tests.rs
+expression: args
+---
+- publish
+- "--manifest-path"
+- crates/baz/Cargo.toml
+- "--registry"
+- crates-io
+- "--no-verify"
+- "--features"
+- "serde,tokio"

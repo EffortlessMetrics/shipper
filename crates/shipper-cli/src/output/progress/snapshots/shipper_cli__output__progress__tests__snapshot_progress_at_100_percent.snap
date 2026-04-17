@@ -1,0 +1,10 @@
+---
+source: crates/shipper-cli/src/output/progress/tests.rs
+expression: state
+---
+(
+    4,
+    4,
+    "delta@0.1.0",
+    100.0,
+)
