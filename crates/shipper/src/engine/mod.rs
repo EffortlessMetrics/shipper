@@ -468,6 +468,24 @@ pub fn run_publish(
             ws, opts, &mut st, &state_dir, &reg, reporter,
         )?;
 
+        // End-of-run events-as-truth consistency check. Events are
+        // authoritative; state.json is a projection. Any drift means either
+        // the projection got stale or something bypassed the event log —
+        // surface it loudly rather than trust a bad resume. See #93 and
+        // docs/INVARIANTS.md.
+        match crate::state::consistency::verify_events_state_consistency(&events_path, &st) {
+            Ok(drift) if !drift.is_consistent() => {
+                reporter.warn(&crate::state::consistency::format_drift_summary(&drift));
+                event_log.record(PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type: EventType::StateEventDriftDetected { drift },
+                    package: "all".to_string(),
+                });
+            }
+            Ok(_) => {}
+            Err(e) => reporter.warn(&format!("end-of-run consistency check failed: {e}")),
+        }
+
         // Event: ExecutionFinished
         let exec_result = if parallel_receipts.iter().all(|r| {
             matches!(
@@ -910,6 +928,23 @@ pub fn run_publish(
                 readiness_checks: readiness_evidence,
             },
         });
+    }
+
+    // End-of-run events-as-truth consistency check. Events are authoritative;
+    // state.json is a projection. Any drift means either the projection got
+    // stale or something bypassed the event log — surface it loudly rather
+    // than trust a bad resume. See #93 and docs/INVARIANTS.md.
+    match crate::state::consistency::verify_events_state_consistency(&events_path, &st) {
+        Ok(drift) if !drift.is_consistent() => {
+            reporter.warn(&crate::state::consistency::format_drift_summary(&drift));
+            event_log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::StateEventDriftDetected { drift },
+                package: "all".to_string(),
+            });
+        }
+        Ok(_) => {}
+        Err(e) => reporter.warn(&format!("end-of-run consistency check failed: {e}")),
     }
 
     // Event: ExecutionFinished

@@ -3,5 +3,6 @@
 //! May import from `runtime` and `ops`. Must not import from `engine` or `plan`.
 //! See `CLAUDE.md` in this folder for the architectural rules.
 
+pub mod consistency;
 pub mod events;
 pub mod execution_state;
