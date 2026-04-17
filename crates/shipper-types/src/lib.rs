@@ -1506,6 +1506,7 @@ pub enum EventType {
     // correlation since events.jsonl is append-only scoped to one state dir.
     RehearsalStarted {
         registry: String,
+        plan_id: String,
         package_count: usize,
     },
     RehearsalPackagePublished {
@@ -1522,6 +1523,11 @@ pub enum EventType {
     RehearsalComplete {
         passed: bool,
         registry: String,
+        /// Plan ID the rehearsal ran against. The hard gate (#97 PR 3)
+        /// consults this: a subsequent `shipper publish` for the same
+        /// plan_id can rely on this rehearsal; if the workspace changes
+        /// (plan_id shifts), the rehearsal is stale and the gate fires.
+        plan_id: String,
         summary: String,
     },
 

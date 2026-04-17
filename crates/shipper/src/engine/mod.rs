@@ -356,6 +356,90 @@ pub fn run_preflight(
     })
 }
 
+/// Enforce the rehearsal hard gate (#97 PR 3).
+///
+/// Rules, evaluated in order:
+///
+/// 1. **Rehearsal not configured** (`opts.rehearsal_registry` is `None`) →
+///    gate is dormant; publish proceeds. Rehearsal is opt-in; existing
+///    workflows that never set a rehearsal registry are unaffected.
+///
+/// 2. **Operator override** (`opts.rehearsal_skip` is `true`) → publish
+///    proceeds with a loud warning logged to the reporter. Use sparingly
+///    (incident response, bootstrap runs). The skip decision is
+///    operator-visible in stderr; it does *not* synthesize a passing
+///    rehearsal receipt, so the audit trail still shows "no rehearsal
+///    ran."
+///
+/// 3. **No rehearsal receipt** (`rehearsal.json` is missing) → refuse.
+///    The operator needs to run `shipper rehearse` first.
+///
+/// 4. **Stale receipt** (receipt exists but `plan_id` mismatches the
+///    current workspace's plan) → refuse. A workspace change between
+///    rehearse and publish invalidates the rehearsal.
+///
+/// 5. **Failing receipt** (`passed: false`) → refuse.
+///
+/// 6. **Fresh passing receipt for current plan** → publish proceeds.
+fn enforce_rehearsal_gate(
+    ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
+    state_dir: &Path,
+    reporter: &mut dyn Reporter,
+) -> Result<()> {
+    let Some(rehearsal_name) = opts.rehearsal_registry.as_deref() else {
+        return Ok(());
+    };
+
+    if opts.rehearsal_skip {
+        reporter.warn(&format!(
+            "--skip-rehearsal was set; publish is proceeding without a rehearsal against '{rehearsal_name}'. \
+             This is an operator-authorized bypass; auditors reading events.jsonl will see no RehearsalComplete event for this plan_id."
+        ));
+        return Ok(());
+    }
+
+    let receipt = crate::state::rehearsal::load_rehearsal(state_dir)
+        .context("failed to read rehearsal receipt while enforcing hard gate")?;
+
+    let rehearsal_path = crate::state::rehearsal::rehearsal_path(state_dir);
+
+    let receipt = match receipt {
+        Some(r) => r,
+        None => bail!(
+            "rehearsal is required (rehearsal registry '{rehearsal_name}' is configured) but no rehearsal receipt was found at {}. \
+             Run `shipper rehearse --rehearsal-registry {rehearsal_name}` first, \
+             or pass --skip-rehearsal to override (not recommended).",
+            rehearsal_path.display()
+        ),
+    };
+
+    if receipt.plan_id != ws.plan.plan_id {
+        bail!(
+            "rehearsal receipt is stale: rehearsal ran for plan_id {} but the current plan_id is {}. \
+             The workspace changed between rehearse and publish; re-run `shipper rehearse` against the current plan.",
+            receipt.plan_id,
+            ws.plan.plan_id
+        );
+    }
+
+    if !receipt.passed {
+        bail!(
+            "rehearsal against '{}' did NOT pass for plan_id {}: {}. \
+             Fix the cause and re-run `shipper rehearse` before publishing.",
+            receipt.registry,
+            receipt.plan_id,
+            receipt.summary
+        );
+    }
+
+    reporter.info(&format!(
+        "rehearsal gate: passing receipt found ({} packages against '{}', plan_id {})",
+        receipt.packages_published, receipt.registry, receipt.plan_id
+    ));
+    Ok(())
+}
+
 /// Execute the publish operation for all packages in the workspace.
 ///
 /// This is the main publishing function that:
@@ -410,6 +494,10 @@ pub fn run_publish(
     {
         bail!("resume-from package '{}' not found in publish plan", target);
     }
+
+    // #97 PR 3: rehearsal hard gate. Only fires when a rehearsal registry
+    // is configured; opt-in until rehearsal phase-2 is stable.
+    enforce_rehearsal_gate(ws, opts, &state_dir, reporter)?;
 
     // Acquire lock
     let lock_timeout = if opts.force {
@@ -1345,6 +1433,7 @@ pub fn run_rehearsal(
         .with_context(|| format!("failed to create state dir {}", state_dir.display()))?;
     let events_path = events::events_path(&state_dir);
     let mut event_log = events::EventLog::new();
+    let started_at = Utc::now();
 
     reporter.info(&format!(
         "rehearsal starting — {} packages against '{}'",
@@ -1356,6 +1445,7 @@ pub fn run_rehearsal(
         timestamp: Utc::now(),
         event_type: EventType::RehearsalStarted {
             registry: rehearsal_name.clone(),
+            plan_id: ws.plan.plan_id.clone(),
             package_count: ws.plan.packages.len(),
         },
         package: "all".to_string(),
@@ -1455,16 +1545,45 @@ pub fn run_rehearsal(
         )
     };
 
+    let completed_at = Utc::now();
     event_log.record(PublishEvent {
-        timestamp: Utc::now(),
+        timestamp: completed_at,
         event_type: EventType::RehearsalComplete {
             passed,
             registry: rehearsal_name.clone(),
+            plan_id: ws.plan.plan_id.clone(),
             summary: summary.clone(),
         },
         package: "all".to_string(),
     });
     event_log.write_to_file(&events_path)?;
+
+    // Persist the sidecar receipt so the hard gate in `run_publish`
+    // can consult it without parsing events.jsonl. Best-effort — a
+    // write failure here doesn't invalidate the events log, which is
+    // the authoritative source; the gate will just act as if no
+    // rehearsal happened and block, which is the safe default.
+    let packages_attempted = packages_published + if passed { 0 } else { 1 };
+    if let Err(err) = crate::state::rehearsal::save_rehearsal(
+        &state_dir,
+        &crate::state::rehearsal::RehearsalReceipt {
+            schema_version: crate::state::rehearsal::CURRENT_REHEARSAL_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: rehearsal_name.clone(),
+            passed,
+            packages_attempted,
+            packages_published,
+            summary: summary.clone(),
+            started_at,
+            completed_at,
+        },
+    ) {
+        reporter.warn(&format!(
+            "rehearsal outcome event was written, but sidecar receipt could not be persisted: {err:#}. \
+             The hard gate may not recognize this rehearsal — check {}.",
+            crate::state::rehearsal::rehearsal_path(&state_dir).display()
+        ));
+    }
 
     if passed {
         reporter.info(&summary);
@@ -1475,7 +1594,7 @@ pub fn run_rehearsal(
     Ok(RehearsalOutcome {
         passed,
         registry_name: rehearsal_name,
-        packages_attempted: packages_published + if passed { 0 } else { 1 },
+        packages_attempted,
         packages_published,
         summary,
     })
@@ -6700,6 +6819,161 @@ mod tests {
             );
 
             rehearsal_server.join();
+        });
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // enforce_rehearsal_gate (#97 PR 3)
+    // ───────────────────────────────────────────────────────────────────
+
+    fn write_rehearsal_receipt(
+        state_dir: &Path,
+        plan_id: &str,
+        passed: bool,
+    ) -> crate::state::rehearsal::RehearsalReceipt {
+        let receipt = crate::state::rehearsal::RehearsalReceipt {
+            schema_version: crate::state::rehearsal::CURRENT_REHEARSAL_VERSION.to_string(),
+            plan_id: plan_id.to_string(),
+            registry: "rehearsal".to_string(),
+            passed,
+            packages_attempted: 1,
+            packages_published: if passed { 1 } else { 0 },
+            summary: if passed {
+                "rehearsed 1 package successfully".into()
+            } else {
+                "rehearsal failed".into()
+            },
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+        };
+        crate::state::rehearsal::save_rehearsal(state_dir, &receipt).expect("write");
+        receipt
+    }
+
+    #[test]
+    fn gate_is_dormant_when_rehearsal_registry_is_none() {
+        let td = tempdir().expect("tempdir");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+        let opts = default_opts(PathBuf::from(".shipper"));
+        // opts.rehearsal_registry is None by default.
+        let mut reporter = CollectingReporter::default();
+        enforce_rehearsal_gate(&ws, &opts, td.path(), &mut reporter).expect("gate dormant");
+    }
+
+    #[test]
+    fn gate_proceeds_with_warning_when_skip_is_set() {
+        let td = tempdir().expect("tempdir");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.rehearsal_registry = Some("rehearsal".into());
+        opts.rehearsal_skip = true;
+        let mut reporter = CollectingReporter::default();
+        enforce_rehearsal_gate(&ws, &opts, td.path(), &mut reporter).expect("skip bypass");
+        assert!(
+            reporter
+                .warns
+                .iter()
+                .any(|w| w.contains("--skip-rehearsal")),
+            "warns: {:?}",
+            reporter.warns
+        );
+    }
+
+    #[test]
+    fn gate_refuses_when_no_receipt_exists() {
+        let td = tempdir().expect("tempdir");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.rehearsal_registry = Some("rehearsal".into());
+        let mut reporter = CollectingReporter::default();
+        let err =
+            enforce_rehearsal_gate(&ws, &opts, td.path(), &mut reporter).expect_err("must fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("no rehearsal receipt was found"), "err: {msg}");
+        assert!(
+            msg.contains("shipper rehearse"),
+            "err should hint fix: {msg}"
+        );
+    }
+
+    #[test]
+    fn gate_refuses_on_plan_id_mismatch() {
+        let td = tempdir().expect("tempdir");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.rehearsal_registry = Some("rehearsal".into());
+
+        write_rehearsal_receipt(td.path(), "some-other-plan", true);
+
+        let mut reporter = CollectingReporter::default();
+        let err =
+            enforce_rehearsal_gate(&ws, &opts, td.path(), &mut reporter).expect_err("must fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("stale"), "err: {msg}");
+        assert!(
+            msg.contains(&ws.plan.plan_id),
+            "err should reference current plan_id: {msg}"
+        );
+    }
+
+    #[test]
+    fn gate_refuses_on_failing_receipt() {
+        let td = tempdir().expect("tempdir");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.rehearsal_registry = Some("rehearsal".into());
+
+        write_rehearsal_receipt(td.path(), &ws.plan.plan_id, false);
+
+        let mut reporter = CollectingReporter::default();
+        let err =
+            enforce_rehearsal_gate(&ws, &opts, td.path(), &mut reporter).expect_err("must fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("did NOT pass"), "err: {msg}");
+    }
+
+    #[test]
+    fn gate_passes_on_fresh_passing_receipt() {
+        let td = tempdir().expect("tempdir");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.rehearsal_registry = Some("rehearsal".into());
+
+        write_rehearsal_receipt(td.path(), &ws.plan.plan_id, true);
+
+        let mut reporter = CollectingReporter::default();
+        enforce_rehearsal_gate(&ws, &opts, td.path(), &mut reporter).expect("fresh pass");
+        assert!(
+            reporter.infos.iter().any(|i| i.contains("passing receipt")),
+            "infos: {:?}",
+            reporter.infos
+        );
+    }
+
+    /// End-to-end: `run_publish` refuses to run when rehearsal is required
+    /// but no receipt exists. This is the gate's actual contract — the
+    /// finer-grained tests above exercise the gate helper in isolation;
+    /// this one confirms run_publish wires it in correctly.
+    #[test]
+    #[serial]
+    fn run_publish_refuses_without_rehearsal_when_required() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let env_vars = fake_program_env_vars(&bin);
+        temp_env::with_vars(env_vars, || {
+            let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+            let state_dir = td.path().join(".shipper");
+            let mut opts = default_opts(state_dir);
+            opts.rehearsal_registry = Some("rehearsal".into());
+
+            let mut reporter = CollectingReporter::default();
+            let err = run_publish(&ws, &opts, &mut reporter).expect_err("gate must bail");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("rehearsal is required") || msg.contains("no rehearsal receipt"),
+                "expected gate error, got: {msg}"
+            );
         });
     }
 
