@@ -75,6 +75,18 @@ Retrying on failure is easy. The interesting questions are:
 
 Each answer is a separate responsibility. Shipper owns them all, under a single process, with a single durable ledger. That's the thing Cargo is not, and shouldn't be.
 
+## Cargo stdout is a hint; the registry is the truth
+
+Cargo's `publish` command uploads to the registry, then polls the index, then reports success or failure. The poll can time out while the upload succeeded. Cargo's stdout/stderr are a human-facing log — explicitly **not** a stable machine protocol.
+
+Shipper treats cargo text as a **fast-path hint**, never the authoritative answer:
+
+- Classification into `ErrorClass::{Retryable, Permanent, Ambiguous}` comes from pattern-matching cargo's stderr. Useful. Not definitive.
+- On `Ambiguous` (cargo exit uncertain), Shipper **never blind-retries**. It polls the registry (sparse index + API) via the reconciliation flow and resolves one of `Published` / `NotPublished` / `StillUnknown`. The registry is authoritative.
+- On `StillUnknown` (even the registry queries couldn't resolve), Shipper halts and surfaces the state for operator decision — uploading a potential duplicate is worse than waiting.
+
+This is why Shipper can be *safer* than a naive `cargo publish` loop in a shell script: the shell script only has cargo's exit code to go on, and Cargo's exit code is sometimes just wrong about whether the upload happened.
+
 ## The single test
 
 If we're doing our job, the single-sentence test from [MISSION.md](../../MISSION.md) is true:
