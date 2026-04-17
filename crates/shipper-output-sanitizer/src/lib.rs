@@ -1,5 +1,74 @@
 //! Output sanitization helpers for cargo command logs and evidence payloads.
 
+/// Strip ANSI escape sequences (CSI/OSC/etc.) from a string.
+///
+/// Cargo colorizes its output with SGR codes like `\x1b[1m` (bold) and
+/// `\x1b[92m` (bright green). Those bytes are noise in anything that will
+/// be parsed or rendered outside a terminal — events, receipts, sidecar
+/// files, dashboards. This function removes every `\x1b[...]` CSI sequence
+/// plus `\x1b]...\x07` OSC sequences and bare `\x1b` characters, leaving
+/// the underlying text intact.
+///
+/// Dependency-free and allocation-frugal — processes one byte at a time.
+///
+/// # Examples
+///
+/// ```
+/// use shipper_output_sanitizer::strip_ansi;
+///
+/// let colored = "\x1b[1m\x1b[92m   Compiling\x1b[0m demo v0.1.0";
+/// assert_eq!(strip_ansi(colored), "   Compiling demo v0.1.0");
+///
+/// // No-op on plain strings.
+/// assert_eq!(strip_ansi("hello"), "hello");
+/// ```
+pub fn strip_ansi(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                // CSI: \x1b[ ... <final byte 0x40..=0x7e>
+                b'[' => {
+                    i += 2;
+                    while i < bytes.len() {
+                        let b = bytes[i];
+                        i += 1;
+                        if (0x40..=0x7e).contains(&b) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: \x1b] ... BEL (0x07) or ST (\x1b\\)
+                b']' => {
+                    i += 2;
+                    while i < bytes.len() {
+                        if bytes[i] == 0x07 {
+                            i += 1;
+                            break;
+                        }
+                        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                // Two-byte escape (e.g. \x1b(B, \x1b=, …) — skip next byte.
+                _ => i += 2,
+            }
+        } else {
+            // Non-ESC byte — append as UTF-8-safe codepoint.
+            let ch = s[i..].chars().next().unwrap_or('\0');
+            let len = ch.len_utf8();
+            out.push(ch);
+            i += len;
+        }
+    }
+    out
+}
+
 /// Return the last `n` lines from `s`, then apply sensitive redaction.
 ///
 /// # Examples
@@ -59,6 +128,56 @@ pub fn redact_sensitive(s: &str) -> String {
         result.push('\n');
     }
     result
+}
+
+#[cfg(test)]
+mod strip_ansi_tests {
+    use super::strip_ansi;
+
+    #[test]
+    fn strips_sgr_color_codes() {
+        let input = "\x1b[1m\x1b[92m   Compiling\x1b[0m demo v0.1.0";
+        assert_eq!(strip_ansi(input), "   Compiling demo v0.1.0");
+    }
+
+    #[test]
+    fn strips_multiple_codes_and_preserves_newlines() {
+        let input = "\x1b[31merror\x1b[0m: thing\n\x1b[33mwarning\x1b[0m: other\n";
+        assert_eq!(strip_ansi(input), "error: thing\nwarning: other\n");
+    }
+
+    #[test]
+    fn noop_on_plain_strings() {
+        assert_eq!(strip_ansi("hello"), "hello");
+        assert_eq!(strip_ansi(""), "");
+        assert_eq!(strip_ansi("line1\nline2"), "line1\nline2");
+    }
+
+    #[test]
+    fn strips_cargo_style_dry_run_output() {
+        let input = "\x1b[1m\x1b[92m   Compiling\x1b[0m anstyle v1.0.14\n\x1b[1m\x1b[33mwarning\x1b[0m: aborting upload due to dry run\n";
+        let out = strip_ansi(input);
+        assert!(
+            !out.contains('\x1b'),
+            "no ESC bytes should remain: {:?}",
+            out
+        );
+        assert!(out.contains("Compiling"));
+        assert!(out.contains("warning"));
+        assert!(out.contains("aborting upload"));
+    }
+
+    #[test]
+    fn handles_utf8_between_escapes() {
+        let input = "\x1b[1mhello, 世界\x1b[0m";
+        assert_eq!(strip_ansi(input), "hello, 世界");
+    }
+
+    #[test]
+    fn strips_osc_sequences() {
+        let input = "\x1b]0;title\x07done";
+        assert_eq!(strip_ansi(input), "done");
+    }
 }
 
 fn redact_line(line: &str) -> String {
