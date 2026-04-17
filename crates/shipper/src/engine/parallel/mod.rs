@@ -21,6 +21,7 @@ use shipper_types::{
 mod policy;
 mod publish;
 mod readiness;
+mod reconcile;
 mod webhook;
 
 /// Re-exported for parallel publish wave planning.

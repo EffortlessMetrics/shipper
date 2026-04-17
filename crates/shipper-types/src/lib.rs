@@ -940,6 +940,35 @@ pub enum ErrorClass {
     Ambiguous,
 }
 
+/// Outcome of reconciling an ambiguous publish attempt against registry truth.
+///
+/// When `cargo publish` exits with an ambiguous class (e.g., upload succeeded
+/// but index poll timed out, or stdout did not parse into a known failure
+/// pattern), Shipper refuses to blind-retry. Instead it polls the registry
+/// within a bounded window and resolves one of three outcomes.
+///
+/// See also: [`ErrorClass::Ambiguous`] and [`PackageState::Ambiguous`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ReconciliationOutcome {
+    /// Registry confirms the crate+version is published. Safe to mark as
+    /// Published and advance; no further retry should occur for this crate.
+    Published { attempts: u32, elapsed_ms: u64 },
+    /// Registry confirms the crate+version is NOT visible after the bounded
+    /// polling window. Caller may safely enter the normal Retryable path
+    /// (retry `cargo publish`) knowing there is no side-effect to duplicate.
+    NotPublished { attempts: u32, elapsed_ms: u64 },
+    /// Polling itself failed (repeated registry-query errors, or exceeded
+    /// the operator's patience budget without a clear signal). Caller MUST
+    /// NOT retry cargo publish; mark the package [`PackageState::Ambiguous`]
+    /// and halt for operator decision.
+    StillUnknown {
+        attempts: u32,
+        elapsed_ms: u64,
+        reason: String,
+    },
+}
+
 /// Progress tracking for a single package in an execution.
 ///
 /// This struct is persisted to disk during publishing to enable
@@ -1368,6 +1397,14 @@ pub enum EventType {
     },
     PackageSkipped {
         reason: String,
+    },
+
+    // Reconciliation events (for `ErrorClass::Ambiguous` outcomes)
+    PublishReconciling {
+        method: ReadinessMethod,
+    },
+    PublishReconciled {
+        outcome: ReconciliationOutcome,
     },
 
     // Readiness events
