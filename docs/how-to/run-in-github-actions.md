@@ -83,19 +83,68 @@ Upload the `.shipper/` directory after plan, after preflight, and after publish 
 
 For a first-publish release of many new crates, crates.io's 1-new-crate-per-10-min rate limit applies. Budget ~10 minutes per crate past the initial 5-crate burst. A 12-crate first publish can run 70–90 minutes. Set `timeout-minutes` accordingly (the example above uses 180).
 
-### Token vs trusted publishing
+### Token vs Trusted Publishing
 
-The example uses `CARGO_REGISTRY_TOKEN`. For a safer posture, use Trusted Publishing (OIDC) — see [#96](https://github.com/EffortlessMetrics/shipper/issues/96) for the migration status. The short version:
+The example above uses `CARGO_REGISTRY_TOKEN` — a long-lived personal
+access token stored as a repo secret. **Prefer Trusted Publishing
+(OIDC)**: short-lived tokens, scoped to a specific repo + workflow + ref
+pattern + GitHub Actions environment. No secrets to rotate, no PATs to
+leak.
+
+**One-time setup on crates.io** (per crate):
+
+1. Log in to <https://crates.io>, open the crate's **Settings →
+   Trusted Publishing** panel.
+2. Add a new trusted publisher:
+   - Repository: `<owner>/<repo>`
+   - Workflow filename: `release.yml` (or whatever yours is called)
+   - Environment: `release` (match the `environment:` name in the job
+     below — this is the scope guard)
+3. Repeat for every crate the workspace publishes.
+
+**Workflow**:
 
 ```yaml
 permissions:
-  id-token: write
   contents: write
+  id-token: write           # required to mint the OIDC token
 
-steps:
-  - uses: rust-lang/crates-io-auth-action@v1  # exchanges OIDC for a short-lived token
-  - run: shipper publish ...                   # uses the exchanged token automatically
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release    # must match the crates.io trusted-publisher config
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install shipper-cli --locked
+
+      # Exchange the workflow's OIDC token for a short-lived
+      # crates.io publish token. Output: steps.auth.outputs.token.
+      - id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: shipper publish
+        env:
+          # Falls back to the long-lived secret if OIDC is unavailable
+          # (e.g. during incident response or the first bootstrap run).
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+        run: shipper publish --policy safe
 ```
+
+**Troubleshooting**:
+
+- `id-token: write` missing → GitHub refuses the OIDC exchange → the
+  action fails loudly; add the permission.
+- Crate not registered as a trusted publisher → `cargo publish` returns
+  401 despite a valid-looking token. Check crates.io's Trusted
+  Publishing panel for the crate.
+- Tag/branch mismatch → token minted for the wrong ref pattern →
+  crates.io refuses. The `environment:` name is the tightest scope —
+  make sure the workflow's environment matches what you registered.
+
+See `.github/workflows/release.yml` in this repo for the production
+example, and [#96](https://github.com/EffortlessMetrics/shipper/issues/96)
+for the migration history.
 
 ### Resume mode
 

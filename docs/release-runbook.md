@@ -14,8 +14,17 @@ Current RC baseline: `v0.3.0-rc.1`, commit [`5beab9b`](https://github.com/Effort
 3. **No mainline changes since the rehearsal.** Any commit to `main` after the rehearsal invalidates the plan ID. If mainline moved, re-rehearse.
 4. **crates.io is healthy.** Open [status.crates.io](https://status.crates.io/) immediately before starting. If the **git index** is running behind but the **sparse index** is healthy, that's OK — the workflow is configured with `--readiness-method both` so it will hit the sparse index path. If the **sparse index** itself is reporting incidents, abort and wait.
 5. **Token / auth is present.**
-   - Trusted Publishing (preferred): the GitHub Actions OIDC path is configured for this repo on crates.io. Verify the trusted-publishing configuration for each of the 12 crates if they've been pre-registered.
-   - Token fallback: `CARGO_REGISTRY_TOKEN` repo secret is set with publish scope for all 12 crates.
+   - **Trusted Publishing (primary path)**: the `release.yml` workflow
+     mints a short-lived token via `rust-lang/crates-io-auth-action@v1`
+     (see #96). Each of the 12 crates must be registered on crates.io
+     as a trusted publisher for this repo + `release.yml` +
+     `release` environment. Verify via crates.io's "Trusted Publishing"
+     settings panel for any one of the crates; if it's missing for any
+     crate, `cargo publish` will 401 for that crate and the train stalls.
+   - **Token fallback**: `CARGO_REGISTRY_TOKEN` repo secret is still
+     consulted if the OIDC action can't mint (incident response, pre-
+     registration gaps). Keep it set with publish scope for all 12
+     crates until Trusted Publishing is confirmed end-to-end.
 
 ## Cut the tag
 
