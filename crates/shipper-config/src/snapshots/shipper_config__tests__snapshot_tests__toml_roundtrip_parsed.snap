@@ -60,3 +60,6 @@ storage:
   endpoint: ~
   access_key_id: ~
   secret_access_key: ~
+rehearsal:
+  enabled: false
+  registry: ~

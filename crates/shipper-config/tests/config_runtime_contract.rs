@@ -69,6 +69,7 @@ fn custom_config() -> ShipperConfig {
             env_key: Some("CUSTOM_KEY".to_string()),
         },
         storage: shipper_config::StorageConfigInner::default(),
+        rehearsal: shipper_config::RehearsalConfig::default(),
     }
 }
 
@@ -119,6 +120,7 @@ fn converts_config_to_runtime_contract_with_registry_overrides() {
         },
         encryption: shipper_config::EncryptionConfigInner::default(),
         storage: shipper_config::StorageConfigInner::default(),
+        rehearsal: shipper_config::RehearsalConfig::default(),
     };
 
     let merged = source.build_runtime_options(CliOverrides {

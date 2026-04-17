@@ -1023,6 +1023,7 @@ timeout_secs = 15
             webhook: WebhookConfig::default(),
             encryption: EncryptionConfigInner::default(),
             storage: StorageConfigInner::default(),
+            rehearsal: shipper_config::RehearsalConfig::default(),
         };
 
         let serialized = toml::to_string_pretty(&config).unwrap();
