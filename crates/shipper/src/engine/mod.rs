@@ -159,13 +159,11 @@ pub fn run_preflight(
                         "failed to write preflight workspace-verify sidecar at {}: {e}",
                         sidecar_path.display()
                     ));
-                } else {
-                    reporter.info(&format!(
-                        "full dry-run output written to {} ({} bytes)",
-                        sidecar_path.display(),
-                        full_stripped.len()
-                    ));
                 }
+                // The sidecar path is deterministic (<state_dir>/preflight_
+                // workspace_verify.txt); documented in the runbook. Keeping
+                // the success path quiet avoids churn in operator output
+                // snapshots and byte-count variability across platforms.
                 // Slim summary for the event log: exit code + tail of
                 // ANSI-stripped stderr (the interesting signal).
                 let tail_summary = shipper_output_sanitizer::tail_lines(
