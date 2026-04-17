@@ -14,7 +14,8 @@ use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
 use crate::runtime::environment;
 use crate::runtime::execution::{
-    backoff_delay, classify_cargo_failure, pkg_key, resolve_state_dir, short_state, update_state,
+    backoff_delay, classify_cargo_failure, pkg_key, registry_aware_backoff, resolve_state_dir,
+    short_state, update_state,
 };
 use crate::state::events;
 use crate::state::execution_state as state;
@@ -639,6 +640,11 @@ pub fn run_publish(
 
         reporter.info(&format!("{}@{}: publishing...", p.name, p.version));
 
+        // Registry-aware backoff (#94): lazy-cached "is this a new crate?"
+        // Only queried when a retry's error message looks like a rate limit,
+        // so the happy path costs zero extra registry calls.
+        let mut is_new_crate_cached: Option<bool> = None;
+
         let mut attempt = st
             .packages
             .get(&key)
@@ -765,12 +771,22 @@ pub fn run_publish(
                             ));
                         }
                         ErrorClass::Retryable | ErrorClass::Ambiguous => {
-                            let delay = backoff_delay(
+                            let is_new_crate =
+                                if crate::runtime::execution::looks_like_rate_limit(&msg) {
+                                    *is_new_crate_cached.get_or_insert_with(|| {
+                                        reg.check_new_crate(&p.name).unwrap_or(false)
+                                    })
+                                } else {
+                                    false
+                                };
+                            let delay = registry_aware_backoff(
                                 opts.base_delay,
                                 opts.max_delay,
                                 attempt,
                                 opts.retry_strategy,
                                 opts.retry_jitter,
+                                is_new_crate,
+                                &msg,
                             );
                             emit_retry_backoff_event(
                                 &mut event_log,

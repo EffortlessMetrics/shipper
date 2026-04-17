@@ -16,7 +16,7 @@ use chrono::Utc;
 use crate::ops::cargo;
 use crate::plan::PlannedWorkspace;
 use crate::runtime::execution::{
-    backoff_delay, classify_cargo_failure, pkg_key, update_state_locked,
+    backoff_delay, classify_cargo_failure, pkg_key, registry_aware_backoff, update_state_locked,
 };
 use crate::state::events;
 use crate::state::execution_state as state;
@@ -209,6 +209,12 @@ pub(super) fn publish_package(
         enabled: effects.readiness_enabled,
         ..opts.readiness.clone()
     };
+
+    // Registry-aware backoff (#94): lazy-cached answer to "is this a brand-new
+    // crate?" — only consulted when a retry's error message looks like a
+    // rate-limit signal. Lazy so the happy path costs zero extra registry
+    // calls, cached so we don't re-query across retries of the same package.
+    let mut is_new_crate_cached: Option<bool> = None;
 
     while attempt < opts.max_attempts {
         attempt += 1;
@@ -503,12 +509,24 @@ pub(super) fn publish_package(
                         // Ambiguous can only reach here if reconciliation
                         // returned NotPublished — registry confirms no
                         // duplicate-upload risk, so cargo retry is safe.
-                        let delay = backoff_delay(
+                        // Only query crate_exists when the error looks like
+                        // a rate limit (saves a registry round-trip for
+                        // generic network/transient failures).
+                        let is_new_crate = if crate::runtime::execution::looks_like_rate_limit(&msg)
+                        {
+                            *is_new_crate_cached
+                                .get_or_insert_with(|| !reg.crate_exists(&p.name).unwrap_or(true))
+                        } else {
+                            false
+                        };
+                        let delay = registry_aware_backoff(
                             opts.base_delay,
                             opts.max_delay,
                             attempt,
                             opts.retry_strategy,
                             opts.retry_jitter,
+                            is_new_crate,
+                            &msg,
                         );
                         emit_retry_backoff(
                             event_log,

@@ -87,6 +87,51 @@ pub fn backoff_delay(
     calculate_delay(&config, attempt)
 }
 
+/// crates.io's documented rate-limit window for new-crate publishes: 10 min.
+/// After the 5-crate account burst is consumed, new crates are admitted at
+/// most once per `CRATES_IO_NEW_CRATE_WINDOW`. Source:
+/// <https://crates.io/docs/rate-limits>.
+pub const CRATES_IO_NEW_CRATE_WINDOW: Duration = Duration::from_secs(10 * 60);
+
+/// Return `true` if an error message looks like a rate-limit signal
+/// (HTTP 429 / "too many requests" / "rate limit" phrasings that appear
+/// in cargo publish stderr or common registry error bodies). Used to gate
+/// the crates.io-aware backoff adjustment: we only extend the delay when
+/// we believe we're actually being rate-limited.
+pub fn looks_like_rate_limit(message: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("429")
+        || m.contains("rate limit")
+        || m.contains("rate-limit")
+        || m.contains("too many requests")
+}
+
+/// Registry-aware backoff. Layered on top of the generic [`backoff_delay`]:
+/// if we're publishing a brand-new crate and the retry is caused by a
+/// rate-limit signal, floor the delay at [`CRATES_IO_NEW_CRATE_WINDOW`]
+/// so we stop burning retries during the 10-minute window crates.io has
+/// already told us to wait through. Everything else uses the generic delay.
+///
+/// Preflight discovers `is_new_crate` already (one `check_new_crate` call
+/// per package at publish start); wiring it here costs no additional I/O.
+/// See issues #94 and #91 for the design discussion.
+pub fn registry_aware_backoff(
+    base: Duration,
+    max: Duration,
+    attempt: u32,
+    strategy: RetryStrategyType,
+    jitter: f64,
+    is_new_crate: bool,
+    error_message: &str,
+) -> Duration {
+    let generic = backoff_delay(base, max, attempt, strategy, jitter);
+    if is_new_crate && looks_like_rate_limit(error_message) {
+        generic.max(CRATES_IO_NEW_CRATE_WINDOW)
+    } else {
+        generic
+    }
+}
+
 /// Update a package state inside an in-memory execution state.
 pub fn update_state_locked(st: &mut ExecutionState, key: &str, new_state: PackageState) {
     if let Some(pr) = st.packages.get_mut(key) {
@@ -106,6 +151,104 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    // ---- Tests for looks_like_rate_limit + registry_aware_backoff (#94) ----
+
+    #[test]
+    fn looks_like_rate_limit_matches_common_phrasings() {
+        assert!(looks_like_rate_limit("HTTP 429 Too Many Requests"));
+        assert!(looks_like_rate_limit("rate limit exceeded"));
+        assert!(looks_like_rate_limit("rate-limited by server"));
+        assert!(looks_like_rate_limit("received 429"));
+        assert!(looks_like_rate_limit("429: retry later"));
+    }
+
+    #[test]
+    fn looks_like_rate_limit_ignores_unrelated_errors() {
+        assert!(!looks_like_rate_limit("connection refused"));
+        assert!(!looks_like_rate_limit("DNS lookup failed"));
+        assert!(!looks_like_rate_limit("invalid manifest"));
+        assert!(!looks_like_rate_limit("500 internal server error"));
+        assert!(!looks_like_rate_limit(""));
+    }
+
+    #[test]
+    fn registry_aware_backoff_extends_for_new_crate_rate_limit() {
+        let short = Duration::from_secs(10);
+        let d = registry_aware_backoff(
+            short,
+            Duration::from_secs(120),
+            1,
+            RetryStrategyType::Exponential,
+            0.0,
+            true,
+            "HTTP 429 Too Many Requests",
+        );
+        assert!(
+            d >= CRATES_IO_NEW_CRATE_WINDOW,
+            "expected delay floored at 10 min for new-crate rate limit; got {:?}",
+            d
+        );
+    }
+
+    #[test]
+    fn registry_aware_backoff_unchanged_for_existing_crate_rate_limit() {
+        // Existing crate hitting a 429 uses the higher per-minute budget;
+        // Shipper should NOT over-extend to the 10-min new-crate window.
+        let base = Duration::from_secs(2);
+        let max = Duration::from_secs(120);
+        let d = registry_aware_backoff(
+            base,
+            max,
+            1,
+            RetryStrategyType::Exponential,
+            0.0,
+            false,
+            "HTTP 429 Too Many Requests",
+        );
+        assert!(
+            d < CRATES_IO_NEW_CRATE_WINDOW,
+            "expected generic backoff for existing crate; got {:?}",
+            d
+        );
+    }
+
+    #[test]
+    fn registry_aware_backoff_unchanged_for_new_crate_non_rate_limit() {
+        // New crate hit a non-rate-limit retryable (network blip); we should
+        // NOT wait 10 min for a transient network issue.
+        let base = Duration::from_secs(2);
+        let max = Duration::from_secs(120);
+        let d = registry_aware_backoff(
+            base,
+            max,
+            1,
+            RetryStrategyType::Exponential,
+            0.0,
+            true,
+            "connection reset by peer",
+        );
+        assert!(
+            d < CRATES_IO_NEW_CRATE_WINDOW,
+            "expected generic backoff for network error; got {:?}",
+            d
+        );
+    }
+
+    #[test]
+    fn registry_aware_backoff_respects_longer_generic_when_it_exceeds_window() {
+        // If the generic exponential delay is already >= 10 min, don't floor
+        // downward — use whichever is larger.
+        let base = Duration::from_secs(60 * 20); // 20 min
+        let max = Duration::from_secs(60 * 30);
+        let d = registry_aware_backoff(base, max, 1, RetryStrategyType::Constant, 0.0, true, "429");
+        assert!(
+            d >= base,
+            "expected to keep the larger delay; got {:?}, base {:?}",
+            d,
+            base
+        );
+    }
 
     fn make_progress(
         name: &str,
