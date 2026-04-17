@@ -18,8 +18,9 @@ use crate::runtime::execution::{pkg_key, update_state_locked};
 use crate::state::events;
 use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
-    ErrorClass, ExecutionState, PackageEvidence, PackageProgress, PackageReceipt, PackageState,
-    PlannedPackage, PublishLevel, ReadinessConfig, Registry, ReleasePlan, RuntimeOptions,
+    ErrorClass, EventType, ExecutionState, PackageEvidence, PackageProgress, PackageReceipt,
+    PackageState, PlannedPackage, PublishLevel, ReadinessConfig, Registry, ReleasePlan,
+    RuntimeOptions,
 };
 
 #[derive(Default)]
@@ -3788,4 +3789,360 @@ mod property_tests_extra {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation BDD scenarios (#99 follow-on)
+//
+// These three tests exercise the ambiguous-outcome reconciliation state
+// machine introduced in PR #111 (in-flight) and PR #115 (resume-path)
+// end-to-end: cargo failing with an ambiguous class + mocked registry
+// responses, asserting on the three reconciliation outcomes.
+//
+// Ambiguous classification is triggered by cargo exiting non-zero with
+// empty stdout/stderr (see `shipper-cargo-failure::classify_publish_failure`
+// edge-case tests). To keep readiness-polling bounded to a single call per
+// reconcile site (avoiding flaky request counts), each test disables the
+// readiness backoff loop: `readiness.enabled = false`.
+// ---------------------------------------------------------------------------
+
+/// Build a RuntimeOptions with readiness polling disabled — every reconcile
+/// site reduces to a single registry query. Simplifies mock request math.
+fn reconcile_scenario_opts(state_dir: PathBuf) -> RuntimeOptions {
+    let mut opts = default_opts(state_dir);
+    opts.readiness.enabled = false;
+    opts
+}
+
+#[test]
+#[serial]
+fn reconcile_bdd_ambiguous_resolves_to_published() {
+    // Scenario: cargo exits ambiguously (exit 1, empty stderr) on attempt 1.
+    // The quick post-failure version_exists check sees nothing, so classify
+    // returns Ambiguous → reconcile_ambiguous_upload fires and the registry
+    // reports the version as visible. Expected: state becomes Published,
+    // no second cargo invocation.
+    //
+    // Request sequence (readiness disabled):
+    //   1. entry "already published" check (publish.rs:136) → 404
+    //   2. post-cargo-failure quick check (publish.rs:~446) → 404
+    //   3. reconcile's single version_exists (via is_version_visible_with_backoff, enabled=false) → 200
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+
+    let server = spawn_registry_server(
+        BTreeMap::from([(
+            "/api/v1/crates/demo/0.1.0".to_string(),
+            vec![
+                (404, "{}".to_string()),
+                (404, "{}".to_string()),
+                (200, "{}".to_string()),
+            ],
+        )]),
+        3,
+    );
+
+    let ws = planned_workspace(td.path(), server.base_url.clone());
+    let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+    let opts = reconcile_scenario_opts(PathBuf::from(".shipper"));
+    let state_dir = td.path().join(".shipper");
+    let st = Arc::new(Mutex::new(init_state_for_package(
+        &ws.plan.plan_id,
+        &ws.plan.registry,
+        "demo",
+        "0.1.0",
+    )));
+    let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+    let events_path = events::events_path(&state_dir);
+    let reporter: Arc<Mutex<dyn Reporter + Send>> =
+        Arc::new(Mutex::new(CollectingReporter::default()));
+
+    temp_env::with_vars(
+        [
+            (
+                "SHIPPER_CARGO_BIN",
+                Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            ),
+            ("SHIPPER_CARGO_EXIT", Some("1")),
+            // Empty stderr/stdout → classify_publish_failure returns Ambiguous.
+            ("SHIPPER_CARGO_STDERR", Some("")),
+            ("SHIPPER_CARGO_STDOUT", Some("")),
+        ],
+        || {
+            let result = publish_package(
+                &ws.plan.packages[0],
+                &ws,
+                &opts,
+                &reg,
+                &st,
+                &state_dir,
+                &event_log,
+                &events_path,
+                &reporter,
+            );
+
+            let receipt = result.result.expect("reconcile should mark Published");
+            assert!(
+                matches!(receipt.state, PackageState::Published),
+                "expected Published via reconcile, got {:?}",
+                receipt.state
+            );
+            // attempts=1 because reconcile fired on the first attempt's failure
+            // and resolved to Published — no further cargo invocations.
+            assert_eq!(receipt.attempts, 1);
+        },
+    );
+
+    // Verify the event stream records the reconcile decision. Events are
+    // flushed to disk + cleared from the in-memory log after each write, so
+    // we read from disk here.
+    let persisted = events::EventLog::read_from_file(&events_path).expect("read events");
+    let has_reconciling = persisted
+        .all_events()
+        .iter()
+        .any(|e| matches!(e.event_type, EventType::PublishReconciling { .. }));
+    let has_reconciled_published = persisted.all_events().iter().any(|e| {
+        matches!(
+            &e.event_type,
+            EventType::PublishReconciled {
+                outcome: shipper_types::ReconciliationOutcome::Published { .. }
+            }
+        )
+    });
+    assert!(has_reconciling, "expected PublishReconciling event");
+    assert!(
+        has_reconciled_published,
+        "expected PublishReconciled with Published outcome"
+    );
+
+    server.join();
+}
+
+#[test]
+#[serial]
+fn reconcile_bdd_ambiguous_resolves_to_not_published_then_retries() {
+    // Scenario: cargo exits ambiguously on every attempt. Registry is
+    // consistently 404 — the version never appears. Reconcile resolves
+    // to NotPublished on each cargo-failure path, which falls through to
+    // the normal Retryable backoff → retry → fails-ambiguous-again. After
+    // max_attempts, the package ends Failed.
+    //
+    // With max_attempts=2 and readiness disabled, the request sequence is:
+    //   1. entry check → 404
+    //   2. attempt 1 post-cargo quick check → 404
+    //   3. attempt 1 reconcile (enabled=false, single call) → 404 → NotPublished
+    //   4. attempt 2 post-cargo quick check → 404
+    //   5. attempt 2 reconcile → 404 → NotPublished
+    //   6. post-loop final "if last_err, maybe visible" check (publish.rs:~817) → 404
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+
+    let server = spawn_registry_server(
+        BTreeMap::from([(
+            "/api/v1/crates/demo/0.1.0".to_string(),
+            vec![
+                (404, "{}".to_string()),
+                (404, "{}".to_string()),
+                (404, "{}".to_string()),
+                (404, "{}".to_string()),
+                (404, "{}".to_string()),
+                (404, "{}".to_string()),
+            ],
+        )]),
+        6,
+    );
+
+    let ws = planned_workspace(td.path(), server.base_url.clone());
+    let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+    let mut opts = reconcile_scenario_opts(PathBuf::from(".shipper"));
+    opts.max_attempts = 2;
+    let state_dir = td.path().join(".shipper");
+    let st = Arc::new(Mutex::new(init_state_for_package(
+        &ws.plan.plan_id,
+        &ws.plan.registry,
+        "demo",
+        "0.1.0",
+    )));
+    let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+    let events_path = events::events_path(&state_dir);
+    let reporter: Arc<Mutex<dyn Reporter + Send>> =
+        Arc::new(Mutex::new(CollectingReporter::default()));
+
+    temp_env::with_vars(
+        [
+            (
+                "SHIPPER_CARGO_BIN",
+                Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            ),
+            ("SHIPPER_CARGO_EXIT", Some("1")),
+            ("SHIPPER_CARGO_STDERR", Some("")),
+            ("SHIPPER_CARGO_STDOUT", Some("")),
+        ],
+        || {
+            let result = publish_package(
+                &ws.plan.packages[0],
+                &ws,
+                &opts,
+                &reg,
+                &st,
+                &state_dir,
+                &event_log,
+                &events_path,
+                &reporter,
+            );
+
+            // max_attempts exhausted, registry never visible → Failed.
+            let err = result
+                .result
+                .expect_err("max_attempts exhausted without success should err");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("failed"),
+                "expected failure message, got: {msg}"
+            );
+            // Verify cargo was actually retried (attempts incremented).
+            let state = st.lock().unwrap();
+            let progress = state.packages.get("demo@0.1.0").expect("package progress");
+            assert_eq!(progress.attempts, 2, "expected 2 cargo attempts");
+        },
+    );
+
+    // Verify at least one reconcile_not_published decision was recorded
+    // (read from disk; in-memory log is cleared after each flush).
+    let persisted = events::EventLog::read_from_file(&events_path).expect("read events");
+    let has_reconciled_not_published = persisted.all_events().iter().any(|e| {
+        matches!(
+            &e.event_type,
+            EventType::PublishReconciled {
+                outcome: shipper_types::ReconciliationOutcome::NotPublished { .. }
+            }
+        )
+    });
+    assert!(
+        has_reconciled_not_published,
+        "expected at least one PublishReconciled with NotPublished outcome"
+    );
+
+    server.join();
+}
+
+#[test]
+#[serial]
+fn reconcile_bdd_resume_from_ambiguous_state_skips_republish() {
+    // Scenario (from PR #115 resume-path reconcile):
+    //   A prior run left demo@0.1.0 in PackageState::Ambiguous. On resume,
+    //   the entry "already published" check still returns 404 (publish.rs:136).
+    //   The resume-path reconcile block (publish.rs:~248) fires BEFORE the
+    //   retry loop, polls the registry, and discovers the version IS now
+    //   visible — marks Published and returns early with zero cargo attempts.
+    //
+    // Request sequence:
+    //   1. entry check → 404
+    //   2. resume-path reconcile's single version_exists → 200
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+
+    let server = spawn_registry_server(
+        BTreeMap::from([(
+            "/api/v1/crates/demo/0.1.0".to_string(),
+            vec![(404, "{}".to_string()), (200, "{}".to_string())],
+        )]),
+        2,
+    );
+
+    let ws = planned_workspace(td.path(), server.base_url.clone());
+    let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+    let opts = reconcile_scenario_opts(PathBuf::from(".shipper"));
+    let state_dir = td.path().join(".shipper");
+
+    // Pre-populate state with PackageState::Ambiguous (as a prior interrupted
+    // run would have left it).
+    let mut initial_state =
+        init_state_for_package(&ws.plan.plan_id, &ws.plan.registry, "demo", "0.1.0");
+    if let Some(pr) = initial_state.packages.get_mut("demo@0.1.0") {
+        pr.state = PackageState::Ambiguous {
+            message: "prior reconciliation inconclusive".to_string(),
+        };
+    }
+    let st = Arc::new(Mutex::new(initial_state));
+    let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+    let events_path = events::events_path(&state_dir);
+    let reporter: Arc<Mutex<dyn Reporter + Send>> =
+        Arc::new(Mutex::new(CollectingReporter::default()));
+
+    // Track whether cargo was invoked via a log file.
+    let cargo_log = td.path().join("cargo-calls.log");
+
+    temp_env::with_vars(
+        [
+            (
+                "SHIPPER_CARGO_BIN",
+                Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            ),
+            (
+                "SHIPPER_CARGO_ARGS_LOG",
+                Some(cargo_log.to_str().expect("utf8")),
+            ),
+            // Cargo would succeed if called, but we expect it to NOT be called.
+            ("SHIPPER_CARGO_EXIT", Some("0")),
+        ],
+        || {
+            let result = publish_package(
+                &ws.plan.packages[0],
+                &ws,
+                &opts,
+                &reg,
+                &st,
+                &state_dir,
+                &event_log,
+                &events_path,
+                &reporter,
+            );
+
+            let receipt = result
+                .result
+                .expect("resume-path reconcile should resolve Published");
+            assert!(
+                matches!(receipt.state, PackageState::Published),
+                "expected Published via resume-path reconcile, got {:?}",
+                receipt.state
+            );
+            // No cargo attempts because we resolved before the retry loop.
+            assert_eq!(receipt.attempts, 0);
+        },
+    );
+
+    // Verify cargo was never actually invoked.
+    let cargo_invoked = std::fs::read_to_string(&cargo_log)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    assert!(
+        !cargo_invoked,
+        "cargo should not have been invoked on resume-path reconcile Published"
+    );
+
+    // Verify the reconcile events were emitted (read from disk).
+    let persisted = events::EventLog::read_from_file(&events_path).expect("read events");
+    let has_reconciling = persisted
+        .all_events()
+        .iter()
+        .any(|e| matches!(e.event_type, EventType::PublishReconciling { .. }));
+    let has_reconciled_published = persisted.all_events().iter().any(|e| {
+        matches!(
+            &e.event_type,
+            EventType::PublishReconciled {
+                outcome: shipper_types::ReconciliationOutcome::Published { .. }
+            }
+        )
+    });
+    assert!(has_reconciling, "expected PublishReconciling event");
+    assert!(
+        has_reconciled_published,
+        "expected PublishReconciled with Published outcome"
+    );
+
+    server.join();
 }
