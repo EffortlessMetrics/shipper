@@ -2,42 +2,31 @@
 source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: normalize_stderr(&stdout)
 ---
-Yank a crate@version from the registry — containment, not undo.
+Generate a fix-forward supersession plan from a compromised receipt (#98 PR 3).
 
-`cargo yank` marks a specific version as not-installable for NEW dependency resolves. Existing lockfile pins and already-downloaded copies are unaffected. See [cargo yank docs](https://doc.rust-lang.org/cargo/commands/cargo-yank.html).
+Reads a prior `receipt.json`, finds packages whose receipt entry carries a `compromised_at` marker (populated by `shipper yank ... --mark-compromised`), and prints an ordered list of successor versions to publish. Dependencies go first (opposite of plan-yank) so downstream consumers can upgrade to a clean chain on `cargo update`.
 
-Part of [#98 Remediate](https://github.com/EffortlessMetrics/shipper/issues/98). Follow-on commands (`shipper plan-yank`, `shipper fix-forward`) compose this primitive into reverse-topological containment and fix-forward plans.
+**Planning only.** This command does NOT edit Cargo.toml or invoke publish — that's operator territory. It prints the steps, you execute them.
 
-Usage: shipper yank [OPTIONS] --crate <NAME> --version <VERSION> --reason <REASON>
+Usage: shipper fix-forward [OPTIONS]
 
 Options:
       --config <CONFIG>
           Path to a custom configuration file (.shipper.toml)
 
-      --crate <NAME>
-          Name of the crate to yank (e.g., `shipper-types`)
+      --from-receipt <PATH>
+          Path to the compromised receipt. Defaults to `<state_dir>/receipt.json` when omitted
 
       --manifest-path <MANIFEST_PATH>
           Path to the workspace Cargo.toml
           
           [default: Cargo.toml]
 
-      --version <VERSION>
-          Version to yank (e.g., `[VERSION]`)
-
-      --reason <REASON>
-          Operator-supplied reason (recorded in the event log, audit trails, and any future receipts that reference this yank).
-          
-          Example: `"CVE-2026-0001 disclosed; containing while patch released"`.
-
       --registry <REGISTRY>
           Cargo registry name (default: crates-io)
 
       --api-base <API_BASE>
           Registry API base URL (default: <https://crates.io>)
-
-      --mark-compromised
-          Also mark the crate's existing receipt entry as compromised (#98 PR 3). Sets `compromised_at = now` and `compromised_by = <reason>` on the matching `PackageReceipt` in `<state_dir>/receipt.json`, so downstream commands like `shipper plan-yank --compromised-only` and `shipper fix-forward` can find the compromised packages without scanning events.jsonl. No-op if no matching receipt exists (prints a warning)
 
       --package <PACKAGES>
           Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members

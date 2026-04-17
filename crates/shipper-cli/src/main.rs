@@ -271,6 +271,15 @@ enum Commands {
         /// released"`.
         #[arg(long)]
         reason: String,
+        /// Also mark the crate's existing receipt entry as compromised
+        /// (#98 PR 3). Sets `compromised_at = now` and `compromised_by =
+        /// <reason>` on the matching `PackageReceipt` in
+        /// `<state_dir>/receipt.json`, so downstream commands like
+        /// `shipper plan-yank --compromised-only` and `shipper fix-forward`
+        /// can find the compromised packages without scanning events.jsonl.
+        /// No-op if no matching receipt exists (prints a warning).
+        #[arg(long)]
+        mark_compromised: bool,
     },
     /// Generate a reverse-topological yank plan from a receipt (#98 PR 2).
     ///
@@ -293,6 +302,26 @@ enum Commands {
         /// package is included (full rollback).
         #[arg(long)]
         compromised_only: bool,
+    },
+    /// Generate a fix-forward supersession plan from a compromised
+    /// receipt (#98 PR 3).
+    ///
+    /// Reads a prior `receipt.json`, finds packages whose receipt entry
+    /// carries a `compromised_at` marker (populated by
+    /// `shipper yank ... --mark-compromised`), and prints an ordered
+    /// list of successor versions to publish. Dependencies go first
+    /// (opposite of plan-yank) so downstream consumers can upgrade to a
+    /// clean chain on `cargo update`.
+    ///
+    /// **Planning only.** This command does NOT edit Cargo.toml or
+    /// invoke publish — that's operator territory. It prints the
+    /// steps, you execute them.
+    #[command(name = "fix-forward")]
+    FixForward {
+        /// Path to the compromised receipt. Defaults to
+        /// `<state_dir>/receipt.json` when omitted.
+        #[arg(long, value_name = "PATH")]
+        from_receipt: Option<PathBuf>,
     },
     /// Configuration file management.
     #[command(subcommand)]
@@ -689,9 +718,11 @@ fn main() -> Result<()> {
             crate_name,
             version,
             reason,
+            mark_compromised,
         } => {
             use shipper::cargo;
             use shipper::state::events::{EventLog, events_path};
+            use shipper::state::execution_state::{load_receipt, receipt_path, write_receipt};
             use shipper::types::{EventType, PublishEvent};
 
             reporter.warn(&format!(
@@ -736,6 +767,63 @@ fn main() -> Result<()> {
             }
 
             if out.exit_code == 0 {
+                if mark_compromised {
+                    // #98 PR 3: mirror the yank into the receipt so
+                    // downstream commands (plan-yank --compromised-only,
+                    // fix-forward) can find the marker without scanning
+                    // events.jsonl. The receipt is a *projection*, so
+                    // mutating one field on one matching package is a
+                    // legitimate amendment.
+                    let rpath = receipt_path(&opts.state_dir);
+                    match load_receipt(&opts.state_dir) {
+                        Ok(Some(mut receipt)) => {
+                            let matched = receipt
+                                .packages
+                                .iter_mut()
+                                .find(|p| p.name == crate_name && p.version == version);
+                            if let Some(pkg) = matched {
+                                pkg.compromised_at = Some(chrono::Utc::now());
+                                pkg.compromised_by = Some(reason.clone());
+                                if let Err(err) = write_receipt(&opts.state_dir, &receipt) {
+                                    reporter.warn(&format!(
+                                        "yanked successfully but failed to mark receipt at \
+                                         {}: {err:#}",
+                                        rpath.display()
+                                    ));
+                                } else {
+                                    reporter.info(&format!(
+                                        "marked {crate_name}@{version} compromised in {}",
+                                        rpath.display()
+                                    ));
+                                }
+                            } else {
+                                reporter.warn(&format!(
+                                    "--mark-compromised: no matching package entry for \
+                                     {crate_name}@{version} in {}; yank succeeded but the \
+                                     receipt was not amended.",
+                                    rpath.display()
+                                ));
+                            }
+                        }
+                        Ok(None) => {
+                            reporter.warn(&format!(
+                                "--mark-compromised: no receipt at {}; yank succeeded but \
+                                 nothing to amend. Future plan-yank / fix-forward runs won't \
+                                 see this version as compromised unless the receipt is \
+                                 reconstructed.",
+                                rpath.display()
+                            ));
+                        }
+                        Err(err) => {
+                            reporter.warn(&format!(
+                                "--mark-compromised: failed to load receipt at {}: {err:#}. \
+                                 Yank succeeded; receipt not amended.",
+                                rpath.display()
+                            ));
+                        }
+                    }
+                }
+
                 reporter.info(&format!(
                     "yanked {crate_name}@{version} successfully. \
                      existing lockfile pins are NOT invalidated; \
@@ -788,6 +876,34 @@ fn main() -> Result<()> {
                 }
                 _ => {
                     println!("{}", plan_yank::render_text(&plan));
+                }
+            }
+        }
+        Commands::FixForward { from_receipt } => {
+            use shipper::engine::fix_forward::{self, SuccessorStrategy};
+
+            let receipt_path = from_receipt.unwrap_or_else(|| {
+                opts.state_dir
+                    .join(shipper::state::execution_state::RECEIPT_FILE)
+            });
+
+            let plan =
+                fix_forward::plan_from_path(&receipt_path, SuccessorStrategy::PlaceholderNext)
+                    .with_context(|| {
+                        "fix-forward needs a readable receipt; default path is \
+                         <state_dir>/receipt.json. Pass --from-receipt <path> to \
+                         override."
+                            .to_string()
+                    })?;
+
+            match cli.format.as_str() {
+                "json" => {
+                    let out = serde_json::to_string_pretty(&plan)
+                        .context("failed to serialize fix-forward plan as JSON")?;
+                    println!("{out}");
+                }
+                _ => {
+                    println!("{}", fix_forward::render_text(&plan));
                 }
             }
         }

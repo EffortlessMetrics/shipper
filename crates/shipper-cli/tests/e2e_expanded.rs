@@ -1438,6 +1438,19 @@ fn help_plan_yank_snapshot() {
     assert_snapshot!("help_plan_yank", normalize_stderr(&stdout));
 }
 
+/// Snapshot: `fix-forward --help` output.
+#[test]
+fn help_fix_forward_snapshot() {
+    let output = shipper_cmd()
+        .args(["fix-forward", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_fix_forward", normalize_stderr(&stdout));
+}
+
 /// Snapshot: `config init --help` output.
 #[test]
 fn help_config_init_snapshot() {
