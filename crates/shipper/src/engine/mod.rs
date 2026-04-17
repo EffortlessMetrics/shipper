@@ -22,7 +22,7 @@ use crate::state::execution_state as state;
 use crate::types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, Finishability,
     PackageProgress, PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent,
-    ReadinessEvidence, Receipt, Registry, RuntimeOptions,
+    ReadinessEvidence, Receipt, ReconciliationOutcome, Registry, RuntimeOptions,
 };
 use crate::webhook::{self, WebhookEvent};
 
@@ -563,7 +563,7 @@ pub fn run_publish(
         // Track whether cargo publish already succeeded (e.g. from Uploaded state on resume)
         let mut cargo_succeeded = false;
 
-        match progress.state {
+        match progress.state.clone() {
             PackageState::Published | PackageState::Skipped { .. } => {
                 reporter.info(&format!(
                     "{}@{}: already complete ({})",
@@ -579,6 +579,91 @@ pub fn run_publish(
                     p.name, p.version
                 ));
                 cargo_succeeded = true;
+            }
+            PackageState::Ambiguous {
+                message: prior_reason,
+            } => {
+                // Resume-path reconciliation (#99 follow-on). A prior run left
+                // this package in Ambiguous state (reconciliation inconclusive).
+                // Before doing ANY further work, reconcile against the
+                // registry so we never re-upload a crate whose prior upload
+                // may have actually succeeded.
+                reporter.warn(&format!(
+                    "{}@{}: resume found ambiguous state ({}); reconciling against registry",
+                    p.name, p.version, prior_reason
+                ));
+
+                let readiness_config = crate::types::ReadinessConfig {
+                    enabled: effects.readiness_enabled,
+                    ..opts.readiness.clone()
+                };
+
+                event_log.record(PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type: EventType::PublishReconciling {
+                        method: readiness_config.method,
+                    },
+                    package: pkg_label.clone(),
+                });
+
+                let (outcome, _evidence) =
+                    sequential_reconcile(&reg, &p.name, &p.version, &readiness_config);
+
+                event_log.record(PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type: EventType::PublishReconciled {
+                        outcome: outcome.clone(),
+                    },
+                    package: pkg_label.clone(),
+                });
+                event_log.write_to_file(&events_path)?;
+                event_log.clear();
+
+                match outcome {
+                    ReconciliationOutcome::Published { .. } => {
+                        update_state(&mut st, &state_dir, &key, PackageState::Published)?;
+                        reporter.info(&format!(
+                            "{}@{}: reconciled as published on resume (no republish)",
+                            p.name, p.version
+                        ));
+                        continue;
+                    }
+                    ReconciliationOutcome::NotPublished { .. } => {
+                        // Clear the Ambiguous state — the registry confirms
+                        // no prior upload succeeded, so falling through to
+                        // the normal publish flow is safe.
+                        update_state(&mut st, &state_dir, &key, PackageState::Pending)?;
+                        reporter.info(&format!(
+                            "{}@{}: reconciled as not published; proceeding with publish",
+                            p.name, p.version
+                        ));
+                        // fall through to normal flow
+                    }
+                    ReconciliationOutcome::StillUnknown { reason, .. } => {
+                        reporter.error(&format!(
+                            "{}@{}: resume reconciliation still inconclusive: {}",
+                            p.name, p.version, reason
+                        ));
+                        webhook::maybe_send_event(
+                            &opts.webhook,
+                            WebhookEvent::PublishFailed {
+                                plan_id: ws.plan.plan_id.clone(),
+                                package_name: p.name.clone(),
+                                package_version: p.version.clone(),
+                                error_class: format!("{:?}", ErrorClass::Ambiguous),
+                                message: format!(
+                                    "resume reconciliation still inconclusive: {reason}"
+                                ),
+                            },
+                        );
+                        bail!(
+                            "{}@{}: resume reconciliation still inconclusive; operator action required. Prior reason: {}",
+                            p.name,
+                            p.version,
+                            reason
+                        );
+                    }
+                }
             }
             _ => {}
         }
@@ -1129,6 +1214,50 @@ pub(crate) fn init_state(ws: &PlannedWorkspace, state_dir: &Path) -> Result<Exec
 
     state::save_state(state_dir, &st)?;
     Ok(st)
+}
+
+/// Reconcile an ambiguous publish outcome against registry truth (sequential
+/// path mirror of [`crate::engine::parallel::reconcile::reconcile_ambiguous_upload`]).
+///
+/// Returns the same [`ReconciliationOutcome`] enum + accumulated
+/// [`ReadinessEvidence`], wrapping the sequential path's registry client
+/// (`crate::registry::RegistryClient`) rather than the parallel path's
+/// `HttpRegistryClient`. Used by the resume-path branch that handles packages
+/// found in `PackageState::Ambiguous` (#99 follow-on).
+fn sequential_reconcile(
+    reg: &RegistryClient,
+    crate_name: &str,
+    version: &str,
+    config: &crate::types::ReadinessConfig,
+) -> (
+    crate::types::ReconciliationOutcome,
+    Vec<crate::types::ReadinessEvidence>,
+) {
+    let start = Instant::now();
+    match reg.is_version_visible_with_backoff(crate_name, version, config) {
+        Ok((true, evidence)) => (
+            crate::types::ReconciliationOutcome::Published {
+                attempts: evidence.len() as u32,
+                elapsed_ms: start.elapsed().as_millis() as u64,
+            },
+            evidence,
+        ),
+        Ok((false, evidence)) => (
+            crate::types::ReconciliationOutcome::NotPublished {
+                attempts: evidence.len() as u32,
+                elapsed_ms: start.elapsed().as_millis() as u64,
+            },
+            evidence,
+        ),
+        Err(e) => (
+            crate::types::ReconciliationOutcome::StillUnknown {
+                attempts: 0,
+                elapsed_ms: start.elapsed().as_millis() as u64,
+                reason: format!("reconciliation query failed: {e}"),
+            },
+            Vec::new(),
+        ),
+    }
 }
 
 /// Emit a [`EventType::RetryBackoffStarted`] event + a human-readable warn
