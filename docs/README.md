@@ -26,6 +26,7 @@ Task-oriented recipes. Each solves one focused problem.
 - [Inspect state, events, and receipts](how-to/inspect-state-and-receipts.md) — post-hoc inspection ("what happened")
 - [Inspect a stalled or interrupted run](how-to/inspect-a-stalled-run.md) — live triage ("is it alive?")
 - [Run the Recover rehearsal](how-to/run-recover-rehearsal.md) — once-per-RC proof that interrupted releases resume cleanly
+- [Remediate a compromised release](how-to/remediate-a-compromised-release.md) — yank + fix-forward walkthrough (#98)
 
 Operator runbook (promotion to how-to pending): [release-runbook.md](release-runbook.md)
 
