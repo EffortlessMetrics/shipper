@@ -121,38 +121,80 @@ pub fn run_preflight(
     use crate::types::VerifyMode;
 
     // Workspace-level dry-run result (used for Workspace mode)
-    let (workspace_dry_run_passed, workspace_dry_run_output) =
-        if effects.run_dry_run && opts.verify_mode == VerifyMode::Workspace {
-            reporter.info("running workspace dry-run verification...");
-            let dry_run_result = cargo::cargo_publish_dry_run_workspace(
-                workspace_root,
-                &ws.plan.registry.name,
-                opts.allow_dirty,
-                opts.output_lines,
-            );
-            match &dry_run_result {
-                Ok(output) => (
-                    output.exit_code == 0,
-                    format!(
-                        "workspace dry-run: exit_code={}; stdout_tail={:?}; stderr_tail={:?}",
-                        output.exit_code, output.stdout_tail, output.stderr_tail
-                    ),
-                ),
-                Err(err) => (false, format!("workspace dry-run failed: {err:#}")),
+    //
+    // Event-payload handling (#92): the raw dry-run stderr is cargo's
+    // human-facing log with embedded ANSI escapes — historically ~2KB per
+    // event and not useful in a structured log. We now:
+    //   1. Strip ANSI from the full captured output,
+    //   2. Write the full stripped output to a sidecar at
+    //      <state_dir>/preflight_workspace_verify.txt,
+    //   3. Put only a short summary (exit_code + last ~200 chars tail) into
+    //      the event's `output` field, preserving the field shape for
+    //      backward compatibility.
+    let (workspace_dry_run_passed, workspace_dry_run_output) = if effects.run_dry_run
+        && opts.verify_mode == VerifyMode::Workspace
+    {
+        reporter.info("running workspace dry-run verification...");
+        let dry_run_result = cargo::cargo_publish_dry_run_workspace(
+            workspace_root,
+            &ws.plan.registry.name,
+            opts.allow_dirty,
+            opts.output_lines,
+        );
+        match &dry_run_result {
+            Ok(output) => {
+                let passed = output.exit_code == 0;
+                let full_stripped = format!(
+                    "workspace dry-run: exit_code={}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
+                    output.exit_code,
+                    shipper_output_sanitizer::strip_ansi(&output.stdout_tail),
+                    shipper_output_sanitizer::strip_ansi(&output.stderr_tail),
+                );
+                let sidecar_path = state_dir.join("preflight_workspace_verify.txt");
+                if let Some(parent) = sidecar_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(&sidecar_path, &full_stripped) {
+                    reporter.warn(&format!(
+                        "failed to write preflight workspace-verify sidecar at {}: {e}",
+                        sidecar_path.display()
+                    ));
+                } else {
+                    reporter.info(&format!(
+                        "full dry-run output written to {} ({} bytes)",
+                        sidecar_path.display(),
+                        full_stripped.len()
+                    ));
+                }
+                // Slim summary for the event log: exit code + tail of
+                // ANSI-stripped stderr (the interesting signal).
+                let tail_summary = shipper_output_sanitizer::tail_lines(
+                    &shipper_output_sanitizer::strip_ansi(&output.stderr_tail),
+                    6,
+                );
+                let summary = format!(
+                    "workspace dry-run: exit_code={}; sidecar={}; stderr_tail_summary={:?}",
+                    output.exit_code,
+                    sidecar_path.display(),
+                    tail_summary
+                );
+                (passed, summary)
             }
-        } else if !effects.run_dry_run || opts.verify_mode == VerifyMode::None {
-            reporter.info("skipping dry-run (policy, --no-verify, or verify_mode=none)");
-            (
-                true,
-                "workspace dry-run skipped (policy, --no-verify, or verify_mode=none)".to_string(),
-            )
-        } else {
-            // Package mode — handled per-package below
-            (
-                true,
-                "workspace dry-run skipped (verify_mode=package)".to_string(),
-            )
-        };
+            Err(err) => (false, format!("workspace dry-run failed: {err:#}")),
+        }
+    } else if !effects.run_dry_run || opts.verify_mode == VerifyMode::None {
+        reporter.info("skipping dry-run (policy, --no-verify, or verify_mode=none)");
+        (
+            true,
+            "workspace dry-run skipped (policy, --no-verify, or verify_mode=none)".to_string(),
+        )
+    } else {
+        // Package mode — handled per-package below
+        (
+            true,
+            "workspace dry-run skipped (verify_mode=package)".to_string(),
+        )
+    };
 
     event_log.record(PublishEvent {
         timestamp: Utc::now(),
