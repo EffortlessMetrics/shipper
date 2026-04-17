@@ -210,6 +210,131 @@ pub(super) fn publish_package(
         ..opts.readiness.clone()
     };
 
+    // Resume-path reconciliation (#99 follow-on): if a prior run left this
+    // package in PackageState::Ambiguous, reconcile against registry truth
+    // BEFORE entering the retry loop so we never re-upload a crate whose
+    // prior upload may have actually succeeded.
+    let ambiguous_prior: Option<String> = {
+        let state = st.lock().unwrap();
+        state.packages.get(&key).and_then(|pr| {
+            if let PackageState::Ambiguous { message } = &pr.state {
+                Some(message.clone())
+            } else {
+                None
+            }
+        })
+    };
+
+    if let Some(prior_reason) = ambiguous_prior {
+        {
+            let mut rep = reporter.lock().unwrap();
+            rep.warn(&format!(
+                "{}@{}: resume found ambiguous state ({}); reconciling against registry",
+                p.name, p.version, prior_reason
+            ));
+        }
+        {
+            let mut log = event_log.lock().unwrap();
+            log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::PublishReconciling {
+                    method: readiness_config.method,
+                },
+                package: pkg_label.clone(),
+            });
+        }
+
+        let (outcome, _evidence) =
+            reconcile_ambiguous_upload(reg, &p.name, &p.version, &readiness_config);
+
+        {
+            let mut log = event_log.lock().unwrap();
+            log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::PublishReconciled {
+                    outcome: outcome.clone(),
+                },
+                package: pkg_label.clone(),
+            });
+            let _ = log.write_to_file(events_path);
+            log.clear();
+        }
+
+        match outcome {
+            ReconciliationOutcome::Published { .. } => {
+                {
+                    let mut state = st.lock().unwrap();
+                    update_state_locked(&mut state, &key, PackageState::Published);
+                    let _ = state::save_state(state_dir, &state);
+                }
+                {
+                    let mut rep = reporter.lock().unwrap();
+                    rep.info(&format!(
+                        "{}@{}: reconciled as published on resume (no republish)",
+                        p.name, p.version
+                    ));
+                }
+                return PackagePublishResult {
+                    result: Ok(PackageReceipt {
+                        name: p.name.clone(),
+                        version: p.version.clone(),
+                        attempts: 0,
+                        state: PackageState::Published,
+                        started_at,
+                        finished_at: Utc::now(),
+                        duration_ms: start_instant.elapsed().as_millis(),
+                        evidence: PackageEvidence {
+                            attempts: vec![],
+                            readiness_checks: vec![],
+                        },
+                    }),
+                };
+            }
+            ReconciliationOutcome::NotPublished { .. } => {
+                {
+                    let mut state = st.lock().unwrap();
+                    update_state_locked(&mut state, &key, PackageState::Pending);
+                    let _ = state::save_state(state_dir, &state);
+                }
+                {
+                    let mut rep = reporter.lock().unwrap();
+                    rep.info(&format!(
+                        "{}@{}: reconciled as not published; proceeding with publish",
+                        p.name, p.version
+                    ));
+                }
+                // Fall through to the normal retry loop below.
+            }
+            ReconciliationOutcome::StillUnknown { reason, .. } => {
+                {
+                    let mut rep = reporter.lock().unwrap();
+                    rep.error(&format!(
+                        "{}@{}: resume reconciliation still inconclusive: {}",
+                        p.name, p.version, reason
+                    ));
+                }
+                maybe_send_event(
+                    &opts.webhook,
+                    WebhookEvent::PublishFailed {
+                        plan_id: ws.plan.plan_id.clone(),
+                        package_name: p.name.clone(),
+                        package_version: p.version.clone(),
+                        error_class: format!("{:?}", ErrorClass::Ambiguous),
+                        message: format!("resume reconciliation still inconclusive: {reason}"),
+                    },
+                );
+                return PackagePublishResult {
+                    result: Err(anyhow::anyhow!(
+                        "{}@{}: resume reconciliation still inconclusive; operator action required. Prior reason: {}",
+                        p.name,
+                        p.version,
+                        reason
+                    )),
+                };
+            }
+        }
+    }
+
     // Registry-aware backoff (#94): lazy-cached answer to "is this a brand-new
     // crate?" — only consulted when a retry's error message looks like a
     // rate-limit signal. Lazy so the happy path costs zero extra registry
