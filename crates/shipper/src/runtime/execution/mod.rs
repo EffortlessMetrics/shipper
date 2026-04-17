@@ -58,6 +58,16 @@ pub fn short_state(st: &PackageState) -> &'static str {
 }
 
 /// Classify a cargo failure output into retry semantics for publish decisioning.
+///
+/// **This is a hint, not authoritative truth.** The returned [`ErrorClass`]
+/// is produced by pattern-matching on cargo's human-facing stdout/stderr —
+/// a surface that is explicitly not a stable machine protocol. The retry
+/// loop consumes this classification as fast-path input, but the
+/// authoritative resolution for an [`ErrorClass::Ambiguous`] outcome comes
+/// from querying the registry (sparse index + API) via the reconciliation
+/// flow — never from the cargo text alone. See the `ErrorClass` rustdoc
+/// and `shipper::engine::parallel::reconcile` for the "hint vs truth"
+/// contract.
 pub fn classify_cargo_failure(stderr: &str, stdout: &str) -> (ErrorClass, String) {
     let outcome = shipper_cargo_failure::classify_publish_failure(stderr, stdout);
     let class = match outcome.class {

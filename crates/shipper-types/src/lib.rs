@@ -924,14 +924,36 @@ pub enum PackageState {
 /// let ambiguous = ErrorClass::Ambiguous;
 /// ```
 ///
-/// # Classification Heuristics
+/// # Classification is a hint, not truth
+///
+/// This enum is produced by parsing cargo's stdout/stderr — a human-facing
+/// log that is explicitly not a stable machine protocol. Pattern-matching on
+/// cargo text gives Shipper a fast first-pass signal, but **it must never be
+/// treated as the final word** on what actually happened:
+///
+/// - [`ErrorClass::Permanent`] and [`ErrorClass::Retryable`] are still
+///   hints — they drive retry scheduling, but every retry attempt re-checks
+///   the registry before and after the next `cargo publish`.
+/// - [`ErrorClass::Ambiguous`] is the dangerous case. Cargo's publish flow
+///   uploads to the registry first and polls the index afterwards; the poll
+///   can time out without affecting the upload. So a non-zero cargo exit
+///   can coexist with a successful upload. Ambiguous outcomes MUST be
+///   reconciled against registry truth before any further action — never
+///   blind-retry. See [`ReconciliationOutcome`] and the reconciliation flow
+///   in `shipper::engine::parallel::reconcile`.
+///
+/// The authoritative classification for `Ambiguous` outcomes comes from
+/// **querying the registry** (sparse index + API) after the fact. Cargo
+/// stderr is a signal; the registry is the source of truth.
+///
+/// # Classification Heuristics (hints)
 ///
 /// Shipper uses various heuristics to classify errors:
 /// - HTTP 429 (Too Many Requests) → Retryable
 /// - HTTP 401/403 (Auth errors) → Permanent
 /// - HTTP 409 (Version conflict) → Permanent
 /// - Network timeouts → Retryable
-/// - Unknown errors → Ambiguous
+/// - Unknown errors → Ambiguous (triggers registry reconciliation)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorClass {
