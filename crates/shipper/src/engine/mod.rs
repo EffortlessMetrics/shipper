@@ -759,6 +759,9 @@ pub fn run_publish(
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             });
             continue;
         }
@@ -1067,6 +1070,9 @@ pub fn run_publish(
                         attempts: attempt_evidence,
                         readiness_checks: readiness_evidence,
                     },
+                    compromised_at: None,
+                    compromised_by: None,
+                    superseded_by: None,
                 });
                 return Err(anyhow::anyhow!("{}@{}: failed: {}", p.name, p.version, msg));
             }
@@ -1088,6 +1094,9 @@ pub fn run_publish(
                 attempts: attempt_evidence,
                 readiness_checks: readiness_evidence,
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         });
     }
 
@@ -4419,6 +4428,9 @@ mod tests {
                             delay_before: Duration::from_millis(100),
                         }],
                     },
+                    compromised_at: None,
+                    compromised_by: None,
+                    superseded_by: None,
                 },
                 PackageReceipt {
                     name: "beta".to_string(),
@@ -4434,6 +4446,9 @@ mod tests {
                         attempts: vec![],
                         readiness_checks: vec![],
                     },
+                    compromised_at: None,
+                    compromised_by: None,
+                    superseded_by: None,
                 },
             ],
             event_log_path: PathBuf::from(".shipper/events.jsonl"),
@@ -6138,3 +6153,6 @@ mod tests {
 
 /// Wave-based parallel publishing engine.
 pub mod parallel;
+
+/// Plan-yank: reverse-topological containment plan from a receipt (#98 PR 2).
+pub mod plan_yank;

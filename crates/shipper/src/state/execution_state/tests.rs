@@ -55,6 +55,9 @@ fn sample_receipt() -> Receipt {
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         }],
         event_log_path: PathBuf::from(".shipper/events.jsonl"),
         git_context: None,
@@ -852,6 +855,9 @@ fn receipt_with_high_attempt_count() {
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         }],
         ..sample_receipt()
     };
@@ -926,6 +932,9 @@ fn deterministic_receipt() -> Receipt {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             },
             PackageReceipt {
                 name: "beta".to_string(),
@@ -942,6 +951,9 @@ fn deterministic_receipt() -> Receipt {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             },
         ],
         event_log_path: PathBuf::from(".shipper/events.jsonl"),
@@ -1148,6 +1160,9 @@ fn snapshot_receipt_all_failed() {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             },
             PackageReceipt {
                 name: "utils".to_string(),
@@ -1164,6 +1179,9 @@ fn snapshot_receipt_all_failed() {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             },
         ],
         event_log_path: PathBuf::from(".shipper/events.jsonl"),
@@ -1316,6 +1334,9 @@ mod proptests {
                         attempts: vec![],
                         readiness_checks: vec![],
                     },
+                    compromised_at: None,
+                    compromised_by: None,
+                    superseded_by: None,
                 }
             })
     }
@@ -1604,6 +1625,9 @@ fn receipt_all_fields_individually_verified_after_roundtrip() {
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         }],
         event_log_path: PathBuf::from("custom/events.jsonl"),
         git_context: Some(shipper_types::GitContext {
@@ -1727,6 +1751,9 @@ fn receipt_with_evidence_data_roundtrip() {
                     delay_before: std::time::Duration::from_millis(500),
                 }],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         }],
         ..sample_receipt()
     };
@@ -2078,6 +2105,9 @@ fn snapshot_receipt_with_git_context() {
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         }],
         event_log_path: PathBuf::from(".shipper/events.jsonl"),
         git_context: Some(shipper_types::GitContext {
@@ -2146,6 +2176,9 @@ fn snapshot_receipt_with_evidence() {
                     delay_before: std::time::Duration::from_millis(500),
                 }],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         }],
         event_log_path: PathBuf::from(".shipper/events.jsonl"),
         git_context: None,
@@ -2342,6 +2375,9 @@ mod proptests_extended {
                         attempts: vec![],
                         readiness_checks: vec![],
                     },
+                                    compromised_at: None,
+                    compromised_by: None,
+                    superseded_by: None,
                 })
                 .collect();
 

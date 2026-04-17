@@ -77,6 +77,9 @@ fn make_package_receipt(name: &str, version: &str, state: PackageState) -> Packa
             attempts: vec![],
             readiness_checks: vec![],
         },
+        compromised_at: None,
+        compromised_by: None,
+        superseded_by: None,
     }
 }
 
@@ -1014,6 +1017,9 @@ fn make_deterministic_package_receipt(
             attempts: vec![],
             readiness_checks: vec![],
         },
+        compromised_at: None,
+        compromised_by: None,
+        superseded_by: None,
     }
 }
 
