@@ -1120,6 +1120,9 @@ pub struct ExecutionState {
 ///         attempts: vec![],
 ///         readiness_checks: vec![],
 ///     },
+/// ///     compromised_at: None,
+///     compromised_by: None,
+///     superseded_by: None,
 /// };
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1132,6 +1135,27 @@ pub struct PackageReceipt {
     pub finished_at: DateTime<Utc>,
     pub duration_ms: u128,
     pub evidence: PackageEvidence,
+
+    // ── Remediate pillar (#98) — compromised-release tracking ──
+    // All three fields are additive Options; existing receipts read back
+    // cleanly without migration. Shipper populates them via `shipper yank`
+    // / `shipper plan-yank --mark-compromised` (PR 2) and
+    // `shipper fix-forward` (PR 3). Tooling can read them to construct
+    // containment and fix-forward plans.
+    /// When this specific package+version was marked compromised. `None`
+    /// if the package is healthy (the default for every published receipt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compromised_at: Option<DateTime<Utc>>,
+    /// Operator-supplied reason / attribution for the compromise marker.
+    /// Often a CVE ID, an incident ticket, or a short free-form tag.
+    /// Example: `"CVE-2026-0001: token leak via debug impl"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compromised_by: Option<String>,
+    /// If a fix-forward release superseded this version, the successor
+    /// version string (e.g., `"0.3.1"`). Populated by `shipper fix-forward`
+    /// (PR 3); `None` before that PR lands OR when no fix release exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
 }
 
 /// Evidence collected during package publishing.
@@ -2097,6 +2121,9 @@ mod tests {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             }],
             event_log_path: PathBuf::from(".shipper/events.jsonl"),
             git_context: None,
@@ -2174,6 +2201,9 @@ mod tests {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             })
             .collect();
         let receipt = Receipt {
@@ -2898,6 +2928,9 @@ mod tests {
                             delay_before: Duration::from_secs(2),
                         }],
                     },
+                    compromised_at: None,
+                    compromised_by: None,
+                    superseded_by: None,
                 }],
                 event_log_path: PathBuf::from(".shipper/events.jsonl"),
                 git_context: Some(GitContext {
@@ -3115,6 +3148,9 @@ mod tests {
                                 delay_before: Duration::from_secs(1),
                             }],
                         },
+                        compromised_at: None,
+                        compromised_by: None,
+                        superseded_by: None,
                     },
                     PackageReceipt {
                         name: "api-server".to_string(),
@@ -3159,6 +3195,9 @@ mod tests {
                             ],
                             readiness_checks: vec![],
                         },
+                        compromised_at: None,
+                        compromised_by: None,
+                        superseded_by: None,
                     },
                     PackageReceipt {
                         name: "old-compat".to_string(),
@@ -3174,6 +3213,9 @@ mod tests {
                             attempts: vec![],
                             readiness_checks: vec![],
                         },
+                        compromised_at: None,
+                        compromised_by: None,
+                        superseded_by: None,
                     },
                 ],
                 event_log_path: PathBuf::from(".shipper/events.jsonl"),
@@ -3215,6 +3257,9 @@ mod tests {
                         attempts: vec![],
                         readiness_checks: vec![],
                     },
+                    compromised_at: None,
+                    compromised_by: None,
+                    superseded_by: None,
                 }],
                 event_log_path: PathBuf::from(".shipper/events.jsonl"),
                 git_context: None,
@@ -3262,6 +3307,9 @@ mod tests {
                             }],
                             readiness_checks: vec![],
                         },
+                        compromised_at: None,
+                        compromised_by: None,
+                        superseded_by: None,
                     },
                     PackageReceipt {
                         name: "dependent-crate".to_string(),
@@ -3277,6 +3325,9 @@ mod tests {
                             attempts: vec![],
                             readiness_checks: vec![],
                         },
+                        compromised_at: None,
+                        compromised_by: None,
+                        superseded_by: None,
                     },
                 ],
                 event_log_path: PathBuf::from(".shipper/events.jsonl"),
@@ -4292,6 +4343,9 @@ mod tests {
                         attempts: vec![],
                         readiness_checks: vec![],
                     },
+                                    compromised_at: None,
+                    compromised_by: None,
+                    superseded_by: None,
                 };
                 let json = serde_json::to_string(&receipt).unwrap();
                 let parsed: PackageReceipt = serde_json::from_str(&json).unwrap();
@@ -4322,6 +4376,9 @@ mod tests {
                             attempts: vec![],
                             readiness_checks: vec![],
                         },
+                                            compromised_at: None,
+                        compromised_by: None,
+                        superseded_by: None,
                     })
                     .collect();
                 let receipt = Receipt {
@@ -4597,6 +4654,9 @@ mod tests {
                         attempts: vec![],
                         readiness_checks: vec![],
                     },
+                    compromised_at: None,
+                    compromised_by: None,
+                    superseded_by: None,
                 })
                 .collect();
 
@@ -4937,6 +4997,9 @@ mod tests {
                                 attempts: vec![],
                                 readiness_checks: vec![],
                             },
+                                                    compromised_at: None,
+                            compromised_by: None,
+                            superseded_by: None,
                         }
                     })
                     .collect();
@@ -5444,6 +5507,9 @@ mod tests {
                             attempts: vec![],
                             readiness_checks: vec![],
                         },
+                                            compromised_at: None,
+                        compromised_by: None,
+                        superseded_by: None,
                     })
                     .collect();
 

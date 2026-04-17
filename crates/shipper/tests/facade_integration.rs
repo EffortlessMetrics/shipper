@@ -183,6 +183,9 @@ fn sample_receipt(plan_id: &str, pkg_names: &[&str]) -> shipper::types::Receipt 
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         })
         .collect();
 
@@ -1242,6 +1245,9 @@ fn receipt_mixed_outcomes_through_file_store() {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             },
             PackageReceipt {
                 name: "mid".to_string(),
@@ -1258,6 +1264,9 @@ fn receipt_mixed_outcomes_through_file_store() {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             },
             PackageReceipt {
                 name: "top".to_string(),
@@ -1273,6 +1282,9 @@ fn receipt_mixed_outcomes_through_file_store() {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             },
         ],
         event_log_path: std::path::PathBuf::from(".shipper/events.jsonl"),
@@ -2097,6 +2109,9 @@ fn receipt_all_fields_persisted_and_roundtrip() {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             },
             PackageReceipt {
                 name: "beta".to_string(),
@@ -2110,6 +2125,9 @@ fn receipt_all_fields_persisted_and_roundtrip() {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             },
         ],
         event_log_path: std::path::PathBuf::from(".shipper/events.jsonl"),
