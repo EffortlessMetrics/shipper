@@ -1449,6 +1449,20 @@ pub enum EventType {
         drift: StateEventDrift,
     },
 
+    // Retry visibility (#91) — emitted immediately before Shipper sleeps on a
+    // retry backoff. `attempt` is the just-failed attempt number (1-indexed),
+    // so the next attempt will be `attempt + 1` of `max_attempts`. `reason`
+    // classifies why the retry is happening; `message` is the one-line
+    // human-facing description (typically from cargo-failure classification).
+    RetryBackoffStarted {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        next_attempt_at: DateTime<Utc>,
+        reason: ErrorClass,
+        message: String,
+    },
+
     // Readiness events
     ReadinessStarted {
         method: ReadinessMethod,
