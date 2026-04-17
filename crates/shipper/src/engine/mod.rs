@@ -1257,7 +1257,7 @@ pub(crate) fn init_state(ws: &PlannedWorkspace, state_dir: &Path) -> Result<Exec
 }
 
 /// Reconcile an ambiguous publish outcome against registry truth (sequential
-/// path mirror of [`crate::engine::parallel::reconcile::reconcile_ambiguous_upload`]).
+/// path mirror of `engine::parallel::reconcile::reconcile_ambiguous_upload`).
 ///
 /// Returns the same [`ReconciliationOutcome`] enum + accumulated
 /// [`ReadinessEvidence`], wrapping the sequential path's registry client
