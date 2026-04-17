@@ -19,6 +19,7 @@ Commands:
   clean            Clean state files (state.json, receipt.json, events.jsonl)
   yank             Yank a crate@version from the registry — containment, not undo
   plan-yank        Generate a reverse-topological yank plan from a receipt (#98 PR 2)
+  fix-forward      Generate a fix-forward supersession plan from a compromised receipt (#98 PR 3)
   config           Configuration file management
   completion       Generate shell completion scripts for the specified shell
   help             Print this message or the help of the given subcommand(s)
