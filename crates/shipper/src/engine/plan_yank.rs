@@ -20,7 +20,7 @@
 //! - Filter packages (all published, or only those with
 //!   `compromised_at = Some(_)`)
 //! - Return the entries in reverse-topological order
-//! - Provide both a structured [`YankPlan`] API and a text renderer
+//! - Provide both a structured `YankPlan` API and a text renderer
 //!
 //! **Does not (yet):**
 //! - Execute the plan — that's `shipper yank` (already landed) running

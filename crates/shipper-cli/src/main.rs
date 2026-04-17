@@ -723,14 +723,12 @@ fn main() -> Result<()> {
                     .join(shipper::state::execution_state::RECEIPT_FILE)
             });
 
-            let receipt = plan_yank::load_receipt_from_path(&receipt_path).with_context(
-                || {
-                    "plan-yank needs a readable receipt; default path is \
-                     <state_dir>/receipt.json. Pass --from-receipt <path> to \
-                     override."
-                        .to_string()
-                },
-            )?;
+            let receipt = plan_yank::load_receipt_from_path(&receipt_path).with_context(|| {
+                "plan-yank needs a readable receipt; default path is \
+                 <state_dir>/receipt.json. Pass --from-receipt <path> to \
+                 override."
+                    .to_string()
+            })?;
 
             let filter = if compromised_only {
                 PlanYankFilter::CompromisedOnly
