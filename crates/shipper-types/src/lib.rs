@@ -940,6 +940,43 @@ pub enum ErrorClass {
     Ambiguous,
 }
 
+/// Report of drift between the authoritative event log and the projected state.
+///
+/// Per [`docs/INVARIANTS.md`](https://github.com/EffortlessMetrics/shipper/blob/main/docs/INVARIANTS.md),
+/// `events.jsonl` is the authoritative source of truth and `state.json` is a
+/// projection derived from it. They should always agree about which packages
+/// were published. A drift is a bug — this struct captures which side claims
+/// what, so the end-of-run consistency check can surface it loudly rather
+/// than silently corrupting resume.
+///
+/// A drift with both lists empty means the projection matches the truth and
+/// [`StateEventDrift::is_consistent`] returns `true`.
+///
+/// Labels use the `name@version` format consistent with the rest of the
+/// event stream (e.g., `shipper-types@0.3.0-rc.1`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StateEventDrift {
+    /// Packages that have a `PackagePublished` event in `events.jsonl` but
+    /// are NOT marked `PackageState::Published` in `state.json`.
+    ///
+    /// This is the dangerous direction: resume would re-attempt publishing
+    /// packages that already uploaded successfully.
+    pub in_events_only: Vec<String>,
+    /// Packages that are marked `PackageState::Published` in `state.json`
+    /// but have NO `PackagePublished` event in `events.jsonl`.
+    ///
+    /// This shouldn't happen if events are appended before state is
+    /// written; if it does, something bypassed the event log.
+    pub in_state_only: Vec<String>,
+}
+
+impl StateEventDrift {
+    /// Returns `true` iff no drift was detected (both sides agree).
+    pub fn is_consistent(&self) -> bool {
+        self.in_events_only.is_empty() && self.in_state_only.is_empty()
+    }
+}
+
 /// Outcome of reconciling an ambiguous publish attempt against registry truth.
 ///
 /// When `cargo publish` exits with an ambiguous class (e.g., upload succeeded
@@ -1405,6 +1442,11 @@ pub enum EventType {
     },
     PublishReconciled {
         outcome: ReconciliationOutcome,
+    },
+
+    // End-of-run consistency check (events-as-truth invariant enforcement; #93)
+    StateEventDriftDetected {
+        drift: StateEventDrift,
     },
 
     // Readiness events
