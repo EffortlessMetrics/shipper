@@ -41,6 +41,64 @@ pub(super) struct PackagePublishResult {
     pub(super) result: anyhow::Result<PackageReceipt>,
 }
 
+/// Emit a [`EventType::RetryBackoffStarted`] event + a human-readable warn
+/// line through the Reporter, then `thread::sleep(delay)`. Used at every
+/// retry-backoff site in the publish loop so operators never stare at a
+/// silent CI log during the wait window. See #91.
+#[allow(clippy::too_many_arguments)]
+fn emit_retry_backoff(
+    event_log: &Arc<Mutex<events::EventLog>>,
+    events_path: &Path,
+    reporter: &Arc<Mutex<dyn Reporter + Send>>,
+    pkg_label: &str,
+    pkg_name: &str,
+    pkg_version: &str,
+    attempt: u32,
+    max_attempts: u32,
+    delay: std::time::Duration,
+    reason: ErrorClass,
+    message: &str,
+) {
+    let next_attempt_at =
+        Utc::now() + chrono::Duration::from_std(delay).unwrap_or_else(|_| chrono::Duration::zero());
+
+    // Record the event (flushed with the next batch of events)
+    {
+        let mut log = event_log.lock().unwrap();
+        log.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::RetryBackoffStarted {
+                attempt,
+                max_attempts,
+                delay_ms: delay.as_millis() as u64,
+                next_attempt_at,
+                reason: reason.clone(),
+                message: message.to_string(),
+            },
+            package: pkg_label.to_string(),
+        });
+        let _ = log.write_to_file(events_path);
+        log.clear();
+    }
+
+    // Human line: reason + attempt count + duration
+    {
+        let mut rep = reporter.lock().unwrap();
+        rep.warn(&format!(
+            "{}@{}: {} ({:?}); next attempt in {} (attempt {}/{})",
+            pkg_name,
+            pkg_version,
+            message,
+            reason,
+            humantime::format_duration(delay),
+            attempt.saturating_add(1),
+            max_attempts,
+        ));
+    }
+
+    thread::sleep(delay);
+}
+
 /// Publish a single package with retries (parallel-safe version)
 #[allow(clippy::too_many_arguments)]
 pub(super) fn publish_package(
@@ -452,16 +510,19 @@ pub(super) fn publish_package(
                             opts.retry_strategy,
                             opts.retry_jitter,
                         );
-                        {
-                            let mut rep = reporter.lock().unwrap();
-                            rep.warn(&format!(
-                                "{}@{}: retrying in {}",
-                                p.name,
-                                p.version,
-                                humantime::format_duration(delay)
-                            ));
-                        }
-                        thread::sleep(delay);
+                        emit_retry_backoff(
+                            event_log,
+                            events_path,
+                            reporter,
+                            &pkg_label,
+                            &p.name,
+                            &p.version,
+                            attempt,
+                            opts.max_attempts,
+                            delay,
+                            class.clone(),
+                            &msg,
+                        );
                     }
                 }
                 continue;
@@ -518,7 +579,9 @@ pub(super) fn publish_package(
 
                     break;
                 } else {
-                    last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
+                    let message =
+                        "published locally, but version not observed on registry within timeout";
+                    last_err = Some((ErrorClass::Ambiguous, message.to_string()));
                     let delay = backoff_delay(
                         opts.base_delay,
                         opts.max_delay,
@@ -526,11 +589,24 @@ pub(super) fn publish_package(
                         opts.retry_strategy,
                         opts.retry_jitter,
                     );
-                    thread::sleep(delay);
+                    emit_retry_backoff(
+                        event_log,
+                        events_path,
+                        reporter,
+                        &pkg_label,
+                        &p.name,
+                        &p.version,
+                        attempt,
+                        opts.max_attempts,
+                        delay,
+                        ErrorClass::Ambiguous,
+                        message,
+                    );
                 }
             }
             Err(_) => {
-                last_err = Some((ErrorClass::Ambiguous, "readiness check failed".into()));
+                let message = "readiness check failed";
+                last_err = Some((ErrorClass::Ambiguous, message.to_string()));
                 let delay = backoff_delay(
                     opts.base_delay,
                     opts.max_delay,
@@ -538,7 +614,19 @@ pub(super) fn publish_package(
                     opts.retry_strategy,
                     opts.retry_jitter,
                 );
-                thread::sleep(delay);
+                emit_retry_backoff(
+                    event_log,
+                    events_path,
+                    reporter,
+                    &pkg_label,
+                    &p.name,
+                    &p.version,
+                    attempt,
+                    opts.max_attempts,
+                    delay,
+                    ErrorClass::Ambiguous,
+                    message,
+                );
             }
         }
     }

@@ -772,13 +772,19 @@ pub fn run_publish(
                                 opts.retry_strategy,
                                 opts.retry_jitter,
                             );
-                            reporter.warn(&format!(
-                                "{}@{}: retrying in {}",
-                                p.name,
-                                p.version,
-                                humantime::format_duration(delay)
-                            ));
-                            thread::sleep(delay);
+                            emit_retry_backoff_event(
+                                &mut event_log,
+                                &events_path,
+                                reporter,
+                                &pkg_label,
+                                &p.name,
+                                &p.version,
+                                attempt,
+                                opts.max_attempts,
+                                delay,
+                                class.clone(),
+                                &msg,
+                            )?;
                         }
                     }
                     continue;
@@ -825,7 +831,9 @@ pub fn run_publish(
 
                 break;
             } else {
-                last_err = Some((ErrorClass::Ambiguous, "publish succeeded locally, but version not observed on registry within timeout".into()));
+                let message =
+                    "published locally, but version not observed on registry within timeout";
+                last_err = Some((ErrorClass::Ambiguous, message.to_string()));
                 let delay = backoff_delay(
                     opts.base_delay,
                     opts.max_delay,
@@ -833,7 +841,19 @@ pub fn run_publish(
                     opts.retry_strategy,
                     opts.retry_jitter,
                 );
-                thread::sleep(delay);
+                emit_retry_backoff_event(
+                    &mut event_log,
+                    &events_path,
+                    reporter,
+                    &pkg_label,
+                    &p.name,
+                    &p.version,
+                    attempt,
+                    opts.max_attempts,
+                    delay,
+                    ErrorClass::Ambiguous,
+                    message,
+                )?;
             }
         }
 
@@ -1093,6 +1113,59 @@ pub(crate) fn init_state(ws: &PlannedWorkspace, state_dir: &Path) -> Result<Exec
 
     state::save_state(state_dir, &st)?;
     Ok(st)
+}
+
+/// Emit a [`EventType::RetryBackoffStarted`] event + a human-readable warn
+/// line, then `thread::sleep(delay)`. Used at every retry-backoff site in the
+/// sequential publish loop so operators never stare at a silent CI log during
+/// the wait window. See #91. (The parallel path has a mirror helper in
+/// `engine::parallel::publish::emit_retry_backoff` that handles its
+/// `Arc<Mutex<_>>` wrapping.)
+#[allow(clippy::too_many_arguments)]
+fn emit_retry_backoff_event(
+    event_log: &mut events::EventLog,
+    events_path: &Path,
+    reporter: &mut dyn Reporter,
+    pkg_label: &str,
+    pkg_name: &str,
+    pkg_version: &str,
+    attempt: u32,
+    max_attempts: u32,
+    delay: std::time::Duration,
+    reason: ErrorClass,
+    message: &str,
+) -> Result<()> {
+    let next_attempt_at =
+        Utc::now() + chrono::Duration::from_std(delay).unwrap_or_else(|_| chrono::Duration::zero());
+
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RetryBackoffStarted {
+            attempt,
+            max_attempts,
+            delay_ms: delay.as_millis() as u64,
+            next_attempt_at,
+            reason: reason.clone(),
+            message: message.to_string(),
+        },
+        package: pkg_label.to_string(),
+    });
+    event_log.write_to_file(events_path)?;
+    event_log.clear();
+
+    reporter.warn(&format!(
+        "{}@{}: {} ({:?}); next attempt in {} (attempt {}/{})",
+        pkg_name,
+        pkg_version,
+        message,
+        reason,
+        humantime::format_duration(delay),
+        attempt.saturating_add(1),
+        max_attempts,
+    ));
+
+    thread::sleep(delay);
+    Ok(())
 }
 
 fn verify_published(
@@ -2208,7 +2281,7 @@ mod tests {
                 let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
                 assert!(matches!(receipt.packages[0].state, PackageState::Published));
                 assert_eq!(receipt.packages[0].attempts, 2);
-                assert!(reporter.warns.iter().any(|w| w.contains("retrying in")));
+                assert!(reporter.warns.iter().any(|w| w.contains("next attempt in")));
                 server.join();
             },
         );
