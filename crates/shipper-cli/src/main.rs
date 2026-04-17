@@ -170,6 +170,23 @@ struct Cli {
     #[arg(long, global = true)]
     resume_from: Option<String>,
 
+    /// Name of a registry (from `[[registries]]` in `.shipper.toml`) to
+    /// rehearse the publish against before live dispatch.
+    ///
+    /// See issue #97. Plumbed through today; phase-2 execution (actual
+    /// publish to the rehearsal registry + install/smoke checks + live
+    /// dispatch gate) lands in a follow-on PR.
+    #[arg(long, global = true)]
+    rehearsal_registry: Option<String>,
+
+    /// Skip rehearsal even if `.shipper.toml` enables it.
+    ///
+    /// Use with caution — rehearsal (once fully implemented under #97)
+    /// is the proof boundary between "we built it" and "we verified it
+    /// actually resolves from a registry." Bypassing it should be rare.
+    #[arg(long, global = true)]
+    skip_rehearsal: bool,
+
     /// Output format: text (default) or json
     #[arg(long, default_value = "text", value_parser = ["text", "json"], global = true)]
     format: String,
@@ -427,6 +444,8 @@ fn main() -> Result<()> {
         }),
         all_registries: cli.all_registries,
         resume_from: cli.resume_from.clone(),
+        rehearsal_registry: cli.rehearsal_registry.clone(),
+        skip_rehearsal: cli.skip_rehearsal,
     };
 
     // Merge CLI overrides with config (or defaults if no config)
@@ -2048,6 +2067,7 @@ mode = "fast"
             webhook: shipper::config::WebhookConfig::default(),
             encryption: shipper::config::EncryptionConfigInner::default(),
             storage: shipper::config::StorageConfigInner::default(),
+            rehearsal: shipper::config::RehearsalConfig::default(),
         };
 
         // CLI overrides some values, leaves others as None

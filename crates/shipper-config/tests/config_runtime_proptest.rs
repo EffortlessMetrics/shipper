@@ -262,6 +262,7 @@ fn arb_shipper_config() -> impl Strategy<Value = ShipperConfig> {
                     webhook,
                     encryption,
                     storage: Default::default(),
+                    rehearsal: Default::default(),
                 }
             },
         )
@@ -372,6 +373,8 @@ fn arb_cli_overrides() -> impl Strategy<Value = CliOverrides> {
                     registries: None,
                     all_registries: false,
                     resume_from: None,
+                    rehearsal_registry: None,
+                    skip_rehearsal: false,
                 }
             },
         )

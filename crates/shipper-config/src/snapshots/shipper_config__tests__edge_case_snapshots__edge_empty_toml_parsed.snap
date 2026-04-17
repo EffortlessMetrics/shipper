@@ -76,4 +76,8 @@ ShipperConfig {
         access_key_id: None,
         secret_access_key: None,
     },
+    rehearsal: RehearsalConfig {
+        enabled: false,
+        registry: None,
+    },
 }

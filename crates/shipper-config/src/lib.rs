@@ -337,6 +337,43 @@ pub struct ShipperConfig {
     /// Storage configuration for cloud storage backends
     #[serde(default)]
     pub storage: StorageConfigInner,
+
+    /// Rehearsal registry configuration — opt-in phase-2 proof before live
+    /// dispatch. See [issue #97](https://github.com/EffortlessMetrics/shipper/issues/97).
+    ///
+    /// This field parses the `[rehearsal]` TOML section. It is wired through
+    /// to CLI overrides but not yet consumed by the engine — follow-on PRs
+    /// under #97 add the phase-2 execution and the gate that refuses live
+    /// dispatch unless rehearsal succeeded for the same plan_id.
+    #[serde(default)]
+    pub rehearsal: RehearsalConfig,
+}
+
+/// Rehearsal registry configuration.
+///
+/// When enabled, Shipper will (in a future PR under [#97](https://github.com/EffortlessMetrics/shipper/issues/97))
+/// run phase-2 proof before live dispatch: publish packaged artifacts to
+/// the named alternate registry, run install/smoke checks, and only then
+/// allow the live `cargo publish` to crates.io (or the target registry).
+///
+/// # Example `.shipper.toml`
+///
+/// ```toml
+/// [rehearsal]
+/// enabled = true
+/// registry = "kellnr-local"  # name must match an entry in [[registries]]
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RehearsalConfig {
+    /// If `true`, rehearsal runs before live dispatch. Default `false`
+    /// (opt-in until the phase-2 execution PR lands).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Name of the registry (declared under `[[registries]]`) to use for
+    /// rehearsal. Must differ from the live target registry.
+    #[serde(default)]
+    pub registry: Option<String>,
 }
 
 /// Registry configuration - supports both single registry and multiple registries
@@ -461,6 +498,14 @@ pub struct CliOverrides {
     pub all_registries: bool,
     /// Optional package name to resume from
     pub resume_from: Option<String>,
+    /// Rehearsal registry override — CLI flag `--rehearsal-registry <name>`.
+    /// Sets [`RehearsalConfig::registry`] and implicitly enables rehearsal.
+    /// Consumed in a follow-on PR under [#97](https://github.com/EffortlessMetrics/shipper/issues/97);
+    /// this field is parsed now so the CLI/config surface is stable.
+    pub rehearsal_registry: Option<String>,
+    /// Skip rehearsal even if config/env enables it — CLI flag `--skip-rehearsal`.
+    /// Consumed in the same follow-on PR.
+    pub skip_rehearsal: bool,
 }
 
 impl Default for ShipperConfig {
@@ -501,6 +546,7 @@ impl Default for ShipperConfig {
             webhook: WebhookConfig::default(),
             encryption: EncryptionConfigInner::default(),
             storage: StorageConfigInner::default(),
+            rehearsal: RehearsalConfig::default(),
         }
     }
 }
@@ -1059,6 +1105,58 @@ api_base = "https://my-registry.example.com"
         assert_eq!(registry.api_base, "https://my-registry.example.com");
     }
 
+    // ---- #97 rehearsal registry config plumbing ----
+
+    #[test]
+    fn rehearsal_defaults_are_disabled_and_empty() {
+        // An empty TOML document should produce a disabled rehearsal config.
+        let config: ShipperConfig = toml::from_str("").unwrap();
+        assert!(
+            !config.rehearsal.enabled,
+            "rehearsal should default to disabled (opt-in until phase-2 execution lands)"
+        );
+        assert!(
+            config.rehearsal.registry.is_none(),
+            "rehearsal registry default is None"
+        );
+    }
+
+    #[test]
+    fn rehearsal_section_parses_enabled_with_registry_name() {
+        let toml = r#"
+[rehearsal]
+enabled = true
+registry = "kellnr-local"
+"#;
+        let config: ShipperConfig = toml::from_str(toml).unwrap();
+        assert!(config.rehearsal.enabled);
+        assert_eq!(
+            config.rehearsal.registry.as_deref(),
+            Some("kellnr-local"),
+            "rehearsal.registry should parse the named registry reference"
+        );
+    }
+
+    #[test]
+    fn rehearsal_section_partial_parses_with_field_defaults() {
+        // Only specify enabled — registry stays None; still valid.
+        let toml = r#"
+[rehearsal]
+enabled = true
+"#;
+        let config: ShipperConfig = toml::from_str(toml).unwrap();
+        assert!(config.rehearsal.enabled);
+        assert!(config.rehearsal.registry.is_none());
+    }
+
+    #[test]
+    fn rehearsal_cli_overrides_default_to_empty() {
+        // CliOverrides uses Default; rehearsal fields should be None/false by default.
+        let overrides = CliOverrides::default();
+        assert!(overrides.rehearsal_registry.is_none());
+        assert!(!overrides.skip_rehearsal);
+    }
+
     #[test]
     fn test_parse_toml_with_parallel() {
         let toml = r#"
@@ -1362,6 +1460,7 @@ enabled = true
                     access_key_id: None,
                     secret_access_key: None,
                 },
+                rehearsal: RehearsalConfig::default(),
             };
             insta::assert_yaml_snapshot!("config_all_fields", config);
         }
@@ -1819,6 +1918,7 @@ per_package_timeout = "15m"
                         webhook: WebhookConfig::default(),
                         encryption: EncryptionConfigInner::default(),
                         storage: StorageConfigInner::default(),
+                        rehearsal: RehearsalConfig::default(),
                     }
                 },
             )
