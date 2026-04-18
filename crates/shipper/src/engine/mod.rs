@@ -7044,3 +7044,6 @@ pub mod parallel;
 
 /// Plan-yank: reverse-topological containment plan from a receipt (#98 PR 2).
 pub mod plan_yank;
+
+/// Fix-forward: supersession plan from a compromised receipt (#98 PR 3).
+pub mod fix_forward;
