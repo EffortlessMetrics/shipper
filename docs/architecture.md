@@ -59,17 +59,17 @@ Many subsystems that started as crates have been consolidated into modules under
 
 Examples (non-exhaustive — see [structure.md](structure.md) for the full module map):
 
-- `shipper::ops::auth` — token resolution + OIDC detection
-- `shipper::ops::lock` — file-based distributed locking
-- `shipper::ops::process` — subprocess invocation + capture
-- `shipper::plan` — workspace analysis, topo-sort, plan_id, levels, chunking
-- `shipper::engine` — preflight + parallel publish + readiness verification
-- `shipper::runtime::execution` — error classification, retry coordination
-- `shipper::runtime::policy` — publish/verify/readiness policy resolution
-- `shipper::runtime::environment` — environment fingerprinting
-- `shipper::state::execution_state` — `state.json` writer (atomic)
-- `shipper::state::events` — `events.jsonl` writer (append-only)
-- `shipper::state::store` — `StateStore` trait
+- `shipper_core::ops::auth` — token resolution + OIDC detection
+- `shipper_core::ops::lock` — file-based distributed locking
+- `shipper_core::ops::process` — subprocess invocation + capture
+- `shipper_core::plan` — workspace analysis, topo-sort, plan_id, levels, chunking
+- `shipper_core::engine` — preflight + parallel publish + readiness verification
+- `shipper_core::runtime::execution` — error classification, retry coordination
+- `shipper_core::runtime::policy` — publish/verify/readiness policy resolution
+- `shipper_core::runtime::environment` — environment fingerprinting
+- `shipper_core::state::execution_state` — `state.json` writer (atomic)
+- `shipper_core::state::events` — `events.jsonl` writer (append-only)
+- `shipper_core::state::store` — `StateStore` trait
 - `shipper-config::runtime` — config + CLI → `RuntimeOptions` conversion
 - `shipper-cli::output::progress` — progress bars and TTY rendering
 
@@ -126,8 +126,8 @@ Reloads `.shipper/state.json`, validates the `plan_id` matches the current works
 
 | Trait / Type | Lives in | Purpose |
 |---|---|---|
-| `StateStore` | `shipper::state::store` | Persistence abstraction. Currently filesystem-backed; designed to host future cloud backends. |
-| `Reporter` | `shipper::engine` | Pluggable output handler for publish/preflight progress. |
+| `StateStore` | `shipper_core::state::store` | Persistence abstraction. Currently filesystem-backed; designed to host future cloud backends. |
+| `Reporter` | `shipper_core::engine` | Pluggable output handler for publish/preflight progress. |
 | `RegistryClient` | `shipper-registry` | Trait-based registry API access (mock-friendly). |
 | `ErrorClass` | `shipper-types` | `Retryable` (HTTP 429, network) / `Permanent` (auth, version conflict) / `Ambiguous` (upload may have succeeded despite client error). Only `Retryable` triggers backoff today; `Ambiguous` reconciliation is the largest open gap ([#99](https://github.com/EffortlessMetrics/shipper/issues/99)). |
 | `PublishPolicy` / `VerifyMode` / `ReadinessMethod` | `shipper-types` | Configuration enums controlling safety vs speed tradeoffs. |

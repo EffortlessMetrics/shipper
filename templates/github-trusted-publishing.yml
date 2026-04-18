@@ -23,7 +23,7 @@ jobs:
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: Install shipper
-        run: cargo install shipper-cli --locked
+        run: cargo install shipper --locked
 
       # Restore Shipper State (cache for faster restores)
       - name: Restore Shipper State Cache

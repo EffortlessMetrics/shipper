@@ -132,7 +132,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install shipper-cli --locked
+      - run: cargo install shipper --locked
 
       # Exchange the workflow's OIDC token for a short-lived
       # crates.io publish token. Output: steps.auth.outputs.token.

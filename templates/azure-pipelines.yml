@@ -97,7 +97,7 @@ stages:
               path: 'target'
 
           - script: |
-              cargo install shipper-cli --locked
+              cargo install shipper --locked
             displayName: 'Install Shipper'
 
           - script: |
