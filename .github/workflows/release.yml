@@ -40,6 +40,9 @@ env:
 
 permissions:
   contents: write
+  # OIDC for Trusted Publishing (crates-io-auth-action). Needed by publish /
+  # rehearse / resume jobs; read-only reach is fine for the others. See #96.
+  id-token: write
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -222,11 +225,43 @@ jobs:
           include-hidden-files: true
           retention-days: 30
 
+      # --- Step 3b: mint a short-lived crates.io token via Trusted Publishing
+      # Requires each published crate to be pre-registered as a trusted
+      # publisher on crates.io with this repo + workflow + `release`
+      # environment. See docs/how-to/run-in-github-actions.md.
+      #
+      # Falls back to the CARGO_REGISTRY_TOKEN secret if the action doesn't
+      # run or outputs no token — kept as a safety rail for the very first
+      # release after OIDC is wired up and during incident response.
+      #
+      # # Mixed-registration caveat (#96 review)
+      #
+      # If the OIDC action succeeds but only some of the crates in the
+      # plan are registered as trusted publishers for this repo, the
+      # minted token will 401 on the unregistered crates mid-train —
+      # AFTER some publishes have already succeeded. The `preflight`
+      # step below uses `--policy safe` which enables per-crate
+      # ownership checks with this same token; any scope mismatch
+      # surfaces there and the `Fail fast if preflight failed` gate
+      # refuses to start the publish train. Operators enabling Trusted
+      # Publishing for the first time MUST register all published
+      # crates BEFORE their first live run — see
+      # docs/how-to/run-in-github-actions.md for the one-time
+      # registration checklist.
+      - name: Mint crates.io token (Trusted Publishing)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       # --- Step 4: preflight ------------------------------------------------
+      # `--policy safe` enables ownership checks. For existing crates
+      # those checks exercise the minted OIDC token against crates.io;
+      # a scope mismatch surfaces here before any publish. New crates
+      # have no owner record yet so the check is best-effort — hence
+      # the one-time-registration operator checklist in the how-to.
       - name: shipper preflight
         id: preflight
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           shipper preflight \
             --registry crates-io \
@@ -256,7 +291,7 @@ jobs:
       - name: shipper publish
         id: publish
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           shipper publish \
             --registry crates-io \
@@ -362,6 +397,15 @@ jobs:
     name: Release rehearse (plan + preflight dry-run)
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'rehearse'
     runs-on: ubuntu-latest
+    # Bind to the `release` environment so the OIDC token minted here is
+    # scoped identically to the production `publish-crates-io` job's.
+    # Without this, rehearsal would validate only the mint *mechanism*
+    # while silently passing a real scope-binding misconfiguration
+    # (production job asks for a `release`-scoped token and gets denied,
+    # but rehearsal never exercised the same scope). Matching scopes
+    # here means rehearsal fails fast on the same scope errors prod
+    # would hit. See #96 review discussion.
+    environment: release
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -399,12 +443,20 @@ jobs:
             --verbose \
             | tee .shipper/plan.txt
 
+      # Mint a Trusted Publishing token for the deeper preflight (ownership
+      # queries benefit from a real token). OIDC unavailable? Fall back to
+      # the CARGO_REGISTRY_TOKEN secret — rehearse keeps working either way.
+      - name: Mint crates.io token (Trusted Publishing)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+        continue-on-error: true
+
       # Preflight against crates.io without publishing. A token isn't strictly
       # required here (ownership checks are best-effort), but supply it if the
       # `release` environment is available for a deeper check.
       - name: shipper preflight (dry-run)
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           shipper preflight \
             --registry crates-io \
@@ -480,9 +532,15 @@ jobs:
           ls -la .shipper/
           [ -f .shipper/state.json ] || { echo "::error::.shipper/state.json missing from recovered artifact"; exit 1; }
 
+      # Mint a fresh Trusted Publishing token for the resume (previous run's
+      # token is already expired). Falls back to secret if OIDC unavailable.
+      - name: Mint crates.io token (Trusted Publishing)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       - name: shipper resume
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           shipper resume \
             --registry crates-io \
