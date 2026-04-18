@@ -19,18 +19,20 @@ cargo build                    # debug
 cargo build --release          # release (LTO + strip)
 
 # Run CLI during development (without installing)
-cargo run -p shipper-cli -- <command>
+cargo run -p shipper -- <command>       # preferred: runs the `shipper` binary
+cargo run -p shipper-cli -- <command>   # equivalent; same code path
 
 # Install CLI locally
-cargo install --path crates/shipper-cli --locked
+cargo install --path crates/shipper --locked
 
 # Tests
 cargo test                                         # all workspace tests
-cargo test -p shipper                              # library crate only
-cargo test -p shipper-cli                          # CLI crate only
-cargo test -p shipper some_test_name               # substring match
-cargo test -p shipper some_test_name -- --exact    # exact match
-cargo test --test cli_e2e -p shipper-cli           # integration tests only
+cargo test -p shipper-core                         # engine crate
+cargo test -p shipper-cli                          # CLI adapter crate
+cargo test -p shipper                              # façade (integration tests)
+cargo test -p shipper-core some_test_name          # substring match
+cargo test -p shipper-core some_test_name -- --exact # exact match
+cargo test --test cli_e2e -p shipper-cli           # CLI integration tests only
 
 # Lint & format
 cargo fmt --all
@@ -40,26 +42,33 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 ## Architecture
 
-Rust workspace with two crates:
+Three-crate product shape (#95):
 
-- **`crates/shipper`** — Core library. All domain logic lives here.
-- **`crates/shipper-cli`** — Thin CLI binary. Parses args with clap, builds a `ReleaseSpec`/`RuntimeOptions`, then calls into the library.
+```
+shipper (install face — carries the `shipper` binary + curated lib re-export)
+  -> shipper-cli (real CLI adapter; exposes pub fn run())
+       -> shipper-core (engine — no CLI deps, stable embedding surface)
+```
 
-Keep library logic in `crates/shipper`; keep `crates/shipper-cli` as a thin dispatch layer.
+- **`crates/shipper-core`** — all engine/library logic: plan, preflight, publish, resume, state, ops. No `clap`, no `indicatif`. This is where behavior changes land.
+- **`crates/shipper-cli`** — CLI adapter. Owns `clap` derive types, subcommand dispatch, help text, progress rendering. Exposes `pub fn run() -> anyhow::Result<()>` as the embedding entry point.
+- **`crates/shipper`** — install façade. 3-line binary forwarding to `shipper_cli::run()`, plus a library that re-exports a curated subset of `shipper-core` (`engine`, `plan`, `types`, `config`, `state`, `store`) for drivers that prefer the product name. Changes rarely.
+
+When touching code: behavior work lives in `shipper-core`; CLI work (arguments, help text, output) lives in `shipper-cli`; the `shipper` crate mostly shouldn't move.
 
 ### Publishing Pipeline
 
 The core flow is: **plan → preflight → publish → (resume if interrupted)**
 
-1. **Plan** (`plan.rs`): Reads workspace via `cargo_metadata`, filters publishable crates, topologically sorts by intra-workspace dependencies (Kahn's algorithm with BTreeSet for determinism), generates a SHA256-based plan ID.
-2. **Preflight** (`engine.rs`): Validates git cleanliness, registry reachability, dry-run, version existence, and optional ownership checks. Produces a `Finishability` assessment (Proven/NotProven/Failed).
-3. **Publish** (`engine.rs`): Executes plan one crate at a time with retry/backoff. After each `cargo publish`, verifies registry visibility (API or sparse index) before proceeding. Persists `ExecutionState` to disk after every step for resumability.
+1. **Plan** (`shipper-core/src/plan/`): Reads workspace via `cargo_metadata`, filters publishable crates, topologically sorts by intra-workspace dependencies (Kahn's algorithm with BTreeSet for determinism), generates a SHA256-based plan ID.
+2. **Preflight** (`shipper-core/src/engine/`): Validates git cleanliness, registry reachability, dry-run, version existence, and optional ownership checks. Produces a `Finishability` assessment (Proven/NotProven/Failed).
+3. **Publish** (`shipper-core/src/engine/`): Executes plan one crate at a time with retry/backoff. After each `cargo publish`, verifies registry visibility (API or sparse index) before proceeding. Persists `ExecutionState` to disk after every step for resumability.
 4. **Resume**: Reloads state from `.shipper/state.json`, validates plan ID match, skips already-published packages, continues from first pending/failed.
 
 ### Key Abstractions
 
-- **`StateStore` trait** (`store.rs`): Persistence abstraction for state/receipt/events. Currently filesystem-backed; designed for future cloud storage backends.
-- **`Reporter` trait** (`engine.rs`): Pluggable output handler for publish/preflight progress.
+- **`StateStore` trait** (`shipper-core/src/state/store/`): Persistence abstraction for state/receipt/events. Currently filesystem-backed; designed for future cloud storage backends.
+- **`Reporter` trait** (`shipper-core/src/engine/`): Pluggable output handler for publish/preflight progress.
 - **`ErrorClass`** enum: Classifies failures as `Retryable` (HTTP 429, network), `Permanent` (auth, version conflict), or `Ambiguous` (upload may have succeeded despite client error). Only retryable errors trigger backoff retries.
 - **`PublishPolicy`/`VerifyMode`/`ReadinessMethod`**: Configuration enums controlling safety vs speed tradeoffs.
 

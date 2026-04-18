@@ -76,7 +76,7 @@ jobs:
 
       - run:
           name: Install Shipper
-          command: cargo install shipper-cli --locked
+          command: cargo install shipper --locked
 
       - run:
           name: Run shipper doctor

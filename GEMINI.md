@@ -15,19 +15,15 @@
 
 - **Core Purpose:** Enhances `cargo publish` by adding a reliability layer that handles planning, preflight checks, retries, and state persistence.
 - **Main Technologies:** Rust (Edition 2024), `clap` (CLI), `anyhow` (Error Handling), `serde` (Serialization), `tokio` (Async - though much of the current logic is sync with thread sleeps), `chrono` (Time).
-- **Architecture:**
-    - **`crates/shipper` (Library):** The engine of the project. Contains logic for:
-        - **Planning:** Building a dependency-aware publish order.
-        - **Preflight:** Verifying git state, crate ownership, and registry reachability.
-        - **Engine:** Executing the publish plan with backoff and retries.
-        - **Registry:** Interacting with Cargo registries (crates.io by default) via their web APIs.
-        - **State:** Persisting execution progress to disk for resumability.
-    - **`crates/shipper-cli` (Binary):** A CLI wrapper around the library logic, providing commands for the end-user.
+- **Architecture (three-crate product shape, #95):**
+    - **`crates/shipper-core` (Engine):** Library only, no CLI deps. Owns planning, preflight, engine execution, registry interaction, state/receipts/events, remediation primitives. Stable embedding surface.
+    - **`crates/shipper-cli` (CLI adapter):** Owns `clap` parsing, subcommand dispatch, help text, progress rendering. Exposes `pub fn run()`.
+    - **`crates/shipper` (Install face):** 3-line binary forwarding to `shipper_cli::run()`; library re-exports a curated subset of `shipper-core`. This is what users `cargo install`.
 
 ## Building and Running
 
 - **Build:** `cargo build`
-- **Install CLI:** `cargo install --path crates/shipper-cli --locked`
+- **Install CLI:** `cargo install --path crates/shipper --locked`
 - **Test:** `cargo test` (Note: some tests use `serial_test` as they modify environment variables or global state).
 - **Fuzzing:** Located in `fuzz/` directory; can be run with `cargo-fuzz`.
 
@@ -57,14 +53,20 @@
 
 ## Project Structure
 
+- `crates/shipper-core/src/`:
+    - `lib.rs`: Library surface.
+    - `engine/`: Preflight + publish + resume + rehearsal orchestration.
+    - `plan/`: Workspace analysis, topological ordering, plan ID.
+    - `state/`: `state.json`, `events.jsonl`, `receipt.json` persistence.
+    - `ops/`: I/O primitives (auth, cargo subprocess, git, lock, process, storage).
+    - `runtime/`: Error classification, policy, environment fingerprinting.
+    - `types.rs`: Shared data structures (re-exports `shipper-types`).
+- `crates/shipper-cli/src/`:
+    - `lib.rs`: `pub fn run()` — argparse + subcommand dispatch.
+    - `main.rs`: 3-line wrapper over `shipper_cli::run()`.
+    - `output/`: Progress bars, formatting.
 - `crates/shipper/src/`:
-    - `lib.rs`: Module declarations.
-    - `engine.rs`: The main execution loop for publishing.
-    - `plan.rs`: Workspace analysis and dependency sorting.
-    - `registry.rs`: HTTP client for registry APIs.
-    - `auth.rs`: Token resolution logic.
-    - `state.rs`: Persistence logic for `state.json` and `receipt.json`.
-    - `types.rs`: Shared data structures (Plans, States, Receipts).
-- `crates/shipper-cli/src/main.rs`: CLI entry point and argument parsing.
+    - `lib.rs`: Curated re-export of `shipper-core`.
+    - `bin/shipper.rs`: 3-line wrapper over `shipper_cli::run()`.
 - `templates/`: Example CI/CD configurations (GitHub/GitLab).
 - `fuzz/`: Fuzzing targets for robust state loading and token resolution.

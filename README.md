@@ -171,10 +171,13 @@ shipper publish --resume-from my-crate  # restart from a specific crate
 
 ## Workspace crates
 
-- [`shipper-cli`](crates/shipper-cli/README.md) — installs the `shipper` binary.
-- [`shipper`](crates/shipper/README.md) — reusable library: planning, preflight, publish, resume, receipts.
+Product surface (the three-crate split):
 
-The full crate map is in [docs/structure.md](docs/structure.md).
+- [`shipper`](crates/shipper/README.md) — the installable product. `cargo install shipper`.
+- [`shipper-cli`](crates/shipper-cli/README.md) — real CLI adapter (clap parsing, subcommands, output). Exposes `pub fn run()` for embedders.
+- [`shipper-core`](crates/shipper-core/README.md) — engine library (no CLI deps). Depend on this for programmatic use.
+
+The full crate map (including supporting microcrates) is in [docs/structure.md](docs/structure.md).
 
 ## Documentation
 

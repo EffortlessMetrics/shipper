@@ -12,7 +12,7 @@ publish:
       - .shipper/
       - target/
   script:
-    - cargo install shipper-cli --locked
+    - cargo install shipper --locked
     - shipper publish --quiet
   variables:
     # Configure this in GitLab CI/CD settings (masked, protected)
