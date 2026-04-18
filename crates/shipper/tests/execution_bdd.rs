@@ -1,10 +1,10 @@
-//! BDD tests for `shipper::runtime::execution` (absorbed from the former
+//! BDD tests for `shipper_core::runtime::execution` (absorbed from the former
 //! `shipper-execution-core` crate's `tests/execution_core_bdd.rs`).
 
 use chrono::Utc;
 use std::collections::BTreeMap;
 
-use shipper::runtime::execution;
+use shipper_core::runtime::execution;
 use shipper_types::{ExecutionState, PackageProgress, PackageState, Registry};
 
 #[test]

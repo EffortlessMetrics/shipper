@@ -719,10 +719,10 @@ fn auth_token_resolved_from_env_for_crates_io() {
             ("CARGO_HOME", Some("__nonexistent_cargo_home__")),
         ],
         || {
-            let token = shipper::auth::resolve_token("crates-io").expect("resolve");
+            let token = shipper_core::auth::resolve_token("crates-io").expect("resolve");
             assert_eq!(token.as_deref(), Some("test-token-abc"));
 
-            let auth_type = shipper::auth::detect_auth_type("crates-io").expect("detect");
+            let auth_type = shipper_core::auth::detect_auth_type("crates-io").expect("detect");
             assert_eq!(auth_type, Some(AuthType::Token));
         },
     );
@@ -738,7 +738,7 @@ fn auth_token_resolved_from_named_registry_env() {
             ("CARGO_HOME", Some("__nonexistent_cargo_home__")),
         ],
         || {
-            let token = shipper::auth::resolve_token("my-reg").expect("resolve");
+            let token = shipper_core::auth::resolve_token("my-reg").expect("resolve");
             assert_eq!(token.as_deref(), Some("private-token-xyz"));
         },
     );
@@ -754,10 +754,10 @@ fn auth_returns_none_when_no_token_configured() {
             ("CARGO_HOME", Some("__nonexistent_cargo_home__")),
         ],
         || {
-            let token = shipper::auth::resolve_token("crates-io").expect("resolve");
+            let token = shipper_core::auth::resolve_token("crates-io").expect("resolve");
             assert!(token.is_none());
 
-            let auth_type = shipper::auth::detect_auth_type("crates-io").expect("detect");
+            let auth_type = shipper_core::auth::detect_auth_type("crates-io").expect("detect");
             assert!(auth_type.is_none());
         },
     );
@@ -792,7 +792,7 @@ fn registry_crate_exists_with_mock() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     let exists = client.crate_exists("existing-crate").expect("check");
     assert!(exists);
@@ -818,7 +818,7 @@ fn registry_check_new_crate_returns_true_for_404() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     let is_new = client.check_new_crate("brand-new-crate").expect("check");
     assert!(is_new, "404 should mean it's a new crate");
@@ -855,7 +855,7 @@ fn registry_list_owners_with_mock() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     let owners = client
         .list_owners("my-crate", "fake-token")
@@ -912,7 +912,7 @@ fn registry_multi_version_check_for_planned_packages() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     let mut published = vec![];
     let mut unpublished = vec![];
@@ -1139,7 +1139,7 @@ api_base = "https://my-registry.example.com"
             ("CARGO_HOME", Some("__nonexistent_cargo_home__")),
         ],
         || {
-            let token = shipper::auth::resolve_token("my-private").expect("resolve");
+            let token = shipper_core::auth::resolve_token("my-private").expect("resolve");
             assert_eq!(token.as_deref(), Some("private-tok-123"));
         },
     );
@@ -1167,7 +1167,7 @@ fn registry_verify_ownership_handles_forbidden() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     let owned = client
         .verify_ownership("some-crate", "bad-token")
@@ -1377,8 +1377,8 @@ fn lock_acquire_publish_release_sequence() {
     fs::create_dir_all(&state_dir).expect("mkdir");
 
     // Step 1: Acquire lock
-    let mut lock = shipper::lock::LockFile::acquire(&state_dir, None).expect("acquire");
-    assert!(shipper::lock::LockFile::is_locked(&state_dir, None).expect("locked"));
+    let mut lock = shipper_core::lock::LockFile::acquire(&state_dir, None).expect("acquire");
+    assert!(shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("locked"));
 
     // Step 2: Set plan_id (simulating engine linking the plan to the lock)
     lock.set_plan_id("facade-lock-plan").expect("set plan_id");
@@ -1400,7 +1400,7 @@ fn lock_acquire_publish_release_sequence() {
 
     // Step 5: Release lock
     lock.release().expect("release");
-    assert!(!shipper::lock::LockFile::is_locked(&state_dir, None).expect("unlocked"));
+    assert!(!shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("unlocked"));
 
     // Verify state and receipt are accessible after lock release
     let loaded_state = state::load_state(&state_dir)
@@ -1501,7 +1501,7 @@ fn registry_server_error_propagates_through_version_check() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     // The error should propagate through the version check
     let err = client
@@ -1535,7 +1535,7 @@ fn registry_server_error_propagates_through_crate_check() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     let err = client
         .crate_exists("some-crate")
@@ -1983,7 +1983,7 @@ fn readiness_version_visible_after_publish_mock() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     // First check: not visible
     let visible1 = client.version_exists("my-crate", "0.2.0").expect("check 1");
@@ -2379,20 +2379,20 @@ fn lock_double_acquire_fails() {
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir");
 
-    let mut lock = shipper::lock::LockFile::acquire(&state_dir, None).expect("first acquire");
-    assert!(shipper::lock::LockFile::is_locked(&state_dir, None).expect("locked"));
+    let mut lock = shipper_core::lock::LockFile::acquire(&state_dir, None).expect("first acquire");
+    assert!(shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("locked"));
 
     // Second acquire should fail
-    let result = shipper::lock::LockFile::acquire(&state_dir, None);
+    let result = shipper_core::lock::LockFile::acquire(&state_dir, None);
     assert!(result.is_err(), "double acquire should fail");
 
     // Release first lock
     lock.release().expect("release");
-    assert!(!shipper::lock::LockFile::is_locked(&state_dir, None).expect("unlocked"));
+    assert!(!shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("unlocked"));
 
     // Now a new acquire should succeed
-    let mut lock2 = shipper::lock::LockFile::acquire(&state_dir, None).expect("re-acquire");
-    assert!(shipper::lock::LockFile::is_locked(&state_dir, None).expect("locked again"));
+    let mut lock2 = shipper_core::lock::LockFile::acquire(&state_dir, None).expect("re-acquire");
+    assert!(shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("locked again"));
     lock2.release().expect("release2");
 }
 
@@ -2566,7 +2566,7 @@ fn registry_multi_crate_ownership_check_mock() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     // First crate: ownership verified
     let owned = client

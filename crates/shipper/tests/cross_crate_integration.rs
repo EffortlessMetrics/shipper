@@ -268,7 +268,7 @@ fn auth_resolve_then_registry_version_check() {
         index_base: None,
     };
 
-    let client = shipper::registry::RegistryClient::new(reg).expect("build registry client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("build registry client");
 
     // Check version exists
     let exists = client
@@ -297,7 +297,7 @@ fn registry_reports_missing_version() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("build registry client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("build registry client");
 
     let exists = client
         .version_exists("nonexistent", "9.9.9")
@@ -357,7 +357,7 @@ fn config_to_plan_to_registry_version_check() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("build registry client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("build registry client");
 
     // Verify none of the planned packages are published yet
     for pkg in &ws.plan.packages {
@@ -904,7 +904,7 @@ fn registry_version_check_errors_on_500() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     let err = client
         .version_exists("some-crate", "1.0.0")
@@ -936,7 +936,7 @@ fn registry_crate_exists_errors_on_503() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     let err = client
         .crate_exists("some-crate")
@@ -968,7 +968,7 @@ fn registry_list_owners_errors_on_429() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     let err = client
         .list_owners("some-crate", "token")
@@ -1515,34 +1515,36 @@ fn lock_acquire_set_plan_id_release_sequence() {
     let state_dir = td.path();
 
     // Acquire lock
-    let mut lock = shipper::lock::LockFile::acquire(state_dir, None).expect("acquire lock");
+    let mut lock = shipper_core::lock::LockFile::acquire(state_dir, None).expect("acquire lock");
 
     // Lock should exist
-    assert!(shipper::lock::LockFile::is_locked(state_dir, None).expect("check"));
+    assert!(shipper_core::lock::LockFile::is_locked(state_dir, None).expect("check"));
 
     // Read lock info
-    let info = shipper::lock::LockFile::read_lock_info(state_dir, None).expect("read info");
+    let info = shipper_core::lock::LockFile::read_lock_info(state_dir, None).expect("read info");
     assert_eq!(info.pid, std::process::id());
     assert!(info.plan_id.is_none());
 
     // Update plan_id
     lock.set_plan_id("lock-test-plan-123").expect("set plan_id");
     let updated_info =
-        shipper::lock::LockFile::read_lock_info(state_dir, None).expect("read updated");
+        shipper_core::lock::LockFile::read_lock_info(state_dir, None).expect("read updated");
     assert_eq!(updated_info.plan_id.as_deref(), Some("lock-test-plan-123"));
 
     // Second acquire should fail
-    let err =
-        shipper::lock::LockFile::acquire(state_dir, None).expect_err("double acquire should fail");
+    let err = shipper_core::lock::LockFile::acquire(state_dir, None)
+        .expect_err("double acquire should fail");
     assert!(err.to_string().contains("lock already held"));
 
     // Release lock
     lock.release().expect("release lock");
-    assert!(!shipper::lock::LockFile::is_locked(state_dir, None).expect("check after release"));
+    assert!(
+        !shipper_core::lock::LockFile::is_locked(state_dir, None).expect("check after release")
+    );
 
     // Re-acquire should succeed after release
     let _lock2 =
-        shipper::lock::LockFile::acquire(state_dir, None).expect("re-acquire after release");
+        shipper_core::lock::LockFile::acquire(state_dir, None).expect("re-acquire after release");
 }
 
 // ===========================================================================
@@ -1660,7 +1662,7 @@ fn registry_error_propagates_with_context() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     // version_exists should error
     let ver_err = client
