@@ -4173,3 +4173,142 @@ fn reconcile_bdd_resume_from_ambiguous_state_skips_republish() {
 
     server.join();
 }
+
+#[test]
+#[serial]
+fn reconcile_bdd_ambiguous_resolves_to_still_unknown() {
+    // Scenario: cargo exits ambiguously and the registry is itself unhealthy —
+    // every reconciliation query returns 5xx. `version_exists` bails with Err
+    // for non-200/404 statuses, which `reconcile_ambiguous_upload` translates
+    // into `ReconciliationOutcome::StillUnknown`. Expected: the package is
+    // marked `PackageState::Ambiguous`, the publish result is Err, cargo is
+    // NOT retried (no blind-retry after StillUnknown), and an operator-visible
+    // `PublishReconciled { outcome: StillUnknown }` event is persisted.
+    //
+    // Request sequence (readiness disabled):
+    //   1. entry "already published" check (publish.rs:136) → 500 → Err
+    //      (does not match `if let Ok(true)`; proceeds to publish)
+    //   2. post-cargo-failure quick check (publish.rs:~452) → 500 → Err
+    //      (unwrap_or(false); falls through to classify + reconcile)
+    //   3. reconcile's single version_exists (via is_version_visible_with_backoff,
+    //      enabled=false) → 500 → Err → StillUnknown
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+
+    let server = spawn_registry_server(
+        BTreeMap::from([(
+            "/api/v1/crates/demo/0.1.0".to_string(),
+            vec![
+                (500, "{}".to_string()),
+                (500, "{}".to_string()),
+                (500, "{}".to_string()),
+            ],
+        )]),
+        3,
+    );
+
+    let ws = planned_workspace(td.path(), server.base_url.clone());
+    let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+    let opts = reconcile_scenario_opts(PathBuf::from(".shipper"));
+    let state_dir = td.path().join(".shipper");
+    let st = Arc::new(Mutex::new(init_state_for_package(
+        &ws.plan.plan_id,
+        &ws.plan.registry,
+        "demo",
+        "0.1.0",
+    )));
+    let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+    let events_path = events::events_path(&state_dir);
+    let reporter: Arc<Mutex<dyn Reporter + Send>> =
+        Arc::new(Mutex::new(CollectingReporter::default()));
+
+    // Track cargo invocations to assert we did NOT blind-retry after
+    // StillUnknown — exactly one attempt should hit cargo.
+    let cargo_log = td.path().join("cargo-calls.log");
+
+    temp_env::with_vars(
+        [
+            (
+                "SHIPPER_CARGO_BIN",
+                Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            ),
+            (
+                "SHIPPER_CARGO_ARGS_LOG",
+                Some(cargo_log.to_str().expect("utf8")),
+            ),
+            ("SHIPPER_CARGO_EXIT", Some("1")),
+            // Empty stderr/stdout → classify_publish_failure returns Ambiguous.
+            ("SHIPPER_CARGO_STDERR", Some("")),
+            ("SHIPPER_CARGO_STDOUT", Some("")),
+        ],
+        || {
+            let result = publish_package(
+                &ws.plan.packages[0],
+                &ws,
+                &opts,
+                &reg,
+                &st,
+                &state_dir,
+                &event_log,
+                &events_path,
+                &reporter,
+            );
+
+            let err = result
+                .result
+                .expect_err("StillUnknown reconciliation must halt with Err");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("reconciliation inconclusive"),
+                "expected inconclusive-reconciliation error, got: {msg}"
+            );
+
+            // State must be Ambiguous so a subsequent resume triggers the
+            // resume-path reconcile block rather than a silent retry.
+            let state = st.lock().unwrap();
+            let progress = state.packages.get("demo@0.1.0").expect("package progress");
+            assert!(
+                matches!(progress.state, PackageState::Ambiguous { .. }),
+                "expected Ambiguous state after StillUnknown, got {:?}",
+                progress.state
+            );
+            // Exactly one cargo attempt — StillUnknown must not trigger another.
+            assert_eq!(
+                progress.attempts, 1,
+                "cargo should run exactly once; StillUnknown must not blind-retry"
+            );
+        },
+    );
+
+    // Cargo call log corroborates the attempts counter: one invocation total.
+    let cargo_invocations = std::fs::read_to_string(&cargo_log)
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0);
+    assert_eq!(
+        cargo_invocations, 1,
+        "cargo should have been invoked exactly once"
+    );
+
+    // Verify the operator-visible reconciliation events were persisted.
+    let persisted = events::EventLog::read_from_file(&events_path).expect("read events");
+    let has_reconciling = persisted
+        .all_events()
+        .iter()
+        .any(|e| matches!(e.event_type, EventType::PublishReconciling { .. }));
+    let has_reconciled_still_unknown = persisted.all_events().iter().any(|e| {
+        matches!(
+            &e.event_type,
+            EventType::PublishReconciled {
+                outcome: shipper_types::ReconciliationOutcome::StillUnknown { .. }
+            }
+        )
+    });
+    assert!(has_reconciling, "expected PublishReconciling event");
+    assert!(
+        has_reconciled_still_unknown,
+        "expected PublishReconciled with StillUnknown outcome"
+    );
+
+    server.join();
+}
