@@ -1,9 +1,29 @@
-//! CLI entry point for the `shipper` binary (#95).
+//! # shipper-cli
 //!
-//! Moved here from the former `shipper-cli` crate so the `shipper`
-//! package carries both its library API and its installable binary.
-//! `shipper-cli` still exists as a thin compatibility shim that
-//! forwards into `run`.
+//! Real CLI adapter for Shipper (#95 three-crate split).
+//!
+//! This crate owns the command-line surface: argument parsing
+//! (`clap`), subcommand dispatch, help text, progress rendering. It
+//! depends on [`shipper_core`] for the actual engine.
+//!
+//! ## Architecture
+//!
+//! ```text
+//! shipper (install façade) -> shipper-cli (this crate) -> shipper-core (engine)
+//! ```
+//!
+//! The `shipper` binary on crates.io is a three-line wrapper that
+//! calls [`run`]; a separate `shipper-cli` binary exists in this
+//! crate for backward compatibility with `cargo install shipper-cli`
+//! and for workspace-local development.
+//!
+//! ## Embedding
+//!
+//! Most callers should use the `shipper` CLI directly. If you need to
+//! embed the exact CLI surface in another Rust program — for example,
+//! a wrapper that invokes `shipper` with extra preflight steps — call
+//! [`run`]. For programmatic use without a `clap` dependency, depend
+//! on [`shipper_core`](https://crates.io/crates/shipper-core) instead.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,14 +33,14 @@ use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
-use crate::config::{CliOverrides, ShipperConfig};
-use crate::engine::{self, Reporter};
-use crate::plan;
-use crate::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
+use shipper_core::config::{CliOverrides, ShipperConfig};
+use shipper_core::engine::{self, Reporter};
+use shipper_core::plan;
+use shipper_core::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
 
 mod output;
 
-use crate::cli::output::progress::ProgressReporter;
+use crate::output::progress::ProgressReporter;
 
 #[derive(Parser, Debug)]
 #[command(name = "shipper", version)]
@@ -431,7 +451,7 @@ impl Reporter for CliReporter {
 
 /// CLI entry point. Exposed for the `shipper` crate's binary target
 /// and for the `shipper-cli` compatibility shim, both of which are
-/// three-line `fn main() { shipper::cli::run() }` wrappers.
+/// three-line `fn main() { shipper_cli::run() }` wrappers.
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -766,11 +786,11 @@ pub fn run() -> Result<()> {
             mark_compromised,
             plan,
         } => {
-            use crate::cargo;
-            use crate::engine::plan_yank;
-            use crate::state::events::{EventLog, events_path};
-            use crate::state::execution_state::{load_receipt, receipt_path, write_receipt};
-            use crate::types::{EventType, PublishEvent};
+            use shipper_core::cargo;
+            use shipper_core::engine::plan_yank;
+            use shipper_core::state::events::{EventLog, events_path};
+            use shipper_core::state::execution_state::{load_receipt, receipt_path, write_receipt};
+            use shipper_core::types::{EventType, PublishEvent};
 
             // #98 PR 5 — plan execution mode. Dispatched entirely
             // separately from the single-yank path below; the two share
@@ -1021,11 +1041,11 @@ pub fn run() -> Result<()> {
             starting_crate,
             reason,
         } => {
-            use crate::engine::plan_yank::{self, PlanYankFilter};
+            use shipper_core::engine::plan_yank::{self, PlanYankFilter};
 
             let receipt_path = from_receipt.unwrap_or_else(|| {
                 opts.state_dir
-                    .join(crate::state::execution_state::RECEIPT_FILE)
+                    .join(shipper_core::state::execution_state::RECEIPT_FILE)
             });
 
             let receipt = plan_yank::load_receipt_from_path(&receipt_path).with_context(|| {
@@ -1070,11 +1090,11 @@ pub fn run() -> Result<()> {
             }
         }
         Commands::FixForward { from_receipt } => {
-            use crate::engine::fix_forward::{self, SuccessorStrategy};
+            use shipper_core::engine::fix_forward::{self, SuccessorStrategy};
 
             let receipt_path = from_receipt.unwrap_or_else(|| {
                 opts.state_dir
-                    .join(crate::state::execution_state::RECEIPT_FILE)
+                    .join(shipper_core::state::execution_state::RECEIPT_FILE)
             });
 
             let plan =
@@ -1122,39 +1142,39 @@ fn parse_duration(s: &str) -> Result<Duration> {
     shipper_duration::parse_duration(s).with_context(|| format!("invalid duration: {s}"))
 }
 
-fn parse_policy(s: &str) -> Result<crate::config::PublishPolicy> {
+fn parse_policy(s: &str) -> Result<shipper_core::config::PublishPolicy> {
     match s.to_lowercase().as_str() {
-        "safe" => Ok(crate::config::PublishPolicy::Safe),
-        "balanced" => Ok(crate::config::PublishPolicy::Balanced),
-        "fast" => Ok(crate::config::PublishPolicy::Fast),
+        "safe" => Ok(shipper_core::config::PublishPolicy::Safe),
+        "balanced" => Ok(shipper_core::config::PublishPolicy::Balanced),
+        "fast" => Ok(shipper_core::config::PublishPolicy::Fast),
         _ => bail!("invalid policy: {s} (expected: safe, balanced, fast)"),
     }
 }
 
-fn parse_verify_mode(s: &str) -> Result<crate::config::VerifyMode> {
+fn parse_verify_mode(s: &str) -> Result<shipper_core::config::VerifyMode> {
     match s.to_lowercase().as_str() {
-        "workspace" => Ok(crate::config::VerifyMode::Workspace),
-        "package" => Ok(crate::config::VerifyMode::Package),
-        "none" => Ok(crate::config::VerifyMode::None),
+        "workspace" => Ok(shipper_core::config::VerifyMode::Workspace),
+        "package" => Ok(shipper_core::config::VerifyMode::Package),
+        "none" => Ok(shipper_core::config::VerifyMode::None),
         _ => bail!("invalid verify-mode: {s} (expected: workspace, package, none)"),
     }
 }
 
-fn parse_readiness_method(s: &str) -> Result<crate::config::ReadinessMethod> {
+fn parse_readiness_method(s: &str) -> Result<shipper_core::config::ReadinessMethod> {
     match s.to_lowercase().as_str() {
-        "api" => Ok(crate::config::ReadinessMethod::Api),
-        "index" => Ok(crate::config::ReadinessMethod::Index),
-        "both" => Ok(crate::config::ReadinessMethod::Both),
+        "api" => Ok(shipper_core::config::ReadinessMethod::Api),
+        "index" => Ok(shipper_core::config::ReadinessMethod::Index),
+        "both" => Ok(shipper_core::config::ReadinessMethod::Both),
         _ => bail!("invalid readiness-method: {s} (expected: api, index, both)"),
     }
 }
 
-fn parse_retry_strategy(s: &str) -> Result<crate::retry::RetryStrategyType> {
+fn parse_retry_strategy(s: &str) -> Result<shipper_core::retry::RetryStrategyType> {
     match s.to_lowercase().as_str() {
-        "immediate" => Ok(crate::retry::RetryStrategyType::Immediate),
-        "exponential" => Ok(crate::retry::RetryStrategyType::Exponential),
-        "linear" => Ok(crate::retry::RetryStrategyType::Linear),
-        "constant" => Ok(crate::retry::RetryStrategyType::Constant),
+        "immediate" => Ok(shipper_core::retry::RetryStrategyType::Immediate),
+        "exponential" => Ok(shipper_core::retry::RetryStrategyType::Exponential),
+        "linear" => Ok(shipper_core::retry::RetryStrategyType::Linear),
+        "constant" => Ok(shipper_core::retry::RetryStrategyType::Constant),
         _ => bail!(
             "invalid retry-strategy: {s} (expected: immediate, exponential, linear, constant)"
         ),
@@ -1384,9 +1404,9 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
                 let published = if p.already_published { "Yes" } else { "No" };
                 let new_crate = if p.is_new_crate { "Yes" } else { "No" };
                 let auth_type = match p.auth_type {
-                    Some(crate::types::AuthType::Token) => "Token",
-                    Some(crate::types::AuthType::TrustedPublishing) => "Trusted",
-                    Some(crate::types::AuthType::Unknown) => "Unknown",
+                    Some(shipper_core::types::AuthType::Token) => "Token",
+                    Some(shipper_core::types::AuthType::TrustedPublishing) => "Trusted",
+                    Some(shipper_core::types::AuthType::Unknown) => "Unknown",
                     None => "-",
                 };
                 let ownership = if p.ownership_verified { "✓" } else { "✗" };
@@ -1465,7 +1485,7 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
 }
 
 fn print_receipt(
-    receipt: &crate::types::Receipt,
+    receipt: &shipper_core::types::Receipt,
     workspace_root: &Path,
     state_dir: &Path,
     format: &str,
@@ -1491,17 +1511,17 @@ fn print_receipt(
             println!(
                 "state:   {}/{}",
                 abs_state.display(),
-                crate::state::execution_state::STATE_FILE
+                shipper_core::state::execution_state::STATE_FILE
             );
             println!(
                 "receipt: {}/{}",
                 abs_state.display(),
-                crate::state::execution_state::RECEIPT_FILE
+                shipper_core::state::execution_state::RECEIPT_FILE
             );
             println!(
                 "events:   {}/{}",
                 abs_state.display(),
-                crate::state::events::EVENTS_FILE
+                shipper_core::state::events::EVENTS_FILE
             );
             println!();
 
@@ -1566,8 +1586,8 @@ fn run_inspect_events(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Res
         ws.workspace_root.join(&opts.state_dir)
     };
 
-    let events_path = crate::state::events::events_path(&state_dir);
-    let event_log = crate::state::events::EventLog::read_from_file(&events_path)
+    let events_path = shipper_core::state::events::events_path(&state_dir);
+    let event_log = shipper_core::state::events::EventLog::read_from_file(&events_path)
         .with_context(|| format!("failed to read event log from {}", events_path.display()))?;
 
     println!("Event log: {}", events_path.display());
@@ -1592,11 +1612,11 @@ fn run_inspect_receipt(
         ws.workspace_root.join(&opts.state_dir)
     };
 
-    let receipt_path = crate::state::execution_state::receipt_path(&state_dir);
+    let receipt_path = shipper_core::state::execution_state::receipt_path(&state_dir);
     let content = std::fs::read_to_string(&receipt_path)
         .with_context(|| format!("failed to read receipt from {}", receipt_path.display()))?;
 
-    let receipt: crate::types::Receipt = serde_json::from_str(&content)
+    let receipt: shipper_core::types::Receipt = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse receipt from {}", receipt_path.display()))?;
 
     if format == "json" {
@@ -1666,14 +1686,16 @@ fn run_inspect_receipt(
     println!("---------");
     for p in &receipt.packages {
         let state_str = match &p.state {
-            crate::types::PackageState::Published => "\x1b[32mPublished\x1b[0m",
-            crate::types::PackageState::Pending => "Pending",
-            crate::types::PackageState::Uploaded => "\x1b[33mUploaded\x1b[0m",
-            crate::types::PackageState::Skipped { reason } => &format!("Skipped: {}", reason),
-            crate::types::PackageState::Failed { class, message } => {
+            shipper_core::types::PackageState::Published => "\x1b[32mPublished\x1b[0m",
+            shipper_core::types::PackageState::Pending => "Pending",
+            shipper_core::types::PackageState::Uploaded => "\x1b[33mUploaded\x1b[0m",
+            shipper_core::types::PackageState::Skipped { reason } => {
+                &format!("Skipped: {}", reason)
+            }
+            shipper_core::types::PackageState::Failed { class, message } => {
                 &format!("\x1b[31mFailed ({:?}): {}\x1b[0m", class, message)
             }
-            crate::types::PackageState::Ambiguous { message } => {
+            shipper_core::types::PackageState::Ambiguous { message } => {
                 &format!("\x1b[33mAmbiguous: {}\x1b[0m", message)
             }
         };
@@ -1688,7 +1710,7 @@ fn run_inspect_receipt(
 
 fn run_status(ws: &plan::PlannedWorkspace, reporter: &mut dyn Reporter) -> Result<()> {
     reporter.info("initializing registry client...");
-    let reg = crate::registry::RegistryClient::new(ws.plan.registry.clone())?;
+    let reg = shipper_core::registry::RegistryClient::new(ws.plan.registry.clone())?;
 
     println!("plan_id: {}", ws.plan.plan_id);
     println!();
@@ -1716,11 +1738,11 @@ fn run_doctor(
     );
 
     // 1. Check Authentication
-    let auth_type = crate::auth::detect_auth_type(&ws.plan.registry.name)?;
+    let auth_type = shipper_core::auth::detect_auth_type(&ws.plan.registry.name)?;
     let auth_label = match auth_type {
-        Some(crate::types::AuthType::Token) => "token (detected)",
-        Some(crate::types::AuthType::TrustedPublishing) => "trusted (detected)",
-        Some(crate::types::AuthType::Unknown) => "unknown",
+        Some(shipper_core::types::AuthType::Token) => "token (detected)",
+        Some(shipper_core::types::AuthType::TrustedPublishing) => "trusted (detected)",
+        Some(shipper_core::types::AuthType::Unknown) => "unknown",
         None => "NONE FOUND (set CARGO_REGISTRY_TOKEN)",
     };
     println!("auth_type: {}", auth_label);
@@ -1749,7 +1771,7 @@ fn run_doctor(
     // 4. Network Connectivity (Best Effort)
     println!();
     reporter.info("checking registry connectivity...");
-    let reg_client = crate::registry::RegistryClient::new(ws.plan.registry.clone())?;
+    let reg_client = shipper_core::registry::RegistryClient::new(ws.plan.registry.clone())?;
 
     match reg_client.crate_exists("serde") {
         Ok(_) => println!("registry_reachable: true"),
@@ -1761,7 +1783,7 @@ fn run_doctor(
 
     // 5. Check Git State
     println!();
-    match crate::git::collect_git_context() {
+    match shipper_core::git::collect_git_context() {
         Some(git) => {
             println!("git_commit: {}", git.commit.unwrap_or_else(|| "-".into()));
             println!("git_branch: {}", git.branch.unwrap_or_else(|| "-".into()));
@@ -2005,10 +2027,10 @@ fn clean_single_dir(
     keep_receipt: bool,
     force: bool,
 ) -> Result<()> {
-    let state_path = dir.join(crate::state::execution_state::STATE_FILE);
-    let receipt_path = dir.join(crate::state::execution_state::RECEIPT_FILE);
-    let events_path = dir.join(crate::state::events::EVENTS_FILE);
-    let lock_path = crate::lock::lock_path(dir, Some(workspace_root));
+    let state_path = dir.join(shipper_core::state::execution_state::STATE_FILE);
+    let receipt_path = dir.join(shipper_core::state::execution_state::RECEIPT_FILE);
+    let events_path = dir.join(shipper_core::state::events::EVENTS_FILE);
+    let lock_path = shipper_core::lock::lock_path(dir, Some(workspace_root));
 
     // Check for active lock
     if lock_path.exists() {
@@ -2020,7 +2042,7 @@ fn clean_single_dir(
             std::fs::remove_file(&lock_path)
                 .with_context(|| format!("failed to remove lock file {}", lock_path.display()))?;
         } else {
-            match crate::lock::LockFile::read_lock_info(dir, Some(workspace_root)) {
+            match shipper_core::lock::LockFile::read_lock_info(dir, Some(workspace_root)) {
                 Ok(lock_info) => {
                     eprintln!("[warn] Active lock found in {}:", dir.display());
                     eprintln!("[warn]   PID: {}", lock_info.pid);
@@ -2250,7 +2272,7 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let ws = plan::PlannedWorkspace {
             workspace_root: td.path().to_path_buf(),
-            plan: crate::types::ReleasePlan {
+            plan: shipper_core::types::ReleasePlan {
                 plan_version: "1".to_string(),
                 plan_id: "plan-x".to_string(),
                 created_at: chrono::Utc::now(),
@@ -2270,22 +2292,22 @@ mod tests {
             max_attempts: 1,
             base_delay: Duration::from_millis(0),
             max_delay: Duration::from_millis(0),
-            retry_strategy: crate::retry::RetryStrategyType::Exponential,
+            retry_strategy: shipper_core::retry::RetryStrategyType::Exponential,
             retry_jitter: 0.5,
-            retry_per_error: crate::retry::PerErrorConfig::default(),
+            retry_per_error: shipper_core::retry::PerErrorConfig::default(),
             verify_timeout: Duration::from_millis(0),
             verify_poll_interval: Duration::from_millis(0),
             state_dir: state_dir.clone(),
             force_resume: false,
             force: false,
             lock_timeout: Duration::from_secs(3600),
-            policy: crate::types::PublishPolicy::Safe,
-            verify_mode: crate::types::VerifyMode::Workspace,
-            readiness: crate::types::ReadinessConfig::default(),
+            policy: shipper_core::types::PublishPolicy::Safe,
+            verify_mode: shipper_core::types::VerifyMode::Workspace,
+            readiness: shipper_core::types::ReadinessConfig::default(),
             output_lines: 50,
-            parallel: crate::types::ParallelConfig::default(),
-            webhook: crate::webhook::WebhookConfig::default(),
-            encryption: crate::encryption::EncryptionConfig::default(),
+            parallel: shipper_core::types::ParallelConfig::default(),
+            webhook: shipper_core::webhook::WebhookConfig::default(),
+            encryption: shipper_core::encryption::EncryptionConfig::default(),
             registries: vec![],
             resume_from: None,
             rehearsal_registry: None,
@@ -2323,7 +2345,7 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let ws = plan::PlannedWorkspace {
             workspace_root: td.path().to_path_buf(),
-            plan: crate::types::ReleasePlan {
+            plan: shipper_core::types::ReleasePlan {
                 plan_version: "1".to_string(),
                 plan_id: "plan-y".to_string(),
                 created_at: chrono::Utc::now(),
@@ -2342,22 +2364,22 @@ mod tests {
             max_attempts: 1,
             base_delay: Duration::from_millis(0),
             max_delay: Duration::from_millis(0),
-            retry_strategy: crate::retry::RetryStrategyType::Exponential,
+            retry_strategy: shipper_core::retry::RetryStrategyType::Exponential,
             retry_jitter: 0.5,
-            retry_per_error: crate::retry::PerErrorConfig::default(),
+            retry_per_error: shipper_core::retry::PerErrorConfig::default(),
             verify_timeout: Duration::from_millis(0),
             verify_poll_interval: Duration::from_millis(0),
             state_dir: td.path().join("abs-state-2"),
             force_resume: false,
             force: false,
             lock_timeout: Duration::from_secs(3600),
-            policy: crate::types::PublishPolicy::Safe,
-            verify_mode: crate::types::VerifyMode::Workspace,
-            readiness: crate::types::ReadinessConfig::default(),
+            policy: shipper_core::types::PublishPolicy::Safe,
+            verify_mode: shipper_core::types::VerifyMode::Workspace,
+            readiness: shipper_core::types::ReadinessConfig::default(),
             output_lines: 50,
-            parallel: crate::types::ParallelConfig::default(),
-            webhook: crate::webhook::WebhookConfig::default(),
-            encryption: crate::encryption::EncryptionConfig::default(),
+            parallel: shipper_core::types::ParallelConfig::default(),
+            webhook: shipper_core::webhook::WebhookConfig::default(),
+            encryption: shipper_core::encryption::EncryptionConfig::default(),
             registries: vec![],
             resume_from: None,
             rehearsal_registry: None,
@@ -2535,7 +2557,7 @@ mode = "fast"
         assert!(config.is_some(), "should return Some when config exists");
         assert_eq!(
             config.unwrap().policy.mode,
-            crate::config::PublishPolicy::Fast
+            shipper_core::config::PublishPolicy::Fast
         );
     }
 
@@ -2543,39 +2565,39 @@ mode = "fast"
     fn config_merge_with_cli_overrides() {
         let config = ShipperConfig {
             schema_version: "shipper.config.v1".to_string(),
-            policy: crate::config::PolicyConfig {
-                mode: crate::config::PublishPolicy::Safe,
+            policy: shipper_core::config::PolicyConfig {
+                mode: shipper_core::config::PublishPolicy::Safe,
             },
-            verify: crate::config::VerifyConfig {
-                mode: crate::config::VerifyMode::Workspace,
+            verify: shipper_core::config::VerifyConfig {
+                mode: shipper_core::config::VerifyMode::Workspace,
             },
-            readiness: crate::config::ReadinessConfig::default(),
-            output: crate::config::OutputConfig { lines: 100 },
-            lock: crate::config::LockConfig {
+            readiness: shipper_core::config::ReadinessConfig::default(),
+            output: shipper_core::config::OutputConfig { lines: 100 },
+            lock: shipper_core::config::LockConfig {
                 timeout: Duration::from_secs(1800),
             },
-            flags: crate::config::FlagsConfig {
+            flags: shipper_core::config::FlagsConfig {
                 allow_dirty: false,
                 skip_ownership_check: false,
                 strict_ownership: false,
             },
-            retry: crate::config::RetryConfig {
-                policy: crate::retry::RetryPolicy::Custom,
+            retry: shipper_core::config::RetryConfig {
+                policy: shipper_core::retry::RetryPolicy::Custom,
                 max_attempts: 10,
                 base_delay: Duration::from_secs(5),
                 max_delay: Duration::from_secs(300),
-                strategy: crate::retry::RetryStrategyType::Exponential,
+                strategy: shipper_core::retry::RetryStrategyType::Exponential,
                 jitter: 0.5,
-                per_error: crate::retry::PerErrorConfig::default(),
+                per_error: shipper_core::retry::PerErrorConfig::default(),
             },
             state_dir: None,
             registry: None,
-            registries: crate::config::MultiRegistryConfig::default(),
-            parallel: crate::config::ParallelConfig::default(),
-            webhook: crate::config::WebhookConfig::default(),
-            encryption: crate::config::EncryptionConfigInner::default(),
-            storage: crate::config::StorageConfigInner::default(),
-            rehearsal: crate::config::RehearsalConfig::default(),
+            registries: shipper_core::config::MultiRegistryConfig::default(),
+            parallel: shipper_core::config::ParallelConfig::default(),
+            webhook: shipper_core::config::WebhookConfig::default(),
+            encryption: shipper_core::config::EncryptionConfigInner::default(),
+            storage: shipper_core::config::StorageConfigInner::default(),
+            rehearsal: shipper_core::config::RehearsalConfig::default(),
         };
 
         // CLI overrides some values, leaves others as None
@@ -2583,8 +2605,8 @@ mode = "fast"
             allow_dirty: true,
             max_attempts: Some(3),
             output_lines: Some(50),
-            policy: Some(crate::config::PublishPolicy::Fast),
-            verify_mode: Some(crate::config::VerifyMode::None),
+            policy: Some(shipper_core::config::PublishPolicy::Fast),
+            verify_mode: Some(shipper_core::config::VerifyMode::None),
             ..Default::default()
         };
 
@@ -2596,12 +2618,12 @@ mode = "fast"
         assert_eq!(merged.output_lines, 50, "CLI output_lines should win");
         assert_eq!(
             merged.policy,
-            crate::types::PublishPolicy::Fast,
+            shipper_core::types::PublishPolicy::Fast,
             "CLI policy should win"
         );
         assert_eq!(
             merged.verify_mode,
-            crate::types::VerifyMode::None,
+            shipper_core::types::VerifyMode::None,
             "CLI verify_mode should win"
         );
 
@@ -2630,13 +2652,13 @@ mode = "fast"
         let abs_state = td.path().join(&state_dir);
         fs::create_dir_all(&abs_state).expect("mkdir");
 
-        let lock_info = crate::lock::LockInfo {
+        let lock_info = shipper_core::lock::LockInfo {
             pid: 12345,
             hostname: "test-host".to_string(),
             acquired_at: Utc::now(),
             plan_id: Some("plan-123".to_string()),
         };
-        let lock_path = crate::lock::lock_path(&abs_state, Some(td.path()));
+        let lock_path = shipper_core::lock::lock_path(&abs_state, Some(td.path()));
         fs::write(
             &lock_path,
             serde_json::to_string(&lock_info).expect("serialize"),
@@ -2655,16 +2677,16 @@ mode = "fast"
         let abs_state = td.path().join(&state_dir);
         fs::create_dir_all(&abs_state).expect("mkdir");
 
-        let state_path = abs_state.join(crate::state::execution_state::STATE_FILE);
-        let receipt_path = abs_state.join(crate::state::execution_state::RECEIPT_FILE);
-        let events_path = abs_state.join(crate::state::events::EVENTS_FILE);
-        let lock_path = crate::lock::lock_path(&abs_state, Some(td.path()));
+        let state_path = abs_state.join(shipper_core::state::execution_state::STATE_FILE);
+        let receipt_path = abs_state.join(shipper_core::state::execution_state::RECEIPT_FILE);
+        let events_path = abs_state.join(shipper_core::state::events::EVENTS_FILE);
+        let lock_path = shipper_core::lock::lock_path(&abs_state, Some(td.path()));
 
         fs::write(&state_path, "{}").expect("write state");
         fs::write(&receipt_path, "{}").expect("write receipt");
         fs::write(&events_path, "{}").expect("write events");
 
-        let lock_info = crate::lock::LockInfo {
+        let lock_info = shipper_core::lock::LockInfo {
             pid: 12345,
             hostname: "test-host".to_string(),
             acquired_at: Utc::now(),

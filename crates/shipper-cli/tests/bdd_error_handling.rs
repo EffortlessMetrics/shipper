@@ -260,10 +260,10 @@ mod auth_failure {
     //   And   no retry is attempted
     #[test]
     fn given_401_unauthorized_when_classifying_then_permanent() {
-        let outcome = shipper::cargo_failure::classify_publish_failure("401 unauthorized", "");
+        let outcome = shipper_core::cargo_failure::classify_publish_failure("401 unauthorized", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Permanent
+            shipper_core::cargo_failure::CargoFailureClass::Permanent
         );
     }
 
@@ -273,10 +273,10 @@ mod auth_failure {
     //   Then  the failure class is "Permanent"
     #[test]
     fn given_invalid_token_when_classifying_then_permanent() {
-        let outcome = shipper::cargo_failure::classify_publish_failure("token is invalid", "");
+        let outcome = shipper_core::cargo_failure::classify_publish_failure("token is invalid", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Permanent
+            shipper_core::cargo_failure::CargoFailureClass::Permanent
         );
     }
 
@@ -284,10 +284,10 @@ mod auth_failure {
     #[test]
     fn given_not_authorized_when_classifying_then_permanent() {
         let outcome =
-            shipper::cargo_failure::classify_publish_failure("not authorized to publish", "");
+            shipper_core::cargo_failure::classify_publish_failure("not authorized to publish", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Permanent
+            shipper_core::cargo_failure::CargoFailureClass::Permanent
         );
     }
 
@@ -346,22 +346,22 @@ mod rate_limiting {
     #[test]
     fn given_429_when_classifying_then_retryable() {
         let outcome =
-            shipper::cargo_failure::classify_publish_failure("HTTP 429 too many requests", "");
+            shipper_core::cargo_failure::classify_publish_failure("HTTP 429 too many requests", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
     #[test]
     fn given_too_many_requests_when_classifying_then_retryable() {
-        let outcome = shipper::cargo_failure::classify_publish_failure(
+        let outcome = shipper_core::cargo_failure::classify_publish_failure(
             "the remote server responded with 429 Too Many Requests",
             "",
         );
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
@@ -430,11 +430,13 @@ mod network_timeout {
     //   Then  the failure class is "Retryable"
     #[test]
     fn given_timeout_when_classifying_then_retryable() {
-        let outcome =
-            shipper::cargo_failure::classify_publish_failure("operation timed out after 30s", "");
+        let outcome = shipper_core::cargo_failure::classify_publish_failure(
+            "operation timed out after 30s",
+            "",
+        );
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
@@ -445,10 +447,10 @@ mod network_timeout {
     #[test]
     fn given_dns_error_when_classifying_then_retryable() {
         let outcome =
-            shipper::cargo_failure::classify_publish_failure("dns error: lookup failed", "");
+            shipper_core::cargo_failure::classify_publish_failure("dns error: lookup failed", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
@@ -459,10 +461,10 @@ mod network_timeout {
     #[test]
     fn given_connection_reset_when_classifying_then_retryable() {
         let outcome =
-            shipper::cargo_failure::classify_publish_failure("connection reset by peer", "");
+            shipper_core::cargo_failure::classify_publish_failure("connection reset by peer", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
@@ -472,10 +474,10 @@ mod network_timeout {
     //   Then  the failure class is "Retryable"
     #[test]
     fn given_502_when_classifying_then_retryable() {
-        let outcome = shipper::cargo_failure::classify_publish_failure("502 bad gateway", "");
+        let outcome = shipper_core::cargo_failure::classify_publish_failure("502 bad gateway", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
@@ -532,10 +534,11 @@ mod invalid_manifest {
     //   Then  the failure class is "Permanent"
     #[test]
     fn given_compilation_failed_when_classifying_then_permanent() {
-        let outcome = shipper::cargo_failure::classify_publish_failure("compilation failed", "");
+        let outcome =
+            shipper_core::cargo_failure::classify_publish_failure("compilation failed", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Permanent
+            shipper_core::cargo_failure::CargoFailureClass::Permanent
         );
     }
 
@@ -590,13 +593,13 @@ resolver = "2"
     // Scenario: "failed to parse manifest" in cargo output is permanent
     #[test]
     fn given_parse_manifest_error_when_classifying_then_permanent() {
-        let outcome = shipper::cargo_failure::classify_publish_failure(
+        let outcome = shipper_core::cargo_failure::classify_publish_failure(
             "failed to parse manifest at Cargo.toml",
             "",
         );
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Permanent
+            shipper_core::cargo_failure::CargoFailureClass::Permanent
         );
     }
 }
@@ -609,20 +612,22 @@ mod registry_unreachable {
     // Scenario: "connection refused" is classified as retryable
     #[test]
     fn given_connection_refused_when_classifying_then_retryable() {
-        let outcome = shipper::cargo_failure::classify_publish_failure("connection refused", "");
+        let outcome =
+            shipper_core::cargo_failure::classify_publish_failure("connection refused", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
     // Scenario: "network unreachable" is classified as retryable
     #[test]
     fn given_network_unreachable_when_classifying_then_retryable() {
-        let outcome = shipper::cargo_failure::classify_publish_failure("network unreachable", "");
+        let outcome =
+            shipper_core::cargo_failure::classify_publish_failure("network unreachable", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
@@ -656,13 +661,13 @@ mod registry_unreachable {
     //   Then  the failure class is "Ambiguous"
     #[test]
     fn given_unrecognized_error_when_classifying_then_ambiguous() {
-        let outcome = shipper::cargo_failure::classify_publish_failure(
+        let outcome = shipper_core::cargo_failure::classify_publish_failure(
             "unexpected registry response: xyz",
             "",
         );
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Ambiguous
+            shipper_core::cargo_failure::CargoFailureClass::Ambiguous
         );
     }
 }
@@ -746,11 +751,13 @@ mod mixed_success_failure_state {
     //   Then  the failure class is "Permanent"
     #[test]
     fn given_already_exists_when_classifying_then_permanent() {
-        let outcome =
-            shipper::cargo_failure::classify_publish_failure("version already exists: 0.1.0", "");
+        let outcome = shipper_core::cargo_failure::classify_publish_failure(
+            "version already exists: 0.1.0",
+            "",
+        );
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Permanent
+            shipper_core::cargo_failure::CargoFailureClass::Permanent
         );
     }
 

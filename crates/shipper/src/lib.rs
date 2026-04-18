@@ -2,13 +2,18 @@
 //!
 //! Installable product face for the Shipper release engine.
 //!
-//! This crate is what users `cargo install`. The engine itself lives in
-//! [`shipper_core`]; the `shipper` binary wires [`shipper_core`] to a
-//! command-line adapter (currently [`cli`], migrating to the
-//! `shipper-cli` crate in the #95 split).
+//! This is the crate you install with `cargo install shipper --locked`.
+//! It ships the `shipper` binary, which delegates to the CLI adapter in
+//! [`shipper-cli`](https://crates.io/crates/shipper-cli) — which in turn
+//! calls the engine in [`shipper_core`].
 //!
-//! For programmatic use without a CLI dependency graph, depend on
-//! [`shipper-core`](https://crates.io/crates/shipper-core) directly.
+//! ## Architecture
+//!
+//! ```text
+//! shipper (this crate — install façade)
+//!   -> shipper-cli (CLI adapter: clap parsing, dispatch, output)
+//!        -> shipper-core (engine: plan, preflight, publish, resume, …)
+//! ```
 //!
 //! ## Install
 //!
@@ -16,21 +21,16 @@
 //! cargo install shipper --locked
 //! ```
 //!
-//! ## Re-exports
+//! ## Embedding
 //!
-//! Every public module of [`shipper_core`] is re-exported here so
-//! existing `shipper::engine`, `shipper::plan`, etc. paths keep
-//! resolving during the #95 migration. New programmatic consumers
-//! should prefer `shipper_core::*` directly.
+//! For programmatic use without CLI dependencies (`clap`, `indicatif`),
+//! depend on [`shipper-core`](https://crates.io/crates/shipper-core)
+//! directly. This crate re-exports its public module surface below so
+//! `shipper::engine::*`, `shipper::plan::*`, etc. keep resolving for
+//! callers that prefer the product name — but new programmatic
+//! consumers should target `shipper_core::*`.
 
 pub use shipper_core::{
     auth, cargo, cargo_failure, config, encryption, engine, git, lock, plan, registry, retry,
     runtime, state, store, types, webhook,
 };
-
-/// CLI entry point for the `shipper` binary.
-///
-/// Currently colocated in the `shipper` crate; moves to `shipper-cli`
-/// as a library adapter in #95 PR 2. The binary target at
-/// `src/bin/shipper.rs` is a three-line shim over [`cli::run`].
-pub mod cli;

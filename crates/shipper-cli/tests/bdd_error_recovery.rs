@@ -91,12 +91,12 @@ mod failure_classification {
     fn given_retryable_stderr_when_classifying_then_retryable() {
         // Given: cargo publish output containing a retryable pattern (rate limit)
         let outcome =
-            shipper::cargo_failure::classify_publish_failure("HTTP 429 too many requests", "");
+            shipper_core::cargo_failure::classify_publish_failure("HTTP 429 too many requests", "");
 
         // Then: The failure is classified as retryable
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
@@ -104,12 +104,13 @@ mod failure_classification {
     #[test]
     fn given_permanent_stderr_when_classifying_then_permanent() {
         // Given: cargo publish output containing a permanent failure pattern
-        let outcome = shipper::cargo_failure::classify_publish_failure("permission denied", "");
+        let outcome =
+            shipper_core::cargo_failure::classify_publish_failure("permission denied", "");
 
         // Then: The failure is classified as permanent
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Permanent
+            shipper_core::cargo_failure::CargoFailureClass::Permanent
         );
     }
 
@@ -117,7 +118,7 @@ mod failure_classification {
     #[test]
     fn given_unknown_error_when_classifying_then_ambiguous() {
         // Given: cargo publish output with no recognizable pattern
-        let outcome = shipper::cargo_failure::classify_publish_failure(
+        let outcome = shipper_core::cargo_failure::classify_publish_failure(
             "something completely unexpected happened",
             "",
         );
@@ -125,7 +126,7 @@ mod failure_classification {
         // Then: The failure is classified as ambiguous
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Ambiguous
+            shipper_core::cargo_failure::CargoFailureClass::Ambiguous
         );
     }
 
@@ -133,7 +134,7 @@ mod failure_classification {
     #[test]
     fn given_both_retryable_and_permanent_patterns_when_classifying_then_retryable_wins() {
         // Given: cargo publish output containing both retryable and permanent patterns
-        let outcome = shipper::cargo_failure::classify_publish_failure(
+        let outcome = shipper_core::cargo_failure::classify_publish_failure(
             "permission denied and 429 too many requests",
             "",
         );
@@ -141,28 +142,30 @@ mod failure_classification {
         // Then: Retryable takes precedence
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
     // Scenario: Network timeout patterns are classified as retryable
     #[test]
     fn given_timeout_error_when_classifying_then_retryable() {
-        let outcome =
-            shipper::cargo_failure::classify_publish_failure("operation timed out after 30s", "");
+        let outcome = shipper_core::cargo_failure::classify_publish_failure(
+            "operation timed out after 30s",
+            "",
+        );
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
     // Scenario: Authentication failures are classified as permanent
     #[test]
     fn given_auth_failure_when_classifying_then_permanent() {
-        let outcome = shipper::cargo_failure::classify_publish_failure("401 unauthorized", "");
+        let outcome = shipper_core::cargo_failure::classify_publish_failure("401 unauthorized", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Permanent
+            shipper_core::cargo_failure::CargoFailureClass::Permanent
         );
     }
 }
@@ -277,12 +280,12 @@ mod resume_skips_completed {
         create_multi_crate_workspace(td.path());
 
         // Use the library directly to get the deterministic plan_id
-        let spec = shipper::types::ReleaseSpec {
+        let spec = shipper_core::types::ReleaseSpec {
             manifest_path: td.path().join("Cargo.toml"),
-            registry: shipper::types::Registry::crates_io(),
+            registry: shipper_core::types::Registry::crates_io(),
             selected_packages: None,
         };
-        let ws = shipper::plan::build_plan(&spec).expect("build plan");
+        let ws = shipper_core::plan::build_plan(&spec).expect("build plan");
         let plan_id = &ws.plan.plan_id;
 
         let state_dir = td.path().join("custom-state");
