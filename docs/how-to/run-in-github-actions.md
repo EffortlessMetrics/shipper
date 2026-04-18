@@ -100,7 +100,23 @@ leak.
    - Workflow filename: `release.yml` (or whatever yours is called)
    - Environment: `release` (match the `environment:` name in the job
      below — this is the scope guard)
-3. Repeat for every crate the workspace publishes.
+3. Repeat for **every** crate the workspace publishes. Do NOT enable
+   OIDC until the list is complete.
+
+> **Why "every crate"**: if only some crates are registered, the
+> OIDC action still succeeds and mints a token — but that token 401s
+> on the unregistered crates mid-train, after some publishes have
+> already succeeded. Shipper's preflight catches scope mismatches
+> for *existing* crates via ownership checks, but new crates have no
+> owner record yet so the first-publish case depends on operator
+> discipline. Complete registration first; rehearse second; tag third.
+>
+> **Rehearsal validates the mechanism.** `release.yml`'s
+> `release-rehearse` job binds to `environment: release` so the OIDC
+> scope it mints matches production. A rehearsal that mints
+> successfully proves the scope wiring. A mid-train 401 on a
+> different crate proves you missed a registration step — fix the
+> missing registration, don't retry the tag.
 
 **Workflow**:
 
