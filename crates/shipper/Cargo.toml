@@ -4,13 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Core library for reliable, resumable Rust workspace publishing"
+description = "Reliable, resumable `cargo publish` for Rust workspaces. Install with `cargo install shipper`."
 readme = "README.md"
 documentation = "https://docs.rs/shipper"
 homepage = "https://github.com/EffortlessMetrics/shipper"
 repository = "https://github.com/EffortlessMetrics/shipper"
-keywords = ["cargo", "publish", "workspace", "release", "automation"]
-categories = ["development-tools", "development-tools::build-utils"]
+keywords = ["cargo", "publish", "workspace", "release", "cli"]
+categories = ["command-line-utilities", "development-tools", "development-tools::build-utils"]
+
+# Package-level unification: one public crate carries both the library
+# API and the `shipper` CLI binary. The #95 reframe replaces the earlier
+# experiment that tried to split this into `shipper-core` + `shipper-cli`
+# + a facade; see GH issue #95 for the rationale.
+[[bin]]
+name = "shipper"
+path = "src/bin/shipper.rs"
 
 [dependencies]
 # Workspace microcrates
@@ -48,6 +56,14 @@ pbkdf2 = { version = "0.12", features = ["simple"] }
 # HMAC for webhook signatures
 hmac = "0.13"
 sha2 = "0.11"
+
+# CLI-only deps (drive the `shipper` binary via `crate::cli`). They're
+# in the regular `[dependencies]` because the CLI module is
+# unconditionally compiled — keeping it behind a feature gate is a
+# later follow-on if the compile-time cost bites.
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+indicatif = "0.18.4"
 
 [lints]
 workspace = true

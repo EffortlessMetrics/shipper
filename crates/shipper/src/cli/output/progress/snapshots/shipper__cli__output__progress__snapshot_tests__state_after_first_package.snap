@@ -1,0 +1,5 @@
+---
+source: crates/shipper/src/cli/output/progress/snapshot_tests.rs
+expression: state_snapshot(&reporter)
+---
+total=3 current=1 name="alpha@0.1.0" tty=false

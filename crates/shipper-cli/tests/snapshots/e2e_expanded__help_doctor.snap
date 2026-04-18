@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 Print environment and auth diagnostics
 
-Usage: shipper doctor [OPTIONS]
+Usage: shipper-cli doctor [OPTIONS]
 
 Options:
       --config <CONFIG>

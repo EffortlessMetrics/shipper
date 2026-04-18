@@ -48,7 +48,7 @@ See [../CLAUDE.md](../CLAUDE.md) for the canonical command list. Quick reference
 
 ```bash
 cargo build --release            # production binary (LTO + strip)
-cargo install --path crates/shipper-cli --locked
+cargo install --path crates/shipper --locked
 cargo test                       # workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check

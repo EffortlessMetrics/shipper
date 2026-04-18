@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 View detailed receipt with evidence
 
-Usage: shipper inspect-receipt [OPTIONS]
+Usage: shipper-cli inspect-receipt [OPTIONS]
 
 Options:
       --config <CONFIG>

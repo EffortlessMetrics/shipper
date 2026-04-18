@@ -4,7 +4,7 @@ expression: normalize_output(&stderr)
 ---
 Resumable, backoff-aware crates.io publishing for workspaces
 
-Usage: shipper [OPTIONS] <COMMAND>
+Usage: shipper-cli [OPTIONS] <COMMAND>
 
 Commands:
   plan             Print the deterministic publish plan (dependency-first ordering)

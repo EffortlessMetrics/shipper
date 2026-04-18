@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Command-line tool for reliable, resumable Rust workspace publishing"
+description = "Compatibility shim for `shipper` — operators should prefer `cargo install shipper`."
 readme = "README.md"
 documentation = "https://github.com/EffortlessMetrics/shipper/tree/main/crates/shipper-cli"
 homepage = "https://github.com/EffortlessMetrics/shipper"
@@ -12,24 +12,26 @@ repository = "https://github.com/EffortlessMetrics/shipper"
 keywords = ["cargo", "publish", "workspace", "cli", "ci"]
 categories = ["command-line-utilities", "development-tools"]
 
+# The CLI lives in the `shipper` package (see #95). This crate remains
+# as a temporary compatibility shim so `cargo install shipper-cli`
+# keeps working for operators on the old name. The shim binary is
+# renamed to `shipper-cli` to avoid a workspace-build collision with
+# `shipper`'s own `shipper` binary.
 [[bin]]
-name = "shipper"
+name = "shipper-cli"
 path = "src/main.rs"
 
 [dependencies]
 shipper.workspace = true
-shipper-duration.workspace = true
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
-serde_json = "1"
-chrono = { version = "0.4.44", features = ["serde"] }
-indicatif = "0.18.4"
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+# Dev-deps retained so the extensive CLI test suite in tests/ can
+# continue to exercise the compat shim. Tests invoke the shim binary
+# via `assert_cmd::cargo_bin!("shipper-cli")`.
 console = "0.16.3"
 assert_cmd = "2"
 insta = "1"
@@ -40,3 +42,5 @@ tempfile = "3"
 tiny_http = "0.12"
 temp-env = "0.3"
 serde_yaml = "0.9"
+serde_json = "1"
+chrono = { version = "0.4.44", features = ["serde"] }

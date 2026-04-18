@@ -8,7 +8,7 @@ Reads a prior `receipt.json`, finds packages whose receipt entry carries a `comp
 
 **Planning only.** This command does NOT edit Cargo.toml or invoke publish — that's operator territory. It prints the steps, you execute them.
 
-Usage: shipper fix-forward [OPTIONS]
+Usage: shipper-cli fix-forward [OPTIONS]
 
 Options:
       --config <CONFIG>

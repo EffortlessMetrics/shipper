@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 Run preflight checks without publishing
 
-Usage: shipper preflight [OPTIONS]
+Usage: shipper-cli preflight [OPTIONS]
 
 Options:
       --config <CONFIG>

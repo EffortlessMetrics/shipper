@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 Print GitLab CI workflow snippet
 
-Usage: shipper ci gitlab [OPTIONS]
+Usage: shipper-cli ci gitlab [OPTIONS]
 
 Options:
       --config <CONFIG>

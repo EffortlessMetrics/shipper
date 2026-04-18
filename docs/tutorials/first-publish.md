@@ -22,7 +22,7 @@ In this tutorial you will publish a two-crate workspace to crates.io using Shipp
 ## 1. Install
 
 ```bash
-cargo install shipper-cli --locked
+cargo install shipper --locked
 ```
 
 > The binary is named `shipper`; the published crate is `shipper-cli`. [Issue #95](https://github.com/EffortlessMetrics/shipper/issues/95) tracks making `cargo install shipper` work.
