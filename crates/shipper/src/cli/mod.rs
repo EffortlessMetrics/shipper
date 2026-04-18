@@ -278,28 +278,34 @@ enum Commands {
     /// compose this primitive into reverse-topological containment and
     /// fix-forward plans.
     Yank {
-        /// Name of the crate to yank (e.g., `shipper-types`).
-        #[arg(long = "crate", value_name = "NAME")]
-        crate_name: String,
-        /// Version to yank (e.g., `0.3.0-rc.1`).
-        #[arg(long, value_name = "VERSION")]
-        version: String,
-        /// Operator-supplied reason (recorded in the event log, audit
-        /// trails, and any future receipts that reference this yank).
+        /// Name of the crate to yank (e.g., `shipper-types`). Required
+        /// unless `--plan` is supplied.
+        #[arg(long = "crate", value_name = "NAME", conflicts_with = "plan")]
+        crate_name: Option<String>,
+        /// Version to yank (e.g., `0.3.0-rc.1`). Required unless `--plan`
+        /// is supplied.
+        #[arg(long, value_name = "VERSION", conflicts_with = "plan")]
+        version: Option<String>,
+        /// Operator-supplied reason. Required unless `--plan` is supplied.
+        /// Recorded in the event log, audit trails, and any future
+        /// receipts that reference this yank.
         ///
         /// Example: `"CVE-2026-0001 disclosed; containing while patch
         /// released"`.
-        #[arg(long)]
-        reason: String,
+        #[arg(long, conflicts_with = "plan")]
+        reason: Option<String>,
         /// Also mark the crate's existing receipt entry as compromised
-        /// (#98 PR 3). Sets `compromised_at = now` and `compromised_by =
-        /// <reason>` on the matching `PackageReceipt` in
-        /// `<state_dir>/receipt.json`, so downstream commands like
-        /// `shipper plan-yank --compromised-only` and `shipper fix-forward`
-        /// can find the compromised packages without scanning events.jsonl.
-        /// No-op if no matching receipt exists (prints a warning).
+        /// (#98 PR 3). Ignored in `--plan` mode (plan execution already
+        /// carries per-entry reasons from the planning step).
         #[arg(long)]
         mark_compromised: bool,
+        /// **Plan execution mode** (#98 PR 5). Path to a yank plan JSON
+        /// file (the `--format json` output of `shipper plan-yank`).
+        /// Walks the plan's entries in order, invoking `cargo yank` for
+        /// each. Mutually exclusive with `--crate` / `--version` /
+        /// `--reason`.
+        #[arg(long, value_name = "PATH")]
+        plan: Option<PathBuf>,
     },
     /// Generate a reverse-topological yank plan from a receipt (#98 PR 2).
     ///
@@ -758,11 +764,139 @@ pub fn run() -> Result<()> {
             version,
             reason,
             mark_compromised,
+            plan,
         } => {
             use crate::cargo;
+            use crate::engine::plan_yank;
             use crate::state::events::{EventLog, events_path};
             use crate::state::execution_state::{load_receipt, receipt_path, write_receipt};
             use crate::types::{EventType, PublishEvent};
+
+            // #98 PR 5 — plan execution mode. Dispatched entirely
+            // separately from the single-yank path below; the two share
+            // the same cargo_yank primitive but different orchestration.
+            if let Some(plan_path) = plan {
+                let yank_plan = plan_yank::load_plan_from_path(&plan_path)?;
+                reporter.info(&format!(
+                    "executing yank plan: {} entries against '{}' (plan_id {})",
+                    yank_plan.entries.len(),
+                    yank_plan.registry,
+                    yank_plan.plan_id
+                ));
+
+                let workspace_root = std::env::current_dir()
+                    .context("failed to resolve current dir for plan execution")?;
+                let registry_name = opts
+                    .registries
+                    .first()
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| yank_plan.registry.clone());
+
+                let mut log = EventLog::new();
+                let events_file = events_path(&opts.state_dir);
+
+                let mut succeeded = 0usize;
+                let mut failed: Option<(String, i32)> = None;
+
+                for (i, entry) in yank_plan.entries.iter().enumerate() {
+                    let entry_reason = entry
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "plan execution".to_string());
+                    reporter.warn(&format!(
+                        "[{}/{}] yanking {}@{} — reason: {}",
+                        i + 1,
+                        yank_plan.entries.len(),
+                        entry.name,
+                        entry.version,
+                        entry_reason
+                    ));
+
+                    let out = cargo::cargo_yank(
+                        &workspace_root,
+                        entry.name.as_str(),
+                        entry.version.as_str(),
+                        registry_name.as_str(),
+                        opts.output_lines,
+                        None,
+                    )?;
+
+                    log.record(PublishEvent {
+                        timestamp: chrono::Utc::now(),
+                        event_type: EventType::PackageYanked {
+                            crate_name: entry.name.clone(),
+                            version: entry.version.clone(),
+                            reason: entry_reason.clone(),
+                            exit_code: out.exit_code,
+                        },
+                        package: format!("{}@{}", entry.name, entry.version),
+                    });
+                    if let Err(err) = log.write_to_file(&events_file) {
+                        reporter.warn(&format!(
+                            "failed to append PackageYanked event to {}: {err:#}",
+                            events_file.display()
+                        ));
+                    }
+                    log.clear();
+
+                    if out.exit_code == 0 {
+                        succeeded += 1;
+                        reporter.info(&format!(
+                            "[{}/{}] yanked {}@{}",
+                            i + 1,
+                            yank_plan.entries.len(),
+                            entry.name,
+                            entry.version
+                        ));
+                    } else {
+                        reporter.error(&format!(
+                            "[{}/{}] cargo yank exited {} for {}@{}. stderr tail:\n{}",
+                            i + 1,
+                            yank_plan.entries.len(),
+                            out.exit_code,
+                            entry.name,
+                            entry.version,
+                            out.stderr_tail
+                        ));
+                        failed = Some((format!("{}@{}", entry.name, entry.version), out.exit_code));
+                        // Halt on first failure. Plan is reverse-topo so
+                        // every entry below this one is a dependent of
+                        // something we just failed to yank — continuing
+                        // would only produce more damage.
+                        break;
+                    }
+                }
+
+                if let Some((pkg, code)) = failed {
+                    reporter.error(&format!(
+                        "yank plan halted: {succeeded}/{} succeeded; failed at {pkg} (cargo exit {code})",
+                        yank_plan.entries.len()
+                    ));
+                    anyhow::bail!(
+                        "yank plan failed at {pkg}; {succeeded}/{} entries succeeded before halt",
+                        yank_plan.entries.len()
+                    );
+                } else {
+                    reporter.info(&format!(
+                        "yank plan complete: {succeeded}/{} entries yanked successfully",
+                        yank_plan.entries.len()
+                    ));
+                    return Ok(());
+                }
+            }
+
+            // Single-yank mode (the original shape). All three fields
+            // are required when `--plan` is absent; clap's
+            // `conflicts_with` already rejected the mixed combinations.
+            let crate_name = crate_name.ok_or_else(|| {
+                anyhow::anyhow!("--crate is required when --plan is not supplied")
+            })?;
+            let version = version.ok_or_else(|| {
+                anyhow::anyhow!("--version is required when --plan is not supplied")
+            })?;
+            let reason = reason.ok_or_else(|| {
+                anyhow::anyhow!("--reason is required when --plan is not supplied")
+            })?;
 
             reporter.warn(&format!(
                 "yanking {crate_name}@{version} from registry \

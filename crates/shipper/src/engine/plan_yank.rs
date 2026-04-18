@@ -37,7 +37,11 @@ use anyhow::{Context, Result, bail};
 use shipper_types::{PackageReceipt, PackageState, Receipt};
 
 /// One entry in a reverse-topological yank plan.
-#[derive(Debug, Clone, serde::Serialize)]
+///
+/// Both `Serialize` and `Deserialize` because plan files are meant to
+/// round-trip: planner writes JSON, operator reviews, executor reads
+/// it back (#98 PR 5).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct YankEntry {
     pub name: String,
     pub version: String,
@@ -45,7 +49,7 @@ pub struct YankEntry {
     /// surfaces here so the operator running the plan sees per-crate
     /// context (CVE id, ticket, etc.) without having to cross-reference
     /// the receipt.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
@@ -63,12 +67,20 @@ pub enum PlanYankFilter {
 }
 
 /// A reverse-topological yank plan derived from a receipt.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct YankPlan {
     pub plan_id: String,
     pub registry: String,
-    pub filter: &'static str,
+    /// Which selector produced this plan. Serialized as a `String` in
+    /// both directions so the plan file round-trips cleanly even across
+    /// Shipper versions that add new selector modes.
+    #[serde(default = "unknown_filter")]
+    pub filter: std::borrow::Cow<'static, str>,
     pub entries: Vec<YankEntry>,
+}
+
+fn unknown_filter() -> std::borrow::Cow<'static, str> {
+    std::borrow::Cow::Borrowed("unknown")
 }
 
 fn include(receipt: &PackageReceipt, filter: PlanYankFilter) -> bool {
@@ -100,10 +112,10 @@ pub fn build_plan(receipt: &Receipt, filter: PlanYankFilter) -> YankPlan {
     YankPlan {
         plan_id: receipt.plan_id.clone(),
         registry: receipt.registry.name.clone(),
-        filter: match filter {
+        filter: std::borrow::Cow::Borrowed(match filter {
             PlanYankFilter::AllPublished => "all_published",
             PlanYankFilter::CompromisedOnly => "compromised_only",
-        },
+        }),
         entries,
     }
 }
@@ -179,9 +191,22 @@ pub fn build_plan_from_starting_crate(
     Ok(YankPlan {
         plan_id: receipt.plan_id.clone(),
         registry: receipt.registry.name.clone(),
-        filter: "starting_crate",
+        filter: std::borrow::Cow::Borrowed("starting_crate"),
         entries,
     })
+}
+
+/// Load a saved yank plan from disk (#98 PR 5).
+///
+/// Used by `shipper yank --plan <path>` to drive execution over a
+/// reviewed plan file produced by `shipper plan-yank`. The file format
+/// is the same JSON shape `plan-yank --format json` produces, so plans
+/// round-trip without any munging.
+pub fn load_plan_from_path(path: &std::path::Path) -> Result<YankPlan> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read yank plan at {}", path.display()))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse yank plan at {}", path.display()))
 }
 
 /// Load a receipt from an arbitrary path (not necessarily inside a state dir).
@@ -438,5 +463,46 @@ mod tests {
             build_plan_from_starting_crate(&r, &deps, "bogus", None).expect_err("should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("not in this receipt"), "err: {msg}");
+    }
+
+    // ── load_plan_from_path (#98 PR 5) roundtrip ──────────────────────────
+
+    #[test]
+    fn yank_plan_json_roundtrips_via_load_plan_from_path() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let r = sample_receipt(vec![
+            pkg("a", PackageState::Published, Some("CVE-1")),
+            pkg("b", PackageState::Published, None),
+        ]);
+        let plan = build_plan(&r, PlanYankFilter::AllPublished);
+        let path = td.path().join("yank-plan.json");
+        let raw = serde_json::to_string_pretty(&plan).expect("serialize");
+        std::fs::write(&path, raw).expect("write");
+
+        let loaded = load_plan_from_path(&path).expect("load");
+        assert_eq!(loaded.plan_id, plan.plan_id);
+        assert_eq!(loaded.registry, plan.registry);
+        assert_eq!(loaded.entries.len(), plan.entries.len());
+        // Entry order preserved (dependents first)
+        assert_eq!(loaded.entries[0].name, "b");
+        assert_eq!(loaded.entries[1].name, "a");
+        // Per-entry reason preserved
+        assert_eq!(loaded.entries[1].reason.as_deref(), Some("CVE-1"));
+    }
+
+    #[test]
+    fn load_plan_from_path_errors_on_missing_file() {
+        let err = load_plan_from_path(std::path::Path::new("/definitely/not/there.json"))
+            .expect_err("should fail");
+        assert!(format!("{err:#}").contains("failed to read yank plan"));
+    }
+
+    #[test]
+    fn load_plan_from_path_errors_on_malformed_json() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join("malformed.json");
+        std::fs::write(&path, "{ not valid json ").expect("write");
+        let err = load_plan_from_path(&path).expect_err("should fail");
+        assert!(format!("{err:#}").contains("failed to parse yank plan"));
     }
 }
