@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shipper::encryption::{decrypt, encrypt};
+use shipper_core::encryption::{decrypt, encrypt};
 
 fuzz_target!(|data: &[u8]| {
     // Test encryption/decryption roundtrip with random data

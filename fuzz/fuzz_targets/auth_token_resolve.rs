@@ -3,7 +3,7 @@
 use std::fs;
 
 use libfuzzer_sys::fuzz_target;
-use shipper::auth::resolve_token;
+use shipper_core::auth::resolve_token;
 use tempfile::tempdir;
 
 fuzz_target!(|data: &[u8]| {

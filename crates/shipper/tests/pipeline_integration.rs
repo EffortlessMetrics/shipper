@@ -330,7 +330,7 @@ fn registry_timeout_error_captured_in_state_and_events() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     // Registry check fails
     let err = client
@@ -397,12 +397,13 @@ fn lock_contention_second_acquire_fails() {
     fs::create_dir_all(&state_dir).expect("mkdir");
 
     // First process acquires the lock
-    let mut lock1 = shipper::lock::LockFile::acquire(&state_dir, None).expect("acquire lock 1");
-    assert!(shipper::lock::LockFile::is_locked(&state_dir, None).expect("check locked"));
+    let mut lock1 =
+        shipper_core::lock::LockFile::acquire(&state_dir, None).expect("acquire lock 1");
+    assert!(shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("check locked"));
 
     // Second attempt should fail
-    let err =
-        shipper::lock::LockFile::acquire(&state_dir, None).expect_err("second acquire should fail");
+    let err = shipper_core::lock::LockFile::acquire(&state_dir, None)
+        .expect_err("second acquire should fail");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("lock already held"),
@@ -411,10 +412,11 @@ fn lock_contention_second_acquire_fails() {
 
     // Release and re-acquire should succeed
     lock1.release().expect("release");
-    assert!(!shipper::lock::LockFile::is_locked(&state_dir, None).expect("check unlocked"));
+    assert!(!shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("check unlocked"));
 
-    let mut lock2 = shipper::lock::LockFile::acquire(&state_dir, None).expect("acquire lock 2");
-    assert!(shipper::lock::LockFile::is_locked(&state_dir, None).expect("check locked again"));
+    let mut lock2 =
+        shipper_core::lock::LockFile::acquire(&state_dir, None).expect("acquire lock 2");
+    assert!(shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("check locked again"));
     lock2.release().expect("release lock 2");
 }
 
@@ -431,7 +433,7 @@ fn lock_stale_timeout_allows_reacquire() {
 
     // Create a lock then release the handle (drop releases it)
     {
-        let mut lock = shipper::lock::LockFile::acquire(&state_dir, None).expect("acquire");
+        let mut lock = shipper_core::lock::LockFile::acquire(&state_dir, None).expect("acquire");
         lock.set_plan_id("stale-plan").expect("set plan_id");
         // Intentionally don't release — lock file remains but process holds it
         // For testing, we manually write a stale lock file
@@ -439,7 +441,7 @@ fn lock_stale_timeout_allows_reacquire() {
     }
 
     // Write a fake stale lock with a very old timestamp
-    let lock_path = shipper::lock::lock_path(&state_dir, None);
+    let lock_path = shipper_core::lock::lock_path(&state_dir, None);
     let stale_info = serde_json::json!({
         "pid": 99999,
         "hostname": "old-host",
@@ -453,10 +455,13 @@ fn lock_stale_timeout_allows_reacquire() {
     .expect("write stale");
 
     // acquire_with_timeout should remove the stale lock and succeed
-    let mut lock =
-        shipper::lock::LockFile::acquire_with_timeout(&state_dir, None, Duration::from_secs(60))
-            .expect("acquire with timeout");
-    assert!(shipper::lock::LockFile::is_locked(&state_dir, None).expect("locked"));
+    let mut lock = shipper_core::lock::LockFile::acquire_with_timeout(
+        &state_dir,
+        None,
+        Duration::from_secs(60),
+    )
+    .expect("acquire with timeout");
+    assert!(shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("locked"));
     lock.release().expect("release");
 }
 
@@ -760,7 +765,7 @@ fn lock_state_events_receipt_full_simulation() {
     let plan_id = "full-sim-001";
 
     // Step 1: Acquire lock
-    let mut lock = shipper::lock::LockFile::acquire(&state_dir, None).expect("acquire lock");
+    let mut lock = shipper_core::lock::LockFile::acquire(&state_dir, None).expect("acquire lock");
     lock.set_plan_id(plan_id).expect("set plan_id");
 
     // Step 2: Initialize state
@@ -844,7 +849,7 @@ fn lock_state_events_receipt_full_simulation() {
 
     // Verify everything is consistent
     assert!(!state::has_incomplete_state(&state_dir));
-    assert!(!shipper::lock::LockFile::is_locked(&state_dir, None).expect("check unlock"));
+    assert!(!shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("check unlock"));
 
     let loaded_receipt = state::load_receipt(&state_dir)
         .expect("load receipt")
@@ -909,7 +914,7 @@ fn config_plan_registry_check_pipeline() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     // Re-build plan for iteration (handler consumed the ws)
     let ws2 = plan::build_plan(&spec).expect("build plan 2");
@@ -1066,7 +1071,7 @@ fn ambiguous_state_resume_and_resolution() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
 
     let exists = client.version_exists("app", "0.1.0").expect("check");
     assert!(exists, "registry says app is published");
@@ -1811,11 +1816,12 @@ fn lock_lifecycle_around_state_operations() {
     let plan_id = "lock-lifecycle-test";
 
     // Acquire lock
-    let mut lock = shipper::lock::LockFile::acquire(&state_dir, None).expect("acquire");
+    let mut lock = shipper_core::lock::LockFile::acquire(&state_dir, None).expect("acquire");
     lock.set_plan_id(plan_id).expect("set plan_id");
 
     // Verify lock info
-    let info = shipper::lock::LockFile::read_lock_info(&state_dir, None).expect("read lock info");
+    let info =
+        shipper_core::lock::LockFile::read_lock_info(&state_dir, None).expect("read lock info");
     assert_eq!(info.plan_id.as_deref(), Some(plan_id));
     assert!(info.pid > 0);
     assert!(!info.hostname.is_empty());
@@ -1826,7 +1832,7 @@ fn lock_lifecycle_around_state_operations() {
 
     // Release lock
     lock.release().expect("release");
-    assert!(!shipper::lock::LockFile::is_locked(&state_dir, None).expect("check unlocked"));
+    assert!(!shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("check unlocked"));
 
     // State should persist after lock release
     let loaded = state::load_state(&state_dir)
@@ -2102,7 +2108,7 @@ fn registry_404_means_not_published() {
         api_base,
         index_base: None,
     };
-    let client = shipper::registry::RegistryClient::new(reg).expect("client");
+    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
     let exists = client
         .version_exists("brand-new-crate", "0.1.0")
         .expect("check");

@@ -36,7 +36,10 @@ workspace = true
 
 [dev-dependencies]
 # Integration tests exercise the re-exported surface but also reach
-# directly into the types microcrate for constructing fixtures.
+# directly into `shipper-core` (for engine internals like `runtime::`
+# that aren't part of the curated façade) and `shipper-types` (for
+# constructing fixtures).
+shipper-core.workspace = true
 shipper-types.workspace = true
 
 tempfile = "3.26.0"

@@ -10,6 +10,10 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 shipper = { path = "../crates/shipper" }
+# Engine internals (auth, encryption, runtime) aren't re-exported from
+# the `shipper` façade after #95 PR 3. Fuzz targets that exercise them
+# depend on `shipper-core` directly.
+shipper-core = { path = "../crates/shipper-core" }
 shipper-duration = { path = "../crates/shipper-duration" }
 shipper-config = { path = "../crates/shipper-config" }
 shipper-output-sanitizer = { path = "../crates/shipper-output-sanitizer" }
