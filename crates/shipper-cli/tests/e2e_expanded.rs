@@ -1425,6 +1425,19 @@ fn help_yank_snapshot() {
     assert_snapshot!("help_yank", normalize_stderr(&stdout));
 }
 
+/// Snapshot: `plan-yank --help` output.
+#[test]
+fn help_plan_yank_snapshot() {
+    let output = shipper_cmd()
+        .args(["plan-yank", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("help_plan_yank", normalize_stderr(&stdout));
+}
+
 /// Snapshot: `config init --help` output.
 #[test]
 fn help_config_init_snapshot() {

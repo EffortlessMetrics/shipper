@@ -111,6 +111,9 @@ fn make_receipt(plan_id: &str, pkgs: &[(&str, &str, PackageState)]) -> shipper::
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         })
         .collect();
 
@@ -665,6 +668,9 @@ fn receipt_with_full_evidence_roundtrips() {
                     },
                 ],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         }],
         event_log_path: std::path::PathBuf::from(".shipper/events.jsonl"),
         git_context: None,
@@ -1331,6 +1337,9 @@ fn full_pipeline_plan_preflight_publish_verify_receipt() {
                     delay_before: Duration::from_secs(1),
                 }],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         })
         .collect();
 
@@ -1697,6 +1706,9 @@ fn receipt_fields_populated_for_mixed_outcomes() {
                         delay_before: Duration::from_secs(1),
                     }],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             },
             PackageReceipt {
                 name: "app".to_string(),
@@ -1741,6 +1753,9 @@ fn receipt_fields_populated_for_mixed_outcomes() {
                     ],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             },
         ],
         event_log_path: std::path::PathBuf::from(".shipper/events.jsonl"),

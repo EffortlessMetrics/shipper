@@ -272,6 +272,28 @@ enum Commands {
         #[arg(long)]
         reason: String,
     },
+    /// Generate a reverse-topological yank plan from a receipt (#98 PR 2).
+    ///
+    /// Reads a prior `receipt.json` and emits the order in which to yank
+    /// the released crates — dependents first, dependencies last — so
+    /// downstream consumers stop resolving against the bad version before
+    /// the bad version itself is pulled. Output is either human-readable
+    /// `shipper yank ...` lines or structured JSON for scripting.
+    ///
+    /// **Planning only.** This command does NOT execute yanks. Pipe the
+    /// output through `sh`, or consume the JSON, once you've reviewed it.
+    /// `shipper fix-forward` (#98 PR 3) will wrap execution.
+    PlanYank {
+        /// Path to the receipt to derive the plan from. Defaults to
+        /// `<state_dir>/receipt.json` when omitted.
+        #[arg(long, value_name = "PATH")]
+        from_receipt: Option<PathBuf>,
+        /// Restrict the plan to packages whose receipt carries a
+        /// `compromised_at` marker. Without this, every `Published`
+        /// package is included (full rollback).
+        #[arg(long)]
+        compromised_only: bool,
+    },
     /// Configuration file management.
     #[command(subcommand)]
     Config(ConfigCommands),
@@ -730,6 +752,43 @@ fn main() -> Result<()> {
                     "yank failed for {crate_name}@{version} (cargo exit {})",
                     out.exit_code
                 );
+            }
+        }
+        Commands::PlanYank {
+            from_receipt,
+            compromised_only,
+        } => {
+            use shipper::engine::plan_yank::{self, PlanYankFilter};
+
+            let receipt_path = from_receipt.unwrap_or_else(|| {
+                opts.state_dir
+                    .join(shipper::state::execution_state::RECEIPT_FILE)
+            });
+
+            let receipt = plan_yank::load_receipt_from_path(&receipt_path).with_context(|| {
+                "plan-yank needs a readable receipt; default path is \
+                 <state_dir>/receipt.json. Pass --from-receipt <path> to \
+                 override."
+                    .to_string()
+            })?;
+
+            let filter = if compromised_only {
+                PlanYankFilter::CompromisedOnly
+            } else {
+                PlanYankFilter::AllPublished
+            };
+
+            let plan = plan_yank::build_plan(&receipt, filter);
+
+            match cli.format.as_str() {
+                "json" => {
+                    let out = serde_json::to_string_pretty(&plan)
+                        .context("failed to serialize yank plan as JSON")?;
+                    println!("{out}");
+                }
+                _ => {
+                    println!("{}", plan_yank::render_text(&plan));
+                }
             }
         }
         Commands::Clean { keep_receipt } => {

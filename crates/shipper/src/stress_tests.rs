@@ -209,6 +209,9 @@ mod tests {
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             })
             .collect();
 

@@ -178,6 +178,9 @@ pub(super) fn publish_package(
                     attempts: vec![],
                     readiness_checks: vec![],
                 },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
             }),
         };
     }
@@ -287,6 +290,9 @@ pub(super) fn publish_package(
                             attempts: vec![],
                             readiness_checks: vec![],
                         },
+                        compromised_at: None,
+                        compromised_by: None,
+                        superseded_by: None,
                     }),
                 };
             }
@@ -850,6 +856,9 @@ pub(super) fn publish_package(
                         attempts: attempt_evidence,
                         readiness_checks: readiness_evidence,
                     },
+                    compromised_at: None,
+                    compromised_by: None,
+                    superseded_by: None,
                 }),
             };
         } else {
@@ -926,6 +935,9 @@ pub(super) fn publish_package(
                 attempts: attempt_evidence,
                 readiness_checks: readiness_evidence,
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         }),
     }
 }

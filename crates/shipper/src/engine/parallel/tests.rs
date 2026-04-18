@@ -1984,6 +1984,9 @@ fn test_execution_result_all_skipped_is_success() {
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         },
         PackageReceipt {
             name: "b".to_string(),
@@ -1999,6 +2002,9 @@ fn test_execution_result_all_skipped_is_success() {
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         },
     ];
 
@@ -3299,6 +3305,9 @@ fn test_execution_result_mixed_published_and_skipped_is_success() {
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         },
         PackageReceipt {
             name: "b".to_string(),
@@ -3314,6 +3323,9 @@ fn test_execution_result_mixed_published_and_skipped_is_success() {
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         },
         PackageReceipt {
             name: "c".to_string(),
@@ -3327,6 +3339,9 @@ fn test_execution_result_mixed_published_and_skipped_is_success() {
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         },
     ];
 
@@ -3361,6 +3376,9 @@ fn test_execution_result_partial_failure() {
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         },
         PackageReceipt {
             name: "bad".to_string(),
@@ -3377,6 +3395,9 @@ fn test_execution_result_partial_failure() {
                 attempts: vec![],
                 readiness_checks: vec![],
             },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
         },
     ];
 
@@ -3416,6 +3437,9 @@ fn test_execution_result_complete_failure() {
             attempts: vec![],
             readiness_checks: vec![],
         },
+        compromised_at: None,
+        compromised_by: None,
+        superseded_by: None,
     }];
 
     let success_count = receipts

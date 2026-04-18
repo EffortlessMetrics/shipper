@@ -207,6 +207,9 @@ pub(crate) fn run_publish_parallel_inner(
                                 attempts: vec![],
                                 readiness_checks: vec![],
                             },
+                            compromised_at: None,
+                            compromised_by: None,
+                            superseded_by: None,
                         });
                     }
                 }
