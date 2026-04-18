@@ -858,6 +858,22 @@ impl ShipperConfig {
                 }
             },
             resume_from: cli.resume_from,
+            // #97 PR 2: rehearsal resolution order, highest priority first:
+            //   1. CLI --rehearsal-registry <name>  (implicit enable)
+            //   2. config [rehearsal] enabled = true + registry = "..."
+            //   3. None → rehearsal disabled
+            //
+            // A CLI override always takes precedence, matching every other
+            // flag in this builder. --skip-rehearsal is passed through raw;
+            // engine::run_rehearsal honors it with a loud warning.
+            rehearsal_registry: cli.rehearsal_registry.clone().or_else(|| {
+                if self.rehearsal.enabled {
+                    self.rehearsal.registry.clone()
+                } else {
+                    None
+                }
+            }),
+            rehearsal_skip: cli.skip_rehearsal,
         }
     }
 

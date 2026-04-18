@@ -11,6 +11,7 @@ Commands:
   preflight        Run preflight checks without publishing
   publish          Execute the plan (will resume if a matching state file exists)
   resume           Resume a previous publish run
+  rehearse         Rehearse a release against an alternate registry (#97 PR 2)
   status           Compare local workspace versions to the registry
   doctor           Print environment and auth diagnostics
   inspect-events   View detailed event log

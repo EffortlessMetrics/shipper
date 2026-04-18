@@ -378,6 +378,8 @@ mod apply_policy_tests {
             encryption: Default::default(),
             registries: vec![],
             resume_from: None,
+            rehearsal_registry: None,
+            rehearsal_skip: false,
         }
     }
 
@@ -665,6 +667,8 @@ mod property_tests {
                         encryption: Default::default(),
                         registries: vec![],
                         resume_from: None,
+                        rehearsal_registry: None,
+                        rehearsal_skip: false,
                     }
                 },
             )
@@ -1068,6 +1072,8 @@ mod absorbed_integration_tests {
             encryption: Default::default(),
             registries: vec![],
             resume_from: None,
+            rehearsal_registry: None,
+            rehearsal_skip: false,
         }
     }
 

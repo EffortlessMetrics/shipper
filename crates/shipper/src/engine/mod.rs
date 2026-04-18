@@ -1249,6 +1249,238 @@ pub fn run_resume(
     run_publish(ws, opts, reporter)
 }
 
+/// Outcome of a rehearsal run. Sufficient for callers (CLI, future hard gate)
+/// to decide whether live dispatch is authorized without re-reading events.
+///
+/// #97 PR 2. The hard gate (#97 PR 3) will bind this outcome to a `plan_id`
+/// so "rehearsal passed" can't be claimed for a different workspace state.
+#[derive(Debug, Clone)]
+pub struct RehearsalOutcome {
+    pub passed: bool,
+    pub registry_name: String,
+    pub packages_attempted: usize,
+    pub packages_published: usize,
+    pub summary: String,
+}
+
+/// Run a rehearsal publish against an alternate registry (#97 PR 2).
+///
+/// Phase-2 preflight: publish every crate in the plan to a non-live
+/// registry, verify each is visible on that registry, and emit a
+/// `RehearsalComplete` event summarizing the outcome.
+///
+/// **Contract**:
+/// - Reads `opts.rehearsal_registry` (set via `--rehearsal-registry` or
+///   `[rehearsal]` config). Must resolve to a [`Registry`] entry in
+///   `opts.registries`; bails clean otherwise.
+/// - Refuses to rehearse against the live target (`ws.plan.registry`).
+///   Rehearsal and live must be different registries.
+/// - Runs sequentially (no parallel yet); stops at the first failure.
+/// - Does NOT touch `state.json`. Rehearsal is a pre-publish proof, not
+///   an execution; it only appends to `events.jsonl` so auditors can
+///   replay the rehearsal from the event log.
+/// - Post-publish visibility check uses the SAME readiness mechanism as
+///   live publish (`reg.version_exists`). A rehearsal artifact that's
+///   not visible within the readiness window fails the rehearsal.
+///
+/// **Not in this PR**:
+/// - Hard gate wiring into `run_publish` (PR 3).
+/// - Install/smoke check against the rehearsal registry (PR 3 or 4).
+/// - Parallel rehearsal (not planned; rehearsal is infrequent and
+///   correctness > speed).
+pub fn run_rehearsal(
+    ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
+    reporter: &mut dyn Reporter,
+) -> Result<RehearsalOutcome> {
+    let rehearsal_name = opts
+        .rehearsal_registry
+        .as_ref()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no rehearsal registry configured; set --rehearsal-registry <name> \
+             or enable [rehearsal] in .shipper.toml"
+            )
+        })?
+        .clone();
+
+    if opts.rehearsal_skip {
+        reporter.warn(&format!(
+            "--skip-rehearsal set; rehearsal against '{rehearsal_name}' was requested but will not run. \
+             Once #97 PR 3 lands, live dispatch will refuse without a prior passing rehearsal."
+        ));
+        return Ok(RehearsalOutcome {
+            passed: false,
+            registry_name: rehearsal_name,
+            packages_attempted: 0,
+            packages_published: 0,
+            summary: "skipped by --skip-rehearsal".to_string(),
+        });
+    }
+
+    let rehearsal_reg = opts
+        .registries
+        .iter()
+        .find(|r| r.name == rehearsal_name)
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "rehearsal registry '{rehearsal_name}' is not configured. \
+             Add it to [[registries]] in .shipper.toml or pass --registries."
+            )
+        })?;
+
+    if rehearsal_reg.name == ws.plan.registry.name {
+        bail!(
+            "rehearsal registry '{}' must differ from the live target; \
+             pick a sandbox registry (e.g. kellnr, a fresh crates-io test account, \
+             or a throwaway alternate-registry entry)",
+            rehearsal_reg.name
+        );
+    }
+
+    let workspace_root = &ws.workspace_root;
+    let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
+    std::fs::create_dir_all(&state_dir)
+        .with_context(|| format!("failed to create state dir {}", state_dir.display()))?;
+    let events_path = events::events_path(&state_dir);
+    let mut event_log = events::EventLog::new();
+
+    reporter.info(&format!(
+        "rehearsal starting — {} packages against '{}'",
+        ws.plan.packages.len(),
+        rehearsal_name
+    ));
+
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RehearsalStarted {
+            registry: rehearsal_name.clone(),
+            package_count: ws.plan.packages.len(),
+        },
+        package: "all".to_string(),
+    });
+    event_log.write_to_file(&events_path)?;
+    event_log.clear();
+
+    let rehearsal_client = init_registry_client(rehearsal_reg.clone(), &state_dir)?;
+
+    let mut packages_published: usize = 0;
+    let mut first_failure: Option<String> = None;
+
+    for p in &ws.plan.packages {
+        let pkg_label = format!("{}@{}", p.name, p.version);
+        reporter.info(&format!("rehearsing {pkg_label} → {rehearsal_name}"));
+        let start = Instant::now();
+
+        let out = cargo::cargo_publish(
+            workspace_root,
+            &p.name,
+            &rehearsal_reg.name,
+            opts.allow_dirty,
+            opts.no_verify,
+            opts.output_lines,
+            None,
+        )?;
+
+        if out.exit_code != 0 {
+            let (class, msg) = classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
+            reporter.error(&format!(
+                "rehearsal failed for {pkg_label}: {msg}\nstderr tail:\n{}",
+                out.stderr_tail
+            ));
+            event_log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::RehearsalPackageFailed {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    class,
+                    message: msg.clone(),
+                },
+                package: pkg_label.clone(),
+            });
+            event_log.write_to_file(&events_path)?;
+            event_log.clear();
+            first_failure = Some(format!("{pkg_label}: {msg}"));
+            break;
+        }
+
+        // Post-publish visibility check on the rehearsal registry. Reuse
+        // `version_exists` — same mechanism live publish trusts.
+        if !rehearsal_client.version_exists(&p.name, &p.version)? {
+            let msg = format!(
+                "rehearsal: cargo publish succeeded but {pkg_label} is not visible on '{rehearsal_name}'"
+            );
+            reporter.error(&msg);
+            event_log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::RehearsalPackageFailed {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    class: ErrorClass::Ambiguous,
+                    message: msg.clone(),
+                },
+                package: pkg_label.clone(),
+            });
+            event_log.write_to_file(&events_path)?;
+            event_log.clear();
+            first_failure = Some(msg);
+            break;
+        }
+
+        let duration_ms = start.elapsed().as_millis();
+        event_log.record(PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::RehearsalPackagePublished {
+                name: p.name.clone(),
+                version: p.version.clone(),
+                duration_ms,
+            },
+            package: pkg_label.clone(),
+        });
+        event_log.write_to_file(&events_path)?;
+        event_log.clear();
+        packages_published += 1;
+    }
+
+    let passed = first_failure.is_none();
+    let summary = if passed {
+        format!("rehearsed {packages_published} packages against '{rehearsal_name}' successfully")
+    } else {
+        format!(
+            "rehearsal stopped at {}/{}: {}",
+            packages_published + 1,
+            ws.plan.packages.len(),
+            first_failure.as_deref().unwrap_or("")
+        )
+    };
+
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RehearsalComplete {
+            passed,
+            registry: rehearsal_name.clone(),
+            summary: summary.clone(),
+        },
+        package: "all".to_string(),
+    });
+    event_log.write_to_file(&events_path)?;
+
+    if passed {
+        reporter.info(&summary);
+    } else {
+        reporter.error(&summary);
+    }
+
+    Ok(RehearsalOutcome {
+        passed,
+        registry_name: rehearsal_name,
+        packages_attempted: packages_published + if passed { 0 } else { 1 },
+        packages_published,
+        summary,
+    })
+}
+
 pub(crate) fn init_state(ws: &PlannedWorkspace, state_dir: &Path) -> Result<ExecutionState> {
     let mut packages: BTreeMap<String, PackageProgress> = BTreeMap::new();
     for p in &ws.plan.packages {
@@ -1667,6 +1899,8 @@ mod tests {
             encryption: crate::encryption::EncryptionConfig::default(),
             registries: vec![],
             resume_from: None,
+            rehearsal_registry: None,
+            rehearsal_skip: false,
         }
     }
 
@@ -6290,6 +6524,229 @@ mod tests {
                 assert_eq!(pkg.attempts, attempts);
             }
         }
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // run_rehearsal (#97 PR 2) — phase-2 preflight against an alt registry
+    // ───────────────────────────────────────────────────────────────────
+
+    fn read_events_raw(state_dir: &Path) -> Vec<serde_json::Value> {
+        let path = events::events_path(state_dir);
+        let raw = std::fs::read_to_string(&path).unwrap_or_default();
+        raw.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).expect("events.jsonl must parse"))
+            .collect()
+    }
+
+    fn event_discriminator(event: &serde_json::Value) -> Option<String> {
+        event
+            .get("event_type")
+            .and_then(|et| et.get("type"))
+            .and_then(|t| t.as_str())
+            .map(str::to_owned)
+    }
+
+    #[test]
+    #[serial]
+    fn run_rehearsal_errors_when_no_rehearsal_registry_configured() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let env_vars = fake_program_env_vars(&bin);
+        temp_env::with_vars(env_vars, || {
+            let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+            let opts = default_opts(PathBuf::from(".shipper"));
+
+            let mut reporter = CollectingReporter::default();
+            let err = run_rehearsal(&ws, &opts, &mut reporter).expect_err("must fail");
+            let msg = format!("{err:#}");
+            assert!(msg.contains("no rehearsal registry"), "err was: {msg}");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_rehearsal_errors_when_rehearsal_equals_live_target() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let env_vars = fake_program_env_vars(&bin);
+        temp_env::with_vars(env_vars, || {
+            let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            // Point rehearsal at the same registry name as the live target.
+            opts.rehearsal_registry = Some("crates-io".to_string());
+            opts.registries = vec![Registry {
+                name: "crates-io".to_string(),
+                api_base: "http://127.0.0.1:1".to_string(),
+                index_base: None,
+            }];
+
+            let mut reporter = CollectingReporter::default();
+            let err = run_rehearsal(&ws, &opts, &mut reporter).expect_err("must fail");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("must differ from the live target"),
+                "err was: {msg}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_rehearsal_errors_when_registry_name_not_in_config() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let env_vars = fake_program_env_vars(&bin);
+        temp_env::with_vars(env_vars, || {
+            let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.rehearsal_registry = Some("bogus-registry".to_string());
+            // opts.registries is empty — bogus-registry won't resolve.
+
+            let mut reporter = CollectingReporter::default();
+            let err = run_rehearsal(&ws, &opts, &mut reporter).expect_err("must fail");
+            let msg = format!("{err:#}");
+            assert!(msg.contains("is not configured"), "err was: {msg}");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_rehearsal_skip_flag_returns_without_running() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let env_vars = fake_program_env_vars(&bin);
+        temp_env::with_vars(env_vars, || {
+            let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.rehearsal_registry = Some("rehearsal".to_string());
+            opts.rehearsal_skip = true;
+
+            let mut reporter = CollectingReporter::default();
+            let outcome =
+                run_rehearsal(&ws, &opts, &mut reporter).expect("skip path should not error");
+            assert!(!outcome.passed, "skip should not claim a pass");
+            assert_eq!(outcome.packages_published, 0);
+            assert!(outcome.summary.contains("skipped"));
+            // Skip path must not write events — nothing to audit.
+            let events_path = events::events_path(&td.path().join(".shipper"));
+            assert!(
+                !events_path.exists(),
+                "skip path must not create events.jsonl"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_rehearsal_happy_path_emits_started_published_complete_events() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let env_vars = fake_program_env_vars(&bin);
+        temp_env::with_vars(env_vars, || {
+            // Rehearsal-registry mock: returns 404 for the preflight lookup
+            // (not here) and 200 for the post-publish visibility check.
+            let rehearsal_server = spawn_registry_server(
+                std::collections::BTreeMap::from([(
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                )]),
+                1,
+            );
+
+            let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.rehearsal_registry = Some("rehearsal".to_string());
+            opts.registries = vec![Registry {
+                name: "rehearsal".to_string(),
+                api_base: rehearsal_server.base_url.clone(),
+                index_base: None,
+            }];
+
+            let mut reporter = CollectingReporter::default();
+            let outcome = run_rehearsal(&ws, &opts, &mut reporter).expect("rehearse");
+            assert!(outcome.passed, "outcome: {outcome:?}");
+            assert_eq!(outcome.packages_published, 1);
+
+            let events = read_events_raw(&td.path().join(".shipper"));
+            let types: Vec<String> = events.iter().filter_map(event_discriminator).collect();
+            assert!(
+                types.contains(&"rehearsal_started".to_string()),
+                "types: {types:?}"
+            );
+            assert!(
+                types.contains(&"rehearsal_package_published".to_string()),
+                "types: {types:?}"
+            );
+            assert!(
+                types.contains(&"rehearsal_complete".to_string()),
+                "types: {types:?}"
+            );
+
+            // RehearsalComplete must carry passed=true for the happy path.
+            let complete = events
+                .iter()
+                .find(|e| event_discriminator(e).as_deref() == Some("rehearsal_complete"))
+                .expect("RehearsalComplete event");
+            assert_eq!(
+                complete["event_type"]["passed"].as_bool(),
+                Some(true),
+                "complete event: {complete}"
+            );
+
+            rehearsal_server.join();
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_rehearsal_cargo_failure_emits_package_failed_and_marks_not_passed() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([("SHIPPER_CARGO_EXIT", Some("101".to_string()))]);
+        temp_env::with_vars(env_vars, || {
+            // Rehearsal registry is never hit because cargo fails.
+            let rehearsal_server = spawn_registry_server(std::collections::BTreeMap::new(), 0);
+
+            let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.rehearsal_registry = Some("rehearsal".to_string());
+            opts.registries = vec![Registry {
+                name: "rehearsal".to_string(),
+                api_base: rehearsal_server.base_url.clone(),
+                index_base: None,
+            }];
+
+            let mut reporter = CollectingReporter::default();
+            let outcome = run_rehearsal(&ws, &opts, &mut reporter).expect("rehearse");
+            assert!(!outcome.passed);
+            assert_eq!(outcome.packages_published, 0);
+
+            let events = read_events_raw(&td.path().join(".shipper"));
+            let types: Vec<String> = events.iter().filter_map(event_discriminator).collect();
+            assert!(
+                types.contains(&"rehearsal_package_failed".to_string()),
+                "types: {types:?}"
+            );
+            assert!(
+                types.contains(&"rehearsal_complete".to_string()),
+                "types: {types:?}"
+            );
+
+            let complete = events
+                .iter()
+                .find(|e| event_discriminator(e).as_deref() == Some("rehearsal_complete"))
+                .expect("RehearsalComplete");
+            assert_eq!(complete["event_type"]["passed"].as_bool(), Some(false));
+            rehearsal_server.join();
+        });
     }
 }
 

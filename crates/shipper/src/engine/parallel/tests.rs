@@ -196,6 +196,8 @@ fn default_opts(state_dir: PathBuf) -> RuntimeOptions {
         webhook: shipper_webhook::WebhookConfig::default(),
         registries: vec![],
         resume_from: None,
+        rehearsal_registry: None,
+        rehearsal_skip: false,
     }
 }
 

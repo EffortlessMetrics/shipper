@@ -1,6 +1,5 @@
 ---
-source: crates/shipper-config-runtime/src/lib.rs
-assertion_line: 355
+source: crates/shipper-config/src/runtime/mod.rs
 expression: converted
 ---
 RuntimeOptions {
@@ -56,4 +55,6 @@ RuntimeOptions {
     },
     registries: [],
     resume_from: None,
+    rehearsal_registry: None,
+    rehearsal_skip: false,
 }
