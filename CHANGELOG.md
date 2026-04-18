@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Nine-competency roadmap ([#109](https://github.com/EffortlessMetrics/shipper/issues/109)) landed end-to-end on `main` since `v0.3.0-rc.1`: **Prove**, **Survive**, **Reconcile**, **Narrate**, **Remediate**, **Harden** (Trusted Publishing), **Ergonomics** (three-crate split), plus consistency enforcement and operator-trust docs.
+
+### Added
+
+#### Reconcile ([#99](https://github.com/EffortlessMetrics/shipper/issues/99))
+
+- **Ambiguous-publish reconciliation against registry truth.** When `cargo publish` exits ambiguously, Shipper now polls the registry (sparse index + API per config) instead of blind-retrying. Outcomes: `Published` (skip retry), `NotPublished` (safe retry), `StillUnknown` (halt for operator). Cargo stdout is demoted to a fast-path hint; registry is authoritative. Resume-path reconciles `Ambiguous` state before re-entering the retry loop.
+- **Events:** `PublishReconciling { method }`, `PublishReconciled { outcome }`.
+- **State:** `PackageState::Ambiguous { message }` persists across resume.
+- **BDD scenarios** for all three outcomes (Published, NotPublished, StillUnknown) plus resume-from-Ambiguous.
+
+#### Prove ([#97](https://github.com/EffortlessMetrics/shipper/issues/97))
+
+- **`shipper rehearse`** — phase-2 preflight: publish every crate to a non-crates.io rehearsal registry, verify visibility, then optionally smoke-install before live dispatch. `engine::run_rehearsal` is the programmatic entry point.
+- **Hard gate:** `run_publish` can require a passing rehearsal receipt before dispatching to production (configurable).
+- **Smoke-install** step validates the rehearsal artifact actually resolves and builds as a dependency.
+
+#### Remediate ([#98](https://github.com/EffortlessMetrics/shipper/issues/98))
+
+- **`shipper yank <crate>@<version>`** — receipt-driven yank with event emission (`PackageYanked`).
+- **`shipper plan-yank`** — generates a reverse-topological containment plan from a receipt; `--starting-crate` supports graph-mode containment; `--plan <file>` executes a saved plan.
+- **`--mark-compromised`** and **`shipper fix-forward`** — plan a minimal repair for a partial release; receipt schema carries `compromised_at`, `compromised_by`, `superseded_by` fields.
+
+#### Harden ([#96](https://github.com/EffortlessMetrics/shipper/issues/96))
+
+- **Trusted Publishing (OIDC)** for crates.io: first-class support in the publish flow and CI templates. Tokens are no longer the only supported path.
+
+#### Narrate ([#91](https://github.com/EffortlessMetrics/shipper/issues/91))
+
+- **Retry visibility** — structured `RetryBackoff` events and live CLI narration so operators can see what the engine is waiting on and why.
+
+#### Survive ([#94](https://github.com/EffortlessMetrics/shipper/issues/94))
+
+- **crates.io-aware backoff** — registry-aware rate-limit detection uses `crate_exists` to distinguish new-crate throttling from transient failures.
+
+#### Recover ([#90](https://github.com/EffortlessMetrics/shipper/issues/90))
+
+- **Synthetic rehearsal test** and **operator rehearsal playbook** proving interruption-resume behavior for preflight, backoff, and partial-publish phases.
+
+### Changed
+
+#### Packaging — three-crate product shape ([#95](https://github.com/EffortlessMetrics/shipper/issues/95))
+
+- **`shipper-core`** (new) — engine library with no CLI dependencies. Stable embedding surface: `plan`, `preflight`, `publish`, `resume`, `reconcile`, `rehearsal`, `remediate`, state/events/receipts, policy/readiness.
+- **`shipper-cli`** — promoted from placeholder to real CLI adapter. Owns `clap` parsing, subcommand dispatch, help text, progress rendering. Exposes `pub fn run() -> anyhow::Result<()>` as the embedding entry point.
+- **`shipper`** — shrunk to install façade. 3-line binary forwarding to `shipper_cli::run()`, plus a library re-exporting a curated subset of `shipper-core`. **This is the recommended install path:** `cargo install shipper --locked`.
+- **Backward compatibility:** `cargo install shipper-cli --locked` still works; the old `shipper-cli` binary forwards to the same `run()`.
+
+#### Consistency ([#93](https://github.com/EffortlessMetrics/shipper/issues/93))
+
+- **Events-as-truth invariant** now enforced at end-of-run. `events.jsonl` is authoritative; `state.json` is a projection; `receipt.json` is a summary. Drift is detected and reported via `StateEventDriftDetected`.
+
+#### Preflight ([#92](https://github.com/EffortlessMetrics/shipper/issues/92))
+
+- **Workspace-verify event** slimmed; ANSI stripped from captured output; full verify log written to a sidecar file rather than inline events.
+
+### Fixed
+
+- **Resume:** `PackageSkipped` event now emits correctly when resume finds a package already in terminal state.
+
+### Documentation
+
+- **Operator-trust pack:** `not_proven` explainer, stalled-run triage, state-files cheat sheet.
+- **Roadmap aligned** with mission/steering docs; Diátaxis reorganization (tutorials, how-to, reference, explanation).
+- **Docs demote cargo stdout to hint**; registry truth is authoritative for safety-critical decisions.
+- Three-crate split reflected across README, runbook, examples, CI templates, `docs/structure.md`, `docs/architecture.md`, GEMINI.md, Copilot instructions.
+
+### Install
+
+```bash
+# New recommended path
+cargo install shipper --locked
+
+# Backward-compatible (same code path)
+cargo install shipper-cli --locked
+```
+
+Embedders who want a clap-free library surface should depend on `shipper-core` directly.
+
 ## [0.3.0-rc.1] - 2026-02-27
 
 ### Added
