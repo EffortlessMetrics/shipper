@@ -80,7 +80,7 @@ Only finalize the GitHub Release after **all 12 crates are visible on crates.io*
 1. Workflow log shows `shipper publish` completed successfully.
 2. Every crate returns a 200 from `https://crates.io/api/v1/crates/<crate>`.
 3. `cargo search shipper-cli` (no path override) returns `0.3.0-rc.1`.
-4. At least one smoke install: `cargo install shipper-cli --version 0.3.0-rc.1 --locked` from a scratch directory.
+4. At least one smoke install: `cargo install shipper --version 0.3.0-rc.1 --locked` from a scratch directory. (`shipper-cli` also works as the compatibility shim.)
 5. The `shipper-state-final` artifact is downloaded and archived (90-day retention by default; take a local copy for the permanent record).
 
 Only then do the per-platform binary artifacts get attached to the GitHub Release. The release note should reference the `shipper-state-final` tarball as publish evidence.

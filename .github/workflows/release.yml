@@ -85,7 +85,7 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-release-
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p shipper-cli
+        run: cargo build --release --target ${{ matrix.target }} -p shipper
 
       - name: Package binary (Unix)
         if: matrix.os != 'windows-latest'
@@ -138,7 +138,7 @@ jobs:
   # The dogfood publish train.
   #
   # Execution order:
-  #   1.  Build shipper-cli (release profile) and install it to PATH.
+  #   1.  Build shipper (release profile) and install it to PATH.
   #   2.  `shipper plan`  — persist plan to .shipper/, also dump JSON to
   #       .shipper/plan.json for artifact review.
   #   3.  Upload .shipper/ as an artifact BEFORE preflight runs (belt-and-
@@ -193,9 +193,9 @@ jobs:
           key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-publish-
 
-      # --- Step 1: build and install shipper-cli ----------------------------
-      - name: Build shipper-cli (release)
-        run: cargo build --release -p shipper-cli
+      # --- Step 1: build and install shipper ----------------------------
+      - name: Build shipper (release)
+        run: cargo build --release -p shipper
 
       - name: Install shipper to PATH
         run: |
@@ -381,8 +381,8 @@ jobs:
           key: ${{ runner.os }}-cargo-rehearse-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-rehearse-
 
-      - name: Build shipper-cli (release)
-        run: cargo build --release -p shipper-cli
+      - name: Build shipper (release)
+        run: cargo build --release -p shipper
 
       - name: Install shipper to PATH
         run: |
@@ -459,8 +459,8 @@ jobs:
           key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-publish-
 
-      - name: Build shipper-cli (release)
-        run: cargo build --release -p shipper-cli
+      - name: Build shipper (release)
+        run: cargo build --release -p shipper
 
       - name: Install shipper to PATH
         run: |

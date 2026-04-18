@@ -25,15 +25,17 @@ Cargo packages and uploads. The workflow around it — planning a multi-crate re
 From crates.io:
 
 ```bash
-cargo install shipper-cli --locked
+cargo install shipper --locked
 ```
 
-> The binary is named `shipper` but the published crate is `shipper-cli`. [#95](https://github.com/EffortlessMetrics/shipper/issues/95) tracks making `cargo install shipper` work.
+> `shipper-cli` is still published as a compatibility shim — older
+> scripts and CI that reference it keep working during the migration
+> window. Prefer `shipper` on new setups. Tracking: [#95](https://github.com/EffortlessMetrics/shipper/issues/95).
 
 From this repository:
 
 ```bash
-cargo install --path crates/shipper-cli --locked
+cargo install --path crates/shipper --locked
 ```
 
 ## Quick start

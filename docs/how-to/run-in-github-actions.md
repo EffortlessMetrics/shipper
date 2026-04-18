@@ -28,7 +28,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Shipper
-        run: cargo install shipper-cli --locked
+        run: cargo install shipper --locked
 
       - name: Plan
         run: |

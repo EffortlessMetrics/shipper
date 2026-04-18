@@ -4,6 +4,6 @@ expression: normalize_stderr(&stderr)
 ---
 error: unrecognized subcommand 'foobar'
 
-Usage: shipper [OPTIONS] <COMMAND>
+Usage: shipper-cli.exe [OPTIONS] <COMMAND>
 
 For more information, try '--help'.

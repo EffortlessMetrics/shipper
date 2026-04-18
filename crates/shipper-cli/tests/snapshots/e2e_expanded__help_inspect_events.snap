@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 View detailed event log
 
-Usage: shipper inspect-events [OPTIONS]
+Usage: shipper-cli.exe inspect-events [OPTIONS]
 
 Options:
       --config <CONFIG>

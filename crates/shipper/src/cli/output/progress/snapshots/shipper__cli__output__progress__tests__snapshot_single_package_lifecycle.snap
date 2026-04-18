@@ -1,0 +1,7 @@
+---
+source: crates/shipper/src/cli/output/progress/tests.rs
+expression: "lines.join(\"\\n\")"
+---
+pending:     pkg=0 name=""
+in_progress: pkg=1 name="my-crate@0.1.0"
+complete:    pkg=1 name="my-crate@0.1.0"

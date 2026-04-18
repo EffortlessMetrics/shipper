@@ -8,7 +8,7 @@ Reads a prior `receipt.json` and emits the order in which to yank the released c
 
 **Planning only.** This command does NOT execute yanks. Pipe the output through `sh`, or consume the JSON, once you've reviewed it. `shipper fix-forward` (#98 PR 3) will wrap execution.
 
-Usage: shipper plan-yank [OPTIONS]
+Usage: shipper-cli.exe plan-yank [OPTIONS]
 
 Options:
       --config <CONFIG>

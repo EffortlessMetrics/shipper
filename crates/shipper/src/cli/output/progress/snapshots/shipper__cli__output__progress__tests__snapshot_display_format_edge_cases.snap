@@ -1,0 +1,10 @@
+---
+source: crates/shipper/src/cli/output/progress/tests.rs
+expression: formatted
+---
+[
+    "name=\"normal\" ver=\"1.0.0\" => \"normal@1.0.0\"",
+    "name=\"\" ver=\"\" => \"@\"",
+    "name=\"a\" ver=\"0.0.0\" => \"a@0.0.0\"",
+    "name=\"crate-with-dashes\" ver=\"0.1.0-alpha.1+meta\" => \"crate-with-dashes@0.1.0-alpha.1+meta\"",
+]

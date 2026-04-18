@@ -1,0 +1,10 @@
+---
+source: crates/shipper/src/cli/output/progress/tests.rs
+expression: state
+---
+(
+    4,
+    0,
+    "",
+    0.0,
+)

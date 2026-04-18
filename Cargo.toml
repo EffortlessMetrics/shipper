@@ -13,7 +13,7 @@ members = [
   "crates/shipper-webhook",
   "crates/shipper-output-sanitizer",
 ]
-default-members = ["crates/shipper-cli", "crates/shipper"]
+default-members = ["crates/shipper", "crates/shipper-cli"]
 exclude = ["fuzz"]
 resolver = "3"
 

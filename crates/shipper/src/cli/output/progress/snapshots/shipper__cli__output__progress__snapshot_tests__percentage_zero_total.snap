@@ -1,0 +1,5 @@
+---
+source: crates/shipper/src/cli/output/progress/snapshot_tests.rs
+expression: "percentage(0, 0)"
+---
+N/A (0 packages)

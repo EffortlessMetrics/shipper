@@ -141,7 +141,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install shipper-cli --locked
+      - run: cargo install shipper --locked
 
       # Point Cargo at the kellnr sidecar
       - name: Configure Cargo registry
@@ -179,7 +179,7 @@ jobs:
           name: shipper-rehearsal
           path: .shipper/
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install shipper-cli --locked
+      - run: cargo install shipper --locked
       - name: Publish (hard gate reads .shipper/rehearsal.json)
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

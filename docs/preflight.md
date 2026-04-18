@@ -336,7 +336,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install shipper
-        run: cargo install shipper-cli --locked
+        run: cargo install shipper --locked
 
       - name: Preflight checks
         run: shipper preflight --strict-ownership --format json

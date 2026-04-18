@@ -293,7 +293,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install shipper-cli --locked
+      - run: cargo install shipper --locked
 
       # Restore state from a previous (possibly failed) run
       - uses: actions/download-artifact@v7
@@ -333,7 +333,7 @@ publish:
       - .shipper/
       - target/
   script:
-    - cargo install shipper-cli --locked
+    - cargo install shipper --locked
     - shipper publish --quiet
   variables:
     CARGO_REGISTRY_TOKEN: $CARGO_REGISTRY_TOKEN

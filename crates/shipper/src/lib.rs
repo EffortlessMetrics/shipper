@@ -169,6 +169,13 @@ pub mod webhook;
 /// State file encryption module.
 pub mod encryption;
 
+/// CLI entry point for the `shipper` binary (#95).
+///
+/// Package-level unification: the `shipper` crate owns both the library
+/// API and its installable binary. The binary target at
+/// `src/bin/shipper.rs` is a three-line shim over `shipper::cli::run`.
+pub mod cli;
+
 /// Property-based tests for shipper invariants.
 #[cfg(test)]
 mod property_tests;

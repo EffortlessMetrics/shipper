@@ -1,0 +1,6 @@
+---
+source: crates/shipper/src/cli/output/progress/snapshot_tests.rs
+expression: "lines.join(\"\\n\")"
+---
+0/1 = 0.0%
+1/1 = 100.0%
