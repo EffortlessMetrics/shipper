@@ -280,14 +280,14 @@ mod parallel_level_grouping {
         let td = tempdir().expect("tempdir");
         create_independent_workspace(td.path());
 
-        let spec = shipper::types::ReleaseSpec {
+        let spec = shipper_core::types::ReleaseSpec {
             manifest_path: td.path().join("Cargo.toml"),
-            registry: shipper::types::Registry::crates_io(),
+            registry: shipper_core::types::Registry::crates_io(),
             selected_packages: None,
         };
 
         // When: We compute the publish plan levels
-        let ws = shipper::plan::build_plan(&spec).expect("plan");
+        let ws = shipper_core::plan::build_plan(&spec).expect("plan");
         let levels = ws.plan.group_by_levels();
 
         // Then: All three crates share a single level (can publish concurrently)
@@ -355,14 +355,14 @@ mod dependency_level_ordering {
         let td = tempdir().expect("tempdir");
         create_parallel_workspace(td.path());
 
-        let spec = shipper::types::ReleaseSpec {
+        let spec = shipper_core::types::ReleaseSpec {
             manifest_path: td.path().join("Cargo.toml"),
-            registry: shipper::types::Registry::crates_io(),
+            registry: shipper_core::types::Registry::crates_io(),
             selected_packages: None,
         };
 
         // When
-        let ws = shipper::plan::build_plan(&spec).expect("plan");
+        let ws = shipper_core::plan::build_plan(&spec).expect("plan");
         let levels = ws.plan.group_by_levels();
 
         // Then: Three levels respecting the dependency chain

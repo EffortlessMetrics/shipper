@@ -348,12 +348,12 @@ mod deterministic_publish_order {
         let td = tempdir().expect("tempdir");
         create_parallel_workspace(td.path());
 
-        let spec = shipper::types::ReleaseSpec {
+        let spec = shipper_core::types::ReleaseSpec {
             manifest_path: td.path().join("Cargo.toml"),
-            registry: shipper::types::Registry::crates_io(),
+            registry: shipper_core::types::Registry::crates_io(),
             selected_packages: None,
         };
-        let ws = shipper::plan::build_plan(&spec).expect("plan");
+        let ws = shipper_core::plan::build_plan(&spec).expect("plan");
         let levels = ws.plan.group_by_levels();
 
         assert_eq!(levels.len(), 3);
@@ -905,10 +905,10 @@ mod error_handling {
     #[test]
     fn given_retryable_publish_output_when_failure_classification_runs_then_retryable() {
         let outcome =
-            shipper::cargo_failure::classify_publish_failure("HTTP 429 too many requests", "");
+            shipper_core::cargo_failure::classify_publish_failure("HTTP 429 too many requests", "");
         assert_eq!(
             outcome.class,
-            shipper::cargo_failure::CargoFailureClass::Retryable
+            shipper_core::cargo_failure::CargoFailureClass::Retryable
         );
     }
 
@@ -991,16 +991,16 @@ mod error_handling {
     // Scenario: Invalid schema versions are rejected by shared store validation
     #[test]
     fn given_invalid_schema_version_when_store_validation_runs_then_error() {
-        let err =
-            shipper::store::validate_schema_version("shipper.receipt.v").expect_err("must fail");
+        let err = shipper_core::store::validate_schema_version("shipper.receipt.v")
+            .expect_err("must fail");
         assert!(err.to_string().contains("invalid"));
     }
 
     // Scenario: Supported schema versions pass shared store validation
     #[test]
     fn given_supported_schema_version_when_store_validation_runs_then_ok() {
-        shipper::store::validate_schema_version(
-            shipper::state::execution_state::CURRENT_RECEIPT_VERSION,
+        shipper_core::store::validate_schema_version(
+            shipper_core::state::execution_state::CURRENT_RECEIPT_VERSION,
         )
         .expect("schema version should be accepted");
     }

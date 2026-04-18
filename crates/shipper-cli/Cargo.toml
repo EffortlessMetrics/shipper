@@ -4,34 +4,47 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Compatibility shim for `shipper` — operators should prefer `cargo install shipper`."
+description = "CLI adapter for Shipper. Install with `cargo install shipper --locked`; this crate is for embedders who want the exact CLI surface programmatically."
 readme = "README.md"
-documentation = "https://github.com/EffortlessMetrics/shipper/tree/main/crates/shipper-cli"
+documentation = "https://docs.rs/shipper-cli"
 homepage = "https://github.com/EffortlessMetrics/shipper"
 repository = "https://github.com/EffortlessMetrics/shipper"
 keywords = ["cargo", "publish", "workspace", "cli", "ci"]
 categories = ["command-line-utilities", "development-tools"]
 
-# The CLI lives in the `shipper` package (see #95). This crate remains
-# as a temporary compatibility shim so `cargo install shipper-cli`
-# keeps working for operators on the old name. The shim binary is
-# renamed to `shipper-cli` to avoid a workspace-build collision with
-# `shipper`'s own `shipper` binary.
+# Real CLI adapter (#95 three-crate split). The library exposes
+# `pub fn run() -> anyhow::Result<()>` as the programmatic entrypoint;
+# the `shipper-cli` binary forwards to it for backward compatibility.
+# The `shipper` package on crates.io does the same forwarding.
 [[bin]]
 name = "shipper-cli"
 path = "src/main.rs"
 
 [dependencies]
-shipper.workspace = true
+# Core engine — this is where all the real work happens.
+shipper-core.workspace = true
+
+# CLI-specific dependencies.
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+indicatif = "0.18.4"
 anyhow = "1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+toml = "1.0.3"
+chrono = { version = "0.4.44", features = ["serde"] }
+
+# Shared domain types and typed config (used by CLI arg parsing +
+# surfacing engine types to operators).
+shipper-types.workspace = true
+shipper-config.workspace = true
+shipper-duration.workspace = true
+shipper-retry.workspace = true
 
 [lints]
 workspace = true
 
 [dev-dependencies]
-# Dev-deps retained so the extensive CLI test suite in tests/ can
-# continue to exercise the compat shim. Tests invoke the shim binary
-# via `assert_cmd::cargo_bin!("shipper-cli")`.
 console = "0.16.3"
 assert_cmd = "2"
 insta = "1"
@@ -42,5 +55,3 @@ tempfile = "3"
 tiny_http = "0.12"
 temp-env = "0.3"
 serde_yaml = "0.9"
-serde_json = "1"
-chrono = { version = "0.4.44", features = ["serde"] }
