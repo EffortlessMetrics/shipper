@@ -6,6 +6,10 @@ use insta::assert_snapshot;
 /// snapshots stay stable across environments.
 fn normalize_output(raw: &str) -> String {
     raw.replace("\r\n", "\n")
+        // Order matters: strip the more specific `.exe` suffix first so the
+        // second replacement doesn't turn `shipper-cli.exe` into `shipper-cli`
+        // via the `shipper.exe` → `shipper` rule when that rule is applied.
+        .replace("shipper-cli.exe", "shipper-cli")
         .replace("shipper.exe", "shipper")
         .replace(env!("CARGO_PKG_VERSION"), "[VERSION]")
 }

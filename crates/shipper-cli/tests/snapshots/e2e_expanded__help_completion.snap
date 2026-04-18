@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 Generate shell completion scripts for the specified shell
 
-Usage: shipper-cli.exe completion [OPTIONS] <SHELL>
+Usage: shipper-cli completion [OPTIONS] <SHELL>
 
 Arguments:
   <SHELL>

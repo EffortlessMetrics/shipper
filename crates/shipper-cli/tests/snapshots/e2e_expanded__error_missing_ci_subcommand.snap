@@ -4,7 +4,7 @@ expression: normalized
 ---
 Print CI configuration snippets for various platforms
 
-Usage: shipper-cli.exe ci [OPTIONS] <COMMAND>
+Usage: shipper-cli ci [OPTIONS] <COMMAND>
 
 Commands:
   github-actions  Print GitHub Actions workflow snippet

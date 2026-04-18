@@ -133,6 +133,10 @@ fn normalize_stderr(raw: &str) -> String {
 
     normalized = normalized
         .replace("\r\n", "\n")
+        // Order matters: strip `shipper-cli.exe` → `shipper-cli` before
+        // `shipper.exe` → `shipper`, otherwise the second rule eats the
+        // first's prefix and we lose the `-cli` suffix.
+        .replace("shipper-cli.exe", "shipper-cli")
         .replace("shipper.exe", "shipper")
         .replace(env!("CARGO_PKG_VERSION"), "[VERSION]");
 

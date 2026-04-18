@@ -4,7 +4,7 @@ expression: normalize_stderr(&stdout)
 ---
 Configuration file management
 
-Usage: shipper-cli.exe config [OPTIONS] <COMMAND>
+Usage: shipper-cli config [OPTIONS] <COMMAND>
 
 Commands:
   init      Generate a default .shipper.toml configuration file

@@ -4,7 +4,7 @@ expression: normalize_help_output(&stdout)
 ---
 Clean state files (state.json, receipt.json, events.jsonl)
 
-Usage: shipper-cli.exe clean [OPTIONS]
+Usage: shipper-cli clean [OPTIONS]
 
 Options:
       --config <CONFIG>
