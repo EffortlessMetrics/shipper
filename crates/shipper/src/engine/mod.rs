@@ -1542,6 +1542,103 @@ pub fn run_rehearsal(
         packages_published += 1;
     }
 
+    // #97 PR 4 — smoke-install. Opt-in. Runs only if:
+    //   (a) all packages in the plan were published successfully AND
+    //   (b) the operator named a crate via --smoke-install / config.
+    // The named crate must be in the plan; resolves its planned version
+    // to pass through to `cargo install`.
+    if first_failure.is_none()
+        && let Some(ref smoke_name) = opts.rehearsal_smoke_install
+    {
+        match ws.plan.packages.iter().find(|p| &p.name == smoke_name) {
+            Some(smoke_pkg) => {
+                reporter.info(&format!(
+                    "smoke-install: {smoke_name}@{} from '{rehearsal_name}'",
+                    smoke_pkg.version
+                ));
+
+                event_log.record(PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type: EventType::RehearsalSmokeCheckStarted {
+                        name: smoke_pkg.name.clone(),
+                        version: smoke_pkg.version.clone(),
+                        registry: rehearsal_name.clone(),
+                    },
+                    package: format!("{smoke_name}@{}", smoke_pkg.version),
+                });
+                event_log.write_to_file(&events_path)?;
+                event_log.clear();
+
+                let install_root = state_dir.join("smoke-install");
+                let _ = std::fs::remove_dir_all(&install_root);
+                let smoke_start = Instant::now();
+                let out = cargo::cargo_install_smoke(
+                    workspace_root,
+                    &smoke_pkg.name,
+                    &smoke_pkg.version,
+                    &rehearsal_reg.name,
+                    &install_root,
+                    opts.output_lines,
+                    None,
+                )?;
+
+                if out.exit_code == 0 {
+                    let duration_ms = smoke_start.elapsed().as_millis();
+                    event_log.record(PublishEvent {
+                        timestamp: Utc::now(),
+                        event_type: EventType::RehearsalSmokeCheckSucceeded {
+                            name: smoke_pkg.name.clone(),
+                            version: smoke_pkg.version.clone(),
+                            duration_ms,
+                        },
+                        package: format!("{smoke_name}@{}", smoke_pkg.version),
+                    });
+                    reporter.info(&format!(
+                        "smoke-install OK for {smoke_name}@{}",
+                        smoke_pkg.version
+                    ));
+                } else {
+                    let msg = format!(
+                        "cargo install exited {} for {smoke_name}@{}. stderr tail:\n{}",
+                        out.exit_code, smoke_pkg.version, out.stderr_tail
+                    );
+                    reporter.error(&msg);
+                    event_log.record(PublishEvent {
+                        timestamp: Utc::now(),
+                        event_type: EventType::RehearsalSmokeCheckFailed {
+                            name: smoke_pkg.name.clone(),
+                            version: smoke_pkg.version.clone(),
+                            message: msg.clone(),
+                        },
+                        package: format!("{smoke_name}@{}", smoke_pkg.version),
+                    });
+                    first_failure = Some(format!(
+                        "smoke-install of {smoke_name}@{} failed: cargo exit {}",
+                        smoke_pkg.version, out.exit_code
+                    ));
+                }
+                event_log.write_to_file(&events_path)?;
+                event_log.clear();
+            }
+            None => {
+                // Operator named a crate that isn't in the plan. Warn,
+                // don't fail — their intent is clear but the workspace
+                // shape disagrees, and failing the whole rehearsal over
+                // a typo would be overkill.
+                reporter.warn(&format!(
+                    "smoke-install target '{smoke_name}' is not in the rehearsal plan; skipping. \
+                     Available crates: {}",
+                    ws.plan
+                        .packages
+                        .iter()
+                        .map(|p| p.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+    }
+
     let passed = first_failure.is_none();
     let summary = if passed {
         format!("rehearsed {packages_published} packages against '{rehearsal_name}' successfully")
@@ -2029,6 +2126,7 @@ mod tests {
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
+            rehearsal_smoke_install: None,
         }
     }
 
@@ -6989,6 +7087,97 @@ mod tests {
                 msg.contains("rehearsal is required") || msg.contains("no rehearsal receipt"),
                 "expected gate error, got: {msg}"
             );
+        });
+    }
+
+    /// #97 PR 4 — smoke-install happy path. --smoke-install names a
+    /// crate in the plan; fake cargo returns 0 for the install call;
+    /// rehearsal emits smoke-check events and passes.
+    #[test]
+    #[serial]
+    fn run_rehearsal_smoke_install_happy_path_emits_succeeded_event() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let env_vars = fake_program_env_vars(&bin);
+        temp_env::with_vars(env_vars, || {
+            let rehearsal_server = spawn_registry_server(
+                std::collections::BTreeMap::from([(
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                )]),
+                1,
+            );
+
+            let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.rehearsal_registry = Some("rehearsal".to_string());
+            opts.registries = vec![Registry {
+                name: "rehearsal".to_string(),
+                api_base: rehearsal_server.base_url.clone(),
+                index_base: None,
+            }];
+            opts.rehearsal_smoke_install = Some("demo".to_string());
+
+            let mut reporter = CollectingReporter::default();
+            let outcome = run_rehearsal(&ws, &opts, &mut reporter).expect("rehearse");
+            assert!(outcome.passed, "outcome: {outcome:?}");
+
+            let events = read_events_raw(&td.path().join(".shipper"));
+            let types: Vec<String> = events.iter().filter_map(event_discriminator).collect();
+            assert!(
+                types.contains(&"rehearsal_smoke_check_started".to_string()),
+                "types: {types:?}"
+            );
+            assert!(
+                types.contains(&"rehearsal_smoke_check_succeeded".to_string()),
+                "types: {types:?}"
+            );
+            rehearsal_server.join();
+        });
+    }
+
+    /// #97 PR 4 — smoke-install named a crate not in the plan. Warn-only
+    /// path: rehearsal itself still passes (publish was fine) but the
+    /// reporter surfaces the misconfiguration so the operator can fix it.
+    #[test]
+    #[serial]
+    fn run_rehearsal_smoke_install_missing_target_warns_without_failing() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let env_vars = fake_program_env_vars(&bin);
+        temp_env::with_vars(env_vars, || {
+            let rehearsal_server = spawn_registry_server(
+                std::collections::BTreeMap::from([(
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                )]),
+                1,
+            );
+
+            let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.rehearsal_registry = Some("rehearsal".to_string());
+            opts.registries = vec![Registry {
+                name: "rehearsal".to_string(),
+                api_base: rehearsal_server.base_url.clone(),
+                index_base: None,
+            }];
+            opts.rehearsal_smoke_install = Some("nonexistent".to_string());
+
+            let mut reporter = CollectingReporter::default();
+            let outcome = run_rehearsal(&ws, &opts, &mut reporter).expect("rehearse");
+            assert!(outcome.passed);
+            assert!(
+                reporter
+                    .warns
+                    .iter()
+                    .any(|w| w.contains("not in the rehearsal plan")),
+                "warns: {:?}",
+                reporter.warns
+            );
+            rehearsal_server.join();
         });
     }
 

@@ -198,6 +198,7 @@ fn default_opts(state_dir: PathBuf) -> RuntimeOptions {
         resume_from: None,
         rehearsal_registry: None,
         rehearsal_skip: false,
+        rehearsal_smoke_install: None,
     }
 }
 

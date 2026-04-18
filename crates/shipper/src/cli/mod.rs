@@ -194,6 +194,19 @@ struct Cli {
     #[arg(long, global = true)]
     skip_rehearsal: bool,
 
+    /// Crate name to smoke-install after a successful rehearsal (#97 PR 4).
+    ///
+    /// Runs `cargo install --registry <rehearsal> <CRATE>` against the
+    /// rehearsal registry to prove the crate actually resolves and
+    /// installs end-to-end — the scenario that workspace-path
+    /// dependencies defeat and that killed the rc.1 first-publish.
+    ///
+    /// The named crate must be in the plan AND have a `[[bin]]` target.
+    /// Library-only crates cannot be smoke-installed directly; use a
+    /// consumer-workspace build instead (follow-on).
+    #[arg(long = "smoke-install", global = true, value_name = "CRATE")]
+    rehearsal_smoke_install: Option<String>,
+
     /// Output format: text (default) or json
     #[arg(long, default_value = "text", value_parser = ["text", "json"], global = true)]
     format: String,
@@ -564,6 +577,7 @@ pub fn run() -> Result<()> {
         resume_from: cli.resume_from.clone(),
         rehearsal_registry: cli.rehearsal_registry.clone(),
         skip_rehearsal: cli.skip_rehearsal,
+        rehearsal_smoke_install: cli.rehearsal_smoke_install.clone(),
     };
 
     // Merge CLI overrides with config (or defaults if no config)
@@ -2142,6 +2156,7 @@ mod tests {
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
+            rehearsal_smoke_install: None,
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
@@ -2213,6 +2228,7 @@ mod tests {
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
+            rehearsal_smoke_install: None,
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");

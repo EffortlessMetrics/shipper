@@ -59,4 +59,5 @@ RuntimeOptions {
     ),
     rehearsal_registry: None,
     rehearsal_skip: false,
+    rehearsal_smoke_install: None,
 }
