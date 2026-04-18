@@ -605,12 +605,33 @@ pub fn run_publish(
 
         match progress.state.clone() {
             PackageState::Published | PackageState::Skipped { .. } => {
+                let short = short_state(&progress.state);
                 reporter.info(&format!(
                     "{}@{}: already complete ({})",
-                    p.name,
-                    p.version,
-                    short_state(&progress.state)
+                    p.name, p.version, short
                 ));
+                // #125: emit a PackageSkipped event so the audit trail
+                // explicitly records resume's "state already terminal,
+                // trusting it" decision. Without this, events.jsonl is
+                // silent about the skip and an auditor reading only
+                // events can't distinguish "resume recognized and
+                // skipped" from "resume never touched this package."
+                //
+                // Deliberately NOT pushing a PackageReceipt here: the
+                // receipt vector has always excluded already-terminal
+                // packages in the resume path, and callers depend on
+                // that shape (see e.g. `run_resume_runs_publish_when_state_exists`).
+                // The new event is the observable fix; receipt shape
+                // is preserved.
+                event_log.record(PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type: EventType::PackageSkipped {
+                        reason: format!("resume: state already {short}"),
+                    },
+                    package: pkg_label.clone(),
+                });
+                event_log.write_to_file(&events_path)?;
+                event_log.clear();
                 continue;
             }
             PackageState::Uploaded => {
@@ -2257,6 +2278,142 @@ mod tests {
             let state_dir = td.path().join(".shipper");
             assert!(state::state_path(&state_dir).exists());
             assert!(state::receipt_path(&state_dir).exists());
+            server.join();
+        });
+    }
+
+    /// Regression for #125: resume encountering a `Published` state in
+    /// state.json must emit a `PackageSkipped` event, not silently move
+    /// on. events.jsonl is the authoritative audit log; a silent skip
+    /// makes "did resume look at this package at all?" unanswerable from
+    /// the log alone.
+    #[test]
+    #[serial]
+    fn resume_emits_package_skipped_event_for_already_published_state() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let env_vars = fake_program_env_vars(&bin);
+        temp_env::with_vars(env_vars, || {
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([(
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(404, "{}".to_string())],
+                )]),
+                1,
+            );
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let state_dir = td.path().join(".shipper");
+
+            // Seed: existing state says demo@0.1.0 is Published. Resume
+            // should recognize it and skip — but crucially, emit the event.
+            let mut packages = BTreeMap::new();
+            packages.insert(
+                "demo@0.1.0".to_string(),
+                PackageProgress {
+                    name: "demo".to_string(),
+                    version: "0.1.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Published,
+                    last_updated_at: Utc::now(),
+                },
+            );
+            let seeded = ExecutionState {
+                state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
+                plan_id: ws.plan.plan_id.clone(),
+                registry: ws.plan.registry.clone(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                packages,
+            };
+            state::save_state(&state_dir, &seeded).expect("seed state");
+
+            let opts = default_opts(PathBuf::from(".shipper"));
+            let mut reporter = CollectingReporter::default();
+            let _receipt = run_publish(&ws, &opts, &mut reporter).expect("publish resumes");
+
+            // Read events.jsonl and assert a PackageSkipped event exists.
+            let events_path = events::events_path(&state_dir);
+            let raw = std::fs::read_to_string(&events_path).expect("events.jsonl");
+            let skipped_count = raw
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .filter(|l| l.contains(r#""type":"package_skipped""#))
+                .count();
+            assert!(
+                skipped_count >= 1,
+                "expected at least one PackageSkipped event for the already-Published package; \
+                 events.jsonl was:\n{raw}"
+            );
+        });
+    }
+
+    /// Regression for #126: when resume encounters a `Failed` state and
+    /// the registry confirms the version is visible, `state.json` must
+    /// transition that package from Failed to Skipped. A stale `failed`
+    /// flag misleads downstream tools (e.g. plan-yank) into thinking
+    /// remediation is needed when it isn't.
+    #[test]
+    #[serial]
+    fn resume_from_failed_ambiguous_updates_state_to_skipped_when_registry_visible() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let env_vars = fake_program_env_vars(&bin);
+        temp_env::with_vars(env_vars, || {
+            // Registry returns 200 for the version check — the crate IS
+            // visible, even though run 1 left us with Failed/Ambiguous.
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([(
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                )]),
+                1,
+            );
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let state_dir = td.path().join(".shipper");
+
+            let mut packages = BTreeMap::new();
+            packages.insert(
+                "demo@0.1.0".to_string(),
+                PackageProgress {
+                    name: "demo".to_string(),
+                    version: "0.1.0".to_string(),
+                    attempts: 1,
+                    state: PackageState::Failed {
+                        class: ErrorClass::Ambiguous,
+                        message: "prior run: publish outcome ambiguous".to_string(),
+                    },
+                    last_updated_at: Utc::now(),
+                },
+            );
+            let seeded = ExecutionState {
+                state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
+                plan_id: ws.plan.plan_id.clone(),
+                registry: ws.plan.registry.clone(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                packages,
+            };
+            state::save_state(&state_dir, &seeded).expect("seed state");
+
+            let opts = default_opts(PathBuf::from(".shipper"));
+            let mut reporter = CollectingReporter::default();
+            let _receipt = run_publish(&ws, &opts, &mut reporter).expect("publish resumes");
+
+            // State.json on disk must now say Skipped, not Failed.
+            let reloaded = state::load_state(&state_dir)
+                .expect("load")
+                .expect("state exists");
+            let pkg_state = &reloaded
+                .packages
+                .get("demo@0.1.0")
+                .expect("package in state")
+                .state;
+            assert!(
+                matches!(pkg_state, PackageState::Skipped { .. }),
+                "expected state.json to show Skipped after resume reconciled against registry; got {pkg_state:?}"
+            );
             server.join();
         });
     }
