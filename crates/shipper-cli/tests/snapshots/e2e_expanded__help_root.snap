@@ -17,6 +17,7 @@ Commands:
   inspect-receipt  View detailed receipt with evidence
   ci               Print CI configuration snippets for various platforms
   clean            Clean state files (state.json, receipt.json, events.jsonl)
+  yank             Yank a crate@version from the registry — containment, not undo
   config           Configuration file management
   completion       Generate shell completion scripts for the specified shell
   help             Print this message or the help of the given subcommand(s)

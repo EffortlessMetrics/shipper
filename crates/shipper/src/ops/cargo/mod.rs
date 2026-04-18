@@ -29,6 +29,52 @@ fn tail_lines(s: &str, n: usize) -> String {
     sanitize_tail_lines(s, n)
 }
 
+/// Invoke `cargo yank` against the configured registry.
+///
+/// Yanks a specific `<crate>@<version>` so the registry refuses to resolve
+/// it for new dependency resolves. **This is containment, not undo**:
+/// existing lockfiles and already-downloaded copies are unaffected.
+/// See [`cargo yank` docs](https://doc.rust-lang.org/cargo/commands/cargo-yank.html).
+///
+/// Output is captured (stdout/stderr tails, exit code, elapsed). The
+/// caller is responsible for:
+/// - classifying the result via existing [`crate::runtime::execution::classify_cargo_failure`]
+/// - emitting a `PackageYanked` event if a state-dir is present
+/// - retrying on transient failures (network, 5xx, 429)
+///
+/// Used by `shipper yank` and (in follow-on PRs under #98) by
+/// `shipper plan-yank` / `shipper fix-forward` when executing a yank plan.
+pub fn cargo_yank(
+    workspace_root: &Path,
+    package_name: &str,
+    version: &str,
+    registry_name: &str,
+    output_lines: usize,
+    timeout: Option<Duration>,
+) -> Result<CargoOutput> {
+    let start = Instant::now();
+    let version_arg = format!("--version={version}");
+    let mut args: Vec<&str> = vec!["yank", package_name, &version_arg];
+
+    // If the user configured a non-default registry, pass it through.
+    if !registry_name.trim().is_empty() && registry_name != "crates-io" {
+        args.push("--registry");
+        args.push(registry_name);
+    }
+
+    let output =
+        process::run_command_with_timeout(&cargo_program(), &args, workspace_root, timeout)
+            .context("failed to execute cargo yank; is Cargo installed?")?;
+
+    Ok(CargoOutput {
+        exit_code: output.exit_code,
+        stdout_tail: tail_lines(&output.stdout, output_lines),
+        stderr_tail: tail_lines(&output.stderr, output_lines),
+        duration: start.elapsed(),
+        timed_out: output.timed_out,
+    })
+}
+
 pub fn cargo_publish(
     workspace_root: &Path,
     package_name: &str,
@@ -562,6 +608,117 @@ mod tests {
                 let err = cargo_publish(td.path(), "x", "crates-io", false, false, 50, None)
                     .expect_err("must fail");
                 assert!(format!("{err:#}").contains("failed to execute cargo publish"));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cargo_yank_passes_flags_and_captures_output() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        fs::create_dir_all(&bin).expect("mkdir");
+        let fake_cargo = write_fake_cargo(&bin);
+
+        let args_log = td.path().join("args.txt");
+        let cwd_log = td.path().join("cwd.txt");
+
+        let ws = td.path().join("workspace");
+        fs::create_dir_all(&ws).expect("mkdir ws");
+
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo.to_str().expect("fake cargo utf8")),
+                ),
+                ("SHIPPER_ARGS_LOG", Some(args_log.to_str().expect("utf8"))),
+                ("SHIPPER_CWD_LOG", Some(cwd_log.to_str().expect("utf8"))),
+                ("SHIPPER_EXIT_CODE", Some("0")),
+            ],
+            || {
+                let out =
+                    cargo_yank(&ws, "my-crate", "1.2.3", "private-reg", 50, None).expect("yank");
+
+                assert_eq!(out.exit_code, 0);
+                assert!(out.stdout_tail.contains("fake-stdout"));
+
+                let args = fs::read_to_string(&args_log).expect("args");
+                assert!(args.contains("yank"));
+                assert!(args.contains("my-crate"));
+                assert!(args.contains("--version=1.2.3"));
+                assert!(args.contains("--registry private-reg"));
+
+                let cwd = fs::read_to_string(&cwd_log).expect("cwd");
+                assert!(cwd.trim_end().ends_with("workspace"));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cargo_yank_omits_registry_for_crates_io() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        fs::create_dir_all(&bin).expect("mkdir");
+        let fake_cargo = write_fake_cargo(&bin);
+
+        let args_log = td.path().join("args.txt");
+        let cwd_log = td.path().join("cwd.txt");
+
+        let ws = td.path().join("workspace");
+        fs::create_dir_all(&ws).expect("mkdir ws");
+
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo.to_str().expect("fake cargo utf8")),
+                ),
+                ("SHIPPER_ARGS_LOG", Some(args_log.to_str().expect("utf8"))),
+                ("SHIPPER_CWD_LOG", Some(cwd_log.to_str().expect("utf8"))),
+                ("SHIPPER_EXIT_CODE", Some("0")),
+            ],
+            || {
+                let _ = cargo_yank(&ws, "my-crate", "0.1.0", "crates-io", 50, None).expect("yank");
+
+                let args = fs::read_to_string(&args_log).expect("args");
+                assert!(!args.contains("--registry"));
+                assert!(args.contains("yank"));
+                assert!(args.contains("--version=0.1.0"));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cargo_yank_propagates_nonzero_exit_code() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        fs::create_dir_all(&bin).expect("mkdir");
+        let fake_cargo = write_fake_cargo(&bin);
+
+        let args_log = td.path().join("args.txt");
+        let cwd_log = td.path().join("cwd.txt");
+
+        let ws = td.path().join("workspace");
+        fs::create_dir_all(&ws).expect("mkdir ws");
+
+        temp_env::with_vars(
+            [
+                (
+                    "SHIPPER_CARGO_BIN",
+                    Some(fake_cargo.to_str().expect("fake cargo utf8")),
+                ),
+                ("SHIPPER_ARGS_LOG", Some(args_log.to_str().expect("utf8"))),
+                ("SHIPPER_CWD_LOG", Some(cwd_log.to_str().expect("utf8"))),
+                ("SHIPPER_EXIT_CODE", Some("101")),
+            ],
+            || {
+                let out =
+                    cargo_yank(&ws, "my-crate", "1.2.3", "crates-io", 50, None).expect("spawn");
+                assert_eq!(out.exit_code, 101);
+                assert!(out.stderr_tail.contains("fake-stderr"));
             },
         );
     }

@@ -1471,6 +1471,17 @@ pub enum EventType {
         drift: StateEventDrift,
     },
 
+    // Remediation / containment (#98). Emitted when `shipper yank` executes
+    // a cargo yank against a specific crate+version. Reason is operator-
+    // supplied (e.g., "CVE-2026-0001 disclosed"); plan_id ties the yank
+    // to the remediation run that issued it.
+    PackageYanked {
+        crate_name: String,
+        version: String,
+        reason: String,
+        exit_code: i32,
+    },
+
     // Retry visibility (#91) — emitted immediately before Shipper sleeps on a
     // retry backoff. `attempt` is the just-failed attempt number (1-indexed),
     // so the next attempt will be `attempt + 1` of `max_attempts`. `reason`
