@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```
-//! use shipper::lock::LockFile;
+//! use shipper_core::lock::LockFile;
 //! use std::path::Path;
 //!
 //! # fn example() -> anyhow::Result<()> {
@@ -68,7 +68,7 @@ impl LockFile {
     /// # Example
     ///
     /// ```
-    /// use shipper::lock::LockFile;
+    /// use shipper_core::lock::LockFile;
     /// use std::path::Path;
     ///
     /// # fn example() -> anyhow::Result<()> {
@@ -144,7 +144,7 @@ impl LockFile {
     /// # Example
     ///
     /// ```
-    /// use shipper::lock::LockFile;
+    /// use shipper_core::lock::LockFile;
     /// use std::path::Path;
     /// use std::time::Duration;
     ///
