@@ -138,6 +138,13 @@ Options:
           
           Use with caution — rehearsal (once fully implemented under #97) is the proof boundary between "we built it" and "we verified it actually resolves from a registry." Bypassing it should be rare.
 
+      --smoke-install <CRATE>
+          Crate name to smoke-install after a successful rehearsal (#97 PR 4).
+          
+          Runs `cargo install --registry <rehearsal> <CRATE>` against the rehearsal registry to prove the crate actually resolves and installs end-to-end — the scenario that workspace-path dependencies defeat and that killed the rc.1 first-publish.
+          
+          The named crate must be in the plan AND have a `[[bin]]` target. Library-only crates cannot be smoke-installed directly; use a consumer-workspace build instead (follow-on).
+
       --format <FORMAT>
           Output format: text (default) or json
           

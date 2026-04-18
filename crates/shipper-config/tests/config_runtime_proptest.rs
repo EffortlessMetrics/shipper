@@ -375,6 +375,7 @@ fn arb_cli_overrides() -> impl Strategy<Value = CliOverrides> {
                     resume_from: None,
                     rehearsal_registry: None,
                     skip_rehearsal: false,
+                    rehearsal_smoke_install: None,
                 }
             },
         )

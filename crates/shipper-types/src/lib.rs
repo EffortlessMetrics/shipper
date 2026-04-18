@@ -593,6 +593,13 @@ pub struct RuntimeOptions {
     /// When the hard gate lands (#97 PR 3), live publish will refuse to run
     /// without this flag if rehearsal has not passed for the current `plan_id`.
     pub rehearsal_skip: bool,
+    /// Crate name to install via `cargo install --registry <rehearsal>`
+    /// after all rehearsal publishes succeed (#97 PR 4). This is the
+    /// install/smoke check that proves end-to-end registry-index
+    /// resolution — the scenario that killed the rc.1 first-publish.
+    /// `None` means no smoke install (opt-in). The named crate must
+    /// exist in the plan AND have a `[[bin]]` target.
+    pub rehearsal_smoke_install: Option<String>,
 }
 
 /// A package in the publish plan.
@@ -1555,6 +1562,27 @@ pub enum EventType {
         summary: String,
     },
 
+    // #97 PR 4 — install/smoke check. Opt-in post-publish step that runs
+    // `cargo install --registry <rehearsal> <crate>` to prove end-to-end
+    // registry-index resolution — the scenario that killed the rc.1
+    // first-publish. Events bracket the check so an auditor replaying
+    // events.jsonl can see the proof (or failure) inline with publishes.
+    RehearsalSmokeCheckStarted {
+        name: String,
+        version: String,
+        registry: String,
+    },
+    RehearsalSmokeCheckSucceeded {
+        name: String,
+        version: String,
+        duration_ms: u128,
+    },
+    RehearsalSmokeCheckFailed {
+        name: String,
+        version: String,
+        message: String,
+    },
+
     // Retry visibility (#91) — emitted immediately before Shipper sleeps on a
     // retry backoff. `attempt` is the just-failed attempt number (1-indexed),
     // so the next attempt will be `attempt + 1` of `max_attempts`. `reason`
@@ -2442,6 +2470,7 @@ mod tests {
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
+            rehearsal_smoke_install: None,
         }
     }
 
@@ -4997,6 +5026,7 @@ mod tests {
                     resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
+            rehearsal_smoke_install: None,
                 };
 
                 // All duration fields must be positive

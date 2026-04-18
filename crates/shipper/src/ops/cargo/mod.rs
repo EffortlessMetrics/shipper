@@ -75,6 +75,57 @@ pub fn cargo_yank(
     })
 }
 
+/// Invoke `cargo install --registry <name> <crate> --version <v>` as a
+/// rehearsal smoke check (#97 PR 4).
+///
+/// Used by `shipper rehearse --smoke-install <crate>` to prove that, after
+/// a rehearsal publish, the crate actually **resolves and installs** via
+/// the registry's index — the end-to-end scenario that workspace-path
+/// dependencies defeat.
+///
+/// Installs to `install_root` (typically a tempdir) with `--force` so an
+/// already-installed version of the same crate doesn't shortcut the
+/// check. Output is captured and tailed like other cargo wrappers.
+pub fn cargo_install_smoke(
+    workspace_root: &Path,
+    package_name: &str,
+    version: &str,
+    registry_name: &str,
+    install_root: &Path,
+    output_lines: usize,
+    timeout: Option<Duration>,
+) -> Result<CargoOutput> {
+    let start = Instant::now();
+    let version_arg = format!("--version={version}");
+    let root_arg = install_root.display().to_string();
+    let mut args: Vec<&str> = vec![
+        "install",
+        package_name,
+        &version_arg,
+        "--root",
+        &root_arg,
+        "--force",
+        "--locked",
+    ];
+
+    if !registry_name.trim().is_empty() && registry_name != "crates-io" {
+        args.push("--registry");
+        args.push(registry_name);
+    }
+
+    let output =
+        process::run_command_with_timeout(&cargo_program(), &args, workspace_root, timeout)
+            .context("failed to execute cargo install; is Cargo installed?")?;
+
+    Ok(CargoOutput {
+        exit_code: output.exit_code,
+        stdout_tail: tail_lines(&output.stdout, output_lines),
+        stderr_tail: tail_lines(&output.stderr, output_lines),
+        duration: start.elapsed(),
+        timed_out: output.timed_out,
+    })
+}
+
 pub fn cargo_publish(
     workspace_root: &Path,
     package_name: &str,

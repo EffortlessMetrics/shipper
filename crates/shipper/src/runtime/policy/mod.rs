@@ -380,6 +380,7 @@ mod apply_policy_tests {
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
+            rehearsal_smoke_install: None,
         }
     }
 
@@ -669,6 +670,7 @@ mod property_tests {
                         resume_from: None,
                         rehearsal_registry: None,
                         rehearsal_skip: false,
+                        rehearsal_smoke_install: None,
                     }
                 },
             )
@@ -1074,6 +1076,7 @@ mod absorbed_integration_tests {
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
+            rehearsal_smoke_install: None,
         }
     }
 

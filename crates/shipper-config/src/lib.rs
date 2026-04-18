@@ -506,6 +506,9 @@ pub struct CliOverrides {
     /// Skip rehearsal even if config/env enables it — CLI flag `--skip-rehearsal`.
     /// Consumed in the same follow-on PR.
     pub skip_rehearsal: bool,
+    /// Crate name to smoke-install post-rehearsal (#97 PR 4) — CLI flag
+    /// `--smoke-install <CRATE>`. `None` means no smoke install.
+    pub rehearsal_smoke_install: Option<String>,
 }
 
 impl Default for ShipperConfig {
@@ -874,6 +877,7 @@ impl ShipperConfig {
                 }
             }),
             rehearsal_skip: cli.skip_rehearsal,
+            rehearsal_smoke_install: cli.rehearsal_smoke_install.clone(),
         }
     }
 

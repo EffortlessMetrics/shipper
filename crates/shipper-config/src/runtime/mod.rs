@@ -41,6 +41,7 @@ pub fn into_runtime_options(value: RuntimeOptions) -> shipper_types::RuntimeOpti
         resume_from: value.resume_from,
         rehearsal_registry: value.rehearsal_registry,
         rehearsal_skip: value.rehearsal_skip,
+        rehearsal_smoke_install: value.rehearsal_smoke_install,
     }
 }
 
@@ -119,6 +120,7 @@ mod tests {
             resume_from: Some("my-crate".to_string()),
             rehearsal_registry: None,
             rehearsal_skip: false,
+            rehearsal_smoke_install: None,
         }
     }
 
@@ -282,6 +284,7 @@ mod tests {
                 resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
+            rehearsal_smoke_install: None,
             };
 
             let converted = into_runtime_options(input);
@@ -916,6 +919,7 @@ mod tests {
                 resume_from: None,
                 rehearsal_registry: None,
                 rehearsal_skip: false,
+                rehearsal_smoke_install: None,
             }
         }
 
@@ -1234,6 +1238,7 @@ mod tests {
                 resume_from: None,
                 rehearsal_registry: None,
                 rehearsal_skip: false,
+                rehearsal_smoke_install: None,
             }
         }
 
@@ -1420,6 +1425,7 @@ mod tests {
                 resume_from: None,
                 rehearsal_registry: None,
                 rehearsal_skip: false,
+                rehearsal_smoke_install: None,
             };
             // Adjust verify_mode to match typical policy usage
             match policy {
@@ -1784,6 +1790,7 @@ mod tests {
                 resume_from: Some(String::new()),
                 rehearsal_registry: None,
                 rehearsal_skip: false,
+                rehearsal_smoke_install: None,
             };
 
             let converted = into_runtime_options(opts);
