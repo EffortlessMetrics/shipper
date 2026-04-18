@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/shipper",
+  "crates/shipper-core",
   "crates/shipper-cli",
   "crates/shipper-duration",
   "crates/shipper-retry",
@@ -29,6 +30,7 @@ unsafe_code = "forbid"
 [workspace.dependencies]
 # Intra-workspace crates (path + version for publish-readiness).
 shipper = { path = "crates/shipper", version = "0.3.0-rc.1" }
+shipper-core = { path = "crates/shipper-core", version = "0.3.0-rc.1" }
 shipper-cli = { path = "crates/shipper-cli", version = "0.3.0-rc.1" }
 shipper-config = { path = "crates/shipper-config", version = "0.3.0-rc.1" }
 shipper-types = { path = "crates/shipper-types", version = "0.3.0-rc.1" }
