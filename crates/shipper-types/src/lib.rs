@@ -581,6 +581,18 @@ pub struct RuntimeOptions {
     pub registries: Vec<Registry>,
     /// Optional package name to resume from (skips all packages before this one)
     pub resume_from: Option<String>,
+    /// Rehearsal registry name (#97) — if `Some`, `shipper rehearse` publishes
+    /// to this registry as phase-2 proof before live dispatch. `None` means
+    /// rehearsal is disabled (the default; opt-in until phase-2 stabilizes).
+    ///
+    /// The name must resolve against the configured [`Self::registries`] at
+    /// runtime; `engine::run_rehearsal` errors clean otherwise.
+    pub rehearsal_registry: Option<String>,
+    /// Operator override — explicitly skip rehearsal even if a
+    /// [`Self::rehearsal_registry`] is configured (#97). Default `false`.
+    /// When the hard gate lands (#97 PR 3), live publish will refuse to run
+    /// without this flag if rehearsal has not passed for the current `plan_id`.
+    pub rehearsal_skip: bool,
 }
 
 /// A package in the publish plan.
@@ -1482,6 +1494,37 @@ pub enum EventType {
         exit_code: i32,
     },
 
+    // Rehearsal-registry proof (#97 PR 2). A rehearsal is phase-2 preflight:
+    // publish every crate to a non-crates.io registry, verify visibility,
+    // and (in a later PR) install-smoke it. The events below are emitted by
+    // `shipper rehearse` so an auditor can replay the rehearsal from the
+    // event log without re-running it.
+    //
+    // `plan_id` is NOT carried in the event payload — the enclosing
+    // `PublishEvent.package` field already disambiguates per-package events,
+    // and the end-of-run `RehearsalComplete` is sufficient for plan-level
+    // correlation since events.jsonl is append-only scoped to one state dir.
+    RehearsalStarted {
+        registry: String,
+        package_count: usize,
+    },
+    RehearsalPackagePublished {
+        name: String,
+        version: String,
+        duration_ms: u128,
+    },
+    RehearsalPackageFailed {
+        name: String,
+        version: String,
+        class: ErrorClass,
+        message: String,
+    },
+    RehearsalComplete {
+        passed: bool,
+        registry: String,
+        summary: String,
+    },
+
     // Retry visibility (#91) — emitted immediately before Shipper sleeps on a
     // retry backoff. `attempt` is the just-failed attempt number (1-indexed),
     // so the next attempt will be `attempt + 1` of `max_attempts`. `reason`
@@ -2361,6 +2404,8 @@ mod tests {
             encryption: EncryptionSettings::default(),
             registries: vec![],
             resume_from: None,
+            rehearsal_registry: None,
+            rehearsal_skip: false,
         }
     }
 
@@ -4884,6 +4929,8 @@ mod tests {
                     encryption: EncryptionSettings::default(),
                     registries: vec![],
                     resume_from: None,
+            rehearsal_registry: None,
+            rehearsal_skip: false,
                 };
 
                 // All duration fields must be positive

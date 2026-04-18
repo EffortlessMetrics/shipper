@@ -39,6 +39,8 @@ pub fn into_runtime_options(value: RuntimeOptions) -> shipper_types::RuntimeOpti
         encryption: value.encryption,
         registries: value.registries,
         resume_from: value.resume_from,
+        rehearsal_registry: value.rehearsal_registry,
+        rehearsal_skip: value.rehearsal_skip,
     }
 }
 
@@ -115,6 +117,8 @@ mod tests {
                 },
             ],
             resume_from: Some("my-crate".to_string()),
+            rehearsal_registry: None,
+            rehearsal_skip: false,
         }
     }
 
@@ -276,6 +280,8 @@ mod tests {
                 encryption,
                 registries,
                 resume_from: None,
+            rehearsal_registry: None,
+            rehearsal_skip: false,
             };
 
             let converted = into_runtime_options(input);
@@ -908,6 +914,8 @@ mod tests {
                 },
                 registries: vec![],
                 resume_from: None,
+                rehearsal_registry: None,
+                rehearsal_skip: false,
             }
         }
 
@@ -1224,6 +1232,8 @@ mod tests {
                 encryption: EncryptionConfig::default(),
                 registries: vec![],
                 resume_from: None,
+                rehearsal_registry: None,
+                rehearsal_skip: false,
             }
         }
 
@@ -1408,6 +1418,8 @@ mod tests {
                 encryption: EncryptionConfig::default(),
                 registries: vec![],
                 resume_from: None,
+                rehearsal_registry: None,
+                rehearsal_skip: false,
             };
             // Adjust verify_mode to match typical policy usage
             match policy {
@@ -1770,6 +1782,8 @@ mod tests {
                 encryption: EncryptionConfig::default(),
                 registries: vec![],
                 resume_from: Some(String::new()),
+                rehearsal_registry: None,
+                rehearsal_skip: false,
             };
 
             let converted = into_runtime_options(opts);

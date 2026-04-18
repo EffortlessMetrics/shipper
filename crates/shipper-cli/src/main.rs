@@ -213,6 +213,22 @@ enum Commands {
     Publish,
     /// Resume a previous publish run.
     Resume,
+    /// Rehearse a release against an alternate registry (#97 PR 2).
+    ///
+    /// Publishes every crate in the plan to the registry named by
+    /// `--rehearsal-registry` (or `[rehearsal] registry = "..."` in
+    /// `.shipper.toml`), verifies visibility on that registry, and
+    /// emits a `RehearsalComplete { passed, ... }` event to
+    /// `events.jsonl` so the outcome is auditable.
+    ///
+    /// Rehearse must target a non-live registry (kellnr, a sandbox
+    /// crates.io account, or a throwaway alternate registry). Shipper
+    /// refuses to rehearse against the same registry as the live target.
+    ///
+    /// Part of [#97](https://github.com/EffortlessMetrics/shipper/issues/97).
+    /// The hard gate that blocks live publish without a passing rehearsal
+    /// lands in #97 PR 3.
+    Rehearse,
     /// Compare local workspace versions to the registry.
     Status,
     /// Print environment and auth diagnostics.
@@ -575,6 +591,32 @@ fn main() -> Result<()> {
                     &current_opts.state_dir,
                     &cli.format,
                 );
+            }
+        }
+        Commands::Rehearse => {
+            let outcome = engine::run_rehearsal(&planned, &opts, &mut reporter)?;
+
+            // Stdout is the operator-facing receipt: mirrors the live
+            // publish path, so a human scanning the terminal sees one
+            // consistent "did it work?" line regardless of which command
+            // they ran. Full per-package detail is in events.jsonl.
+            if outcome.passed {
+                println!(
+                    "rehearsal OK: {} packages against '{}'",
+                    outcome.packages_published, outcome.registry_name
+                );
+            } else {
+                println!(
+                    "rehearsal FAILED after {}/{} packages against '{}': {}",
+                    outcome.packages_published,
+                    outcome.packages_attempted,
+                    outcome.registry_name,
+                    outcome.summary
+                );
+                // Exit non-zero so CI lanes that wrap `shipper rehearse`
+                // fail the job on a failed rehearsal without needing extra
+                // scripting.
+                anyhow::bail!("rehearsal did not pass");
             }
         }
         Commands::Status => {
@@ -1881,6 +1923,8 @@ mod tests {
             encryption: shipper::encryption::EncryptionConfig::default(),
             registries: vec![],
             resume_from: None,
+            rehearsal_registry: None,
+            rehearsal_skip: false,
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
@@ -1950,6 +1994,8 @@ mod tests {
             encryption: shipper::encryption::EncryptionConfig::default(),
             registries: vec![],
             resume_from: None,
+            rehearsal_registry: None,
+            rehearsal_skip: false,
         };
 
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
