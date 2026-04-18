@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shipper::runtime::execution;
+use shipper_core::runtime::execution;
 use shipper_retry::RetryStrategyType;
 use shipper_types::{ExecutionState, PackageProgress, PackageState, Registry};
 
