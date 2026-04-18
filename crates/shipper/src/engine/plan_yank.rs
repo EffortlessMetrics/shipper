@@ -31,7 +31,9 @@
 //! Keeping this PR to **planning only** matches the staged rollout agreed
 //! in the #98 scope: primitive → plan → execute / fix-forward.
 
-use anyhow::{Context, Result};
+use std::collections::{BTreeMap, BTreeSet};
+
+use anyhow::{Context, Result, bail};
 use shipper_types::{PackageReceipt, PackageState, Receipt};
 
 /// One entry in a reverse-topological yank plan.
@@ -104,6 +106,82 @@ pub fn build_plan(receipt: &Receipt, filter: PlanYankFilter) -> YankPlan {
         },
         entries,
     }
+}
+
+/// Build a reverse-topological yank plan rooted at a specific broken crate
+/// (#98 PR 4). Walks the release plan's dependency graph backwards from
+/// `starting_crate` to enumerate every crate that transitively depends on
+/// it, then orders them dependents-first.
+///
+/// This is the **graph mode** complement to `build_plan`'s receipt-filter
+/// modes. Use when you know exactly which crate is broken (e.g. CVE
+/// targeting `my-lib`) and want containment of only the affected
+/// dependency chain — not a full-release rollback.
+///
+/// `dependency_graph` is `plan.dependencies` from the original
+/// `ReleasePlan` (crate → list of its intra-workspace deps). Not
+/// embedded in `Receipt` because receipts are summaries, not graphs.
+///
+/// Errors if `starting_crate` is not in the receipt.
+pub fn build_plan_from_starting_crate(
+    receipt: &Receipt,
+    dependency_graph: &BTreeMap<String, Vec<String>>,
+    starting_crate: &str,
+    reason: Option<String>,
+) -> Result<YankPlan> {
+    if !receipt.packages.iter().any(|p| p.name == starting_crate) {
+        bail!(
+            "starting crate '{starting_crate}' is not in this receipt; \
+             available packages: {}",
+            receipt
+                .packages
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    // Reverse-walk the dependency graph: starting from the broken crate,
+    // collect every crate that (transitively) depends on it.
+    let mut affected: BTreeSet<String> = BTreeSet::new();
+    affected.insert(starting_crate.to_string());
+    let mut frontier: Vec<String> = vec![starting_crate.to_string()];
+    while let Some(current) = frontier.pop() {
+        for (dependent, deps) in dependency_graph.iter() {
+            if deps.iter().any(|d| d == &current) && affected.insert(dependent.clone()) {
+                frontier.push(dependent.clone());
+            }
+        }
+    }
+
+    // receipt.packages is in topological order. Filter to the affected set
+    // and restrict to actually-Published entries (yanking a Failed / never-
+    // shipped entry is a no-op on the registry). Then reverse so
+    // dependents come first.
+    let mut entries: Vec<YankEntry> = receipt
+        .packages
+        .iter()
+        .filter(|p| affected.contains(&p.name))
+        .filter(|p| matches!(p.state, PackageState::Published))
+        .map(|p| YankEntry {
+            name: p.name.clone(),
+            version: p.version.clone(),
+            // Per-entry reason priority:
+            //   1. Operator-supplied `--reason <text>` (applies to all)
+            //   2. Existing `compromised_by` on the receipt entry
+            //   3. None
+            reason: reason.clone().or_else(|| p.compromised_by.clone()),
+        })
+        .collect();
+    entries.reverse();
+
+    Ok(YankPlan {
+        plan_id: receipt.plan_id.clone(),
+        registry: receipt.registry.name.clone(),
+        filter: "starting_crate",
+        entries,
+    })
 }
 
 /// Load a receipt from an arbitrary path (not necessarily inside a state dir).
@@ -266,5 +344,99 @@ mod tests {
             "b must come before a in reverse topo:\n{out}"
         );
         assert!(out.starts_with("# yank plan"));
+    }
+
+    // ── build_plan_from_starting_crate tests (#98 PR 4) ─────────────────
+
+    /// Graph: a (leaf) ← b ← c. Dep map says: b depends on a, c depends
+    /// on b and a. Starting from "a" (the leaf), all three should be in
+    /// the plan, with c yanked first, then b, then a.
+    #[test]
+    fn starting_crate_walks_all_transitive_dependents_in_reverse_topo() {
+        let r = sample_receipt(vec![
+            pkg("a", PackageState::Published, None),
+            pkg("b", PackageState::Published, None),
+            pkg("c", PackageState::Published, None),
+        ]);
+        let mut deps = BTreeMap::new();
+        deps.insert("a".to_string(), vec![]);
+        deps.insert("b".to_string(), vec!["a".to_string()]);
+        deps.insert("c".to_string(), vec!["a".to_string(), "b".to_string()]);
+
+        let plan = build_plan_from_starting_crate(&r, &deps, "a", None).expect("plan");
+        let names: Vec<_> = plan.entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, vec!["c", "b", "a"]);
+        assert_eq!(plan.filter, "starting_crate");
+    }
+
+    /// Graph: a ← b (b depends on a), plus an unrelated crate z. Starting
+    /// from "a" should yank a and b but NOT z (no dependency edge).
+    #[test]
+    fn starting_crate_ignores_unrelated_crates() {
+        let r = sample_receipt(vec![
+            pkg("a", PackageState::Published, None),
+            pkg("b", PackageState::Published, None),
+            pkg("z", PackageState::Published, None),
+        ]);
+        let mut deps = BTreeMap::new();
+        deps.insert("a".to_string(), vec![]);
+        deps.insert("b".to_string(), vec!["a".to_string()]);
+        deps.insert("z".to_string(), vec![]); // independent
+
+        let plan = build_plan_from_starting_crate(&r, &deps, "a", None).expect("plan");
+        let names: Vec<_> = plan.entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, vec!["b", "a"]);
+        assert!(!names.contains(&"z".to_string()));
+    }
+
+    #[test]
+    fn starting_crate_skips_non_published_entries() {
+        let r = sample_receipt(vec![
+            pkg("a", PackageState::Published, None),
+            pkg(
+                "b",
+                PackageState::Failed {
+                    class: shipper_types::ErrorClass::Permanent,
+                    message: "nope".into(),
+                },
+                None,
+            ),
+        ]);
+        let mut deps = BTreeMap::new();
+        deps.insert("b".to_string(), vec!["a".to_string()]);
+
+        let plan = build_plan_from_starting_crate(&r, &deps, "a", None).expect("plan");
+        // b is a dependent of a but it Failed to publish — never on
+        // registry — so it's excluded from the yank plan. Only a remains.
+        let names: Vec<_> = plan.entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, vec!["a"]);
+    }
+
+    #[test]
+    fn starting_crate_applies_explicit_reason_to_every_entry() {
+        let r = sample_receipt(vec![
+            pkg("a", PackageState::Published, None),
+            pkg("b", PackageState::Published, None),
+        ]);
+        let mut deps = BTreeMap::new();
+        deps.insert("b".to_string(), vec!["a".to_string()]);
+
+        let plan =
+            build_plan_from_starting_crate(&r, &deps, "a", Some("CVE-2026-0001".to_string()))
+                .expect("plan");
+        assert_eq!(plan.entries.len(), 2);
+        for entry in &plan.entries {
+            assert_eq!(entry.reason.as_deref(), Some("CVE-2026-0001"));
+        }
+    }
+
+    #[test]
+    fn starting_crate_errors_when_not_in_receipt() {
+        let r = sample_receipt(vec![pkg("a", PackageState::Published, None)]);
+        let deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let err =
+            build_plan_from_starting_crate(&r, &deps, "bogus", None).expect_err("should error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("not in this receipt"), "err: {msg}");
     }
 }

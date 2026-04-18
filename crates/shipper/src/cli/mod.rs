@@ -306,9 +306,24 @@ enum Commands {
         from_receipt: Option<PathBuf>,
         /// Restrict the plan to packages whose receipt carries a
         /// `compromised_at` marker. Without this, every `Published`
-        /// package is included (full rollback).
-        #[arg(long)]
+        /// package is included (full rollback). Mutually exclusive
+        /// with `--starting-crate`.
+        #[arg(long, conflicts_with = "starting_crate")]
         compromised_only: bool,
+        /// **Graph mode** (#98 PR 4). Given a specific broken crate
+        /// name, walk the workspace's dependency graph to find every
+        /// crate that transitively depends on it, and emit a yank
+        /// plan covering only that affected chain (not a full
+        /// rollback). Resolves the graph from the current workspace's
+        /// `Cargo.toml` metadata — the receipt supplies the versions
+        /// and Published-state filter.
+        #[arg(long, value_name = "CRATE")]
+        starting_crate: Option<String>,
+        /// Per-entry reason to embed in the yank plan (applied to
+        /// every entry). If omitted, each entry's reason falls back
+        /// to its receipt-level `compromised_by` field (if set).
+        #[arg(long, value_name = "REASON")]
+        reason: Option<String>,
     },
     /// Generate a fix-forward supersession plan from a compromised
     /// receipt (#98 PR 3).
@@ -855,6 +870,8 @@ pub fn run() -> Result<()> {
         Commands::PlanYank {
             from_receipt,
             compromised_only,
+            starting_crate,
+            reason,
         } => {
             use crate::engine::plan_yank::{self, PlanYankFilter};
 
@@ -870,13 +887,28 @@ pub fn run() -> Result<()> {
                     .to_string()
             })?;
 
-            let filter = if compromised_only {
-                PlanYankFilter::CompromisedOnly
+            // Three mutually-informative modes:
+            //   --starting-crate <N>   → graph mode (walk dependents)
+            //   --compromised-only     → receipt-filter mode (marker)
+            //   (default)              → receipt-filter mode (all Published)
+            // clap's `conflicts_with` already rejects combinations at parse time.
+            let plan = if let Some(ref starting) = starting_crate {
+                // Graph mode uses the *current workspace's* dependency graph,
+                // read from the planned workspace we already built upstream.
+                plan_yank::build_plan_from_starting_crate(
+                    &receipt,
+                    &planned.plan.dependencies,
+                    starting,
+                    reason.clone(),
+                )?
             } else {
-                PlanYankFilter::AllPublished
+                let filter = if compromised_only {
+                    PlanYankFilter::CompromisedOnly
+                } else {
+                    PlanYankFilter::AllPublished
+                };
+                plan_yank::build_plan(&receipt, filter)
             };
-
-            let plan = plan_yank::build_plan(&receipt, filter);
 
             match cli.format.as_str() {
                 "json" => {
