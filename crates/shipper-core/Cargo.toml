@@ -1,33 +1,19 @@
 [package]
-name = "shipper"
+name = "shipper-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Reliable, resumable `cargo publish` for Rust workspaces. Install with `cargo install shipper`."
+description = "Core library behind the `shipper` CLI: engine, planning, state, registry, and remediation primitives for `cargo publish` workspaces."
 readme = "README.md"
-documentation = "https://docs.rs/shipper"
+documentation = "https://docs.rs/shipper-core"
 homepage = "https://github.com/EffortlessMetrics/shipper"
 repository = "https://github.com/EffortlessMetrics/shipper"
-keywords = ["cargo", "publish", "workspace", "release", "cli"]
-categories = ["command-line-utilities", "development-tools", "development-tools::build-utils"]
-
-# Installable product façade: `shipper` carries the `shipper` binary and
-# re-exports `shipper-core`. The real engine lives in `shipper-core`
-# (library only, no CLI deps); in a later stage of the #95 split, the
-# CLI code currently in `src/cli/` moves to the `shipper-cli` library
-# adapter and this crate's `main.rs` forwards to `shipper_cli::run()`.
-[[bin]]
-name = "shipper"
-path = "src/bin/shipper.rs"
+keywords = ["cargo", "publish", "workspace", "release"]
+categories = ["development-tools", "development-tools::build-utils"]
 
 [dependencies]
-# The real engine lives here; `shipper` re-exports its public surface.
-shipper-core.workspace = true
-
-# Workspace microcrates (kept for now; PR 3 will drop any that only the
-# re-exported `shipper_core` modules need, once CLI code also moves to
-# `shipper-cli`).
+# Workspace microcrates
 shipper-retry.workspace = true
 shipper-encrypt.workspace = true
 shipper-registry.workspace = true
@@ -63,14 +49,6 @@ pbkdf2 = { version = "0.12", features = ["simple"] }
 hmac = "0.13"
 sha2 = "0.11"
 
-# CLI-only deps (drive the `shipper` binary via `crate::cli`). They're
-# in the regular `[dependencies]` because the CLI module is
-# unconditionally compiled — keeping it behind a feature gate is a
-# later follow-on if the compile-time cost bites.
-clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
-indicatif = "0.18.4"
-
 [lints]
 workspace = true
 
@@ -82,4 +60,3 @@ serial_test = "3.4.0"
 tiny_http = "0.12.0"
 temp-env = "0.3"
 console = "0.16.3"
-

@@ -4,10 +4,12 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'crates/shipper-core/src/**'
       - 'crates/shipper/src/**'
   push:
     branches: [main]
     paths:
+      - 'crates/shipper-core/src/**'
       - 'crates/shipper/src/**'
 
 jobs:
@@ -24,16 +26,15 @@ jobs:
       # - runtime-> may import ops
       # - ops    -> may import nothing from above
       #
-      # This guard becomes meaningful after Phase 3 scaffolds the layer dirs.
-      # Until then it's a no-op (the layer dirs don't exist yet).
+      # Layers live in `crates/shipper-core/src/` after the #95 split.
       - name: check ops/ does not import upward
         run: |
           set -e
-          if [ ! -d crates/shipper/src/ops ]; then
-            echo "ops/ layer not yet scaffolded — skipping (this is expected before Phase 3)."
+          if [ ! -d crates/shipper-core/src/ops ]; then
+            echo "ops/ layer not yet scaffolded — skipping."
             exit 0
           fi
-          if grep -rE --include='*.rs' 'use crate::(engine|plan|state|runtime)::' crates/shipper/src/ops/; then
+          if grep -rE --include='*.rs' 'use crate::(engine|plan|state|runtime)::' crates/shipper-core/src/ops/; then
             echo "::error::ops/ layer must not import from engine, plan, state, or runtime"
             exit 1
           fi
@@ -41,11 +42,11 @@ jobs:
       - name: check runtime/ does not import upward
         run: |
           set -e
-          if [ ! -d crates/shipper/src/runtime ]; then
+          if [ ! -d crates/shipper-core/src/runtime ]; then
             echo "runtime/ layer not yet scaffolded — skipping."
             exit 0
           fi
-          if grep -rE --include='*.rs' 'use crate::(engine|plan|state)::' crates/shipper/src/runtime/; then
+          if grep -rE --include='*.rs' 'use crate::(engine|plan|state)::' crates/shipper-core/src/runtime/; then
             echo "::error::runtime/ layer must not import from engine, plan, or state"
             exit 1
           fi
@@ -53,11 +54,11 @@ jobs:
       - name: check state/ does not import upward
         run: |
           set -e
-          if [ ! -d crates/shipper/src/state ]; then
+          if [ ! -d crates/shipper-core/src/state ]; then
             echo "state/ layer not yet scaffolded — skipping."
             exit 0
           fi
-          if grep -rE --include='*.rs' 'use crate::(engine|plan)::' crates/shipper/src/state/; then
+          if grep -rE --include='*.rs' 'use crate::(engine|plan)::' crates/shipper-core/src/state/; then
             echo "::error::state/ layer must not import from engine or plan"
             exit 1
           fi
@@ -65,11 +66,11 @@ jobs:
       - name: check plan/ does not import upward
         run: |
           set -e
-          if [ ! -d crates/shipper/src/plan ]; then
+          if [ ! -d crates/shipper-core/src/plan ]; then
             echo "plan/ layer not yet scaffolded — skipping."
             exit 0
           fi
-          if grep -rE --include='*.rs' 'use crate::engine::' crates/shipper/src/plan/; then
+          if grep -rE --include='*.rs' 'use crate::engine::' crates/shipper-core/src/plan/; then
             echo "::error::plan/ layer must not import from engine"
             exit 1
           fi
