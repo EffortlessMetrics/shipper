@@ -14,7 +14,7 @@ publish:
       - <STATE_DIR>/
       - target/
   script:
-    - cargo install shipper-cli --locked
+    - cargo install shipper --locked
     - shipper publish --quiet
   variables:
     CARGO_TERM_COLOR: "always"

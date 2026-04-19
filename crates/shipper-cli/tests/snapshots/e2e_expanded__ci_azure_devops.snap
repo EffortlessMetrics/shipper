@@ -25,7 +25,7 @@ steps:
       path: $(CARGO_HOME)
       cacheHitVar: CACHE_RESTORED
 
-  - script: cargo install shipper-cli --locked
+  - script: cargo install shipper --locked
     displayName: 'Install Shipper'
 
   - script: shipper publish --quiet

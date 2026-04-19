@@ -13,9 +13,10 @@
 //! ```
 //!
 //! The `shipper` binary on crates.io is a three-line wrapper that
-//! calls [`run`]; a separate `shipper-cli` binary exists in this
-//! crate for backward compatibility with `cargo install shipper-cli`
-//! and for workspace-local development.
+//! calls [`run`]. This crate also ships its own `shipper-cli` binary,
+//! another three-line wrapper over [`run`], for callers that want the
+//! adapter crate installed directly (`cargo install shipper-cli`) or
+//! for workspace-local development.
 //!
 //! ## Embedding
 //!
@@ -1887,7 +1888,7 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
             println!("      - {}/", abs_state.display());
             println!("      - target/");
             println!("  script:");
-            println!("    - cargo install shipper-cli --locked");
+            println!("    - cargo install shipper --locked");
             println!("    - shipper publish --quiet");
             println!("  variables:");
             println!("    CARGO_TERM_COLOR: \"always\"");
@@ -1918,7 +1919,7 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
             println!("            - shipper-state-");
             println!("      - run:");
             println!("          name: Install Shipper");
-            println!("          command: cargo install shipper-cli --locked");
+            println!("          command: cargo install shipper --locked");
             println!("      - run:");
             println!("          name: Publish Crates");
             println!("          command: shipper publish --quiet");
@@ -1966,7 +1967,7 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
             println!("      path: $(CARGO_HOME)");
             println!("      cacheHitVar: CACHE_RESTORED");
             println!();
-            println!("  - script: cargo install shipper-cli --locked");
+            println!("  - script: cargo install shipper --locked");
             println!("    displayName: 'Install Shipper'");
             println!();
             println!("  - script: shipper publish --quiet");
