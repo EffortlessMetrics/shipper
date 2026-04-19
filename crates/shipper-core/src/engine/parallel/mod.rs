@@ -36,6 +36,36 @@ pub trait Reporter {
     fn info(&mut self, msg: &str);
     fn warn(&mut self, msg: &str);
     fn error(&mut self, msg: &str);
+
+    /// Narrate a retry-backoff wait to the operator and block until the wait
+    /// has elapsed. Called from the parallel publish retry sites after the
+    /// [`shipper_types::EventType::RetryBackoffStarted`] event has been
+    /// recorded. The default impl preserves the pre-#103 behavior (warn line
+    /// then `thread::sleep(delay)`); overrides MUST block for the full
+    /// `delay` before returning. See #103 / #91.
+    #[allow(clippy::too_many_arguments)]
+    fn retry_wait(
+        &mut self,
+        pkg_name: &str,
+        pkg_version: &str,
+        attempt: u32,
+        max_attempts: u32,
+        delay: std::time::Duration,
+        reason: shipper_types::ErrorClass,
+        message: &str,
+    ) {
+        self.warn(&format!(
+            "{}@{}: {} ({:?}); next attempt in {} (attempt {}/{})",
+            pkg_name,
+            pkg_version,
+            message,
+            reason,
+            humantime::format_duration(delay),
+            attempt.saturating_add(1),
+            max_attempts,
+        ));
+        std::thread::sleep(delay);
+    }
 }
 
 /// Adapter that bridges the host crate's `crate::engine::Reporter` trait into
@@ -54,6 +84,31 @@ impl<'a> Reporter for HostReporterAdapter<'a> {
     }
     fn error(&mut self, msg: &str) {
         self.inner.error(msg);
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn retry_wait(
+        &mut self,
+        pkg_name: &str,
+        pkg_version: &str,
+        attempt: u32,
+        max_attempts: u32,
+        delay: std::time::Duration,
+        reason: shipper_types::ErrorClass,
+        message: &str,
+    ) {
+        // Forward to the host reporter so the CLI's live-countdown override
+        // fires for parallel retries too. (Buffering in SendReporter means
+        // the countdown is only visible in the single-level case, but the
+        // default-impl fallback still emits a warn line.)
+        self.inner.retry_wait(
+            pkg_name,
+            pkg_version,
+            attempt,
+            max_attempts,
+            delay,
+            reason,
+            message,
+        );
     }
 }
 

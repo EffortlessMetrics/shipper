@@ -2307,6 +2307,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "console",
+ "humantime",
  "indicatif",
  "insta",
  "predicates",

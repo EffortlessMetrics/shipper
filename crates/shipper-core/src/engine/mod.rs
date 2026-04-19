@@ -30,6 +30,38 @@ pub trait Reporter {
     fn info(&mut self, msg: &str);
     fn warn(&mut self, msg: &str);
     fn error(&mut self, msg: &str);
+
+    /// Narrate a retry-backoff wait to the operator and block until the wait
+    /// has elapsed. Called once per retry backoff site after the
+    /// [`EventType::RetryBackoffStarted`] event has been recorded. The default
+    /// implementation preserves the pre-#103 behavior (a single `warn()` line
+    /// then `thread::sleep(delay)`); richer UIs (e.g., the CLI) override it to
+    /// render a live countdown during the wait window. Overrides MUST block
+    /// for the full `delay` before returning — the engine relies on this
+    /// method to own the retry sleep. See #103 and #91.
+    #[allow(clippy::too_many_arguments)]
+    fn retry_wait(
+        &mut self,
+        pkg_name: &str,
+        pkg_version: &str,
+        attempt: u32,
+        max_attempts: u32,
+        delay: Duration,
+        reason: ErrorClass,
+        message: &str,
+    ) {
+        self.warn(&format!(
+            "{}@{}: {} ({:?}); next attempt in {} (attempt {}/{})",
+            pkg_name,
+            pkg_version,
+            message,
+            reason,
+            humantime::format_duration(delay),
+            attempt.saturating_add(1),
+            max_attempts,
+        ));
+        thread::sleep(delay);
+    }
 }
 
 pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::runtime::policy::PolicyEffects {
@@ -1816,18 +1848,20 @@ fn emit_retry_backoff_event(
     event_log.write_to_file(events_path)?;
     event_log.clear();
 
-    reporter.warn(&format!(
-        "{}@{}: {} ({:?}); next attempt in {} (attempt {}/{})",
+    // Delegate the human-facing narration AND the backoff sleep to the
+    // Reporter so TTY-capable UIs can render a live countdown during the
+    // wait. The default `Reporter::retry_wait` impl preserves the pre-#103
+    // behavior (single warn line + `thread::sleep(delay)`), so reporters
+    // that don't override it behave exactly as before.
+    reporter.retry_wait(
         pkg_name,
         pkg_version,
-        message,
-        reason,
-        humantime::format_duration(delay),
-        attempt.saturating_add(1),
+        attempt,
         max_attempts,
-    ));
-
-    thread::sleep(delay);
+        delay,
+        reason,
+        message,
+    );
     Ok(())
 }
 

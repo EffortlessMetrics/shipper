@@ -81,22 +81,22 @@ fn emit_retry_backoff(
         log.clear();
     }
 
-    // Human line: reason + attempt count + duration
+    // Delegate human-facing narration AND the backoff sleep to the Reporter.
+    // Parallel mode's SendReporter uses the default impl (buffered warn +
+    // thread::sleep), matching pre-#103 behavior. Single-level callers that
+    // use the host reporter directly can provide a live-countdown override.
     {
         let mut rep = reporter.lock().unwrap();
-        rep.warn(&format!(
-            "{}@{}: {} ({:?}); next attempt in {} (attempt {}/{})",
+        rep.retry_wait(
             pkg_name,
             pkg_version,
-            message,
-            reason,
-            humantime::format_duration(delay),
-            attempt.saturating_add(1),
+            attempt,
             max_attempts,
-        ));
+            delay,
+            reason,
+            message,
+        );
     }
-
-    thread::sleep(delay);
 }
 
 /// Publish a single package with retries (parallel-safe version)
