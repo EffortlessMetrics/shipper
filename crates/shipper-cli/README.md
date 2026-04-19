@@ -33,19 +33,24 @@ For programmatic use **without** a `clap` dependency graph, depend on
 [`shipper-core`](https://crates.io/crates/shipper-core) instead — that's
 where the engine lives.
 
-## Back-compat binary
+## Installing the adapter directly
 
-A `shipper-cli` binary still ships so that existing pipelines with
-`cargo install shipper-cli --locked` keep working. Prefer
-`cargo install shipper --locked` on new setups.
+The `shipper-cli` crate ships its own `shipper-cli` binary, a
+three-line wrapper over `shipper_cli::run()` — the same entry point
+the `shipper` install uses. Install the adapter directly when you
+want the `shipper-cli` binary name (e.g., existing pipelines, or
+you prefer the adapter crate explicitly):
 
 ```bash
-# Backward-compatible — same code path
+# From crates.io — same code path as `cargo install shipper`
 cargo install shipper-cli --locked
 
 # From this repository
 cargo install --path crates/shipper-cli --locked
 ```
+
+Most users should prefer `cargo install shipper --locked`, which
+installs a binary named `shipper` against the same adapter.
 
 ## Core commands
 

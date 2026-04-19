@@ -28,9 +28,11 @@ From crates.io:
 cargo install shipper --locked
 ```
 
-> `shipper-cli` is still published as a compatibility shim — older
-> scripts and CI that reference it keep working during the migration
-> window. Prefer `shipper` on new setups. Tracking: [#95](https://github.com/EffortlessMetrics/shipper/issues/95).
+> `shipper-cli` is the real CLI adapter crate (clap parsing, subcommand
+> dispatch, output/progress — exposes `pub fn run()`). Most users should
+> install `shipper`; `shipper-cli` is still published as its own crate
+> so callers that want the adapter directly — or that already wired
+> `cargo install shipper-cli` into pipelines — keep working. See [#95](https://github.com/EffortlessMetrics/shipper/issues/95).
 
 From this repository:
 
