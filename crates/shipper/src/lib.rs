@@ -24,9 +24,19 @@
 //! ## Embedding
 //!
 //! For programmatic use — driving a publish from your own Rust code
-//! without a CLI dependency graph (no `clap`, no `indicatif`) — depend
-//! on [`shipper-core`](https://crates.io/crates/shipper-core) directly.
-//! That crate is the stable embedding surface.
+//! without a CLI dependency graph (no `clap`, no `indicatif`) — you
+//! have two options:
+//!
+//! 1. Depend on [`shipper-core`](https://crates.io/crates/shipper-core)
+//!    directly. That crate is the stable embedding surface.
+//! 2. Or disable the default `cli` feature on this crate:
+//!
+//!    ```toml
+//!    shipper = { version = "...", default-features = false }
+//!    ```
+//!
+//!    This drops the `shipper-cli` (and therefore `clap`) dependency
+//!    while keeping the curated re-export paths below.
 //!
 //! This crate re-exports a **curated** set of `shipper-core` modules
 //! for convenience so `shipper::engine`, `shipper::plan`, etc. keep

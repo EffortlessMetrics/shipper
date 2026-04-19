@@ -22,13 +22,24 @@ categories = ["command-line-utilities", "development-tools", "development-tools:
 # The library target re-exports `shipper-core`'s public surface so the
 # historical `shipper::engine`, `shipper::plan`, etc. paths keep
 # resolving for callers that depend on the product name.
+#
+# The `cli` feature is on by default so `cargo install shipper` works
+# out of the box. Library consumers that only want the curated
+# `shipper-core` re-export (no `clap`, no `indicatif`) can opt out
+# with `shipper = { version = "...", default-features = false }`.
+[features]
+default = ["cli"]
+# Pulls in `shipper-cli` and enables the `[[bin]]` target.
+cli = ["dep:shipper-cli"]
+
 [[bin]]
 name = "shipper"
 path = "src/bin/shipper.rs"
+required-features = ["cli"]
 
 [dependencies]
 shipper-core.workspace = true
-shipper-cli.workspace = true
+shipper-cli = { workspace = true, optional = true }
 anyhow = "1.0.102"
 
 [lints]
