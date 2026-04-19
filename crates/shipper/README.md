@@ -1,85 +1,58 @@
 # shipper
 
-Reliable, resumable `cargo publish` for Rust workspaces.
+Installable release-execution facade for Rust workspaces.
 
-```text
+A workspace release can fail after some crates publish and before the rest do. Cargo's own docs note that `cargo publish --workspace` is non-atomic and that a client timeout does not always mean the upload failed. Shipper gives you a plan, a preflight gate, durable state, and a recovery path for that failure mode.
+
+## Install
+
+```bash
 cargo install shipper --locked
 ```
-
-Shipper runs a multi-crate workspace release to crates.io (or any
-Cargo-compatible registry) with the safety guarantees that `cargo
-publish` alone can't give you:
-
-- **Resumable** — if a publish is interrupted (CI timeout, rate limit,
-  network blip), `shipper resume` picks up from exactly where it
-  stopped. Already-published crates are skipped; ambiguous crates
-  reconcile against the registry first.
-- **Backoff-aware** — 429s and transient network errors retry with
-  jittered exponential backoff. Permanent failures fail fast.
-- **Events-as-truth** — every step writes to `.shipper/events.jsonl`.
-  `state.json` is a projection, `receipt.json` is a summary. When the
-  three disagree, events win.
-- **Prove before publish** — optional rehearsal against an alternate
-  registry (`shipper rehearse`) that packages, verifies, and
-  install-smokes every crate before touching crates.io.
-- **Contain damage** — receipt-driven `shipper yank`, reverse-topological
-  yank plans, and fix-forward planning for partial or compromised
-  releases.
-- **Trusted Publishing** — OIDC authentication against crates.io in CI
-  via GitHub's `rust-lang/crates-io-auth-action`, no long-lived tokens
-  required.
-
-## Architecture
-
-```text
-shipper (this crate — install face)
-  -> shipper-cli (CLI adapter: clap parsing, dispatch, output)
-       -> shipper-core (engine: plan, preflight, publish, resume, …)
-```
-
-Three crates, one product. You install `shipper`. If you're embedding
-the engine in your own Rust tool, you have two options:
-
-1. Depend on [`shipper-core`](https://crates.io/crates/shipper-core)
-   directly — it has no CLI dependencies (no `clap`, no `indicatif`).
-2. Disable this crate's default `cli` feature to drop `shipper-cli`
-   (and therefore `clap`) while keeping the curated re-export paths:
-
-   ```toml
-   shipper = { version = "...", default-features = false }
-   ```
 
 ## Quick start
 
 ```bash
-# In a Rust workspace with crates you want to publish
-cargo install shipper --locked
-
-# Preview the plan + preflight
-shipper preflight
-
-# Publish (writes receipt, events, state to .shipper/)
-shipper publish
-
-# If interrupted, continue from where it stopped
-shipper resume
+shipper plan        # preview the publish order
+shipper preflight   # check readiness
+shipper publish     # execute the plan
+shipper resume      # continue after an interrupted run
 ```
 
-See [the how-to guides](https://github.com/EffortlessMetrics/shipper/tree/main/docs/how-to)
-for rehearsal against an alternate registry, remediating a compromised
-release, and running recovery drills.
+`shipper --help` and `shipper <subcommand> --help` are the canonical command reference.
+
+## What this crate is
+
+`shipper` is the user-facing package — the one you install and the one that shows up on crates.io. It wraps:
+
+- a small binary that forwards to the CLI adapter,
+- a curated library re-export over the engine (`engine`, `plan`, `types`, `config`, `state`, `store`),
+- product-facing documentation.
+
+The actual work happens in two sibling crates:
+
+- [`shipper-cli`](https://crates.io/crates/shipper-cli) — CLI adapter (clap parsing, subcommands, output, `pub fn run()`).
+- [`shipper-core`](https://crates.io/crates/shipper-core) — engine library with no CLI dependencies.
+
+## Use another crate when
+
+- You want the lean embedding surface (no `clap`, no `indicatif`) → depend on [`shipper-core`](https://crates.io/crates/shipper-core).
+- You need the exact clap-driven CLI surface programmatically (custom wrappers, pre-run hooks) → depend on [`shipper-cli`](https://crates.io/crates/shipper-cli) and call `shipper_cli::run()`.
+- You want `shipper` as a library but without the `clap` graph → `shipper = { version = "...", default-features = false }`.
 
 ## Scope
 
-Shipper **does** handle publishing, retrying, resuming, rehearsing,
-yanking, and fix-forward planning. It **does not** decide version
-numbers, generate changelogs, tag releases, or create GitHub
-releases — pair it with your preferred versioning/release workflow.
+Shipper handles publishing, retrying, resuming, rehearsing, yanking, and fix-forward planning. It does not decide version numbers, generate changelogs, tag releases, or create GitHub releases — pair it with your preferred versioning/release workflow.
+
+## Documentation
+
+- Project README: <https://github.com/EffortlessMetrics/shipper#readme>
+- Full docs tree: <https://github.com/EffortlessMetrics/shipper/tree/main/docs>
+- Configuration reference: <https://github.com/EffortlessMetrics/shipper/blob/main/docs/configuration.md>
 
 ## Stability
 
-Pre-1.0. Breaking changes are called out in
-[`CHANGELOG.md`](https://github.com/EffortlessMetrics/shipper/blob/main/CHANGELOG.md).
+Pre-1.0. Breaking changes are called out in [`CHANGELOG.md`](https://github.com/EffortlessMetrics/shipper/blob/main/CHANGELOG.md).
 
 ## License
 

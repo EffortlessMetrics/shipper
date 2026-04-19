@@ -1,24 +1,65 @@
 # shipper-core
 
-Core library behind the [`shipper`](https://crates.io/crates/shipper) CLI.
+Lean engine library behind [Shipper](https://crates.io/crates/shipper).
 
-`shipper-core` is the engine, planning, state, registry, and remediation
-layer. It has no CLI dependencies (no `clap`, no `indicatif`) and is
-intended for programmatic use by CI frameworks, custom tools, and tests
-that need to drive `cargo publish` with the same safety guarantees the
-CLI gives operators.
+`shipper-core` is the stable embedding surface for Shipper's workspace-publish engine. It has no CLI dependencies — no `clap`, no `indicatif`, no progress rendering — and is intended for Rust tools, CI frameworks, and tests that need to drive `cargo publish` with Shipper's safety guarantees but do not need the operator-facing CLI.
 
-## When to use which crate
+## Use this crate when
 
-- **Installing the CLI** — `cargo install shipper --locked`. Use the
-  [`shipper`](https://crates.io/crates/shipper) crate.
-- **Embedding the engine in your own Rust tool** — add
-  `shipper-core` as a dependency.
-- **Rewriting the CLI surface or writing a different frontend** — add
-  [`shipper-cli`](https://crates.io/crates/shipper-cli), which re-exports
-  `shipper-core` and owns the `clap` layer.
+You want deterministic publish planning, preflight, publish/resume orchestration, and state/receipt/event handling **without** pulling the clap and terminal-UX graph.
+
+If you just want to run Shipper from a terminal or CI, install [`shipper`](https://crates.io/crates/shipper) instead.
+
+## What lives here
+
+- **Plan** — deterministic dependency-ordered publish plan from `cargo_metadata`, with a stable `plan_id`.
+- **Preflight** — git cleanliness, registry reachability, dry-run, version-not-taken, optional ownership checks.
+- **Publish / resume** — per-crate `cargo publish` with retry/backoff, post-publish readiness verification, resumable state.
+- **Reconciliation** — ambiguous-outcome handling against registry truth (`Published` / `NotPublished` / `StillUnknown`).
+- **State / events / receipts** — append-only `events.jsonl` as truth, `state.json` as projection, `receipt.json` as summary.
+- **Remediation planning** — yank, reverse-topological containment, fix-forward planning.
+- **Rehearsal** — package + verify against an alternate registry before touching production.
+
+## What does not live here
+
+- CLI parsing (`clap`) — in `shipper-cli`.
+- Progress rendering (`indicatif`) — in `shipper-cli`.
+- Install-facing docs and binary — in `shipper`.
+
+## Minimal shape
+
+```rust
+use shipper_core::plan::build_plan;
+
+// See docs/ and the engine entry points for the full API.
+// The load-bearing pieces are:
+//   - shipper_core::plan   — build a ReleasePlan from a workspace
+//   - shipper_core::engine — run preflight / publish / resume
+//   - shipper_core::state  — read persisted execution state
+//   - shipper_core::store  — StateStore trait + filesystem impl
+//   - shipper_core::types  — domain types (specs, receipts, state, events)
+//   - shipper_core::config — load and merge `.shipper.toml`
+```
+
+## Architecture
+
+```text
+shipper (install face)
+  -> shipper-cli (CLI adapter: clap, subcommands, output, pub fn run())
+       -> shipper-core (this crate — engine, no CLI deps)
+```
+
+## Related
+
+- Install face: <https://crates.io/crates/shipper>
+- CLI adapter: <https://crates.io/crates/shipper-cli>
+- Project README: <https://github.com/EffortlessMetrics/shipper#readme>
+- Architecture: <https://github.com/EffortlessMetrics/shipper/blob/main/docs/architecture.md>
 
 ## Stability
 
-Pre-1.0. The public API will move; breaking changes are called out in
-[`CHANGELOG.md`](https://github.com/EffortlessMetrics/shipper/blob/main/CHANGELOG.md).
+Pre-1.0. The public API will move; breaking changes are called out in [`CHANGELOG.md`](https://github.com/EffortlessMetrics/shipper/blob/main/CHANGELOG.md).
+
+## License
+
+MIT OR Apache-2.0.
