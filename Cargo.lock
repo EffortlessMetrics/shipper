@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "shipper"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2291,7 +2291,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-cargo-failure"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "insta",
  "proptest",
@@ -2299,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-cli"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-config"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "insta",
@@ -2345,7 +2345,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-core"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2389,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-duration"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "humantime",
  "insta",
@@ -2401,7 +2401,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-encrypt"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2418,7 +2418,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-output-sanitizer"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "insta",
  "proptest",
@@ -2426,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-registry"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2444,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-retry"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "humantime-serde",
  "insta",
@@ -2455,7 +2455,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-sparse-index"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "insta",
  "proptest",
@@ -2465,7 +2465,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-types"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2482,7 +2482,7 @@ dependencies = [
 
 [[package]]
 name = "shipper-webhook"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "hmac 0.12.1",
