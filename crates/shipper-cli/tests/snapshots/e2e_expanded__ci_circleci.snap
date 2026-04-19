@@ -20,7 +20,7 @@ jobs:
             - shipper-state-
       - run:
           name: Install Shipper
-          command: cargo install shipper-cli --locked
+          command: cargo install shipper --locked
       - run:
           name: Publish Crates
           command: shipper publish --quiet
