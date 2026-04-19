@@ -17,7 +17,7 @@ jobs:
     name: forbid upward layer imports
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Architecture rules per docs/decrating-plan.md §4.2 R3:
       # - engine -> may import plan, state, runtime, ops
