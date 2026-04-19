@@ -54,11 +54,31 @@ mod tests;
 /// Canonical event file name.
 pub const EVENTS_FILE: &str = "events.jsonl";
 
+/// Canonical file name for a session-isolated preflight audit (#100).
+///
+/// Used by `shipper preflight --preflight-only` to keep a fresh
+/// finishability audit from appending into the authoritative
+/// `events.jsonl` log, preserving events-as-truth for the publish
+/// flow while still producing an auditable JSONL trace for the
+/// standalone preflight run.
+pub const PREFLIGHT_ONLY_EVENTS_FILE: &str = "preflight-only.events.jsonl";
+
 /// Get the events file path for a state directory.
 ///
 /// The returned value is always `state_dir/events.jsonl`.
 pub fn events_path(state_dir: &Path) -> PathBuf {
     state_dir.join(EVENTS_FILE)
+}
+
+/// Get the session-isolated preflight audit events file path (#100).
+///
+/// Used by `shipper preflight --preflight-only` so that a fresh audit
+/// never appends to the authoritative `events.jsonl` log. Each
+/// `--preflight-only` invocation **truncates** this sidecar before
+/// writing, reflecting the "fresh" semantics: the sidecar mirrors the
+/// last standalone audit, not an accumulation.
+pub fn preflight_only_events_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(PREFLIGHT_ONLY_EVENTS_FILE)
 }
 
 /// Append-only event log for publish operations.
@@ -95,6 +115,42 @@ impl EventLog {
         let file = OpenOptions::new()
             .create(true)
             .append(true)
+            .open(path)
+            .with_context(|| format!("failed to open events file {}", path.display()))?;
+
+        let mut writer = std::io::BufWriter::new(file);
+
+        for event in &self.events {
+            let line = serde_json::to_string(event).context("failed to serialize event to JSON")?;
+            writeln!(writer, "{}", line).context("failed to write event line")?;
+        }
+
+        writer.flush().context("failed to flush events file")?;
+
+        Ok(())
+    }
+
+    /// Write all recorded events to a file in JSONL format, replacing any
+    /// existing contents (#100).
+    ///
+    /// Unlike [`write_to_file`], which is append-only, this truncates the
+    /// file first. Intended for session-isolated sidecars such as the
+    /// `--preflight-only` audit log, where each invocation should stand on
+    /// its own rather than accumulate onto prior runs. Never call this on
+    /// the authoritative `events.jsonl` — events-as-truth depends on that
+    /// log being append-only.
+    ///
+    /// [`write_to_file`]: Self::write_to_file
+    pub fn write_to_file_truncating(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create events dir {}", parent.display()))?;
+        }
+
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
             .open(path)
             .with_context(|| format!("failed to open events file {}", path.display()))?;
 

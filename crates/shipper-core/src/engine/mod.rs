@@ -109,13 +109,43 @@ fn init_registry_client(registry: Registry, state_dir: &Path) -> Result<Registry
 /// let report = engine::run_preflight(&ws, &opts, &mut reporter)?;
 /// println!("Finishability: {:?}", report.finishability);
 /// ```
+/// Run-time options that only affect preflight behavior (#100).
+///
+/// Kept separate from [`RuntimeOptions`] so that CLI-level "just this
+/// invocation" toggles (e.g. `--preflight-only`) don't need to thread
+/// through every other engine entry point. A `Default` instance
+/// preserves historical behavior: reads and appends the authoritative
+/// `events.jsonl` log.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PreflightRunOptions {
+    /// If `true`, the preflight run is session-isolated (#100 /
+    /// `shipper preflight --preflight-only`):
+    ///
+    /// - Does not touch the authoritative `events.jsonl` log; writes
+    ///   its events to a sidecar at
+    ///   `<state_dir>/preflight-only.events.jsonl` that is truncated
+    ///   on first write and appended to for the remainder of the run.
+    /// - Does not load or inspect any prior `events.jsonl`; the
+    ///   resulting `Finishability` is a fresh read of the current
+    ///   workspace + registry, independent of any accumulated publish
+    ///   or resume state.
+    /// - Never writes `state.json`.
+    ///
+    /// `false` (the default) preserves the original behavior: the
+    /// authoritative append-only `events.jsonl` is extended.
+    pub fresh_audit: bool,
+}
+
+/// Back-compat entry point preserving the historical preflight shape
+/// (appends to `events.jsonl`). Equivalent to
+/// `run_preflight_with_options(ws, opts, reporter, Default::default())`.
 pub fn run_preflight(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
 ) -> Result<PreflightReport> {
     let mut ws = ws.clone();
-    run_preflight_in_place(&mut ws, opts, reporter)
+    run_preflight_in_place_with_options(&mut ws, opts, reporter, PreflightRunOptions::default())
 }
 
 /// Run preflight checks for a planned workspace and stamp regime metadata.
@@ -130,10 +160,59 @@ pub fn run_preflight_in_place(
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
 ) -> Result<PreflightReport> {
+    run_preflight_in_place_with_options(ws, opts, reporter, PreflightRunOptions::default())
+}
+
+/// Run preflight with caller-chosen [`PreflightRunOptions`] (#100).
+///
+/// See [`run_preflight`] for the full pipeline description; this entry
+/// point additionally honors the `fresh_audit` flag, which redirects
+/// event writes to a session-scoped sidecar (see
+/// [`PreflightRunOptions::fresh_audit`] for details).
+pub fn run_preflight_with_options(
+    ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
+    reporter: &mut dyn Reporter,
+    run_opts: PreflightRunOptions,
+) -> Result<PreflightReport> {
+    let mut ws = ws.clone();
+    run_preflight_in_place_with_options(&mut ws, opts, reporter, run_opts)
+}
+
+/// Run preflight checks for a planned workspace and stamp regime metadata,
+/// with caller-chosen [`PreflightRunOptions`] (#100 + #106).
+pub fn run_preflight_in_place_with_options(
+    ws: &mut PlannedWorkspace,
+    opts: &RuntimeOptions,
+    reporter: &mut dyn Reporter,
+    run_opts: PreflightRunOptions,
+) -> Result<PreflightReport> {
     let workspace_root = &ws.workspace_root;
     let effects = policy_effects(opts);
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
-    let events_path = events::events_path(&state_dir);
+
+    // Resolve the event sink. In `fresh_audit` mode we never touch the
+    // authoritative `events.jsonl`; events land in a session-isolated
+    // sidecar instead. See `PreflightRunOptions::fresh_audit`.
+    let events_path = if run_opts.fresh_audit {
+        events::preflight_only_events_path(&state_dir)
+    } else {
+        events::events_path(&state_dir)
+    };
+
+    // Track whether this run has performed its first flush to the sidecar
+    // so `fresh_audit` truncates exactly once (initial write) and appends
+    // afterward, producing a single session's JSONL trace.
+    let mut fresh_audit_first_flush = run_opts.fresh_audit;
+    let mut flush_events = |log: &events::EventLog, path: &Path| -> Result<()> {
+        if fresh_audit_first_flush {
+            fresh_audit_first_flush = false;
+            log.write_to_file_truncating(path)
+        } else {
+            log.write_to_file(path)
+        }
+    };
+
     let mut event_log = events::EventLog::new();
 
     event_log.record(PublishEvent {
@@ -141,7 +220,7 @@ pub fn run_preflight_in_place(
         event_type: EventType::PreflightStarted,
         package: "all".to_string(),
     });
-    event_log.write_to_file(&events_path)?;
+    flush_events(&event_log, &events_path)?;
     event_log.clear();
 
     if !opts.allow_dirty {
@@ -164,7 +243,7 @@ pub fn run_preflight_in_place(
             },
             package: "all".to_string(),
         });
-        event_log.write_to_file(&events_path)?;
+        flush_events(&event_log, &events_path)?;
         bail!(
             "strict ownership requested but no token found (set CARGO_REGISTRY_TOKEN or run cargo login)"
         );
@@ -405,7 +484,7 @@ pub fn run_preflight_in_place(
         },
         package: "all".to_string(),
     });
-    event_log.write_to_file(&events_path)?;
+    flush_events(&event_log, &events_path)?;
 
     Ok(PreflightReport {
         plan_id: ws.plan.plan_id.clone(),
@@ -2789,6 +2868,239 @@ mod tests {
                     .any(|e| matches!(e.event_type, EventType::PreflightComplete { .. }))
             );
             server.join();
+        });
+    }
+
+    // #100 — fresh-audit mode must not read or append the authoritative
+    // `events.jsonl`. We seed a pre-existing `events.jsonl` with a bogus
+    // event that would fail deserialization, run preflight in
+    // `fresh_audit` mode, and assert: (a) the authoritative log is
+    // byte-identical to the seed afterward, and (b) the preflight trace
+    // lands in the session-isolated sidecar instead.
+    #[test]
+    #[serial]
+    fn run_preflight_fresh_audit_ignores_prior_state() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([("SHIPPER_CARGO_EXIT", Some("0".to_string()))]);
+        temp_env::with_vars(env_vars, || {
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.allow_dirty = true;
+            opts.skip_ownership_check = true;
+
+            // Seed a sentinel `events.jsonl`. If fresh-audit touches it at
+            // all (read or append), we'll see drift after the run.
+            let authoritative_events = td.path().join(".shipper").join("events.jsonl");
+            std::fs::create_dir_all(authoritative_events.parent().unwrap()).expect("mkdir");
+            let sentinel = "{\"sentinel\":\"do not touch\"}\n";
+            std::fs::write(&authoritative_events, sentinel).expect("seed events");
+
+            // Seed a state.json too — fresh-audit must not produce or
+            // overwrite a publish state file as a side-effect.
+            let state_json = td.path().join(".shipper").join("state.json");
+            std::fs::write(&state_json, "{\"sentinel\":\"state\"}").expect("seed state");
+
+            let mut reporter = CollectingReporter::default();
+            let rep = super::run_preflight_with_options(
+                &ws,
+                &opts,
+                &mut reporter,
+                super::PreflightRunOptions { fresh_audit: true },
+            )
+            .expect("preflight");
+            assert_eq!(rep.packages.len(), 1);
+
+            // Authoritative events.jsonl is byte-identical to the seed.
+            let after = std::fs::read_to_string(&authoritative_events).expect("read events");
+            assert_eq!(
+                after, sentinel,
+                "fresh_audit must NOT append or rewrite events.jsonl"
+            );
+
+            // state.json untouched.
+            let state_after = std::fs::read_to_string(&state_json).expect("read state");
+            assert_eq!(
+                state_after, "{\"sentinel\":\"state\"}",
+                "fresh_audit must NOT write publish state"
+            );
+
+            // Sidecar carries the full preflight trace.
+            let sidecar = td
+                .path()
+                .join(".shipper")
+                .join("preflight-only.events.jsonl");
+            assert!(sidecar.exists(), "sidecar must be written");
+            let side_log =
+                crate::state::events::EventLog::read_from_file(&sidecar).expect("read sidecar");
+            let events = side_log.all_events();
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.event_type, EventType::PreflightStarted)),
+                "sidecar must contain PreflightStarted"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.event_type, EventType::PreflightComplete { .. })),
+                "sidecar must contain PreflightComplete"
+            );
+
+            server.join();
+        });
+    }
+
+    // #100 — fresh-audit reflects *current* workspace state, not a
+    // cached prior result. We run preflight twice in fresh_audit mode:
+    // first against a registry that treats the crate as new (NotProven),
+    // then against the same workspace but with a server that returns
+    // 200 + owners — ownership verified, so Proven. If fresh_audit were
+    // cached/reused, the second run would incorrectly still report
+    // NotProven; it must reflect the changed registry reality.
+    //
+    // This also exercises the "prior events.jsonl NOT appended to"
+    // invariant under repeated runs: the authoritative log stays empty
+    // across both invocations.
+    #[test]
+    #[serial]
+    fn run_preflight_with_dirty_git_fresh_audit() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+            (
+                "CARGO_HOME",
+                Some(td.path().to_str().expect("utf8").to_string()),
+            ),
+            ("CARGO_REGISTRY_TOKEN", Some("token-abc".to_string())),
+        ]);
+        temp_env::with_vars(env_vars, || {
+            // Run 1: new crate (404 on crate lookup) → NotProven (no
+            // ownership possible for new crates when strict=false and
+            // token present).
+            let server1 = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let ws1 = planned_workspace(td.path(), server1.base_url.clone());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.allow_dirty = true;
+            opts.skip_ownership_check = false;
+            opts.strict_ownership = false;
+
+            let mut reporter = CollectingReporter::default();
+            let rep1 = super::run_preflight_with_options(
+                &ws1,
+                &opts,
+                &mut reporter,
+                super::PreflightRunOptions { fresh_audit: true },
+            )
+            .expect("preflight 1");
+            assert_eq!(rep1.finishability, Finishability::NotProven);
+            assert!(rep1.packages[0].is_new_crate);
+            server1.join();
+
+            // Authoritative events.jsonl must not exist after a fresh
+            // audit (no state persistence).
+            let authoritative_events = td.path().join(".shipper").join("events.jsonl");
+            assert!(
+                !authoritative_events.exists(),
+                "fresh_audit must not create events.jsonl; found {}",
+                authoritative_events.display()
+            );
+
+            // Run 2: established crate with confirmed owners → Proven.
+            // Same workspace, different registry reality. Fresh audit
+            // must pick up the new state, not cache the previous run.
+            let server2 = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(200, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo/owners".to_string(),
+                        vec![(
+                            200,
+                            r#"{"users":[{"id":1,"login":"alice","name":"Alice"}]}"#.to_string(),
+                        )],
+                    ),
+                ]),
+                3,
+            );
+
+            let ws2 = planned_workspace(td.path(), server2.base_url.clone());
+            let rep2 = super::run_preflight_with_options(
+                &ws2,
+                &opts,
+                &mut reporter,
+                super::PreflightRunOptions { fresh_audit: true },
+            )
+            .expect("preflight 2");
+            assert_eq!(
+                rep2.finishability,
+                Finishability::Proven,
+                "fresh_audit must reflect current registry state, not cached"
+            );
+            assert!(!rep2.packages[0].is_new_crate);
+            server2.join();
+
+            // Still no authoritative events.jsonl after two fresh runs.
+            assert!(
+                !authoritative_events.exists(),
+                "authoritative events.jsonl must remain absent across fresh audits"
+            );
+
+            // Sidecar reflects the *latest* run (truncate-on-first-write
+            // semantics). Count PreflightStarted events: must be exactly 1.
+            let sidecar = td
+                .path()
+                .join(".shipper")
+                .join("preflight-only.events.jsonl");
+            let side_log =
+                crate::state::events::EventLog::read_from_file(&sidecar).expect("read sidecar");
+            let started_count = side_log
+                .all_events()
+                .iter()
+                .filter(|e| matches!(e.event_type, EventType::PreflightStarted))
+                .count();
+            assert_eq!(
+                started_count, 1,
+                "sidecar must be truncated between fresh audits, not accumulated"
+            );
         });
     }
 

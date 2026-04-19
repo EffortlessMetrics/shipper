@@ -305,7 +305,23 @@ EXAMPLES:
     # Machine-readable output for CI gates:
     shipper preflight --format json
 ")]
-    Preflight,
+    Preflight {
+        /// Re-run preflight with a fresh filesystem audit (no cached state).
+        ///
+        /// When set, Shipper performs an isolated finishability assessment:
+        ///   - Does NOT read a prior `events.jsonl` into memory.
+        ///   - Does NOT append to the existing `events.jsonl`; instead,
+        ///     writes its events to a session-scoped sidecar
+        ///     (`preflight-only.events.jsonl`) under `state_dir`.
+        ///   - Never writes publish state (`state.json`).
+        ///
+        /// Useful for operators who want a fresh Proven/NotProven/Failed
+        /// signal against the current workspace, independent of any
+        /// prior publish or resume state. Part of
+         /// [#100 Prove](https://github.com/EffortlessMetrics/shipper/issues/100).
+        #[arg(long = "preflight-only")]
+        preflight_only: bool,
+    },
     /// Execute the plan (will resume if a matching state file exists).
     #[command(long_about = "\
 Execute the publish plan end-to-end, persisting resumable state after
@@ -781,9 +797,16 @@ pub fn run() -> Result<()> {
         Commands::Plan => {
             print_plan(&planned, cli.verbose);
         }
-        Commands::Preflight => {
-            let rep = engine::run_preflight_in_place(&mut planned, &opts, &mut reporter)
-                .with_context(|| preflight_failure_hint(&opts.state_dir))?;
+        Commands::Preflight { preflight_only } => {
+            let rep = engine::run_preflight_in_place_with_options(
+                &mut planned,
+                &opts,
+                &mut reporter,
+                engine::PreflightRunOptions {
+                    fresh_audit: preflight_only,
+                },
+            )
+            .with_context(|| preflight_failure_hint(&opts.state_dir))?;
             print_preflight(&rep, &cli.format);
         }
         Commands::Publish => {
@@ -2442,12 +2465,49 @@ mod tests {
         ])
         .expect("parse CLI");
 
-        assert!(matches!(cli.cmd, Some(Commands::Preflight)));
+        assert!(matches!(
+            cli.cmd,
+            Some(Commands::Preflight {
+                preflight_only: false
+            })
+        ));
         assert!(cli.allow_dirty);
         assert!(cli.strict_ownership);
         assert_eq!(cli.verify_mode.as_deref(), Some("package"));
         assert_eq!(cli.policy.as_deref(), Some("safe"));
         assert_eq!(cli.format, "json");
+    }
+
+    // #100 — `--preflight-only` on `shipper preflight` must parse into a
+    // `fresh_audit=true` signal. This test pins the clap surface: the
+    // flag is exposed on the preflight subcommand (and defaults to
+    // `false` on all invocations), and the flag name is scoped to that
+    // subcommand only — clap must reject it on unrelated subcommands.
+    #[test]
+    fn preflight_only_flag_parses_and_defaults_to_false() {
+        // Explicit: flag present.
+        let cli = Cli::try_parse_from(["shipper", "preflight", "--preflight-only"])
+            .expect("parse with flag");
+        match cli.cmd {
+            Commands::Preflight { preflight_only } => assert!(preflight_only),
+            other => panic!("expected Preflight, got {other:?}"),
+        }
+
+        // Default: flag absent → false.
+        let cli = Cli::try_parse_from(["shipper", "preflight"]).expect("parse without flag");
+        match cli.cmd {
+            Commands::Preflight { preflight_only } => {
+                assert!(
+                    !preflight_only,
+                    "preflight_only must default to false for back-compat"
+                );
+            }
+            other => panic!("expected Preflight, got {other:?}"),
+        }
+
+        // Flag is scoped to `preflight`: unknown on other subcommands.
+        Cli::try_parse_from(["shipper", "publish", "--preflight-only"])
+            .expect_err("must reject --preflight-only on publish");
     }
 
     #[test]
