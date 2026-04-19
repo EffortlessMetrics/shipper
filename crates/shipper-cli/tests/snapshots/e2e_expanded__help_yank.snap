@@ -23,7 +23,7 @@ Options:
           [default: Cargo.toml]
 
       --version <VERSION>
-          Version to yank (e.g., `[VERSION]`). Required unless `--plan` is supplied
+          Version to yank (e.g., `1.2.3`). Required unless `--plan` is supplied
 
       --reason <REASON>
           Operator-supplied reason. Required unless `--plan` is supplied. Recorded in the event log, audit trails, and any future receipts that reference this yank.

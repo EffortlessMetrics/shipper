@@ -302,7 +302,7 @@ enum Commands {
         /// unless `--plan` is supplied.
         #[arg(long = "crate", value_name = "NAME", conflicts_with = "plan")]
         crate_name: Option<String>,
-        /// Version to yank (e.g., `0.3.0-rc.1`). Required unless `--plan`
+        /// Version to yank (e.g., `1.2.3`). Required unless `--plan`
         /// is supplied.
         #[arg(long, value_name = "VERSION", conflicts_with = "plan")]
         version: Option<String>,
