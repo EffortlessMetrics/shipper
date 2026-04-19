@@ -21,6 +21,7 @@ mod tests {
             name: name.to_string(),
             version: version.to_string(),
             manifest_path: PathBuf::from(format!("crates/{}/Cargo.toml", name)),
+            regime: None,
         }
     }
 

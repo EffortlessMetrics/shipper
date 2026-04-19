@@ -23,8 +23,8 @@ use crate::state::execution_state as state;
 use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionState, PackageEvidence, PackageReceipt,
-    PackageState, PlannedPackage, PublishEvent, PublishLevel, ReadinessConfig, ReadinessEvidence,
-    ReconciliationOutcome, RuntimeOptions,
+    PackageState, PlannedPackage, PublishEvent, PublishLevel, PublishRegime, ReadinessConfig,
+    ReadinessEvidence, ReconciliationOutcome, RuntimeOptions,
 };
 
 use super::Reporter;
@@ -341,11 +341,16 @@ pub(super) fn publish_package(
         }
     }
 
-    // Registry-aware backoff (#94): lazy-cached answer to "is this a brand-new
-    // crate?" — only consulted when a retry's error message looks like a
-    // rate-limit signal. Lazy so the happy path costs zero extra registry
-    // calls, cached so we don't re-query across retries of the same package.
-    let mut is_new_crate_cached: Option<bool> = None;
+    // Registry-aware backoff (#94 / #106 PR 1): prefer the `PublishRegime`
+    // that preflight stamped onto the `PlannedPackage`. That answer is
+    // authoritative; when it is present we never re-query the registry
+    // mid-retry for "is this a brand-new crate?"
+    //
+    // `None` here means an older plan / state.json predating the regime
+    // field, or a test harness that constructed a `PlannedPackage`
+    // directly without populating it. In that case we fall back to the
+    // legacy lazy-cached behavior so we remain backward compatible.
+    let mut is_new_crate_cached: Option<bool> = p.regime.map(PublishRegime::is_new_crate);
 
     while attempt < opts.max_attempts {
         attempt += 1;

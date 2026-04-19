@@ -9,6 +9,7 @@ fn pkg(name: &str) -> PlannedPackage {
         name: name.to_string(),
         version: "0.1.0".to_string(),
         manifest_path: PathBuf::from(format!("crates/{name}/Cargo.toml")),
+        regime: None,
     }
 }
 

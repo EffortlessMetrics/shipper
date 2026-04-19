@@ -199,6 +199,7 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
                 name: pkg.name.to_string(),
                 version: pkg.version.to_string(),
                 manifest_path: pkg.manifest_path.clone().into_std_path_buf(),
+                regime: None,
             }
         })
         .collect();
@@ -846,11 +847,13 @@ edition = "2021"
             name: "foo".to_string(),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from("foo/Cargo.toml"),
+            regime: None,
         }];
         let pkgs_b = vec![PlannedPackage {
             name: "bar".to_string(),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from("bar/Cargo.toml"),
+            regime: None,
         }];
         let id_a = compute_plan_id("https://crates.io", &pkgs_a);
         let id_b = compute_plan_id("https://crates.io", &pkgs_b);
@@ -863,6 +866,7 @@ edition = "2021"
             name: "foo".to_string(),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from("foo/Cargo.toml"),
+            regime: None,
         }];
         let id1 = compute_plan_id("https://crates.io", &pkgs);
         let id2 = compute_plan_id("https://private.example.com", &pkgs);
@@ -875,11 +879,13 @@ edition = "2021"
             name: "foo".to_string(),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from("foo/Cargo.toml"),
+            regime: None,
         }];
         let pkgs2 = vec![PlannedPackage {
             name: "foo".to_string(),
             version: "2.0.0".to_string(),
             manifest_path: PathBuf::from("foo/Cargo.toml"),
+            regime: None,
         }];
         let id1 = compute_plan_id("https://crates.io", &pkgs1);
         let id2 = compute_plan_id("https://crates.io", &pkgs2);
@@ -2093,11 +2099,13 @@ core = { path = "../core", version = "2.5.0" }
             name: "foo".to_string(),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from("a/Cargo.toml"),
+            regime: None,
         }];
         let pkgs_b = vec![PlannedPackage {
             name: "fo".to_string(),
             version: "o1.0.0".to_string(),
             manifest_path: PathBuf::from("b/Cargo.toml"),
+            regime: None,
         }];
         let id_a = compute_plan_id("https://crates.io", &pkgs_a);
         let id_b = compute_plan_id("https://crates.io", &pkgs_b);
@@ -2112,11 +2120,13 @@ core = { path = "../core", version = "2.5.0" }
             name: "aaa".to_string(),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from("a/Cargo.toml"),
+            regime: None,
         };
         let pkg_b = PlannedPackage {
             name: "bbb".to_string(),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from("b/Cargo.toml"),
+            regime: None,
         };
         let id_ab = compute_plan_id("https://crates.io", &[pkg_a.clone(), pkg_b.clone()]);
         let id_ba = compute_plan_id("https://crates.io", &[pkg_b, pkg_a]);
@@ -2132,11 +2142,13 @@ core = { path = "../core", version = "2.5.0" }
                 name: "x".to_string(),
                 version: "0.0.1".to_string(),
                 manifest_path: PathBuf::from("x/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "y".to_string(),
                 version: "0.0.2".to_string(),
                 manifest_path: PathBuf::from("y/Cargo.toml"),
+                regime: None,
             },
         ];
         let id = compute_plan_id("https://example.com", &pkgs);
@@ -2196,6 +2208,7 @@ core = { path = "../core", version = "2.5.0" }
                     name: name.clone(),
                     version: format!("{}.{}.{}", major, minor, patch),
                     manifest_path: Path::new("x").join(format!("{name}.toml")),
+                    regime: None,
                 })
                 .collect();
 
@@ -2217,6 +2230,7 @@ core = { path = "../core", version = "2.5.0" }
                     name: format!("crate-{i}"),
                     version: format!("{i}.0.0"),
                     manifest_path: Path::new("x").join(format!("crate-{i}.toml")),
+                    regime: None,
                 })
                 .collect();
 
@@ -2292,11 +2306,13 @@ core = { path = "../core", version = "2.5.0" }
                 name: name_a,
                 version: format!("{ver_a}.0.0"),
                 manifest_path: Path::new("a").join("Cargo.toml"),
+                regime: None,
             }];
             let pkgs_b = vec![PlannedPackage {
                 name: name_b,
                 version: format!("{ver_b}.0.0"),
                 manifest_path: Path::new("b").join("Cargo.toml"),
+                regime: None,
             }];
             let id_a = compute_plan_id("https://crates.io", &pkgs_a);
             let id_b = compute_plan_id("https://crates.io", &pkgs_b);
@@ -3283,6 +3299,7 @@ resolver = "2"
             name: "foo".to_string(),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from("foo/Cargo.toml"),
+            regime: None,
         };
         let id_one = compute_plan_id("https://crates.io", std::slice::from_ref(&pkg));
         let id_two = compute_plan_id("https://crates.io", &[pkg.clone(), pkg]);
