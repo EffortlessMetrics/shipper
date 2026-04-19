@@ -450,8 +450,9 @@ impl Reporter for CliReporter {
 }
 
 /// CLI entry point. Exposed for the `shipper` crate's binary target
-/// and for the `shipper-cli` compatibility shim, both of which are
-/// three-line `fn main() { shipper_cli::run() }` wrappers.
+/// and for the `shipper-cli` crate's own `shipper-cli` binary — both
+/// are three-line `fn main() { shipper_cli::run() }` wrappers over
+/// this function.
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 

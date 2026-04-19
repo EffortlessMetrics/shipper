@@ -250,6 +250,15 @@ jobs:
       # registration checklist.
       - name: Mint crates.io token (Trusted Publishing)
         id: auth
+        # continue-on-error: if the repo/crates aren't yet registered for
+        # Trusted Publishing on crates.io, this action exits non-zero
+        # ("No Trusted Publishing config found for repository ..."). The
+        # downstream publish steps read
+        # `steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN`, so
+        # a failed OIDC exchange cleanly falls through to the secret
+        # token. This is the safety rail called out above — don't fail
+        # the whole release just because OIDC isn't configured yet.
+        continue-on-error: true
         uses: rust-lang/crates-io-auth-action@v1
 
       # --- Step 4: preflight ------------------------------------------------
@@ -448,8 +457,16 @@ jobs:
       # the CARGO_REGISTRY_TOKEN secret — rehearse keeps working either way.
       - name: Mint crates.io token (Trusted Publishing)
         id: auth
-        uses: rust-lang/crates-io-auth-action@v1
+        # continue-on-error: if the repo/crates aren't yet registered for
+        # Trusted Publishing on crates.io, this action exits non-zero
+        # ("No Trusted Publishing config found for repository ..."). The
+        # downstream publish steps read
+        # `steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN`, so
+        # a failed OIDC exchange cleanly falls through to the secret
+        # token. This is the safety rail called out above — don't fail
+        # the whole release just because OIDC isn't configured yet.
         continue-on-error: true
+        uses: rust-lang/crates-io-auth-action@v1
 
       # Preflight against crates.io without publishing. A token isn't strictly
       # required here (ownership checks are best-effort), but supply it if the
@@ -536,6 +553,15 @@ jobs:
       # token is already expired). Falls back to secret if OIDC unavailable.
       - name: Mint crates.io token (Trusted Publishing)
         id: auth
+        # continue-on-error: if the repo/crates aren't yet registered for
+        # Trusted Publishing on crates.io, this action exits non-zero
+        # ("No Trusted Publishing config found for repository ..."). The
+        # downstream publish steps read
+        # `steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN`, so
+        # a failed OIDC exchange cleanly falls through to the secret
+        # token. This is the safety rail called out above — don't fail
+        # the whole release just because OIDC isn't configured yet.
+        continue-on-error: true
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: shipper resume
