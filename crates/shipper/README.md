@@ -38,9 +38,16 @@ shipper (this crate — install face)
 ```
 
 Three crates, one product. You install `shipper`. If you're embedding
-the engine in your own Rust tool, depend on
-[`shipper-core`](https://crates.io/crates/shipper-core) directly — it
-has no CLI dependencies (no `clap`, no `indicatif`).
+the engine in your own Rust tool, you have two options:
+
+1. Depend on [`shipper-core`](https://crates.io/crates/shipper-core)
+   directly — it has no CLI dependencies (no `clap`, no `indicatif`).
+2. Disable this crate's default `cli` feature to drop `shipper-cli`
+   (and therefore `clap`) while keeping the curated re-export paths:
+
+   ```toml
+   shipper = { version = "...", default-features = false }
+   ```
 
 ## Quick start
 
