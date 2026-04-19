@@ -21,6 +21,24 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
+    # RustCrypto ecosystem (hmac, sha2, pbkdf2, aes-gcm) bumps minor versions
+    # together because they share the `digest` trait version. A lone hmac 0.13
+    # or sha2 0.11 bump fails to compile because pbkdf2 0.13 and aes-gcm 0.11
+    # (the coupled counterparts on digest 0.11) are still pre-release. Re-
+    # enable these updates once pbkdf2 0.13 and aes-gcm 0.11 ship as stable.
+    ignore:
+      - dependency-name: "hmac"
+        update-types:
+          - "version-update:semver-minor"
+      - dependency-name: "sha2"
+        update-types:
+          - "version-update:semver-minor"
+      - dependency-name: "pbkdf2"
+        update-types:
+          - "version-update:semver-minor"
+      - dependency-name: "aes-gcm"
+        update-types:
+          - "version-update:semver-minor"
     groups:
       # Group minor/patch updates for dev dependencies
       dev-deps:
