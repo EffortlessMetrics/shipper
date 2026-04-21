@@ -1,5 +1,6 @@
 ---
 source: crates/shipper-cli/tests/e2e_expanded.rs
+assertion_line: 2496
 expression: normalize_stderr(&stdout)
 ---
 Run preflight checks without publishing.
@@ -26,6 +27,13 @@ Options:
 
       --config <CONFIG>
           Path to a custom configuration file (.shipper.toml)
+
+      --preflight-only
+          Re-run preflight with a fresh filesystem audit (no cached state).
+          
+          When set, Shipper performs an isolated finishability assessment: - Does NOT read a prior `events.jsonl` into memory. - Does NOT append to the existing `events.jsonl`; instead, writes its events to a session-scoped sidecar (`preflight-only.events.jsonl`) under `state_dir`. - Never writes publish state (`state.json`).
+          
+          Useful for operators who want a fresh Proven/NotProven/Failed signal against the current workspace, independent of any prior publish or resume state. Part of [#100 Prove](https://github.com/EffortlessMetrics/shipper/issues/100).
 
       --manifest-path <MANIFEST_PATH>
           Path to the workspace Cargo.toml

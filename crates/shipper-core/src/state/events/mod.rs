@@ -120,10 +120,7 @@ impl EventLog {
 
         let mut writer = std::io::BufWriter::new(file);
 
-        for event in &self.events {
-            let line = serde_json::to_string(event).context("failed to serialize event to JSON")?;
-            writeln!(writer, "{}", line).context("failed to write event line")?;
-        }
+        self.write_events_to(&mut writer)?;
 
         writer.flush().context("failed to flush events file")?;
 
@@ -156,12 +153,21 @@ impl EventLog {
 
         let mut writer = std::io::BufWriter::new(file);
 
-        for event in &self.events {
-            let line = serde_json::to_string(event).context("failed to serialize event to JSON")?;
-            writeln!(writer, "{}", line).context("failed to write event line")?;
-        }
+        self.write_events_to(&mut writer)?;
 
         writer.flush().context("failed to flush events file")?;
+
+        Ok(())
+    }
+
+    fn write_events_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+        for event in &self.events {
+            serde_json::to_writer(&mut *writer, event)
+                .context("failed to serialize event to JSON")?;
+            writer
+                .write_all(b"\n")
+                .context("failed to write event line")?;
+        }
 
         Ok(())
     }
