@@ -26,7 +26,7 @@
 //! [`run`]. For programmatic use without a `clap` dependency, depend
 //! on [`shipper_core`](https://crates.io/crates/shipper-core) instead.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -305,7 +305,19 @@ EXAMPLES:
     # Machine-readable output for CI gates:
     shipper preflight --format json
 ")]
-    Preflight,
+    Preflight {
+        /// Run preflight as a standalone audit.
+        ///
+        /// Writes events to a session-scoped
+        /// `preflight-only-<session>.events.jsonl` sidecar under `state_dir`,
+        /// does not append to the authoritative `events.jsonl`, and never
+        /// writes publish state (`state.json`). Use this when you want a fresh
+        /// Proven/NotProven/Failed signal without mutating resumable publish
+        /// state. Part of
+        /// [#100 Prove](https://github.com/EffortlessMetrics/shipper/issues/100).
+        #[arg(long = "preflight-only")]
+        preflight_only: bool,
+    },
     /// Execute the plan (will resume if a matching state file exists).
     #[command(long_about = "\
 Execute the publish plan end-to-end, persisting resumable state after
@@ -354,9 +366,9 @@ EXAMPLES:
     /// Print CI configuration snippets for various platforms.
     #[command(subcommand)]
     Ci(CiCommands),
-    /// Clean state files (state.json, receipt.json, events.jsonl).
+    /// Clean state files (state.json, receipt.json, events.jsonl, preflight-only-*.events.jsonl).
     Clean {
-        /// Keep receipt.json (only remove state.json and events.jsonl)
+        /// Keep receipt.json (remove state.json and all event logs only)
         #[arg(long)]
         keep_receipt: bool,
     },
@@ -781,9 +793,16 @@ pub fn run() -> Result<()> {
         Commands::Plan => {
             print_plan(&planned, cli.verbose);
         }
-        Commands::Preflight => {
-            let rep = engine::run_preflight_in_place(&mut planned, &opts, &mut reporter)
-                .with_context(|| preflight_failure_hint(&opts.state_dir))?;
+        Commands::Preflight { preflight_only } => {
+            let rep = engine::run_preflight_in_place_with_options(
+                &mut planned,
+                &opts,
+                &mut reporter,
+                engine::PreflightRunOptions {
+                    fresh_audit: preflight_only,
+                },
+            )
+            .with_context(|| preflight_failure_hint(&opts.state_dir))?;
             print_preflight(&rep, &cli.format);
         }
         Commands::Publish => {
@@ -1840,19 +1859,47 @@ fn run_inspect_events(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Res
         ws.workspace_root.join(&opts.state_dir)
     };
 
-    let events_path = shipper_core::state::events::events_path(&state_dir);
-    let event_log = shipper_core::state::events::EventLog::read_from_file(&events_path)
-        .with_context(|| format!("failed to read event log from {}", events_path.display()))?;
+    let event_logs = discover_event_logs(&state_dir)?;
+    if event_logs.is_empty() {
+        println!("No event logs found under {}", state_dir.display());
+        return Ok(());
+    }
 
-    println!("Event log: {}", events_path.display());
-    println!();
+    for (idx, events_path) in event_logs.iter().enumerate() {
+        let event_log = shipper_core::state::events::EventLog::read_from_file(events_path)
+            .with_context(|| format!("failed to read event log from {}", events_path.display()))?;
 
-    for event in event_log.all_events() {
-        let json = serde_json::to_string(event).expect("serialize event");
-        println!("{}", json);
+        println!("Event log: {}", events_path.display());
+        println!();
+
+        for event in event_log.all_events() {
+            let json = serde_json::to_string(event).expect("serialize event");
+            println!("{}", json);
+        }
+
+        if idx + 1 != event_logs.len() {
+            println!();
+        }
     }
 
     Ok(())
+}
+
+fn discover_event_logs(state_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    let authoritative = shipper_core::state::events::events_path(state_dir);
+    if authoritative.exists() {
+        paths.push(authoritative);
+    }
+
+    let mut seen = BTreeSet::new();
+    for path in shipper_core::state::events::preflight_only_events_paths(state_dir)? {
+        if seen.insert(path.clone()) {
+            paths.push(path);
+        }
+    }
+
+    Ok(paths)
 }
 
 fn run_inspect_receipt(
@@ -2283,7 +2330,6 @@ fn clean_single_dir(
 ) -> Result<()> {
     let state_path = dir.join(shipper_core::state::execution_state::STATE_FILE);
     let receipt_path = dir.join(shipper_core::state::execution_state::RECEIPT_FILE);
-    let events_path = dir.join(shipper_core::state::events::EVENTS_FILE);
     let lock_path = shipper_core::lock::lock_path(dir, Some(workspace_root));
 
     // Check for active lock
@@ -2323,11 +2369,14 @@ fn clean_single_dir(
         println!("Removed: {}", state_path.display());
     }
 
-    // Remove events file
-    if events_path.exists() {
-        std::fs::remove_file(&events_path)
-            .with_context(|| format!("failed to remove events file {}", events_path.display()))?;
-        println!("Removed: {}", events_path.display());
+    // Remove event logs (authoritative + preflight-only sidecars)
+    for events_path in discover_event_logs(dir)? {
+        if events_path.exists() {
+            std::fs::remove_file(&events_path).with_context(|| {
+                format!("failed to remove events file {}", events_path.display())
+            })?;
+            println!("Removed: {}", events_path.display());
+        }
     }
 
     // Optionally remove receipt file
@@ -2442,12 +2491,49 @@ mod tests {
         ])
         .expect("parse CLI");
 
-        assert!(matches!(cli.cmd, Some(Commands::Preflight)));
+        assert!(matches!(
+            cli.cmd,
+            Some(Commands::Preflight {
+                preflight_only: false
+            })
+        ));
         assert!(cli.allow_dirty);
         assert!(cli.strict_ownership);
         assert_eq!(cli.verify_mode.as_deref(), Some("package"));
         assert_eq!(cli.policy.as_deref(), Some("safe"));
         assert_eq!(cli.format, "json");
+    }
+
+    // #100 — `--preflight-only` on `shipper preflight` must parse into a
+    // `fresh_audit=true` signal. This test pins the clap surface: the
+    // flag is exposed on the preflight subcommand (and defaults to
+    // `false` on all invocations), and the flag name is scoped to that
+    // subcommand only — clap must reject it on unrelated subcommands.
+    #[test]
+    fn preflight_only_flag_parses_and_defaults_to_false() {
+        // Explicit: flag present.
+        let cli = Cli::try_parse_from(["shipper", "preflight", "--preflight-only"])
+            .expect("parse with flag");
+        match cli.cmd {
+            Some(Commands::Preflight { preflight_only }) => assert!(preflight_only),
+            other => panic!("expected Preflight, got {other:?}"),
+        }
+
+        // Default: flag absent → false.
+        let cli = Cli::try_parse_from(["shipper", "preflight"]).expect("parse without flag");
+        match cli.cmd {
+            Some(Commands::Preflight { preflight_only }) => {
+                assert!(
+                    !preflight_only,
+                    "preflight_only must default to false for back-compat"
+                );
+            }
+            other => panic!("expected Preflight, got {other:?}"),
+        }
+
+        // Flag is scoped to `preflight`: unknown on other subcommands.
+        Cli::try_parse_from(["shipper", "publish", "--preflight-only"])
+            .expect_err("must reject --preflight-only on publish");
     }
 
     #[test]
@@ -3048,11 +3134,14 @@ mode = "fast"
         let state_path = abs_state.join(shipper_core::state::execution_state::STATE_FILE);
         let receipt_path = abs_state.join(shipper_core::state::execution_state::RECEIPT_FILE);
         let events_path = abs_state.join(shipper_core::state::events::EVENTS_FILE);
+        let preflight_only_events_path =
+            abs_state.join("preflight-only-20260421T010101000000000Z-pid123.events.jsonl");
         let lock_path = shipper_core::lock::lock_path(&abs_state, Some(td.path()));
 
         fs::write(&state_path, "{}").expect("write state");
         fs::write(&receipt_path, "{}").expect("write receipt");
         fs::write(&events_path, "{}").expect("write events");
+        fs::write(&preflight_only_events_path, "{}").expect("write preflight-only events");
 
         let lock_info = shipper_core::lock::LockInfo {
             pid: 12345,
@@ -3071,6 +3160,23 @@ mode = "fast"
         assert!(!state_path.exists(), "state file should be removed");
         assert!(!receipt_path.exists(), "receipt file should be removed");
         assert!(!events_path.exists(), "events file should be removed");
+        assert!(
+            !preflight_only_events_path.exists(),
+            "preflight-only sidecar should be removed"
+        );
         assert!(!lock_path.exists(), "lock file should be removed");
+    }
+
+    #[test]
+    fn discover_event_logs_includes_preflight_only_sidecars() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = td.path().join(".shipper");
+        fs::create_dir_all(&state_dir).expect("mkdir");
+
+        let sidecar = state_dir.join("preflight-only-20260421T010101000000000Z-pid1.events.jsonl");
+        fs::write(&sidecar, "{}").expect("write sidecar");
+
+        let discovered = discover_event_logs(&state_dir).expect("discover event logs");
+        assert_eq!(discovered, vec![sidecar]);
     }
 }

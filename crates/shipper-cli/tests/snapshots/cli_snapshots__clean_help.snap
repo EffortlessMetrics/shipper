@@ -2,13 +2,13 @@
 source: crates/shipper-cli/tests/cli_snapshots.rs
 expression: normalize_help_output(&stdout)
 ---
-Clean state files (state.json, receipt.json, events.jsonl)
+Clean state files (state.json, receipt.json, events.jsonl, preflight-only-*.events.jsonl)
 
 Usage: shipper-cli clean [OPTIONS]
 
 Options:
       --keep-receipt
-          Keep receipt.json (only remove state.json and events.jsonl)
+          Keep receipt.json (remove state.json and all event logs only)
 
   -V, --version
           Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
