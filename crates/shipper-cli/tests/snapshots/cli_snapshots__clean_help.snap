@@ -7,11 +7,14 @@ Clean state files (state.json, receipt.json, events.jsonl)
 Usage: shipper-cli clean [OPTIONS]
 
 Options:
-      --config <CONFIG>
-          Path to a custom configuration file (.shipper.toml)
-
       --keep-receipt
           Keep receipt.json (only remove state.json and events.jsonl)
+
+  -V, --version
+          Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
+
+      --config <CONFIG>
+          Path to a custom configuration file (.shipper.toml)
 
       --manifest-path <MANIFEST_PATH>
           Path to the workspace Cargo.toml

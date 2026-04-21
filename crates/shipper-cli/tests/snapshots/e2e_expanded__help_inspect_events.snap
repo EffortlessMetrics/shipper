@@ -7,6 +7,9 @@ View detailed event log
 Usage: shipper-cli inspect-events [OPTIONS]
 
 Options:
+  -V, --version
+          Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
+
       --config <CONFIG>
           Path to a custom configuration file (.shipper.toml)
 

@@ -11,31 +11,34 @@ Reads a prior `receipt.json` and emits the order in which to yank the released c
 Usage: shipper-cli plan-yank [OPTIONS]
 
 Options:
-      --config <CONFIG>
-          Path to a custom configuration file (.shipper.toml)
-
       --from-receipt <PATH>
           Path to the receipt to derive the plan from. Defaults to `<state_dir>/receipt.json` when omitted
 
+  -V, --version
+          Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
+
       --compromised-only
           Restrict the plan to packages whose receipt carries a `compromised_at` marker. Without this, every `Published` package is included (full rollback). Mutually exclusive with `--starting-crate`
+
+      --config <CONFIG>
+          Path to a custom configuration file (.shipper.toml)
 
       --manifest-path <MANIFEST_PATH>
           Path to the workspace Cargo.toml
           
           [default: Cargo.toml]
 
-      --registry <REGISTRY>
-          Cargo registry name (default: crates-io)
-
       --starting-crate <CRATE>
           **Graph mode** (#98 PR 4). Given a specific broken crate name, walk the workspace's dependency graph to find every crate that transitively depends on it, and emit a yank plan covering only that affected chain (not a full rollback). Resolves the graph from the current workspace's `Cargo.toml` metadata — the receipt supplies the versions and Published-state filter
 
-      --api-base <API_BASE>
-          Registry API base URL (default: <https://crates.io>)
-
       --reason <REASON>
           Per-entry reason to embed in the yank plan (applied to every entry). If omitted, each entry's reason falls back to its receipt-level `compromised_by` field (if set)
+
+      --registry <REGISTRY>
+          Cargo registry name (default: crates-io)
+
+      --api-base <API_BASE>
+          Registry API base URL (default: <https://crates.io>)
 
       --package <PACKAGES>
           Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members

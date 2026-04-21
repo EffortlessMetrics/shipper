@@ -7,13 +7,16 @@ Generate a default .shipper.toml configuration file
 Usage: shipper-cli config init [OPTIONS]
 
 Options:
-      --config <CONFIG>
-          Path to a custom configuration file (.shipper.toml)
-
   -o, --output <OUTPUT>
           Output path for the configuration file (default: .shipper.toml)
           
           [default: .shipper.toml]
+
+  -V, --version
+          Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
+
+      --config <CONFIG>
+          Path to a custom configuration file (.shipper.toml)
 
       --manifest-path <MANIFEST_PATH>
           Path to the workspace Cargo.toml

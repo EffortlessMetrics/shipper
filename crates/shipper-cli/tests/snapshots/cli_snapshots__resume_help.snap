@@ -7,6 +7,9 @@ Resume a previous publish run
 Usage: shipper-cli resume [OPTIONS]
 
 Options:
+  -V, --version
+          Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
+
       --config <CONFIG>
           Path to a custom configuration file (.shipper.toml)
 
