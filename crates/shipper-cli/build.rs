@@ -61,10 +61,10 @@ fn emit_git_rerun_hints() {
         println!("cargo:rerun-if-changed={}", head_path.display());
     }
 
-    if let Some(current_ref) = git_stdout(&["symbolic-ref", "-q", "HEAD"]) {
-        if let Some(ref_path) = git_path(&current_ref) {
-            println!("cargo:rerun-if-changed={}", ref_path.display());
-        }
+    if let Some(current_ref) = git_stdout(&["symbolic-ref", "-q", "HEAD"])
+        && let Some(ref_path) = git_path(&current_ref)
+    {
+        println!("cargo:rerun-if-changed={}", ref_path.display());
     }
 
     if let Some(packed_refs) = git_path("packed-refs") {
