@@ -46,5 +46,5 @@ Each absorbed I/O microcrate gets its own folder under `ops/`:
 
 - Each subfolder has its own `mod.rs` facade. Other modules talk through the facade, not by reaching into deep paths.
 - Default visibility: `pub(crate)`. Only items truly part of `shipper-core`'s public API get `pub`.
-- Each subfolder has its own local guidance files (`CLAUDE.md` and matching `agents.md`) describing its single responsibility.
+- Each subfolder has its own local guidance files (`CLAUDE.md` and matching `AGENTS.md`) describing its single responsibility.
 

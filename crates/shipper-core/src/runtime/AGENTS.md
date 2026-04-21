@@ -33,6 +33,6 @@ These are enforced by `.github/workflows/architecture-guard.yml`.
 ## Boundary discipline
 
 - Default visibility: `pub(crate)`.
-- Each subfolder owns its own `mod.rs` and local guidance files (`CLAUDE.md` and matching `agents.md`).
+- Each subfolder owns its own `mod.rs` and local guidance files (`CLAUDE.md` and matching `AGENTS.md`).
 - Items here are mostly types and pure functions. If you find yourself doing I/O here, the code belongs in `ops/` instead.
 
