@@ -2,11 +2,28 @@
 source: crates/shipper-cli/tests/cli_snapshots.rs
 expression: normalize_help_output(&stdout)
 ---
-Print the deterministic publish plan (dependency-first ordering)
+Print the deterministic publish plan (dependency-first ordering).
+
+Reads the workspace via `cargo metadata`, filters publishable crates,
+topologically sorts them, and prints the order in which they will be
+published. The plan is deterministic — the same workspace produces the
+same plan ID on any machine — which is the anchor that makes `resume`
+safe.
+
+EXAMPLES:
+    # Preview the publish order for every publishable workspace member:
+    shipper plan
+
+    # Plan with dependency-level breakdown (who can publish in parallel):
+    shipper plan --verbose
+
 
 Usage: shipper-cli plan [OPTIONS]
 
 Options:
+  -V, --version
+          Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
+
       --config <CONFIG>
           Path to a custom configuration file (.shipper.toml)
 

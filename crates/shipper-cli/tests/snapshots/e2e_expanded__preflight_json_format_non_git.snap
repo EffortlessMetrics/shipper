@@ -3,4 +3,10 @@ source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: normalize_output(&normalize_stderr(&stderr))
 ---
 [info] checking git cleanliness...
-Error: git status failed: git status failed: fatal: not a git repository (or any of the parent directories): .git
+Error: preflight failed — next steps:
+  * run `shipper doctor` to diagnose auth / git / registry
+  * inspect .shipper/events.jsonl for the authoritative event log
+  * `shipper preflight --format json` for machine-readable detail
+
+Caused by:
+    git status failed: git status failed: fatal: not a git repository (or any of the parent directories): .git

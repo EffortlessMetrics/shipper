@@ -11,6 +11,10 @@ homepage = "https://github.com/EffortlessMetrics/shipper"
 repository = "https://github.com/EffortlessMetrics/shipper"
 keywords = ["cargo", "publish", "workspace", "cli", "ci"]
 categories = ["command-line-utilities", "development-tools"]
+# `build.rs` emits git SHA, build profile, and rustc version as
+# `rustc-env` values consumed by the rich `--version` output.
+# Stdlib-only — no vergen — to keep the supply chain tight.
+build = "build.rs"
 
 # Real CLI adapter (#95 three-crate split). The library exposes
 # `pub fn run() -> anyhow::Result<()>` as the programmatic entrypoint;

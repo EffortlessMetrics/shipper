@@ -2,11 +2,29 @@
 source: crates/shipper-cli/tests/cli_snapshots.rs
 expression: normalize_help_output(&stdout)
 ---
-Execute the plan (will resume if a matching state file exists)
+Execute the publish plan end-to-end, persisting resumable state after
+every step.
+
+If `.shipper/state.json` already exists for this plan, `publish` picks
+up where the previous run left off — already-published crates are
+skipped, and the run continues from the first pending or failed
+package. On interruption (Ctrl-C, network drop, ambiguous registry
+response), rerun `shipper publish` or `shipper resume`.
+
+EXAMPLES:
+    # Publish the whole workspace to crates.io:
+    shipper publish
+
+    # Publish a subset, allowing a dirty git tree (local rehearsal):
+    shipper publish --package shipper-core --allow-dirty
+
 
 Usage: shipper-cli publish [OPTIONS]
 
 Options:
+  -V, --version
+          Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
+
       --config <CONFIG>
           Path to a custom configuration file (.shipper.toml)
 

@@ -3,7 +3,12 @@ source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: "normalize_output(&normalize_stderr(&stderr.replace(td.path().to_str().unwrap(),\n\"<TMPDIR>\").replace(&td.path().to_str().unwrap().replace('\\\\', \"/\"),\n\"<TMPDIR>\")))"
 ---
 [1/1] Publishing demo@0.1.0... (<DURATION>)
-Error: failed to parse state JSON <STATE_DIR>/state.json
+Error: resume failed — next steps:
+  * if plan-ID mismatch: either `shipper clean` and start a fresh plan, or pass `--force-resume` if you understand the divergence
+  * inspect <STATE_DIR>/events.jsonl for the authoritative event log
+  * inspect <STATE_DIR>/state.json to see what was already published
+  * run `shipper status` to compare local versions to the registry
 
 Caused by:
-    invalid type: sequence, expected a map at line 1 column 44
+    0: failed to parse state JSON <STATE_DIR>/state.json
+    1: invalid type: sequence, expected a map at line 1 column 44

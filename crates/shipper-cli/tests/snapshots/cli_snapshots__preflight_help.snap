@@ -2,11 +2,28 @@
 source: crates/shipper-cli/tests/cli_snapshots.rs
 expression: normalize_help_output(&stdout)
 ---
-Run preflight checks without publishing
+Run preflight checks without publishing.
+
+Validates everything that can fail a live publish — git cleanliness,
+registry reachability, token availability, dry-run, ownership — and
+prints a `Finishability` verdict (PROVEN / NOT PROVEN / FAILED). No
+crate is uploaded. Run this before `publish` on any run you cannot
+afford to restart from scratch.
+
+EXAMPLES:
+    # Run preflight across the whole workspace:
+    shipper preflight
+
+    # Machine-readable output for CI gates:
+    shipper preflight --format json
+
 
 Usage: shipper-cli preflight [OPTIONS]
 
 Options:
+  -V, --version
+          Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
+
       --config <CONFIG>
           Path to a custom configuration file (.shipper.toml)
 

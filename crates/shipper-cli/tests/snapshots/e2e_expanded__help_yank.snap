@@ -11,24 +11,27 @@ Part of [#98 Remediate](https://github.com/EffortlessMetrics/shipper/issues/98).
 Usage: shipper-cli yank [OPTIONS]
 
 Options:
+      --crate <NAME>
+          Name of the crate to yank (e.g., `shipper-types`). Required unless `--plan` is supplied
+
       --config <CONFIG>
           Path to a custom configuration file (.shipper.toml)
 
-      --crate <NAME>
-          Name of the crate to yank (e.g., `shipper-types`). Required unless `--plan` is supplied
+      --version <VERSION>
+          Version to yank (e.g., `1.2.3`). Required unless `--plan` is supplied
 
       --manifest-path <MANIFEST_PATH>
           Path to the workspace Cargo.toml
           
           [default: Cargo.toml]
 
-      --version <VERSION>
-          Version to yank (e.g., `1.2.3`). Required unless `--plan` is supplied
-
       --reason <REASON>
           Operator-supplied reason. Required unless `--plan` is supplied. Recorded in the event log, audit trails, and any future receipts that reference this yank.
           
           Example: `"CVE-2026-0001 disclosed; containing while patch released"`.
+
+      --mark-compromised
+          Also mark the crate's existing receipt entry as compromised (#98 PR 3). Ignored in `--plan` mode (plan execution already carries per-entry reasons from the planning step)
 
       --registry <REGISTRY>
           Cargo registry name (default: crates-io)
@@ -36,14 +39,11 @@ Options:
       --api-base <API_BASE>
           Registry API base URL (default: <https://crates.io>)
 
-      --mark-compromised
-          Also mark the crate's existing receipt entry as compromised (#98 PR 3). Ignored in `--plan` mode (plan execution already carries per-entry reasons from the planning step)
+      --plan <PATH>
+          **Plan execution mode** (#98 PR 5). Path to a yank plan JSON file (the `--format json` output of `shipper plan-yank`). Walks the plan's entries in order, invoking `cargo yank` for each. Mutually exclusive with `--crate` / `--version` / `--reason`
 
       --package <PACKAGES>
           Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members
-
-      --plan <PATH>
-          **Plan execution mode** (#98 PR 5). Path to a yank plan JSON file (the `--format json` output of `shipper plan-yank`). Walks the plan's entries in order, invoking `cargo yank` for each. Mutually exclusive with `--crate` / `--version` / `--reason`
 
       --state-dir <STATE_DIR>
           Directory for shipper state and receipts (default: .shipper)

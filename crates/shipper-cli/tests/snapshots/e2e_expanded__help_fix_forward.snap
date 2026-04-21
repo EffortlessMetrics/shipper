@@ -11,11 +11,14 @@ Reads a prior `receipt.json`, finds packages whose receipt entry carries a `comp
 Usage: shipper-cli fix-forward [OPTIONS]
 
 Options:
-      --config <CONFIG>
-          Path to a custom configuration file (.shipper.toml)
-
       --from-receipt <PATH>
           Path to the compromised receipt. Defaults to `<state_dir>/receipt.json` when omitted
+
+  -V, --version
+          Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
+
+      --config <CONFIG>
+          Path to a custom configuration file (.shipper.toml)
 
       --manifest-path <MANIFEST_PATH>
           Path to the workspace Cargo.toml
