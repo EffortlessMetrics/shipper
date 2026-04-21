@@ -2,34 +2,22 @@
 
 Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
 
-# Layer: `engine` (orchestration — top of the stack)
+## Purpose
 
-**Position in the architecture:** Layer 5 (top). Coordinates all lower layers.
+This directory orchestrates the release pipeline: plan -> preflight -> publish -> resume.
 
-## Single responsibility
+## Key files
 
-Orchestrate the **plan -> preflight -> publish -> resume** pipeline. Loop
-through the plan, invoke registry/cargo operations, persist state after each
-step, retry on transient failures, classify errors.
+- `mod.rs` — main entrypoints and the `Reporter` trait.
+- `parallel/` — dependency-level parallel publish execution.
 
-## Import rules
+## Invariants
 
-`engine` modules MAY import from any layer below: `crate::plan::*`,
-`crate::state::*`, `crate::runtime::*`, `crate::ops::*`, `crate::types`, plus
-public crates (`shipper_registry`, `shipper_webhook`, `shipper_retry`, etc.).
+- Orchestration belongs here; clap parsing and terminal presentation do not.
+- State persistence, retries, and publish/readiness flow should stay coherent with the serial pipeline.
+- Changes here often affect CLI snapshots and resume/publish behavior across crates.
 
-`engine` is the top of the dependency tree — nothing imports from `engine`
-except `lib.rs` re-exports and `shipper-cli`.
+## Checks
 
-## What lives here
-
-- `engine/mod.rs` — current orchestration entry points (`run_preflight`,
-  `run_publish`, `run_resume`) and the `Reporter` trait. This file was moved
-  verbatim from `crates/shipper/src/engine.rs` when the `engine/` layer dir
-  was introduced.
-- `engine/parallel/` — wave-based parallel publish (was the standalone
-  `shipper-engine-parallel` crate, absorbed in the same PR that created this
-  layer dir).
-- Future: `engine/preflight/`, `engine/publish/`, `engine/resume/`,
-  `engine/readiness/` as `engine/mod.rs` gets split up.
-
+- Run the targeted `shipper-core` tests that cover the changed engine path.
+- If user-visible output or workflow behavior changes, run the relevant `shipper-cli` tests too.
