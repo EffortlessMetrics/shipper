@@ -44,18 +44,16 @@ mod output;
 
 use crate::output::progress::ProgressReporter;
 
-/// Rich version string shown by `shipper --version` / `-V`.
+/// Extra build metadata shown by `shipper --version --verbose`.
 ///
 /// Format:
 /// ```text
-/// shipper 0.3.0
 /// commit: abc1234
 /// build:  release
 /// rustc:  rustc 1.92.0 (... )
 /// ```
-const LONG_VERSION: &str = concat!(
-    env!("CARGO_PKG_VERSION"),
-    "\ncommit: ",
+const RICH_VERSION_DETAILS: &str = concat!(
+    "commit: ",
     env!("SHIPPER_GIT_SHA"),
     "\nbuild:  ",
     env!("SHIPPER_BUILD_PROFILE"),
@@ -64,9 +62,15 @@ const LONG_VERSION: &str = concat!(
 );
 
 #[derive(Parser, Debug)]
-#[command(name = "shipper", version, long_version = LONG_VERSION)]
+#[command(name = "shipper", version, disable_version_flag = true)]
 #[command(about = "Resumable, backoff-aware crates.io publishing for workspaces")]
+#[command(override_usage = "shipper [OPTIONS] <COMMAND>")]
 struct Cli {
+    /// Print version information. Combine with `--verbose` for commit,
+    /// build-profile, and rustc metadata.
+    #[arg(short = 'V', long = "version", global = true)]
+    version: bool,
+
     /// Path to a custom configuration file (.shipper.toml)
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -261,7 +265,7 @@ struct Cli {
     quiet: bool,
 
     #[command(subcommand)]
-    cmd: Commands,
+    cmd: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -602,14 +606,28 @@ impl Reporter for CliReporter {
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
+    if cli.version {
+        print_version(cli.verbose);
+        return Ok(());
+    }
+
     // Handle Config commands early (they don't need workspace plan)
-    if let Commands::Config(config_cmd) = &cli.cmd {
+    if let Some(Commands::Config(config_cmd)) = &cli.cmd {
         return run_config(config_cmd.clone());
     }
 
     // Handle Completion commands early (they don't need workspace plan)
-    if let Commands::Completion { shell } = &cli.cmd {
+    if let Some(Commands::Completion { shell }) = &cli.cmd {
         return run_completion(shell);
+    }
+
+    if cli.cmd.is_none() {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::MissingSubcommand,
+                "'shipper' requires a subcommand but one was not provided",
+            )
+            .exit();
     }
 
     let api_base = cli
@@ -759,7 +777,7 @@ pub fn run() -> Result<()> {
 
     let mut reporter = CliReporter::new(cli.quiet);
 
-    match cli.cmd {
+    match cli.cmd.expect("subcommand checked above") {
         Commands::Plan => {
             print_plan(&planned, cli.verbose);
         }
@@ -1407,6 +1425,13 @@ fn parse_retry_strategy(s: &str) -> Result<shipper_core::retry::RetryStrategyTyp
         _ => bail!(
             "invalid retry-strategy: {s} (expected: immediate, exponential, linear, constant)"
         ),
+    }
+}
+
+fn print_version(verbose: bool) {
+    println!("shipper {}", env!("CARGO_PKG_VERSION"));
+    if verbose {
+        println!("{RICH_VERSION_DETAILS}");
     }
 }
 
@@ -2417,7 +2442,7 @@ mod tests {
         ])
         .expect("parse CLI");
 
-        assert!(matches!(cli.cmd, Commands::Preflight));
+        assert!(matches!(cli.cmd, Some(Commands::Preflight)));
         assert!(cli.allow_dirty);
         assert!(cli.strict_ownership);
         assert_eq!(cli.verify_mode.as_deref(), Some("package"));

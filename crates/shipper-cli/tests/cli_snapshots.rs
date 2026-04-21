@@ -158,6 +158,16 @@ fn version_flag() {
     assert_snapshot!("version_flag", normalize_output(&stdout));
 }
 
+#[test]
+fn version_flag_verbose() {
+    let output = shipper_cmd()
+        .args(["--version", "--verbose"])
+        .output()
+        .expect("failed to run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("version_flag_verbose", normalize_output(&stdout));
+}
+
 // ── Error cases ──────────────────────────────────────────────────────
 
 #[test]

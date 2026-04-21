@@ -334,16 +334,36 @@ fn version_output_format() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let trimmed = stdout.trim();
-    // Format should be "shipper X.Y.Z" or "shipper X.Y.Z-rc.N" etc.
+    // Plain `--version` stays terse; build metadata moves behind
+    // `--version --verbose`.
     assert!(
         trimmed.starts_with("shipper "),
         "expected version to start with 'shipper ', got: {trimmed}"
+    );
+    assert!(
+        !trimmed.contains('\n'),
+        "plain --version should stay single-line, got: {trimmed}"
     );
     let version_part = trimmed.strip_prefix("shipper ").unwrap();
     assert!(
         version_part.contains('.'),
         "version should contain a dot: {version_part}"
     );
+}
+
+#[test]
+fn version_output_verbose_includes_build_metadata() {
+    let output = shipper_cmd()
+        .args(["--version", "--verbose"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("shipper "));
+    assert!(stdout.contains("\ncommit: "));
+    assert!(stdout.contains("\nbuild:  "));
+    assert!(stdout.contains("\nrustc:  "));
 }
 
 // ===========================================================================
@@ -1005,11 +1025,11 @@ fn help_inspect_receipt_snapshot() {
 // 13. Version output
 // ===========================================================================
 
-/// Snapshot: `--version` output with version redacted.
+/// Snapshot: `--version --verbose` output with version redacted.
 #[test]
 fn version_output_snapshot() {
     let output = shipper_cmd()
-        .arg("--version")
+        .args(["--version", "--verbose"])
         .output()
         .expect("failed to run");
 
