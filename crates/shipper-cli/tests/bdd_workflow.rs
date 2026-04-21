@@ -2849,12 +2849,12 @@ max_concurrent = 1
 mod inspect_events_without_events_file {
     use super::*;
 
-    // Scenario: inspect-events with no events file shows empty log path
+    // Scenario: inspect-events with no events file reports no event logs
     //
     // Given: a workspace with "demo" and no events.jsonl in the state directory
     // When: I run "shipper inspect-events"
     // Then: exit code is 0 (empty event log is valid)
-    // And: output contains "Event log:" header
+    // And: output reports that no event logs were found
     #[test]
     fn given_no_events_file_when_inspect_events_then_shows_empty_log() {
         let td = tempdir().expect("tempdir");
@@ -2870,7 +2870,7 @@ mod inspect_events_without_events_file {
             .arg("inspect-events")
             .assert()
             .success()
-            .stdout(contains("Event log:"));
+            .stdout(contains("No event logs found under"));
     }
 }
 

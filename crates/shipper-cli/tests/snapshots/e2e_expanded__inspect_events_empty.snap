@@ -2,4 +2,4 @@
 source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: normalize_output(&stdout)
 ---
-Event log: <STATE_DIR>/events.jsonl
+No event logs found under <STATE_DIR>
