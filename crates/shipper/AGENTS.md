@@ -62,4 +62,3 @@ cargo build -p shipper --release
   to import from `shipper_core::X` instead (and note it in the PR).
 
 For full workspace guidance, see [../../CLAUDE.md](../../CLAUDE.md).
-

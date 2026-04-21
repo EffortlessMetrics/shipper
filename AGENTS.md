@@ -2,7 +2,7 @@
 
 Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
 
-This file provides repository guidance for agentic coding tools working in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Orientation
 
