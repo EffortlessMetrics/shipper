@@ -16,7 +16,7 @@ fn normalize_output(raw: &str) -> String {
     redact_version_metadata(&normalized)
 }
 
-/// Redact the three build-time fields embedded in `--version --verbose`
+/// Redact the three build-time fields embedded in `--version`
 /// (`commit:`, `build:`, `rustc:`) so snapshots are stable regardless of
 /// the git checkout, build profile, or rustc version.
 fn redact_version_metadata(s: &str) -> String {

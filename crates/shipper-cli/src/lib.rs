@@ -44,9 +44,7 @@ mod output;
 
 use crate::output::progress::ProgressReporter;
 
-/// Long-form version string shown by `shipper --version --verbose` (or
-/// `-V --verbose`). The plain `--version` stays terse ("shipper X.Y.Z")
-/// so scripts parsing it don't need to adapt.
+/// Rich version string shown by `shipper --version` / `-V`.
 ///
 /// Format:
 /// ```text

@@ -1,4 +1,4 @@
-//! Build-time metadata for `shipper --version --verbose`.
+//! Build-time metadata for `shipper --version`.
 //!
 //! Emits three `rustc-env` values consumed by `src/lib.rs`:
 //!
@@ -14,14 +14,15 @@
 //! milliseconds and operators auditing our supply chain have one fewer
 //! transitive dependency to vet.
 
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    // Re-run if HEAD moves so the embedded SHA stays honest. `.git/HEAD`
-    // covers branch tip moves; `.git/refs/heads` catches force-updates.
+    // Resolve git internals through `git rev-parse --git-path` so this
+    // stays correct in linked worktrees, where `.git` is a file pointing
+    // at the real git dir rather than a directory of its own.
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
-    println!("cargo:rerun-if-changed=../../.git/refs/heads");
+    emit_git_rerun_hints();
 
     let git_sha = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -53,4 +54,34 @@ fn main() {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "unknown".to_string());
     println!("cargo::rustc-env=SHIPPER_RUSTC_VERSION={rustc_version}");
+}
+
+fn emit_git_rerun_hints() {
+    if let Some(head_path) = git_path("HEAD") {
+        println!("cargo:rerun-if-changed={}", head_path.display());
+    }
+
+    if let Some(current_ref) = git_stdout(&["symbolic-ref", "-q", "HEAD"]) {
+        if let Some(ref_path) = git_path(&current_ref) {
+            println!("cargo:rerun-if-changed={}", ref_path.display());
+        }
+    }
+
+    if let Some(packed_refs) = git_path("packed-refs") {
+        println!("cargo:rerun-if-changed={}", packed_refs.display());
+    }
+}
+
+fn git_path(spec: &str) -> Option<PathBuf> {
+    git_stdout(&["rev-parse", "--git-path", spec]).map(PathBuf::from)
+}
+
+fn git_stdout(args: &[&str]) -> Option<String> {
+    Command::new("git")
+        .args(args)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|stdout| !stdout.is_empty())
 }
