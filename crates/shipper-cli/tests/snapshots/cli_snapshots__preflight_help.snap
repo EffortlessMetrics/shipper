@@ -21,16 +21,16 @@ EXAMPLES:
 Usage: shipper-cli preflight [OPTIONS]
 
 Options:
+      --preflight-only
+          Run preflight as a standalone audit.
+          
+          Writes events to a session-scoped `preflight-only-<session>.events.jsonl` sidecar under `state_dir`, does not append to the authoritative `events.jsonl`, and never writes publish state (`state.json`). Use this when you want a fresh Proven/NotProven/Failed signal without mutating resumable publish state. Part of [#100 Prove](https://github.com/EffortlessMetrics/shipper/issues/100).
+
   -V, --version
           Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
 
       --config <CONFIG>
           Path to a custom configuration file (.shipper.toml)
-
-      --preflight-only
-          Run preflight as a standalone audit.
-          
-          Writes events to a session-scoped `preflight-only-<session>.events.jsonl` sidecar under `state_dir`, does not append to the authoritative `events.jsonl`, and never writes publish state (`state.json`). Use this when you want a fresh Proven/NotProven/Failed signal without mutating resumable publish state.
 
       --manifest-path <MANIFEST_PATH>
           Path to the workspace Cargo.toml

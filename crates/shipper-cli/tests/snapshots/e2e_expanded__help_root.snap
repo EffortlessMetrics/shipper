@@ -17,7 +17,7 @@ Commands:
   inspect-events   View detailed event log
   inspect-receipt  View detailed receipt with evidence
   ci               Print CI configuration snippets for various platforms
-  clean            Clean state files (state.json, receipt.json, events.jsonl)
+  clean            Clean state files (state.json, receipt.json, events.jsonl, preflight-only-*.events.jsonl)
   yank             Yank a crate@version from the registry — containment, not undo
   plan-yank        Generate a reverse-topological yank plan from a receipt (#98 PR 2)
   fix-forward      Generate a fix-forward supersession plan from a compromised receipt (#98 PR 3)

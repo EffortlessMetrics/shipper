@@ -2515,14 +2515,14 @@ mod tests {
         let cli = Cli::try_parse_from(["shipper", "preflight", "--preflight-only"])
             .expect("parse with flag");
         match cli.cmd {
-            Commands::Preflight { preflight_only } => assert!(preflight_only),
+            Some(Commands::Preflight { preflight_only }) => assert!(preflight_only),
             other => panic!("expected Preflight, got {other:?}"),
         }
 
         // Default: flag absent → false.
         let cli = Cli::try_parse_from(["shipper", "preflight"]).expect("parse without flag");
         match cli.cmd {
-            Commands::Preflight { preflight_only } => {
+            Some(Commands::Preflight { preflight_only }) => {
                 assert!(
                     !preflight_only,
                     "preflight_only must default to false for back-compat"
