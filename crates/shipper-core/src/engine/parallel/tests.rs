@@ -148,6 +148,7 @@ fn planned_workspace(workspace_root: &Path, api_base: String) -> PlannedWorkspac
                 name: "demo".to_string(),
                 version: "0.1.0".to_string(),
                 manifest_path: workspace_root.join("demo").join("Cargo.toml"),
+                regime: None,
             }],
             dependencies: BTreeMap::new(),
         },
@@ -527,11 +528,13 @@ fn test_run_publish_level_processes_packages() {
                     name: "alpha".to_string(),
                     version: "0.1.0".to_string(),
                     manifest_path: td.path().join("alpha").join("Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "beta".to_string(),
                     version: "0.2.0".to_string(),
                     manifest_path: td.path().join("beta").join("Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::new(),
@@ -714,11 +717,13 @@ fn test_run_publish_parallel_multiple_levels() {
                     name: "base".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("base").join("Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "dependent".to_string(),
                     version: "2.0.0".to_string(),
                     manifest_path: td.path().join("dependent").join("Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::from([("dependent".to_string(), vec!["base".to_string()])]),
@@ -985,6 +990,7 @@ fn test_run_publish_level_respects_max_concurrent() {
             name: name.to_string(),
             version: "0.1.0".to_string(),
             manifest_path: td.path().join(name).join("Cargo.toml"),
+            regime: None,
         })
         .collect();
 
@@ -1126,16 +1132,19 @@ fn test_levels_execute_in_dependency_order() {
                     name: "a".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("a").join("Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "b".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("b").join("Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "c".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("c").join("Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::from([
@@ -1245,11 +1254,13 @@ fn test_failed_level_stops_subsequent_levels() {
                     name: "base".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("base").join("Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "dependent".to_string(),
                     version: "2.0.0".to_string(),
                     manifest_path: td.path().join("dependent").join("Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::from([("dependent".to_string(), vec!["base".to_string()])]),
@@ -1350,11 +1361,13 @@ fn test_partial_success_within_level() {
             name: "alpha".to_string(),
             version: "0.1.0".to_string(),
             manifest_path: td.path().join("alpha").join("Cargo.toml"),
+            regime: None,
         },
         PlannedPackage {
             name: "beta".to_string(),
             version: "0.1.0".to_string(),
             manifest_path: td.path().join("beta").join("Cargo.toml"),
+            regime: None,
         },
     ];
 
@@ -1572,11 +1585,13 @@ fn test_resume_from_skips_earlier_levels() {
                     name: "base".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("base").join("Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "dependent".to_string(),
                     version: "2.0.0".to_string(),
                     manifest_path: td.path().join("dependent").join("Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::from([("dependent".to_string(), vec!["base".to_string()])]),
@@ -1707,16 +1722,19 @@ fn test_all_packages_already_published() {
                     name: "core".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("core").join("Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "utils".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("utils").join("Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "app".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("app").join("Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::from([(
@@ -1828,6 +1846,7 @@ fn test_max_concurrency_one_serializes_execution() {
             name: name.to_string(),
             version: "0.1.0".to_string(),
             manifest_path: td.path().join(name).join("Cargo.toml"),
+            regime: None,
         })
         .collect();
 
@@ -2188,16 +2207,19 @@ mod snapshot_tests {
                     name: "a".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/a/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "b".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/b/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "c".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/c/Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::from([
@@ -2238,21 +2260,25 @@ mod snapshot_tests {
                     name: "a".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/a/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "b".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/b/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "c".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/c/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "d".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/d/Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::from([
@@ -2293,31 +2319,37 @@ mod snapshot_tests {
                     name: "core".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/core/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "cli".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/cli/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "web".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/web/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "api".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/api/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "worker".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/worker/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "bench".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("/ws/bench/Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::from([
@@ -2360,21 +2392,25 @@ mod snapshot_tests {
                     name: "utils-a".to_string(),
                     version: "0.1.0".to_string(),
                     manifest_path: PathBuf::from("/ws/utils-a/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "utils-b".to_string(),
                     version: "0.2.0".to_string(),
                     manifest_path: PathBuf::from("/ws/utils-b/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "utils-c".to_string(),
                     version: "0.3.0".to_string(),
                     manifest_path: PathBuf::from("/ws/utils-c/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "utils-d".to_string(),
                     version: "0.4.0".to_string(),
                     manifest_path: PathBuf::from("/ws/utils-d/Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::new(),
@@ -2457,21 +2493,25 @@ fn test_levels_are_sequentially_numbered() {
                 name: "a".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: PathBuf::from("a/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "b".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: PathBuf::from("b/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "c".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: PathBuf::from("c/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "d".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: PathBuf::from("d/Cargo.toml"),
+                regime: None,
             },
         ],
         dependencies: BTreeMap::from([
@@ -2505,16 +2545,19 @@ fn test_level_ordering_dependencies_precede_dependents() {
                 name: "core".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: PathBuf::from("core/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "utils".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: PathBuf::from("utils/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "app".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: PathBuf::from("app/Cargo.toml"),
+                regime: None,
             },
         ],
         dependencies: BTreeMap::from([
@@ -2569,16 +2612,19 @@ fn test_all_packages_same_level_no_deps() {
                 name: "foo".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: PathBuf::from("foo/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "bar".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: PathBuf::from("bar/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "baz".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: PathBuf::from("baz/Cargo.toml"),
+                regime: None,
             },
         ],
         dependencies: BTreeMap::new(),
@@ -2608,26 +2654,31 @@ fn test_linear_chain_produces_n_levels() {
                 name: "l1".to_string(),
                 version: "0.1.0".to_string(),
                 manifest_path: PathBuf::from("l1/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "l2".to_string(),
                 version: "0.1.0".to_string(),
                 manifest_path: PathBuf::from("l2/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "l3".to_string(),
                 version: "0.1.0".to_string(),
                 manifest_path: PathBuf::from("l3/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "l4".to_string(),
                 version: "0.1.0".to_string(),
                 manifest_path: PathBuf::from("l4/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "l5".to_string(),
                 version: "0.1.0".to_string(),
                 manifest_path: PathBuf::from("l5/Cargo.toml"),
+                regime: None,
             },
         ],
         dependencies: BTreeMap::from([
@@ -2684,16 +2735,19 @@ fn test_error_in_first_level_prevents_all_subsequent() {
                     name: "a".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("a").join("Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "b".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("b").join("Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "c".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("c").join("Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::from([
@@ -2831,6 +2885,7 @@ fn test_all_independent_packages_single_level() {
             name: format!("pkg-{i}"),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from(format!("pkg-{i}/Cargo.toml")),
+            regime: None,
         })
         .collect();
 
@@ -2858,6 +2913,7 @@ fn test_wide_fan_out_two_levels() {
         name: "root".to_string(),
         version: "1.0.0".to_string(),
         manifest_path: PathBuf::from("root/Cargo.toml"),
+        regime: None,
     }];
     let mut deps = BTreeMap::new();
     for i in 0..6 {
@@ -2866,6 +2922,7 @@ fn test_wide_fan_out_two_levels() {
             name: name.clone(),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from(format!("{name}/Cargo.toml")),
+            regime: None,
         });
         deps.insert(name, vec!["root".to_string()]);
     }
@@ -2897,6 +2954,7 @@ fn test_deep_chain_produces_n_levels() {
             name: format!("c{i}"),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from(format!("c{i}/Cargo.toml")),
+            regime: None,
         })
         .collect();
     let mut deps = BTreeMap::new();
@@ -2956,6 +3014,7 @@ fn test_max_concurrent_exceeds_package_count() {
             name: n.to_string(),
             version: "0.1.0".to_string(),
             manifest_path: td.path().join(n).join("Cargo.toml"),
+            regime: None,
         })
         .collect();
 
@@ -3067,6 +3126,7 @@ fn test_independent_failures_both_reported() {
             name: n.to_string(),
             version: "0.1.0".to_string(),
             manifest_path: td.path().join(n).join("Cargo.toml"),
+            regime: None,
         })
         .collect();
 
@@ -3180,6 +3240,7 @@ fn test_concurrent_state_updates_consistent() {
             name: n.to_string(),
             version: "0.1.0".to_string(),
             manifest_path: td.path().join(n).join("Cargo.toml"),
+            regime: None,
         })
         .collect();
 
@@ -3485,6 +3546,7 @@ fn test_level_message_includes_max_concurrent() {
             name: n.to_string(),
             version: "0.1.0".to_string(),
             manifest_path: td.path().join(n).join("Cargo.toml"),
+            regime: None,
         })
         .collect();
 
@@ -3589,6 +3651,7 @@ fn test_state_persisted_to_disk_after_level() {
                 name: "saved".to_string(),
                 version: "0.1.0".to_string(),
                 manifest_path: td.path().join("saved").join("Cargo.toml"),
+                regime: None,
             }],
             ..ws.plan
         },
@@ -3664,6 +3727,7 @@ mod property_tests_extra {
                     name: n.clone(),
                     version: "0.1.0".to_string(),
                     manifest_path: PathBuf::from(format!("{}/Cargo.toml", n)),
+                    regime: None,
                 })
                 .collect();
 
@@ -3690,6 +3754,7 @@ mod property_tests_extra {
                     name: n.clone(),
                     version: "0.1.0".to_string(),
                     manifest_path: PathBuf::from(format!("{}/Cargo.toml", n)),
+                    regime: None,
                 })
                 .collect();
 
@@ -3719,6 +3784,7 @@ mod property_tests_extra {
                     name: format!("p{i}"),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from(format!("p{i}/Cargo.toml")),
+                    regime: None,
                 })
                 .collect();
 
@@ -3782,6 +3848,7 @@ mod property_tests_extra {
                     name: format!("ind{i}"),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from(format!("ind{i}/Cargo.toml")),
+                    regime: None,
                 })
                 .collect();
 

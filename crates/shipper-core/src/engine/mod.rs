@@ -22,7 +22,7 @@ use crate::state::execution_state as state;
 use crate::types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, Finishability,
     PackageProgress, PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent,
-    ReadinessEvidence, Receipt, ReconciliationOutcome, Registry, RuntimeOptions,
+    PublishRegime, ReadinessEvidence, Receipt, ReconciliationOutcome, Registry, RuntimeOptions,
 };
 use crate::webhook::{self, WebhookEvent};
 
@@ -36,7 +36,17 @@ pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::runtime::policy::P
     crate::runtime::policy::policy_effects(opts)
 }
 
+fn init_registry_client(registry: Registry, state_dir: &Path) -> Result<RegistryClient> {
+    let cache_dir = state_dir.join("cache");
+    RegistryClient::new(registry).map(|c| c.with_cache_dir(cache_dir))
+}
+
 /// Run preflight verification checks before publishing.
+///
+/// This is the backward-compatible read-only entry point for embedders.
+/// Call [`run_preflight_in_place`] if you want preflight to stamp the detected
+/// [`PublishRegime`] onto each `PlannedPackage` for a subsequent publish in
+/// the same process.
 ///
 /// This function performs various pre-publish checks to catch issues early:
 /// - Git cleanliness (if `allow_dirty` is false)
@@ -67,13 +77,24 @@ pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::runtime::policy::P
 /// let report = engine::run_preflight(&ws, &opts, &mut reporter)?;
 /// println!("Finishability: {:?}", report.finishability);
 /// ```
-fn init_registry_client(registry: Registry, state_dir: &Path) -> Result<RegistryClient> {
-    let cache_dir = state_dir.join("cache");
-    RegistryClient::new(registry).map(|c| c.with_cache_dir(cache_dir))
-}
-
 pub fn run_preflight(
     ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
+    reporter: &mut dyn Reporter,
+) -> Result<PreflightReport> {
+    let mut ws = ws.clone();
+    run_preflight_in_place(&mut ws, opts, reporter)
+}
+
+/// Run preflight checks for a planned workspace and stamp regime metadata.
+///
+/// Takes `&mut PlannedWorkspace` so preflight can stamp the detected
+/// [`PublishRegime`] onto each `PlannedPackage` once it has queried the
+/// registry (#106 PR 1). The mutation is additive: the new `regime`
+/// field defaults to `None` and is skipped in serialization when unset,
+/// so older readers of `state.json` / plan files stay compatible.
+pub fn run_preflight_in_place(
+    ws: &mut PlannedWorkspace,
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
 ) -> Result<PreflightReport> {
@@ -241,9 +262,21 @@ pub fn run_preflight(
     let mut packages: Vec<PreflightPackage> = Vec::new();
     let mut any_ownership_unverified = false;
 
-    for p in &ws.plan.packages {
+    for p in ws.plan.packages.iter_mut() {
         let already_published = reg.version_exists(&p.name, &p.version)?;
         let is_new_crate = reg.check_new_crate(&p.name)?;
+
+        // #106 PR 1: stamp the detected regime onto the plan so the
+        // publish retry loop can consume it without re-querying the
+        // registry. Classification is based purely on registry
+        // presence here; finer-grained variants (e.g. Patch) can be
+        // layered on in later PRs without breaking this contract.
+        p.regime = Some(if is_new_crate {
+            PublishRegime::FirstPublish
+        } else {
+            PublishRegime::Update
+        });
+
         if is_new_crate {
             event_log.record(PublishEvent {
                 timestamp: Utc::now(),
@@ -877,10 +910,15 @@ pub fn run_publish(
 
         reporter.info(&format!("{}@{}: publishing...", p.name, p.version));
 
-        // Registry-aware backoff (#94): lazy-cached "is this a new crate?"
-        // Only queried when a retry's error message looks like a rate limit,
-        // so the happy path costs zero extra registry calls.
-        let mut is_new_crate_cached: Option<bool> = None;
+        // Registry-aware backoff (#94 / #106 PR 1): prefer the `PublishRegime`
+        // that preflight stamped onto the `PlannedPackage`. That answer is
+        // authoritative; when present, we never re-query the registry
+        // mid-retry.
+        //
+        // `None` here means the plan predates the regime field (old
+        // state.json, legacy test harness). In that case we fall back to the
+        // historical lazy-cached behavior for backward compatibility.
+        let mut is_new_crate_cached: Option<bool> = p.regime.map(PublishRegime::is_new_crate);
 
         let mut attempt = st
             .packages
@@ -1324,7 +1362,7 @@ pub fn run_publish(
 /// # Example
 ///
 /// ```ignore
-/// let ws = plan::build_plan(&spec)?;
+/// let mut ws = plan::build_plan(&spec)?;
 /// let opts = types::RuntimeOptions { /* ... */ };
 /// let mut reporter = MyReporter::default();
 /// let receipt = engine::run_resume(&ws, &opts, &mut reporter)?;
@@ -2080,6 +2118,7 @@ mod tests {
                     name: "demo".to_string(),
                     version: "0.1.0".to_string(),
                     manifest_path: workspace_root.join("demo").join("Cargo.toml"),
+                    regime: None,
                 }],
                 dependencies: std::collections::BTreeMap::new(),
             },
@@ -2533,13 +2572,13 @@ mod tests {
                 2,
             );
 
-            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let mut ws = planned_workspace(td.path(), server.base_url.clone());
             let mut opts = default_opts(PathBuf::from(".shipper"));
             opts.skip_ownership_check = false;
             opts.strict_ownership = true;
 
             let mut reporter = CollectingReporter::default();
-            let rep = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+            let rep = run_preflight_in_place(&mut ws, &opts, &mut reporter).expect("preflight");
             assert_eq!(rep.packages.len(), 1);
             assert!(!rep.packages[0].ownership_verified);
             assert!(rep.packages[0].is_new_crate);
@@ -2548,6 +2587,107 @@ mod tests {
                     .infos
                     .iter()
                     .any(|i| i.contains("new crate, skipping ownership check"))
+            );
+            // #106 PR 1: preflight must stamp PublishRegime::FirstPublish
+            // on the plan so the downstream publish retry loop can
+            // consume it without re-querying the registry.
+            assert_eq!(
+                ws.plan.packages[0].regime,
+                Some(PublishRegime::FirstPublish),
+                "preflight should stamp FirstPublish regime on new crates"
+            );
+            server.join();
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_preflight_legacy_entry_point_preserves_immutable_api() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([("SHIPPER_CARGO_EXIT", Some("0".to_string()))]);
+        temp_env::with_vars(env_vars, || {
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let opts = default_opts(PathBuf::from(".shipper"));
+            let mut reporter = CollectingReporter::default();
+
+            let rep = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+            assert_eq!(rep.packages.len(), 1);
+            assert!(rep.packages[0].is_new_crate);
+            assert_eq!(
+                ws.plan.packages[0].regime, None,
+                "legacy immutable API should not mutate the caller's plan"
+            );
+            server.join();
+        });
+    }
+
+    /// #106 PR 1: preflight stamps `PublishRegime::Update` on crates
+    /// that already have at least one published version. Ensures the
+    /// downstream retry loop can distinguish update vs. first-publish
+    /// backoff windows without re-querying the registry.
+    #[test]
+    #[serial]
+    fn run_preflight_stamps_update_regime_on_existing_crate() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+            (
+                "CARGO_HOME",
+                Some(td.path().to_str().expect("utf8").to_string()),
+            ),
+        ]);
+        temp_env::with_vars(env_vars, || {
+            // Crate root returns 200 (crate exists), specific version 404
+            // (this version is not yet published). This is the canonical
+            // "publishing a new version of an existing crate" preflight.
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(200, r#"{"crate":{"name":"demo"}}"#.to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let mut ws = planned_workspace(td.path(), server.base_url.clone());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.skip_ownership_check = true;
+            opts.strict_ownership = false;
+
+            let mut reporter = CollectingReporter::default();
+            let rep = run_preflight_in_place(&mut ws, &opts, &mut reporter).expect("preflight");
+            assert_eq!(rep.packages.len(), 1);
+            assert!(!rep.packages[0].is_new_crate);
+            assert_eq!(
+                ws.plan.packages[0].regime,
+                Some(PublishRegime::Update),
+                "preflight should stamp Update regime on existing crates"
             );
             server.join();
         });
@@ -4118,11 +4258,13 @@ mod tests {
                     name: "pkg1".to_string(),
                     version: "0.1.0".to_string(),
                     manifest_path: td.path().join("pkg1/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "pkg2".to_string(),
                     version: "0.1.0".to_string(),
                     manifest_path: td.path().join("pkg2/Cargo.toml"),
+                    regime: None,
                 },
             ];
 
@@ -4187,16 +4329,19 @@ mod tests {
                 name: "alpha".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: td.path().join("alpha/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "beta".to_string(),
                 version: "2.0.0".to_string(),
                 manifest_path: td.path().join("beta/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "gamma".to_string(),
                 version: "0.3.0".to_string(),
                 manifest_path: td.path().join("gamma/Cargo.toml"),
+                regime: None,
             },
         ];
         let state_dir = td.path().join(".shipper");
@@ -4493,11 +4638,13 @@ mod tests {
                     name: "alpha".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("alpha/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "beta".to_string(),
                     version: "2.0.0".to_string(),
                     manifest_path: td.path().join("beta/Cargo.toml"),
+                    regime: None,
                 },
             ];
             let opts = default_opts(PathBuf::from(".shipper"));
@@ -4811,11 +4958,13 @@ mod tests {
                     name: "alpha".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("alpha/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "beta".to_string(),
                     version: "2.0.0".to_string(),
                     manifest_path: td.path().join("beta/Cargo.toml"),
+                    regime: None,
                 },
             ];
             let mut opts = default_opts(PathBuf::from(".shipper"));
@@ -4864,11 +5013,13 @@ mod tests {
                     name: "alpha".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: td.path().join("alpha/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "beta".to_string(),
                     version: "2.0.0".to_string(),
                     manifest_path: td.path().join("beta/Cargo.toml"),
+                    regime: None,
                 },
             ];
 
@@ -5528,6 +5679,7 @@ mod tests {
                         name: name.to_string(),
                         version: ver.to_string(),
                         manifest_path: workspace_root.join(*name).join("Cargo.toml"),
+                        regime: None,
                     })
                     .collect(),
                 dependencies: std::collections::BTreeMap::new(),
@@ -6511,16 +6663,19 @@ mod tests {
                 name: "alpha".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: td.path().join("alpha/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "beta".to_string(),
                 version: "2.0.0".to_string(),
                 manifest_path: td.path().join("beta/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "gamma".to_string(),
                 version: "0.3.0".to_string(),
                 manifest_path: td.path().join("gamma/Cargo.toml"),
+                regime: None,
             },
         ];
         let state_dir = td.path().join(".shipper");
@@ -6553,11 +6708,13 @@ mod tests {
                 name: "alpha".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: td.path().join("alpha/Cargo.toml"),
+                regime: None,
             },
             PlannedPackage {
                 name: "beta".to_string(),
                 version: "2.0.0".to_string(),
                 manifest_path: td.path().join("beta/Cargo.toml"),
+                regime: None,
             },
         ];
         let state_dir = td.path().join(".shipper");

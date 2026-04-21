@@ -602,6 +602,49 @@ pub struct RuntimeOptions {
     pub rehearsal_smoke_install: Option<String>,
 }
 
+/// Classification of a publish operation, used by the runtime to make
+/// registry-aware decisions (backoff windows, duration estimation,
+/// per-regime telemetry).
+///
+/// Preflight already determines whether a crate has ever been published
+/// by querying the registry; that answer is captured here and propagated
+/// through the [`ReleasePlan`] so the publish retry loop does not have
+/// to re-query the registry to recover it.
+///
+/// # Variants
+///
+/// - [`PublishRegime::FirstPublish`]: the crate has never been published.
+///   Triggers the documented crates.io new-crate rate-limit window.
+/// - [`PublishRegime::Update`]: the crate already exists; this is a new
+///   version upload.
+///
+/// # Example
+///
+/// ```ignore
+/// use shipper::types::PublishRegime;
+///
+/// let regime = PublishRegime::FirstPublish;
+/// assert_eq!(regime.is_new_crate(), true);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublishRegime {
+    /// Crate has never been published to this registry.
+    FirstPublish,
+    /// Crate exists; publishing a new version.
+    Update,
+}
+
+impl PublishRegime {
+    /// Convenience: `true` iff this is a first-publish regime.
+    ///
+    /// Equivalent to the preflight `is_new_crate` boolean, but carried
+    /// through the plan so later phases do not have to re-query.
+    pub fn is_new_crate(self) -> bool {
+        matches!(self, PublishRegime::FirstPublish)
+    }
+}
+
 /// A package in the publish plan.
 ///
 /// This represents a single crate that will be published as part of
@@ -618,6 +661,7 @@ pub struct RuntimeOptions {
 ///     name: "my-crate".to_string(),
 ///     version: "1.2.3".to_string(),
 ///     manifest_path: PathBuf::from("crates/my-crate/Cargo.toml"),
+///     regime: None,
 /// };
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -625,6 +669,15 @@ pub struct PlannedPackage {
     pub name: String,
     pub version: String,
     pub manifest_path: PathBuf,
+    /// Publish-regime classification produced by preflight (#106).
+    ///
+    /// Optional for backward compatibility with state.json / plan files
+    /// written by earlier versions that predate this field. When
+    /// `None`, the publish retry loop falls back to re-querying the
+    /// registry on rate-limit errors; when `Some`, no re-query is
+    /// performed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime: Option<PublishRegime>,
 }
 
 /// A group of packages that can be published in parallel.
@@ -2028,6 +2081,77 @@ mod tests {
         }
     }
 
+    // ===== PublishRegime / PlannedPackage backward compatibility (#106 PR 1) =====
+
+    /// A plan serialized before the `regime` field existed must still
+    /// deserialize cleanly. The field is `Option`, `serde(default)`, and
+    /// `skip_serializing_if = Option::is_none`, which together guarantee
+    /// forward and backward compatibility with existing state.json and
+    /// plan files.
+    #[test]
+    fn planned_package_backward_compat_no_regime_field() {
+        // Simulate a plan written by an older version of shipper that
+        // did not emit the `regime` field at all.
+        let legacy_json = r#"{
+            "name": "legacy-crate",
+            "version": "0.1.0",
+            "manifest_path": "crates/legacy-crate/Cargo.toml"
+        }"#;
+        let parsed: PlannedPackage = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(parsed.name, "legacy-crate");
+        assert_eq!(parsed.version, "0.1.0");
+        assert!(
+            parsed.regime.is_none(),
+            "missing regime should deserialize to None for backward compat"
+        );
+    }
+
+    /// When `regime` is `None`, serialization must omit the field
+    /// entirely (not emit `"regime": null`). This preserves byte-for-byte
+    /// compatibility of plan / state snapshots for readers that do not
+    /// know about the field.
+    #[test]
+    fn planned_package_regime_none_is_skipped_in_serialization() {
+        let pkg = PlannedPackage {
+            name: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            manifest_path: PathBuf::from("Cargo.toml"),
+            regime: None,
+        };
+        let json = serde_json::to_string(&pkg).unwrap();
+        assert!(
+            !json.contains("regime"),
+            "None regime should be skipped, got: {json}"
+        );
+    }
+
+    /// When `regime` is `Some(...)`, it must round-trip cleanly and use
+    /// the documented snake_case wire format.
+    #[test]
+    fn planned_package_regime_some_round_trips() {
+        for regime in [PublishRegime::FirstPublish, PublishRegime::Update] {
+            let pkg = PlannedPackage {
+                name: "demo".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: PathBuf::from("Cargo.toml"),
+                regime: Some(regime),
+            };
+            let json = serde_json::to_string(&pkg).unwrap();
+            assert!(
+                json.contains("\"regime\""),
+                "regime must be present: {json}"
+            );
+            let parsed: PlannedPackage = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.regime, Some(regime));
+        }
+    }
+
+    #[test]
+    fn publish_regime_is_new_crate_matches_variant() {
+        assert!(PublishRegime::FirstPublish.is_new_crate());
+        assert!(!PublishRegime::Update.is_new_crate());
+    }
+
     // ===== ReleasePlan determinism =====
 
     #[test]
@@ -2042,11 +2166,13 @@ mod tests {
                     name: "alpha".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("crates/alpha/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "beta".to_string(),
                     version: "2.0.0".to_string(),
                     manifest_path: PathBuf::from("crates/beta/Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::from([("beta".to_string(), vec!["alpha".to_string()])]),
@@ -2074,6 +2200,7 @@ mod tests {
                 name: "standalone".to_string(),
                 version: "0.1.0".to_string(),
                 manifest_path: PathBuf::from("Cargo.toml"),
+                regime: None,
             }],
             dependencies: BTreeMap::new(),
         };
@@ -2093,6 +2220,7 @@ mod tests {
                 name: "solo".to_string(),
                 version: "1.0.0".to_string(),
                 manifest_path: PathBuf::from("Cargo.toml"),
+                regime: None,
             }],
             dependencies: BTreeMap::new(),
         };
@@ -2115,16 +2243,19 @@ mod tests {
                     name: "a".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("a/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "b".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("b/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "c".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("c/Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::from([
@@ -2154,16 +2285,19 @@ mod tests {
                     name: "x".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("x/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "y".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("y/Cargo.toml"),
+                    regime: None,
                 },
                 PlannedPackage {
                     name: "z".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("z/Cargo.toml"),
+                    regime: None,
                 },
             ],
             dependencies: BTreeMap::new(),
@@ -2928,11 +3062,13 @@ mod tests {
                         name: "core-lib".to_string(),
                         version: "0.1.0".to_string(),
                         manifest_path: PathBuf::from("crates/core-lib/Cargo.toml"),
+                        regime: None,
                     },
                     PlannedPackage {
                         name: "my-cli".to_string(),
                         version: "0.2.0".to_string(),
                         manifest_path: PathBuf::from("crates/my-cli/Cargo.toml"),
+                        regime: None,
                     },
                 ],
                 dependencies: BTreeMap::from([(
@@ -3112,6 +3248,7 @@ mod tests {
                     name: "solo-crate".to_string(),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("Cargo.toml"),
+                    regime: None,
                 }],
                 dependencies: BTreeMap::new(),
             };
@@ -3134,11 +3271,13 @@ mod tests {
                         name: "internal-utils".to_string(),
                         version: "2.1.0".to_string(),
                         manifest_path: PathBuf::from("crates/internal-utils/Cargo.toml"),
+                        regime: None,
                     },
                     PlannedPackage {
                         name: "internal-api".to_string(),
                         version: "3.0.0".to_string(),
                         manifest_path: PathBuf::from("crates/internal-api/Cargo.toml"),
+                        regime: None,
                     },
                 ],
                 dependencies: BTreeMap::from([(
@@ -3161,21 +3300,25 @@ mod tests {
                         name: "foundation".to_string(),
                         version: "0.1.0".to_string(),
                         manifest_path: PathBuf::from("crates/foundation/Cargo.toml"),
+                        regime: None,
                     },
                     PlannedPackage {
                         name: "middleware".to_string(),
                         version: "0.2.0".to_string(),
                         manifest_path: PathBuf::from("crates/middleware/Cargo.toml"),
+                        regime: None,
                     },
                     PlannedPackage {
                         name: "service".to_string(),
                         version: "0.3.0".to_string(),
                         manifest_path: PathBuf::from("crates/service/Cargo.toml"),
+                        regime: None,
                     },
                     PlannedPackage {
                         name: "gateway".to_string(),
                         version: "1.0.0".to_string(),
                         manifest_path: PathBuf::from("crates/gateway/Cargo.toml"),
+                        regime: None,
                     },
                 ],
                 dependencies: BTreeMap::from([
@@ -4193,6 +4336,7 @@ mod tests {
                     name,
                     version,
                     manifest_path: PathBuf::from("crates/test/Cargo.toml"),
+                    regime: None,
                 };
                 let json = serde_json::to_string(&pkg).unwrap();
                 let parsed: PlannedPackage = serde_json::from_str(&json).unwrap();
@@ -4212,6 +4356,7 @@ mod tests {
                         name: format!("crate-{i}"),
                         version: format!("{i}.0.0"),
                         manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                        regime: None,
                     })
                     .collect();
                 let lvl = PublishLevel { level, packages };
@@ -4232,6 +4377,7 @@ mod tests {
                         name: format!("crate-{i}"),
                         version: format!("{i}.0.0"),
                         manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                        regime: None,
                     })
                     .collect();
                 let mut deps = BTreeMap::new();
@@ -4672,6 +4818,7 @@ mod tests {
                         name: format!("crate-{}-{}", seed, i),
                         version: format!("{}.0.0", i),
                         manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                        regime: None,
                     })
                     .collect();
 
@@ -4702,11 +4849,13 @@ mod tests {
                     name: format!("crate-a-{seed}"),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("Cargo.toml"),
+                    regime: None,
                 }];
                 let pkgs_b = vec![PlannedPackage {
                     name: format!("crate-b-{seed}"),
                     version: "1.0.0".to_string(),
                     manifest_path: PathBuf::from("Cargo.toml"),
+                    regime: None,
                 }];
 
                 let id_a = compute_plan_id(&pkgs_a, "crates-io");
@@ -4911,6 +5060,7 @@ mod tests {
                     name: "test-crate".to_string(),
                     version: version.clone(),
                     manifest_path: PathBuf::from("Cargo.toml"),
+                    regime: None,
                 };
                 let json = serde_json::to_string(&pkg).unwrap();
                 let parsed: PlannedPackage = serde_json::from_str(&json).unwrap();
@@ -4936,6 +5086,7 @@ mod tests {
                         name: format!("crate-{i}"),
                         version: format!("{}.0.0", i + 1),
                         manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                        regime: None,
                     })
                     .collect();
                 let mut deps = BTreeMap::new();
@@ -5474,6 +5625,7 @@ mod tests {
                         name: format!("crate-{i}"),
                         version: format!("0.{i}.0"),
                         manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                        regime: None,
                     })
                     .collect();
 
@@ -5516,6 +5668,7 @@ mod tests {
                         name: format!("crate-{i}"),
                         version: format!("0.{i}.0"),
                         manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                        regime: None,
                     })
                     .collect();
 
@@ -5573,6 +5726,7 @@ mod tests {
                         name: format!("crate-{i}"),
                         version: format!("0.{i}.0"),
                         manifest_path: PathBuf::from(format!("crates/crate-{i}/Cargo.toml")),
+                        regime: None,
                     })
                     .collect();
 
