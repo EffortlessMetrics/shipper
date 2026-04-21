@@ -6,7 +6,7 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 **Layer:** ops (layer 1, bottom)
 **Single responsibility:** Cargo registry token resolution.
-**Was:** standalone crate `shipper-auth` + the in-tree shim with credential fallback (absorbed during the decrating effort; the dedup intermediate was PR #51).
+**Was:** standalone crate `shipper-auth` + the in-tree shim with credential fallback (absorbed in this PR; the dedup intermediate was PR #51).
 
 ## Resolution order
 1. `CARGO_REGISTRY_TOKEN` env var

@@ -61,5 +61,5 @@ cargo build -p shipper --release
 - If tests in `tests/` reach beyond the curated façade, update them
   to import from `shipper_core::X` instead (and note it in the PR).
 
-For full workspace guidance, see [../../CLAUDE.md](../../CLAUDE.md).
+For full workspace guidance, see [../../CLAUDE.md](H:\Code\Rust\shipper\CLAUDE.md).
 

@@ -17,9 +17,9 @@ callers reclaim locks whose holders died without releasing.
 
 ## Public-to-crate API
 
-Public module path: `shipper_core::lock`. Inside `shipper-core` itself, use
-`crate::lock`. The install-facing `shipper` facade does not re-export this
-module.
+Re-exported at `shipper::lock` (preserved backward compatibility with the old
+`shipper-lock` public surface; callers in `shipper-cli` and the integration
+tests use the `shipper::lock::*` path).
 
 - `LOCK_FILE` — default lock filename constant.
 - `LockInfo` — serde struct written to the lock file.

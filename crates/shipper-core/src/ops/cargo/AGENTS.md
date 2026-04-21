@@ -10,9 +10,8 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 ## Public-to-crate API
 
-Public module path: `shipper_core::cargo`. Inside `shipper-core` itself, use
-`crate::cargo`. The install-facing `shipper` facade does not re-export this
-module.
+Re-exported at `shipper::cargo` (preserved backward compatibility with the old
+`shipper-cargo` public surface).
 
 - `CargoOutput` — value type: exit code, stdout/stderr tails, duration, timed-out flag.
 - `cargo_publish(workspace_root, package, registry, allow_dirty, no_verify, output_lines, timeout)` — spawn `cargo publish -p <pkg>` with optional wall-clock timeout.

@@ -6,7 +6,7 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 **Layer:** ops (layer 1, bottom)
 **Single responsibility:** Storage backend trait + filesystem-backed implementation. Cloud backends (S3/GCS/Azure) are stubbed pending implementation.
-**Was:** Runtime portion of the standalone `shipper-storage` crate (split during the decrating effort — config types went to `shipper-types::storage`).
+**Was:** Runtime portion of the standalone `shipper-storage` crate (split in this PR — config types went to `shipper-types::storage`).
 
 ## Public-to-crate API
 - `StorageBackend` trait
@@ -21,6 +21,6 @@ Re-exported for convenience: `CloudStorageConfig`, `StorageType` from `shipper_t
 - S3/GCS/Azure: currently bail with "not yet implemented". Do not promise these to external users.
 - The trait stays as a trait so future cloud backends can plug in.
 
-## Why this lives inside `shipper-core`, not as a public crate
-The trait + filesystem impl is mature, but the cloud backends are stubbed. Promising a public `StorageBackend` trait via crates.io would freeze a half-finished design. Keeping it internal lets us evolve until cloud backends are real. When cloud backends are implemented, this module can either be promoted to a public storage API surface or extracted into a new standalone crate.
+## Why this lives inside shipper, not as a public crate
+The trait + filesystem impl is mature, but the cloud backends are stubbed. Promising a public `StorageBackend` trait via crates.io would freeze a half-finished design. Keeping it internal lets us evolve until cloud backends are real. When cloud backends are implemented, this module can either be promoted to a public `shipper::storage` API or extracted into a new standalone crate.
 

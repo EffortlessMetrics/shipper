@@ -14,11 +14,12 @@ Persist execution state, events, and receipts to disk (or other backends via the
 
 `state` modules MAY import from `crate::runtime::*`, `crate::ops::*`, `crate::types`, external crates.
 `state` modules MUST NOT import from `crate::engine::*` or `crate::plan::*`.
-Enforced by `.github/workflows/architecture-guard.yml`.
+Enforced by `.github/workflows/architecture-guard.yml` (once added).
 
 ## What lives here
 
-- `state/execution_state/` — `ExecutionState`, receipt persistence, schema migration, and atomic filesystem I/O (was `shipper-state`)
+- `state/execution_state/` — `ExecutionState` struct, transitions, persistence (was `shipper-state`)
 - `state/events/` — Append-only JSONL event log (was `shipper-events`)
-- `state/store/` — `StateStore` trait + filesystem impl (was `shipper-store`)
+- `state/store/` — `StateStore` trait + filesystem impl (was `shipper-store`) [future PR]
+- `state/receipt/` — Receipt write/read [future PR]
 
