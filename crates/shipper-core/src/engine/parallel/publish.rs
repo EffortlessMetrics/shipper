@@ -46,7 +46,7 @@ pub(super) struct PackagePublishResult {
 /// retry-backoff site in the publish loop so operators never stare at a
 /// silent CI log during the wait window. See #91.
 #[allow(clippy::too_many_arguments)]
-fn emit_retry_backoff(
+pub(super) fn emit_retry_backoff(
     event_log: &Arc<Mutex<events::EventLog>>,
     events_path: &Path,
     reporter: &Arc<Mutex<dyn Reporter + Send>>,
@@ -81,22 +81,24 @@ fn emit_retry_backoff(
         log.clear();
     }
 
-    // Delegate human-facing narration AND the backoff sleep to the Reporter.
-    // Parallel mode's SendReporter uses the default impl (buffered warn +
-    // thread::sleep), matching pre-#103 behavior. Single-level callers that
-    // use the host reporter directly can provide a live-countdown override.
+    // Emit the warn line while holding the reporter mutex, then release the
+    // lock before sleeping so other worker threads are not blocked from
+    // logging during the backoff window.
     {
         let mut rep = reporter.lock().unwrap();
-        rep.retry_wait(
+        rep.warn(&format!(
+            "{}@{}: {} ({:?}); next attempt in {} (attempt {}/{})",
             pkg_name,
             pkg_version,
-            attempt,
-            max_attempts,
-            delay,
-            reason,
             message,
-        );
+            reason,
+            humantime::format_duration(delay),
+            attempt.saturating_add(1),
+            max_attempts,
+        ));
     }
+
+    thread::sleep(delay);
 }
 
 /// Publish a single package with retries (parallel-safe version)

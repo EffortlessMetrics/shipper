@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serial_test::serial;
@@ -10,7 +10,7 @@ use tempfile::tempdir;
 use tiny_http::{Header, Response, Server, StatusCode};
 
 use super::policy::policy_effects;
-use super::publish::{publish_package, run_publish_level};
+use super::publish::{emit_retry_backoff, publish_package, run_publish_level};
 use super::run_publish_parallel_inner as run_publish_parallel;
 use super::*;
 use crate::plan::PlannedWorkspace;
@@ -42,6 +42,75 @@ impl Reporter for CollectingReporter {
     fn error(&mut self, msg: &str) {
         self.errors.push(msg.to_string());
     }
+}
+
+#[test]
+fn emit_retry_backoff_releases_reporter_lock_before_sleep() {
+    struct SignalingReporter {
+        warned: Option<mpsc::Sender<()>>,
+    }
+
+    impl Reporter for SignalingReporter {
+        fn info(&mut self, _msg: &str) {}
+
+        fn warn(&mut self, _msg: &str) {
+            if let Some(tx) = self.warned.take() {
+                tx.send(()).expect("send warn signal");
+            }
+        }
+
+        fn error(&mut self, _msg: &str) {}
+    }
+
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir state dir");
+
+    let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+    let events_path = events::events_path(&state_dir);
+    let (warn_tx, warn_rx) = mpsc::channel();
+    let reporter: Arc<Mutex<dyn Reporter + Send>> = Arc::new(Mutex::new(SignalingReporter {
+        warned: Some(warn_tx),
+    }));
+
+    let event_log_for_retry = Arc::clone(&event_log);
+    let reporter_for_retry = Arc::clone(&reporter);
+    let events_path_for_retry = events_path.clone();
+    let delay = Duration::from_millis(250);
+
+    let retry_thread = std::thread::spawn(move || {
+        emit_retry_backoff(
+            &event_log_for_retry,
+            &events_path_for_retry,
+            &reporter_for_retry,
+            "demo@0.1.0",
+            "demo",
+            "0.1.0",
+            1,
+            3,
+            delay,
+            ErrorClass::Retryable,
+            "rate limited",
+        );
+    });
+
+    warn_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("retry warn should fire");
+
+    let lock_started = Instant::now();
+    {
+        let mut rep = reporter.lock().unwrap();
+        rep.info("other worker thread");
+    }
+
+    assert!(
+        lock_started.elapsed() < Duration::from_millis(100),
+        "reporter mutex stayed locked during retry sleep: {:?}",
+        lock_started.elapsed()
+    );
+
+    retry_thread.join().expect("join retry thread");
 }
 
 fn write_fake_cargo(bin_dir: &Path) {

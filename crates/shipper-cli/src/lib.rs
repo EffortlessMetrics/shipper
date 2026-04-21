@@ -2308,6 +2308,24 @@ mod tests {
     }
 
     #[test]
+    fn cli_reporter_retry_wait_without_progress_warns_and_blocks_for_delay() {
+        use std::time::Instant;
+        let mut rep = CliReporter::new(false);
+        let delay = Duration::from_millis(40);
+        let start = Instant::now();
+        rep.retry_wait(
+            "pkg",
+            "0.1.0",
+            1,
+            3,
+            delay,
+            shipper_core::types::ErrorClass::Retryable,
+            "rate limited",
+        );
+        assert!(start.elapsed() >= delay);
+    }
+
+    #[test]
     fn cli_reporter_retry_wait_with_progress_routes_through_countdown() {
         // Installing a (silent) progress handle should route retry_wait
         // through ProgressReporter::retry_countdown — still blocks for the

@@ -884,6 +884,30 @@ fn test_retry_countdown_non_tty_one_shot_line() {
 }
 
 #[test]
+fn test_retry_countdown_tty_branch_updates_status() {
+    let progress_bar = indicatif::ProgressBar::hidden();
+    let reporter = ProgressReporter {
+        is_tty: true,
+        quiet: false,
+        total_packages: 1,
+        current_package: 0,
+        current_name: "tty-crate@1.0.0".to_string(),
+        progress_bar: Some(progress_bar),
+        start_time: Instant::now(),
+    };
+
+    reporter.retry_countdown(
+        "tty-crate",
+        "1.0.0",
+        0,
+        3,
+        Duration::from_millis(1),
+        "Retryable",
+        "server busy",
+    );
+}
+
+#[test]
 fn test_retry_countdown_max_attempts_display() {
     // Smoke check: exotic attempt/max combinations shouldn't panic.
     let reporter = ProgressReporter::silent(1);
