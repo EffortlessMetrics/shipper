@@ -26,6 +26,7 @@
 //! [`run`]. For programmatic use without a `clap` dependency, depend
 //! on [`shipper_core`](https://crates.io/crates/shipper-core) instead.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -436,6 +437,7 @@ struct CliReporter {
     /// fall through to the default `Reporter::retry_wait` behavior (warn +
     /// sleep), matching subcommands that don't own a progress bar.
     progress: Option<ProgressReporter>,
+    package_positions: BTreeMap<String, usize>,
 }
 
 impl CliReporter {
@@ -443,14 +445,21 @@ impl CliReporter {
         Self {
             quiet,
             progress: None,
+            package_positions: BTreeMap::new(),
         }
     }
 
-    fn install_progress(&mut self, progress: ProgressReporter) {
+    fn install_progress(
+        &mut self,
+        progress: ProgressReporter,
+        package_positions: BTreeMap<String, usize>,
+    ) {
         self.progress = Some(progress);
+        self.package_positions = package_positions;
     }
 
     fn take_progress(&mut self) -> Option<ProgressReporter> {
+        self.package_positions.clear();
         self.progress.take()
     }
 }
@@ -488,7 +497,13 @@ impl Reporter for CliReporter {
         // non-TTY mode gets a single line. Otherwise fall back to the
         // default trait impl so callers without a progress bar still see the
         // original warn-line behavior.
-        if let Some(progress) = &self.progress {
+        if let Some(progress) = &mut self.progress {
+            if let Some(index) = self
+                .package_positions
+                .get(&format!("{pkg_name}@{pkg_version}"))
+            {
+                progress.set_package(*index, pkg_name, pkg_version);
+            }
             progress.retry_countdown(
                 pkg_name,
                 pkg_version,
@@ -710,6 +725,13 @@ pub fn run() -> Result<()> {
 
                 let total_packages = current_planned.plan.packages.len();
                 let mut progress = ProgressReporter::new(total_packages, cli.quiet);
+                let package_positions: BTreeMap<String, usize> = current_planned
+                    .plan
+                    .packages
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, pkg)| (format!("{}@{}", pkg.name, pkg.version), idx + 1))
+                    .collect();
 
                 // Show initial progress if we have packages
                 if total_packages > 0 {
@@ -720,7 +742,7 @@ pub fn run() -> Result<()> {
                 // Install the progress handle on the reporter so the engine's
                 // retry-backoff narration (#103) can drive a live TTY
                 // countdown via ProgressReporter::retry_countdown.
-                reporter.install_progress(progress);
+                reporter.install_progress(progress, package_positions);
 
                 let receipt = engine::run_publish(&current_planned, &current_opts, &mut reporter)?;
 
@@ -761,6 +783,13 @@ pub fn run() -> Result<()> {
 
                 let total_packages = current_planned.plan.packages.len();
                 let mut progress = ProgressReporter::new(total_packages, cli.quiet);
+                let package_positions: BTreeMap<String, usize> = current_planned
+                    .plan
+                    .packages
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, pkg)| (format!("{}@{}", pkg.name, pkg.version), idx + 1))
+                    .collect();
 
                 // Show initial progress if we have packages
                 if total_packages > 0 {
@@ -771,7 +800,7 @@ pub fn run() -> Result<()> {
                 // Install the progress handle on the reporter so the engine's
                 // retry-backoff narration (#103) can drive a live TTY
                 // countdown via ProgressReporter::retry_countdown.
-                reporter.install_progress(progress);
+                reporter.install_progress(progress, package_positions);
 
                 let receipt = engine::run_resume(&current_planned, &current_opts, &mut reporter)?;
 
@@ -2332,7 +2361,10 @@ mod tests {
         // delay, with no panic from the set_status path.
         use std::time::Instant;
         let mut rep = CliReporter::new(false);
-        rep.install_progress(crate::output::progress::ProgressReporter::silent(2));
+        rep.install_progress(
+            crate::output::progress::ProgressReporter::silent(2),
+            BTreeMap::from([(String::from("pkg@1.0.0"), 2usize)]),
+        );
         let delay = Duration::from_millis(40);
         let start = Instant::now();
         rep.retry_wait(
@@ -2346,6 +2378,29 @@ mod tests {
         );
         assert!(start.elapsed() >= delay);
         assert!(rep.take_progress().is_some());
+    }
+
+    #[test]
+    fn cli_reporter_retry_wait_updates_progress_to_retrying_package() {
+        let mut rep = CliReporter::new(true);
+        rep.install_progress(
+            crate::output::progress::ProgressReporter::silent(3),
+            BTreeMap::from([(String::from("beta@0.2.0"), 2usize)]),
+        );
+
+        rep.retry_wait(
+            "beta",
+            "0.2.0",
+            1,
+            3,
+            Duration::from_millis(1),
+            shipper_core::types::ErrorClass::Retryable,
+            "server busy",
+        );
+
+        let progress = rep.take_progress().expect("progress handle");
+        assert_eq!(progress.current_package(), 2);
+        assert_eq!(progress.current_name(), "beta@0.2.0");
     }
 
     #[test]

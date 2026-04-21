@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use chrono::Utc;
@@ -27,11 +27,11 @@ use shipper_types::{
     ReconciliationOutcome, RuntimeOptions,
 };
 
-use super::Reporter;
 use super::policy::policy_effects;
 use super::readiness::is_version_visible_with_backoff;
 use super::reconcile::reconcile_ambiguous_upload;
 use super::webhook::{WebhookEvent, maybe_send_event};
+use super::{Reporter, SendReporter, drain_retry_waits};
 
 use crate::plan::chunking::chunk_by_max_concurrent;
 
@@ -49,7 +49,7 @@ pub(super) struct PackagePublishResult {
 pub(super) fn emit_retry_backoff(
     event_log: &Arc<Mutex<events::EventLog>>,
     events_path: &Path,
-    reporter: &Arc<Mutex<dyn Reporter + Send>>,
+    reporter: &Arc<SendReporter>,
     pkg_label: &str,
     pkg_name: &str,
     pkg_version: &str,
@@ -81,24 +81,15 @@ pub(super) fn emit_retry_backoff(
         log.clear();
     }
 
-    // Emit the warn line while holding the reporter mutex, then release the
-    // lock before sleeping so other worker threads are not blocked from
-    // logging during the backoff window.
-    {
-        let mut rep = reporter.lock().unwrap();
-        rep.warn(&format!(
-            "{}@{}: {} ({:?}); next attempt in {} (attempt {}/{})",
-            pkg_name,
-            pkg_version,
-            message,
-            reason,
-            humantime::format_duration(delay),
-            attempt.saturating_add(1),
-            max_attempts,
-        ));
-    }
-
-    thread::sleep(delay);
+    reporter.retry_wait(
+        pkg_name,
+        pkg_version,
+        attempt,
+        max_attempts,
+        delay,
+        reason,
+        message,
+    );
 }
 
 /// Publish a single package with retries (parallel-safe version)
@@ -112,7 +103,7 @@ pub(super) fn publish_package(
     state_dir: &Path,
     event_log: &Arc<Mutex<events::EventLog>>,
     events_path: &Path,
-    reporter: &Arc<Mutex<dyn Reporter + Send>>,
+    reporter: &Arc<SendReporter>,
 ) -> PackagePublishResult {
     let key = pkg_key(&p.name, &p.version);
     let pkg_label = format!("{}@{}", p.name, p.version);
@@ -136,13 +127,10 @@ pub(super) fn publish_package(
 
     // Check if already published
     if let Ok(true) = reg.version_exists(&p.name, &p.version) {
-        {
-            let mut rep = reporter.lock().unwrap();
-            rep.info(&format!(
-                "{}@{}: already published (skipping)",
-                p.name, p.version
-            ));
-        }
+        reporter.info(&format!(
+            "{}@{}: already published (skipping)",
+            p.name, p.version
+        ));
 
         let skipped = PackageState::Skipped {
             reason: "already published".to_string(),
@@ -187,10 +175,7 @@ pub(super) fn publish_package(
         };
     }
 
-    {
-        let mut rep = reporter.lock().unwrap();
-        rep.info(&format!("{}@{}: publishing...", p.name, p.version));
-    }
+    reporter.info(&format!("{}@{}: publishing...", p.name, p.version));
 
     let mut attempt = 0u32;
     let mut last_err: Option<(ErrorClass, String)> = None;
@@ -231,13 +216,10 @@ pub(super) fn publish_package(
     };
 
     if let Some(prior_reason) = ambiguous_prior {
-        {
-            let mut rep = reporter.lock().unwrap();
-            rep.warn(&format!(
-                "{}@{}: resume found ambiguous state ({}); reconciling against registry",
-                p.name, p.version, prior_reason
-            ));
-        }
+        reporter.warn(&format!(
+            "{}@{}: resume found ambiguous state ({}); reconciling against registry",
+            p.name, p.version, prior_reason
+        ));
         {
             let mut log = event_log.lock().unwrap();
             log.record(PublishEvent {
@@ -272,13 +254,10 @@ pub(super) fn publish_package(
                     update_state_locked(&mut state, &key, PackageState::Published);
                     let _ = state::save_state(state_dir, &state);
                 }
-                {
-                    let mut rep = reporter.lock().unwrap();
-                    rep.info(&format!(
-                        "{}@{}: reconciled as published on resume (no republish)",
-                        p.name, p.version
-                    ));
-                }
+                reporter.info(&format!(
+                    "{}@{}: reconciled as published on resume (no republish)",
+                    p.name, p.version
+                ));
                 return PackagePublishResult {
                     result: Ok(PackageReceipt {
                         name: p.name.clone(),
@@ -304,23 +283,17 @@ pub(super) fn publish_package(
                     update_state_locked(&mut state, &key, PackageState::Pending);
                     let _ = state::save_state(state_dir, &state);
                 }
-                {
-                    let mut rep = reporter.lock().unwrap();
-                    rep.info(&format!(
-                        "{}@{}: reconciled as not published; proceeding with publish",
-                        p.name, p.version
-                    ));
-                }
+                reporter.info(&format!(
+                    "{}@{}: reconciled as not published; proceeding with publish",
+                    p.name, p.version
+                ));
                 // Fall through to the normal retry loop below.
             }
             ReconciliationOutcome::StillUnknown { reason, .. } => {
-                {
-                    let mut rep = reporter.lock().unwrap();
-                    rep.error(&format!(
-                        "{}@{}: resume reconciliation still inconclusive: {}",
-                        p.name, p.version, reason
-                    ));
-                }
+                reporter.error(&format!(
+                    "{}@{}: resume reconciliation still inconclusive: {}",
+                    p.name, p.version, reason
+                ));
                 maybe_send_event(
                     &opts.webhook,
                     WebhookEvent::PublishFailed {
@@ -365,13 +338,10 @@ pub(super) fn publish_package(
             p.name, ws.plan.registry.name
         );
 
-        {
-            let mut rep = reporter.lock().unwrap();
-            rep.info(&format!(
-                "{}@{}: attempt {}/{}",
-                p.name, p.version, attempt, opts.max_attempts
-            ));
-        }
+        reporter.info(&format!(
+            "{}@{}: attempt {}/{}",
+            p.name, p.version, attempt, opts.max_attempts
+        ));
 
         if !cargo_succeeded {
             // Event: PackageAttempted
@@ -398,13 +368,10 @@ pub(super) fn publish_package(
             ) {
                 Ok(o) => o,
                 Err(e) => {
-                    {
-                        let mut rep = reporter.lock().unwrap();
-                        rep.error(&format!(
-                            "{}@{}: cargo publish failed to execute: {}",
-                            p.name, p.version, e
-                        ));
-                    }
+                    reporter.error(&format!(
+                        "{}@{}: cargo publish failed to execute: {}",
+                        p.name, p.version, e
+                    ));
                     return PackagePublishResult { result: Err(e) };
                 }
             };
@@ -443,22 +410,16 @@ pub(super) fn publish_package(
                 }
             } else {
                 // Cargo failed, check registry
-                {
-                    let mut rep = reporter.lock().unwrap();
-                    rep.warn(&format!(
-                        "{}@{}: cargo publish failed (exit={}); checking registry...",
-                        p.name, p.version, out.exit_code
-                    ));
-                }
+                reporter.warn(&format!(
+                    "{}@{}: cargo publish failed (exit={}); checking registry...",
+                    p.name, p.version, out.exit_code
+                ));
 
                 if reg.version_exists(&p.name, &p.version).unwrap_or(false) {
-                    {
-                        let mut rep = reporter.lock().unwrap();
-                        rep.info(&format!(
-                            "{}@{}: version is present on registry; treating as published",
-                            p.name, p.version
-                        ));
-                    }
+                    reporter.info(&format!(
+                        "{}@{}: version is present on registry; treating as published",
+                        p.name, p.version
+                    ));
 
                     {
                         let mut state = st.lock().unwrap();
@@ -498,13 +459,10 @@ pub(super) fn publish_package(
                             package: pkg_label.clone(),
                         });
                     }
-                    {
-                        let mut rep = reporter.lock().unwrap();
-                        rep.warn(&format!(
-                            "{}@{}: cargo exit ambiguous; reconciling against registry",
-                            p.name, p.version
-                        ));
-                    }
+                    reporter.warn(&format!(
+                        "{}@{}: cargo exit ambiguous; reconciling against registry",
+                        p.name, p.version
+                    ));
 
                     let (outcome, reconcile_evidence) =
                         reconcile_ambiguous_upload(reg, &p.name, &p.version, &readiness_config);
@@ -522,13 +480,10 @@ pub(super) fn publish_package(
 
                     match outcome {
                         ReconciliationOutcome::Published { .. } => {
-                            {
-                                let mut rep = reporter.lock().unwrap();
-                                rep.info(&format!(
-                                    "{}@{}: reconciled as published; no retry",
-                                    p.name, p.version
-                                ));
-                            }
+                            reporter.info(&format!(
+                                "{}@{}: reconciled as published; no retry",
+                                p.name, p.version
+                            ));
                             {
                                 let mut state = st.lock().unwrap();
                                 update_state_locked(&mut state, &key, PackageState::Published);
@@ -681,13 +636,10 @@ pub(super) fn publish_package(
         }
 
         // Readiness verification (runs after first cargo success + all retries)
-        {
-            let mut rep = reporter.lock().unwrap();
-            rep.info(&format!(
-                "{}@{}: cargo publish exited successfully; verifying...",
-                p.name, p.version
-            ));
-        }
+        reporter.info(&format!(
+            "{}@{}: cargo publish exited successfully; verifying...",
+            p.name, p.version
+        ));
 
         let verify_result =
             is_version_visible_with_backoff(reg, &p.name, &p.version, &readiness_config);
@@ -955,12 +907,13 @@ pub(super) fn run_publish_level(
     state_dir: &Path,
     event_log: &Arc<Mutex<events::EventLog>>,
     events_path: &Path,
-    reporter: &Arc<Mutex<dyn Reporter + Send>>,
+    reporter: &mut dyn Reporter,
+    send_reporter: &Arc<SendReporter>,
 ) -> Result<Vec<PackageReceipt>> {
     let num_packages = level.packages.len();
     let max_concurrent = opts.parallel.max_concurrent.min(num_packages);
 
-    reporter.lock().unwrap().info(&format!(
+    reporter.info(&format!(
         "Level {}: publishing {} packages (max concurrent: {})",
         level.level, num_packages, max_concurrent
     ));
@@ -982,7 +935,7 @@ pub(super) fn run_publish_level(
             let state_dir = state_dir.to_path_buf();
             let event_log_clone = Arc::clone(event_log);
             let events_path = events_path.to_path_buf();
-            let reporter_clone = Arc::clone(reporter);
+            let reporter_clone = Arc::clone(send_reporter);
 
             let handle = thread::spawn(move || {
                 publish_package(
@@ -1000,6 +953,12 @@ pub(super) fn run_publish_level(
 
             handles.push(handle);
         }
+
+        while handles.iter().any(|handle| !handle.is_finished()) {
+            drain_retry_waits(reporter, send_reporter.as_ref());
+            thread::sleep(Duration::from_millis(25));
+        }
+        drain_retry_waits(reporter, send_reporter.as_ref());
 
         // Wait for all packages in this chunk to complete, collecting all results
         for handle in handles {

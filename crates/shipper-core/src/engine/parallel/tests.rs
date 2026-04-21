@@ -23,6 +23,10 @@ use shipper_types::{
     RuntimeOptions,
 };
 
+fn make_send_reporter() -> Arc<SendReporter> {
+    Arc::new(SendReporter::default())
+}
+
 #[derive(Default)]
 struct CollectingReporter {
     infos: Vec<String>,
@@ -45,33 +49,14 @@ impl Reporter for CollectingReporter {
 }
 
 #[test]
-fn emit_retry_backoff_releases_reporter_lock_before_sleep() {
-    struct SignalingReporter {
-        warned: Option<mpsc::Sender<()>>,
-    }
-
-    impl Reporter for SignalingReporter {
-        fn info(&mut self, _msg: &str) {}
-
-        fn warn(&mut self, _msg: &str) {
-            if let Some(tx) = self.warned.take() {
-                tx.send(()).expect("send warn signal");
-            }
-        }
-
-        fn error(&mut self, _msg: &str) {}
-    }
-
+fn emit_retry_backoff_does_not_block_other_reporter_calls_during_sleep() {
     let td = tempdir().expect("tempdir");
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir state dir");
 
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let (warn_tx, warn_rx) = mpsc::channel();
-    let reporter: Arc<Mutex<dyn Reporter + Send>> = Arc::new(Mutex::new(SignalingReporter {
-        warned: Some(warn_tx),
-    }));
+    let reporter = make_send_reporter();
 
     let event_log_for_retry = Arc::clone(&event_log);
     let reporter_for_retry = Arc::clone(&reporter);
@@ -94,20 +79,86 @@ fn emit_retry_backoff_releases_reporter_lock_before_sleep() {
         );
     });
 
-    warn_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("retry warn should fire");
+    std::thread::sleep(Duration::from_millis(25));
 
     let lock_started = Instant::now();
-    {
-        let mut rep = reporter.lock().unwrap();
-        rep.info("other worker thread");
-    }
+    reporter.info("other worker thread");
 
     assert!(
         lock_started.elapsed() < Duration::from_millis(100),
-        "reporter mutex stayed locked during retry sleep: {:?}",
+        "retry backoff blocked other reporter calls for {:?}",
         lock_started.elapsed()
+    );
+
+    retry_thread.join().expect("join retry thread");
+
+    let infos = reporter.drain_infos();
+    assert!(
+        infos.iter().any(|msg| msg == "other worker thread"),
+        "concurrent info should still be recorded"
+    );
+}
+
+#[test]
+fn drain_retry_waits_forwards_live_notice_before_worker_sleep_elapses() {
+    struct SignalingReporter {
+        tx: Option<mpsc::Sender<Duration>>,
+    }
+
+    impl Reporter for SignalingReporter {
+        fn info(&mut self, _msg: &str) {}
+
+        fn warn(&mut self, _msg: &str) {}
+
+        fn error(&mut self, _msg: &str) {}
+
+        fn retry_wait(
+            &mut self,
+            _pkg_name: &str,
+            _pkg_version: &str,
+            _attempt: u32,
+            _max_attempts: u32,
+            delay: Duration,
+            _reason: ErrorClass,
+            _message: &str,
+        ) {
+            if let Some(tx) = self.tx.take() {
+                tx.send(delay).expect("send forwarded delay");
+            }
+        }
+    }
+
+    let send_reporter = make_send_reporter();
+    let delay = Duration::from_millis(250);
+    let reporter_for_retry = Arc::clone(&send_reporter);
+    let retry_thread = std::thread::spawn(move || {
+        reporter_for_retry.retry_wait(
+            "demo",
+            "0.1.0",
+            1,
+            3,
+            delay,
+            ErrorClass::Retryable,
+            "rate limited",
+        );
+    });
+
+    std::thread::sleep(Duration::from_millis(25));
+
+    let (tx, rx) = mpsc::channel();
+    let mut host_reporter = SignalingReporter { tx: Some(tx) };
+    drain_retry_waits(&mut host_reporter, send_reporter.as_ref());
+
+    let forwarded_delay = rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("host reporter should observe retry wait promptly");
+    assert!(
+        forwarded_delay <= delay && forwarded_delay > Duration::ZERO,
+        "forwarded delay should be the remaining live backoff, got {forwarded_delay:?}"
+    );
+    assert!(
+        !retry_thread.is_finished(),
+        "worker retry sleep should still be in progress when the host observes it"
     );
 
     retry_thread.join().expect("join retry thread");
@@ -327,8 +378,7 @@ fn test_publish_package_skips_already_published() {
     )));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let reporter = make_send_reporter();
 
     temp_env::with_var(
         "SHIPPER_CARGO_BIN",
@@ -387,8 +437,7 @@ fn test_publish_package_publishes_successfully() {
     )));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let reporter = make_send_reporter();
 
     temp_env::with_vars(
         [
@@ -447,8 +496,7 @@ fn test_publish_package_handles_permanent_failure() {
     )));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let reporter = make_send_reporter();
 
     temp_env::with_vars(
         [
@@ -524,8 +572,7 @@ fn test_publish_package_retries_on_transient() {
     )));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let reporter = make_send_reporter();
 
     temp_env::with_vars(
         [
@@ -634,8 +681,8 @@ fn test_run_publish_level_processes_packages() {
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let mut reporter = CollectingReporter::default();
+    let send_reporter = make_send_reporter();
 
     let level = PublishLevel {
         level: 0,
@@ -655,7 +702,8 @@ fn test_run_publish_level_processes_packages() {
                 &state_dir,
                 &event_log,
                 &events_path,
-                &reporter,
+                &mut reporter,
+                &send_reporter,
             )
             .expect("level publish");
 
@@ -900,8 +948,7 @@ fn test_publish_package_handles_uploaded_resume() {
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let reporter = make_send_reporter();
 
     temp_env::with_var(
         "SHIPPER_CARGO_BIN",
@@ -969,8 +1016,7 @@ fn test_publish_package_records_attempt_evidence() {
     )));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let reporter = make_send_reporter();
 
     temp_env::with_vars(
         [
@@ -1103,8 +1149,8 @@ fn test_run_publish_level_respects_max_concurrent() {
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let mut reporter = CollectingReporter::default();
+    let send_reporter = make_send_reporter();
 
     let level = PublishLevel { level: 0, packages };
 
@@ -1121,7 +1167,8 @@ fn test_run_publish_level_respects_max_concurrent() {
                 &state_dir,
                 &event_log,
                 &events_path,
-                &reporter,
+                &mut reporter,
+                &send_reporter,
             )
             .expect("level publish");
 
@@ -1472,8 +1519,8 @@ fn test_partial_success_within_level() {
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let mut reporter = CollectingReporter::default();
+    let send_reporter = make_send_reporter();
 
     let level = PublishLevel { level: 0, packages };
 
@@ -1496,7 +1543,8 @@ fn test_partial_success_within_level() {
                 &state_dir,
                 &event_log,
                 &events_path,
-                &reporter,
+                &mut reporter,
+                &send_reporter,
             );
 
             // Level should report error because beta failed
@@ -1945,8 +1993,8 @@ fn test_max_concurrency_one_serializes_execution() {
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let mut reporter = CollectingReporter::default();
+    let send_reporter = make_send_reporter();
 
     let level = PublishLevel { level: 0, packages };
 
@@ -1963,7 +2011,8 @@ fn test_max_concurrency_one_serializes_execution() {
                 &state_dir,
                 &event_log,
                 &events_path,
-                &reporter,
+                &mut reporter,
+                &send_reporter,
             )
             .expect("level publish");
 
@@ -3073,8 +3122,8 @@ fn test_max_concurrent_exceeds_package_count() {
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let mut reporter = CollectingReporter::default();
+    let send_reporter = make_send_reporter();
 
     let level = PublishLevel { level: 0, packages };
 
@@ -3091,7 +3140,8 @@ fn test_max_concurrent_exceeds_package_count() {
                 &state_dir,
                 &event_log,
                 &events_path,
-                &reporter,
+                &mut reporter,
+                &send_reporter,
             )
             .expect("level publish");
 
@@ -3184,8 +3234,8 @@ fn test_independent_failures_both_reported() {
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let mut reporter = CollectingReporter::default();
+    let send_reporter = make_send_reporter();
 
     let level = PublishLevel { level: 0, packages };
 
@@ -3208,7 +3258,8 @@ fn test_independent_failures_both_reported() {
                 &state_dir,
                 &event_log,
                 &events_path,
-                &reporter,
+                &mut reporter,
+                &send_reporter,
             );
 
             assert!(result.is_err());
@@ -3297,8 +3348,8 @@ fn test_concurrent_state_updates_consistent() {
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let mut reporter = CollectingReporter::default();
+    let send_reporter = make_send_reporter();
 
     let level = PublishLevel { level: 0, packages };
 
@@ -3315,7 +3366,8 @@ fn test_concurrent_state_updates_consistent() {
                 &state_dir,
                 &event_log,
                 &events_path,
-                &reporter,
+                &mut reporter,
+                &send_reporter,
             )
             .expect("level publish");
 
@@ -3951,8 +4003,7 @@ fn reconcile_bdd_ambiguous_resolves_to_published() {
     )));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let reporter = make_send_reporter();
 
     temp_env::with_vars(
         [
@@ -4063,8 +4114,7 @@ fn reconcile_bdd_ambiguous_resolves_to_not_published_then_retries() {
     )));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let reporter = make_send_reporter();
 
     temp_env::with_vars(
         [
@@ -4166,8 +4216,7 @@ fn reconcile_bdd_resume_from_ambiguous_state_skips_republish() {
     let st = Arc::new(Mutex::new(initial_state));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let reporter = make_send_reporter();
 
     // Track whether cargo was invoked via a log file.
     let cargo_log = td.path().join("cargo-calls.log");
@@ -4289,8 +4338,7 @@ fn reconcile_bdd_ambiguous_resolves_to_still_unknown() {
     )));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
     let events_path = events::events_path(&state_dir);
-    let reporter: Arc<Mutex<dyn Reporter + Send>> =
-        Arc::new(Mutex::new(CollectingReporter::default()));
+    let reporter = make_send_reporter();
 
     // Track cargo invocations to assert we did NOT blind-retry after
     // StillUnknown — exactly one attempt should hit cargo.
