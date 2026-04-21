@@ -668,6 +668,53 @@ fn events_file_constant_is_events_jsonl() {
     assert_eq!(EVENTS_FILE, "events.jsonl");
 }
 
+#[test]
+fn preflight_only_events_path_includes_session_id() {
+    let base = PathBuf::from("x");
+    assert_eq!(
+        preflight_only_events_path(&base, "session-123"),
+        PathBuf::from("x").join("preflight-only-session-123.events.jsonl")
+    );
+}
+
+#[test]
+fn preflight_only_events_paths_returns_sorted_sidecars_only() {
+    let td = tempdir().expect("tempdir");
+    fs::write(
+        td.path()
+            .join("preflight-only-20260421T010101000000000Z-pid1.events.jsonl"),
+        "",
+    )
+    .expect("write first sidecar");
+    fs::write(td.path().join("events.jsonl"), "").expect("write canonical events");
+    fs::write(
+        td.path()
+            .join("preflight-only-20260421T020202000000000Z-pid2.events.jsonl"),
+        "",
+    )
+    .expect("write second sidecar");
+    fs::create_dir_all(td.path().join("nested")).expect("mkdir nested");
+
+    let paths = preflight_only_events_paths(td.path()).expect("discover sidecars");
+    let names: Vec<String> = paths
+        .iter()
+        .map(|path| {
+            path.file_name()
+                .expect("filename")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+
+    assert_eq!(
+        names,
+        vec![
+            "preflight-only-20260421T010101000000000Z-pid1.events.jsonl".to_string(),
+            "preflight-only-20260421T020202000000000Z-pid2.events.jsonl".to_string(),
+        ]
+    );
+}
+
 // -- Edge cases --
 
 #[test]
@@ -1957,6 +2004,10 @@ fn events_path_with_various_inputs() {
         PathBuf::from("a/b/c").join("events.jsonl")
     );
     assert_eq!(events_path(Path::new("")), PathBuf::from("events.jsonl"));
+    assert_eq!(
+        preflight_only_events_path(Path::new("."), "session-123"),
+        PathBuf::from(".").join("preflight-only-session-123.events.jsonl")
+    );
 }
 
 #[test]

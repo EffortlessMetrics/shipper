@@ -61,7 +61,8 @@ pub const EVENTS_FILE: &str = "events.jsonl";
 /// `events.jsonl` log, preserving events-as-truth for the publish
 /// flow while still producing an auditable JSONL trace for the
 /// standalone preflight run.
-pub const PREFLIGHT_ONLY_EVENTS_FILE: &str = "preflight-only.events.jsonl";
+pub const PREFLIGHT_ONLY_EVENTS_FILE_PREFIX: &str = "preflight-only-";
+pub const PREFLIGHT_ONLY_EVENTS_FILE_SUFFIX: &str = ".events.jsonl";
 
 /// Get the events file path for a state directory.
 ///
@@ -74,11 +75,48 @@ pub fn events_path(state_dir: &Path) -> PathBuf {
 ///
 /// Used by `shipper preflight --preflight-only` so that a fresh audit
 /// never appends to the authoritative `events.jsonl` log. Each
-/// `--preflight-only` invocation **truncates** this sidecar before
-/// writing, reflecting the "fresh" semantics: the sidecar mirrors the
-/// last standalone audit, not an accumulation.
-pub fn preflight_only_events_path(state_dir: &Path) -> PathBuf {
-    state_dir.join(PREFLIGHT_ONLY_EVENTS_FILE)
+/// invocation writes to its own session-scoped JSONL file, keeping
+/// standalone audits isolated from both publish history and one another.
+pub fn preflight_only_events_path(state_dir: &Path, session_id: &str) -> PathBuf {
+    state_dir.join(format!(
+        "{PREFLIGHT_ONLY_EVENTS_FILE_PREFIX}{session_id}{PREFLIGHT_ONLY_EVENTS_FILE_SUFFIX}"
+    ))
+}
+
+/// Return all preflight-only event sidecars in lexical order.
+pub fn preflight_only_events_paths(state_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+
+    if !state_dir.exists() {
+        return Ok(paths);
+    }
+
+    for entry in fs::read_dir(state_dir)
+        .with_context(|| format!("failed to read state dir {}", state_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", state_dir.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", entry.path().display()))?;
+
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let Some(file_name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+
+        if file_name.starts_with(PREFLIGHT_ONLY_EVENTS_FILE_PREFIX)
+            && file_name.ends_with(PREFLIGHT_ONLY_EVENTS_FILE_SUFFIX)
+        {
+            paths.push(entry.path());
+        }
+    }
+
+    paths.sort();
+    Ok(paths)
 }
 
 /// Append-only event log for publish operations.
@@ -115,39 +153,6 @@ impl EventLog {
         let file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)
-            .with_context(|| format!("failed to open events file {}", path.display()))?;
-
-        let mut writer = std::io::BufWriter::new(file);
-
-        self.write_events_to(&mut writer)?;
-
-        writer.flush().context("failed to flush events file")?;
-
-        Ok(())
-    }
-
-    /// Write all recorded events to a file in JSONL format, replacing any
-    /// existing contents (#100).
-    ///
-    /// Unlike [`write_to_file`], which is append-only, this truncates the
-    /// file first. Intended for session-isolated sidecars such as the
-    /// `--preflight-only` audit log, where each invocation should stand on
-    /// its own rather than accumulate onto prior runs. Never call this on
-    /// the authoritative `events.jsonl` — events-as-truth depends on that
-    /// log being append-only.
-    ///
-    /// [`write_to_file`]: Self::write_to_file
-    pub fn write_to_file_truncating(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create events dir {}", parent.display()))?;
-        }
-
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
             .open(path)
             .with_context(|| format!("failed to open events file {}", path.display()))?;
 

@@ -123,8 +123,7 @@ pub struct PreflightRunOptions {
     ///
     /// - Does not touch the authoritative `events.jsonl` log; writes
     ///   its events to a sidecar at
-    ///   `<state_dir>/preflight-only.events.jsonl` that is truncated
-    ///   on first write and appended to for the remainder of the run.
+    ///   `<state_dir>/preflight-only-<session>.events.jsonl`.
     /// - Does not load or inspect any prior `events.jsonl`; the
     ///   resulting `Finishability` is a fresh read of the current
     ///   workspace + registry, independent of any accumulated publish
@@ -192,26 +191,21 @@ pub fn run_preflight_in_place_with_options(
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
 
     // Resolve the event sink. In `fresh_audit` mode we never touch the
-    // authoritative `events.jsonl`; events land in a session-isolated
+    // authoritative `events.jsonl`; events land in a session-scoped
     // sidecar instead. See `PreflightRunOptions::fresh_audit`.
     let events_path = if run_opts.fresh_audit {
-        events::preflight_only_events_path(&state_dir)
+        let session_id = format!(
+            "{}-pid{}",
+            Utc::now().format("%Y%m%dT%H%M%S%fZ"),
+            std::process::id()
+        );
+        events::preflight_only_events_path(&state_dir, &session_id)
     } else {
         events::events_path(&state_dir)
     };
 
-    // Track whether this run has performed its first flush to the sidecar
-    // so `fresh_audit` truncates exactly once (initial write) and appends
-    // afterward, producing a single session's JSONL trace.
-    let mut fresh_audit_first_flush = run_opts.fresh_audit;
-    let mut flush_events = |log: &events::EventLog, path: &Path| -> Result<()> {
-        if fresh_audit_first_flush {
-            fresh_audit_first_flush = false;
-            log.write_to_file_truncating(path)
-        } else {
-            log.write_to_file(path)
-        }
-    };
+    let flush_events =
+        |log: &events::EventLog, path: &Path| -> Result<()> { log.write_to_file(path) };
 
     let mut event_log = events::EventLog::new();
 
@@ -2942,10 +2936,12 @@ mod tests {
             );
 
             // Sidecar carries the full preflight trace.
-            let sidecar = td
-                .path()
-                .join(".shipper")
-                .join("preflight-only.events.jsonl");
+            let sidecar =
+                crate::state::events::preflight_only_events_paths(&td.path().join(".shipper"))
+                    .expect("discover sidecars")
+                    .into_iter()
+                    .next()
+                    .expect("fresh audit sidecar");
             assert!(sidecar.exists(), "sidecar must be written");
             let side_log =
                 crate::state::events::EventLog::read_from_file(&sidecar).expect("read sidecar");
@@ -3084,23 +3080,30 @@ mod tests {
                 "authoritative events.jsonl must remain absent across fresh audits"
             );
 
-            // Sidecar reflects the *latest* run (truncate-on-first-write
-            // semantics). Count PreflightStarted events: must be exactly 1.
-            let sidecar = td
-                .path()
-                .join(".shipper")
-                .join("preflight-only.events.jsonl");
-            let side_log =
-                crate::state::events::EventLog::read_from_file(&sidecar).expect("read sidecar");
-            let started_count = side_log
-                .all_events()
-                .iter()
-                .filter(|e| matches!(e.event_type, EventType::PreflightStarted))
-                .count();
+            // Each fresh audit gets its own sidecar so repeated or concurrent
+            // runs do not overwrite one another.
+            let sidecars =
+                crate::state::events::preflight_only_events_paths(&td.path().join(".shipper"))
+                    .expect("discover sidecars");
             assert_eq!(
-                started_count, 1,
-                "sidecar must be truncated between fresh audits, not accumulated"
+                sidecars.len(),
+                2,
+                "each fresh audit should create a new sidecar"
             );
+
+            for sidecar in sidecars {
+                let side_log =
+                    crate::state::events::EventLog::read_from_file(&sidecar).expect("read sidecar");
+                let started_count = side_log
+                    .all_events()
+                    .iter()
+                    .filter(|e| matches!(e.event_type, EventType::PreflightStarted))
+                    .count();
+                assert_eq!(
+                    started_count, 1,
+                    "each sidecar should contain exactly one fresh-audit session"
+                );
+            }
         });
     }
 
