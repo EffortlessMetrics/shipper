@@ -1,3 +1,7 @@
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
+
 # Layer: `runtime` (runtime context — pure data)
 
 **Position in the architecture:** Layer 2. Above `ops/`, below `state/`, `plan/`, `engine/`.
@@ -31,3 +35,4 @@ These are enforced by `.github/workflows/architecture-guard.yml`.
 - Default visibility: `pub(crate)`.
 - Each subfolder owns its own `mod.rs` and local guidance files (`CLAUDE.md` and matching `agents.md`).
 - Items here are mostly types and pure functions. If you find yourself doing I/O here, the code belongs in `ops/` instead.
+

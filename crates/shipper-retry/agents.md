@@ -1,4 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
 
 This file provides agent-specific guidance for working in crate shipper-retry.
 

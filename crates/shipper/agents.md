@@ -1,4 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
 
 This file provides agent-specific guidance for working in crate `shipper`.
 
@@ -60,3 +62,4 @@ cargo build -p shipper --release
   to import from `shipper_core::X` instead (and note it in the PR).
 
 For full workspace guidance, see [../../CLAUDE.md](../../CLAUDE.md).
+

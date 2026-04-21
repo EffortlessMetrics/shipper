@@ -1,3 +1,7 @@
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
+
 # Module: `crate::plan::chunking`
 
 **Layer:** plan (layer 4)
@@ -7,3 +11,4 @@
 ## Public-to-crate API
 
 - `pub(crate) fn chunk_by_max_concurrent<T: Clone>(items: &[T], max_concurrent: usize) -> Vec<Vec<T>>`
+
