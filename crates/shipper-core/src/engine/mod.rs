@@ -36,7 +36,17 @@ pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::runtime::policy::P
     crate::runtime::policy::policy_effects(opts)
 }
 
+fn init_registry_client(registry: Registry, state_dir: &Path) -> Result<RegistryClient> {
+    let cache_dir = state_dir.join("cache");
+    RegistryClient::new(registry).map(|c| c.with_cache_dir(cache_dir))
+}
+
 /// Run preflight verification checks before publishing.
+///
+/// This is the backward-compatible read-only entry point for embedders.
+/// Call [`run_preflight_in_place`] if you want preflight to stamp the detected
+/// [`PublishRegime`] onto each `PlannedPackage` for a subsequent publish in
+/// the same process.
 ///
 /// This function performs various pre-publish checks to catch issues early:
 /// - Git cleanliness (if `allow_dirty` is false)
@@ -61,25 +71,29 @@ pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::runtime::policy::P
 /// # Example
 ///
 /// ```ignore
-/// let mut ws = plan::build_plan(&spec)?;
+/// let ws = plan::build_plan(&spec)?;
 /// let opts = types::RuntimeOptions { /* ... */ };
 /// let mut reporter = MyReporter::default();
-/// let report = engine::run_preflight(&mut ws, &opts, &mut reporter)?;
+/// let report = engine::run_preflight(&ws, &opts, &mut reporter)?;
 /// println!("Finishability: {:?}", report.finishability);
 /// ```
-fn init_registry_client(registry: Registry, state_dir: &Path) -> Result<RegistryClient> {
-    let cache_dir = state_dir.join("cache");
-    RegistryClient::new(registry).map(|c| c.with_cache_dir(cache_dir))
+pub fn run_preflight(
+    ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
+    reporter: &mut dyn Reporter,
+) -> Result<PreflightReport> {
+    let mut ws = ws.clone();
+    run_preflight_in_place(&mut ws, opts, reporter)
 }
 
-/// Run preflight checks for a planned workspace.
+/// Run preflight checks for a planned workspace and stamp regime metadata.
 ///
 /// Takes `&mut PlannedWorkspace` so preflight can stamp the detected
 /// [`PublishRegime`] onto each `PlannedPackage` once it has queried the
 /// registry (#106 PR 1). The mutation is additive: the new `regime`
 /// field defaults to `None` and is skipped in serialization when unset,
 /// so older readers of `state.json` / plan files stay compatible.
-pub fn run_preflight(
+pub fn run_preflight_in_place(
     ws: &mut PlannedWorkspace,
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
@@ -2564,7 +2578,7 @@ mod tests {
             opts.strict_ownership = true;
 
             let mut reporter = CollectingReporter::default();
-            let rep = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+            let rep = run_preflight_in_place(&mut ws, &opts, &mut reporter).expect("preflight");
             assert_eq!(rep.packages.len(), 1);
             assert!(!rep.packages[0].ownership_verified);
             assert!(rep.packages[0].is_new_crate);
@@ -2581,6 +2595,45 @@ mod tests {
                 ws.plan.packages[0].regime,
                 Some(PublishRegime::FirstPublish),
                 "preflight should stamp FirstPublish regime on new crates"
+            );
+            server.join();
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_preflight_legacy_entry_point_preserves_immutable_api() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([("SHIPPER_CARGO_EXIT", Some("0".to_string()))]);
+        temp_env::with_vars(env_vars, || {
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let opts = default_opts(PathBuf::from(".shipper"));
+            let mut reporter = CollectingReporter::default();
+
+            let rep = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+            assert_eq!(rep.packages.len(), 1);
+            assert!(rep.packages[0].is_new_crate);
+            assert_eq!(
+                ws.plan.packages[0].regime, None,
+                "legacy immutable API should not mutate the caller's plan"
             );
             server.join();
         });
@@ -2628,7 +2681,7 @@ mod tests {
             opts.strict_ownership = false;
 
             let mut reporter = CollectingReporter::default();
-            let rep = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+            let rep = run_preflight_in_place(&mut ws, &opts, &mut reporter).expect("preflight");
             assert_eq!(rep.packages.len(), 1);
             assert!(!rep.packages[0].is_new_crate);
             assert_eq!(

@@ -619,7 +619,7 @@ pub fn run() -> Result<()> {
             print_plan(&planned, cli.verbose);
         }
         Commands::Preflight => {
-            let rep = engine::run_preflight(&mut planned, &opts, &mut reporter)?;
+            let rep = engine::run_preflight_in_place(&mut planned, &opts, &mut reporter)?;
             print_preflight(&rep, &cli.format);
         }
         Commands::Publish => {
