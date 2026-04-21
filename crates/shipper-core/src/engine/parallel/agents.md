@@ -8,7 +8,7 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 **Single responsibility:** Wave-based parallel publish engine. Schedules
 independent crates into concurrent publish waves based on the dependency
-graph produced by `shipper_plan::ReleasePlan::group_by_levels`.
+graph produced by `ws.plan.group_by_levels()` on the current release plan.
 
 **Was:** standalone crate `shipper-engine-parallel` (absorbed — chosen as
 canonical because it had +1589 LOC of additional functionality vs the

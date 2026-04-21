@@ -8,7 +8,7 @@ This file provides agent-specific guidance for working in crate shipper-registry
 
 - Crate: shipper-registry
 - Path: crates/shipper-registry
-- Workspace root: h:\Code\Rust\shipper
+- Workspace root: repository root for the current checkout; use repo-relative paths from this file
 - Primary entry: src/lib.rs
 
 ## Useful commands

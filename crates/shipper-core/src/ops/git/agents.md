@@ -10,7 +10,9 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 ## Public-to-crate API
 
-Re-exported at `shipper::git` (preserved backward compatibility with the old shim):
+Public module path: `shipper_core::git`. Inside `shipper-core` itself, use
+`crate::git`. The install-facing `shipper` facade does not re-export this
+module.
 
 - `collect_git_context() -> Option<crate::types::GitContext>` — populate a
   `GitContext` for the current working directory. Returns `None` when the CWD
