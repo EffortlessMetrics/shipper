@@ -44,8 +44,29 @@ mod output;
 
 use crate::output::progress::ProgressReporter;
 
+/// Long-form version string shown by `shipper --version --verbose` (or
+/// `-V --verbose`). The plain `--version` stays terse ("shipper X.Y.Z")
+/// so scripts parsing it don't need to adapt.
+///
+/// Format:
+/// ```text
+/// shipper 0.3.0
+/// commit: abc1234
+/// build:  release
+/// rustc:  rustc 1.92.0 (... )
+/// ```
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "\ncommit: ",
+    env!("SHIPPER_GIT_SHA"),
+    "\nbuild:  ",
+    env!("SHIPPER_BUILD_PROFILE"),
+    "\nrustc:  ",
+    env!("SHIPPER_RUSTC_VERSION"),
+);
+
 #[derive(Parser, Debug)]
-#[command(name = "shipper", version)]
+#[command(name = "shipper", version, long_version = LONG_VERSION)]
 #[command(about = "Resumable, backoff-aware crates.io publishing for workspaces")]
 struct Cli {
     /// Path to a custom configuration file (.shipper.toml)
@@ -248,10 +269,59 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Print the deterministic publish plan (dependency-first ordering).
+    #[command(long_about = "\
+Print the deterministic publish plan (dependency-first ordering).
+
+Reads the workspace via `cargo metadata`, filters publishable crates,
+topologically sorts them, and prints the order in which they will be
+published. The plan is deterministic — the same workspace produces the
+same plan ID on any machine — which is the anchor that makes `resume`
+safe.
+
+EXAMPLES:
+    # Preview the publish order for every publishable workspace member:
+    shipper plan
+
+    # Plan with dependency-level breakdown (who can publish in parallel):
+    shipper plan --verbose
+")]
     Plan,
     /// Run preflight checks without publishing.
+    #[command(long_about = "\
+Run preflight checks without publishing.
+
+Validates everything that can fail a live publish — git cleanliness,
+registry reachability, token availability, dry-run, ownership — and
+prints a `Finishability` verdict (PROVEN / NOT PROVEN / FAILED). No
+crate is uploaded. Run this before `publish` on any run you cannot
+afford to restart from scratch.
+
+EXAMPLES:
+    # Run preflight across the whole workspace:
+    shipper preflight
+
+    # Machine-readable output for CI gates:
+    shipper preflight --format json
+")]
     Preflight,
     /// Execute the plan (will resume if a matching state file exists).
+    #[command(long_about = "\
+Execute the publish plan end-to-end, persisting resumable state after
+every step.
+
+If `.shipper/state.json` already exists for this plan, `publish` picks
+up where the previous run left off — already-published crates are
+skipped, and the run continues from the first pending or failed
+package. On interruption (Ctrl-C, network drop, ambiguous registry
+response), rerun `shipper publish` or `shipper resume`.
+
+EXAMPLES:
+    # Publish the whole workspace to crates.io:
+    shipper publish
+
+    # Publish a subset, allowing a dirty git tree (local rehearsal):
+    shipper publish --package shipper-core --allow-dirty
+")]
     Publish,
     /// Resume a previous publish run.
     Resume,
@@ -696,7 +766,8 @@ pub fn run() -> Result<()> {
             print_plan(&planned, cli.verbose);
         }
         Commands::Preflight => {
-            let rep = engine::run_preflight_in_place(&mut planned, &opts, &mut reporter)?;
+            let rep = engine::run_preflight_in_place(&mut planned, &opts, &mut reporter)
+                .with_context(|| preflight_failure_hint(&opts.state_dir))?;
             print_preflight(&rep, &cli.format);
         }
         Commands::Publish => {
@@ -744,7 +815,8 @@ pub fn run() -> Result<()> {
                 // countdown via ProgressReporter::retry_countdown.
                 reporter.install_progress(progress, package_positions);
 
-                let receipt = engine::run_publish(&current_planned, &current_opts, &mut reporter)?;
+                let receipt = engine::run_publish(&current_planned, &current_opts, &mut reporter)
+                    .with_context(|| publish_failure_hint(&current_opts.state_dir))?;
 
                 if let Some(progress) = reporter.take_progress() {
                     progress.finish();
@@ -802,7 +874,8 @@ pub fn run() -> Result<()> {
                 // countdown via ProgressReporter::retry_countdown.
                 reporter.install_progress(progress, package_positions);
 
-                let receipt = engine::run_resume(&current_planned, &current_opts, &mut reporter)?;
+                let receipt = engine::run_resume(&current_planned, &current_opts, &mut reporter)
+                    .with_context(|| resume_failure_hint(&current_opts.state_dir))?;
 
                 if let Some(progress) = reporter.take_progress() {
                     progress.finish();
@@ -1243,6 +1316,57 @@ pub fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Operator-facing hint attached to a failed `preflight` run.
+///
+/// Preflight errors are almost always "something about your environment
+/// isn't ready yet" — missing token, dirty git, registry unreachable —
+/// and the answer is almost always `shipper doctor`. Point operators
+/// there so they don't have to guess.
+fn preflight_failure_hint(state_dir: &Path) -> String {
+    format!(
+        "preflight failed — next steps:\n  \
+         * run `shipper doctor` to diagnose auth / git / registry\n  \
+         * inspect {}/events.jsonl for the authoritative event log\n  \
+         * `shipper preflight --format json` for machine-readable detail",
+        state_dir.display()
+    )
+}
+
+/// Operator-facing hint attached to a failed `publish` run.
+///
+/// Publish can fail mid-plan (network, ambiguous response, auth, version
+/// collision). In every case the authoritative record is
+/// `events.jsonl`; resuming (once the root cause is fixed) is how you
+/// continue without re-uploading successfully-published crates.
+fn publish_failure_hint(state_dir: &Path) -> String {
+    format!(
+        "publish failed — next steps:\n  \
+         * inspect {dir}/events.jsonl (authoritative) and {dir}/state.json (projection)\n  \
+         * run `shipper status` to compare local versions to the registry\n  \
+         * run `shipper resume` after fixing the root cause to continue from the failed crate\n  \
+         * run `shipper doctor` if auth / network is suspect",
+        dir = state_dir.display()
+    )
+}
+
+/// Operator-facing hint attached to a failed `resume` run.
+///
+/// The most common resume failure is a plan-ID mismatch: the workspace
+/// changed since the interrupted run, so the computed plan no longer
+/// matches the one recorded in `state.json`. Point operators at the
+/// two real paths out — delete state, or `--force-resume`.
+fn resume_failure_hint(state_dir: &Path) -> String {
+    format!(
+        "resume failed — next steps:\n  \
+         * if plan-ID mismatch: either `shipper clean` and start a fresh plan, \
+         or pass `--force-resume` if you understand the divergence\n  \
+         * inspect {dir}/events.jsonl for the authoritative event log\n  \
+         * inspect {dir}/state.json to see what was already published\n  \
+         * run `shipper status` to compare local versions to the registry",
+        dir = state_dir.display()
+    )
 }
 
 fn parse_duration(s: &str) -> Result<Duration> {

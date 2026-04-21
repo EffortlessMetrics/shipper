@@ -5,13 +5,38 @@ use insta::assert_snapshot;
 /// Normalize line endings, platform-specific binary names, and versions so
 /// snapshots stay stable across environments.
 fn normalize_output(raw: &str) -> String {
-    raw.replace("\r\n", "\n")
+    let normalized = raw
+        .replace("\r\n", "\n")
         // Order matters: strip the more specific `.exe` suffix first so the
         // second replacement doesn't turn `shipper-cli.exe` into `shipper-cli`
         // via the `shipper.exe` → `shipper` rule when that rule is applied.
         .replace("shipper-cli.exe", "shipper-cli")
         .replace("shipper.exe", "shipper")
-        .replace(env!("CARGO_PKG_VERSION"), "[VERSION]")
+        .replace(env!("CARGO_PKG_VERSION"), "[VERSION]");
+    redact_version_metadata(&normalized)
+}
+
+/// Redact the three build-time fields embedded in `--version --verbose`
+/// (`commit:`, `build:`, `rustc:`) so snapshots are stable regardless of
+/// the git checkout, build profile, or rustc version.
+fn redact_version_metadata(s: &str) -> String {
+    let trailing_nl = s.ends_with('\n');
+    let joined = s
+        .lines()
+        .map(|line| {
+            if line.starts_with("commit: ") {
+                "commit: [GIT_SHA]".to_string()
+            } else if line.starts_with("build:  ") {
+                "build:  [PROFILE]".to_string()
+            } else if line.starts_with("rustc:  ") {
+                "rustc:  [RUSTC_VERSION]".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if trailing_nl { joined + "\n" } else { joined }
 }
 
 fn normalize_help_output(raw: &str) -> String {

@@ -1,5 +1,8 @@
 ---
 source: crates/shipper-cli/tests/cli_snapshots.rs
-expression: redact_version(&stdout)
+expression: normalize_output(&stdout)
 ---
 shipper [VERSION]
+commit: [GIT_SHA]
+build:  [PROFILE]
+rustc:  [RUSTC_VERSION]
