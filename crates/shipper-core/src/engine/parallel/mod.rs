@@ -6,8 +6,11 @@
 //! Absorbed from the standalone `shipper-engine-parallel` crate. See
 //! `CLAUDE.md` alongside this module for module-level guidance.
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
@@ -36,6 +39,30 @@ pub trait Reporter {
     fn info(&mut self, msg: &str);
     fn warn(&mut self, msg: &str);
     fn error(&mut self, msg: &str);
+
+    #[allow(clippy::too_many_arguments)]
+    fn retry_wait(
+        &mut self,
+        pkg_name: &str,
+        pkg_version: &str,
+        attempt: u32,
+        max_attempts: u32,
+        delay: Duration,
+        reason: shipper_types::ErrorClass,
+        message: &str,
+    ) {
+        self.warn(&format!(
+            "{}@{}: {} ({:?}); next attempt in {} (attempt {}/{})",
+            pkg_name,
+            pkg_version,
+            message,
+            reason,
+            humantime::format_duration(delay),
+            attempt.saturating_add(1),
+            max_attempts,
+        ));
+        thread::sleep(delay);
+    }
 }
 
 /// Adapter that bridges the host crate's `crate::engine::Reporter` trait into
@@ -54,6 +81,127 @@ impl<'a> Reporter for HostReporterAdapter<'a> {
     }
     fn error(&mut self, msg: &str) {
         self.inner.error(msg);
+    }
+
+    fn retry_wait(
+        &mut self,
+        pkg_name: &str,
+        pkg_version: &str,
+        attempt: u32,
+        max_attempts: u32,
+        delay: Duration,
+        reason: shipper_types::ErrorClass,
+        message: &str,
+    ) {
+        self.inner.retry_wait(
+            pkg_name,
+            pkg_version,
+            attempt,
+            max_attempts,
+            delay,
+            reason,
+            message,
+        );
+    }
+}
+
+pub(super) struct RetryWaitNotice {
+    pub(super) pkg_name: String,
+    pub(super) pkg_version: String,
+    pub(super) attempt: u32,
+    pub(super) max_attempts: u32,
+    pub(super) delay: Duration,
+    pub(super) reason: shipper_types::ErrorClass,
+    pub(super) message: String,
+    pub(super) started_at: Instant,
+}
+
+#[derive(Default)]
+pub(super) struct SendReporter {
+    infos: Mutex<Vec<String>>,
+    warns: Mutex<Vec<String>>,
+    errors: Mutex<Vec<String>>,
+    retry_waits: Mutex<VecDeque<RetryWaitNotice>>,
+}
+
+impl SendReporter {
+    pub(super) fn info(&self, msg: &str) {
+        self.infos.lock().unwrap().push(msg.to_string());
+    }
+
+    pub(super) fn warn(&self, msg: &str) {
+        self.warns.lock().unwrap().push(msg.to_string());
+    }
+
+    pub(super) fn error(&self, msg: &str) {
+        self.errors.lock().unwrap().push(msg.to_string());
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn retry_wait(
+        &self,
+        pkg_name: &str,
+        pkg_version: &str,
+        attempt: u32,
+        max_attempts: u32,
+        delay: Duration,
+        reason: shipper_types::ErrorClass,
+        message: &str,
+    ) {
+        self.retry_waits.lock().unwrap().push_back(RetryWaitNotice {
+            pkg_name: pkg_name.to_string(),
+            pkg_version: pkg_version.to_string(),
+            attempt,
+            max_attempts,
+            delay,
+            reason,
+            message: message.to_string(),
+            started_at: Instant::now(),
+        });
+        thread::sleep(delay);
+    }
+
+    fn drain_infos(&self) -> Vec<String> {
+        std::mem::take(&mut *self.infos.lock().unwrap())
+    }
+
+    fn drain_warns(&self) -> Vec<String> {
+        std::mem::take(&mut *self.warns.lock().unwrap())
+    }
+
+    fn drain_errors(&self) -> Vec<String> {
+        std::mem::take(&mut *self.errors.lock().unwrap())
+    }
+
+    fn drain_retry_waits(&self) -> Vec<RetryWaitNotice> {
+        self.retry_waits.lock().unwrap().drain(..).collect()
+    }
+}
+
+fn replay_buffered_messages(reporter: &mut dyn Reporter, send_reporter: &SendReporter) {
+    for msg in send_reporter.drain_infos() {
+        reporter.info(&msg);
+    }
+    for msg in send_reporter.drain_warns() {
+        reporter.warn(&msg);
+    }
+    for msg in send_reporter.drain_errors() {
+        reporter.error(&msg);
+    }
+}
+
+pub(super) fn drain_retry_waits(reporter: &mut dyn Reporter, send_reporter: &SendReporter) {
+    for notice in send_reporter.drain_retry_waits() {
+        let remaining = notice.delay.saturating_sub(notice.started_at.elapsed());
+        reporter.retry_wait(
+            &notice.pkg_name,
+            &notice.pkg_version,
+            notice.attempt,
+            notice.max_attempts,
+            remaining,
+            notice.reason,
+            &notice.message,
+        );
     }
 }
 
@@ -115,29 +263,12 @@ pub(crate) fn run_publish_parallel_inner(
     // Wrap state and reporter in Arc<Mutex<>> for thread safety
     let st_arc = Arc::new(Mutex::new(st.clone()));
 
-    // Create a thread-safe reporter wrapper
-    struct SendReporter {
-        infos: Mutex<Vec<String>>,
-        warns: Mutex<Vec<String>>,
-        errors: Mutex<Vec<String>>,
-    }
-    impl Reporter for SendReporter {
-        fn info(&mut self, msg: &str) {
-            self.infos.lock().unwrap().push(msg.to_string());
-        }
-        fn warn(&mut self, msg: &str) {
-            self.warns.lock().unwrap().push(msg.to_string());
-        }
-        fn error(&mut self, msg: &str) {
-            self.errors.lock().unwrap().push(msg.to_string());
-        }
-    }
-
-    let send_reporter = Arc::new(Mutex::new(SendReporter {
+    let send_reporter = Arc::new(SendReporter {
         infos: Mutex::new(Vec::new()),
         warns: Mutex::new(Vec::new()),
         errors: Mutex::new(Vec::new()),
-    }));
+        retry_waits: Mutex::new(VecDeque::new()),
+    });
 
     let mut all_receipts: Vec<PackageReceipt> = Vec::new();
 
@@ -226,24 +357,14 @@ pub(crate) fn run_publish_parallel_inner(
             state_dir,
             &event_log,
             &events_path,
-            &(send_reporter.clone() as Arc<Mutex<dyn Reporter + Send>>),
+            reporter,
+            &send_reporter,
         )?;
         all_receipts.extend(level_receipts);
+        replay_buffered_messages(reporter, send_reporter.as_ref());
     }
 
-    // Replay messages to the real reporter
-    {
-        let sr = send_reporter.lock().unwrap();
-        for msg in sr.infos.lock().unwrap().iter() {
-            reporter.info(msg);
-        }
-        for msg in sr.warns.lock().unwrap().iter() {
-            reporter.warn(msg);
-        }
-        for msg in sr.errors.lock().unwrap().iter() {
-            reporter.error(msg);
-        }
-    }
+    replay_buffered_messages(reporter, send_reporter.as_ref());
 
     // Copy updated state back
     let updated_st = st_arc.lock().unwrap();

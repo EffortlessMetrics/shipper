@@ -26,6 +26,7 @@
 //! [`run`]. For programmatic use without a `clap` dependency, depend
 //! on [`shipper_core`](https://crates.io/crates/shipper-core) instead.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -430,6 +431,37 @@ enum ConfigCommands {
 
 struct CliReporter {
     quiet: bool,
+    /// Optional progress handle installed during `publish`/`resume` so
+    /// [`CliReporter::retry_wait`] can render a live countdown via the
+    /// existing `ProgressReporter::retry_countdown`. When `None`, retries
+    /// fall through to the default `Reporter::retry_wait` behavior (warn +
+    /// sleep), matching subcommands that don't own a progress bar.
+    progress: Option<ProgressReporter>,
+    package_positions: BTreeMap<String, usize>,
+}
+
+impl CliReporter {
+    fn new(quiet: bool) -> Self {
+        Self {
+            quiet,
+            progress: None,
+            package_positions: BTreeMap::new(),
+        }
+    }
+
+    fn install_progress(
+        &mut self,
+        progress: ProgressReporter,
+        package_positions: BTreeMap<String, usize>,
+    ) {
+        self.progress = Some(progress);
+        self.package_positions = package_positions;
+    }
+
+    fn take_progress(&mut self) -> Option<ProgressReporter> {
+        self.package_positions.clear();
+        self.progress.take()
+    }
 }
 
 impl Reporter for CliReporter {
@@ -447,6 +479,51 @@ impl Reporter for CliReporter {
 
     fn error(&mut self, msg: &str) {
         eprintln!("[error] {msg}");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn retry_wait(
+        &mut self,
+        pkg_name: &str,
+        pkg_version: &str,
+        attempt: u32,
+        max_attempts: u32,
+        delay: std::time::Duration,
+        reason: shipper_core::types::ErrorClass,
+        message: &str,
+    ) {
+        // If a progress handle is installed (publish/resume flow), route the
+        // retry narration through it so TTY mode gets a live countdown and
+        // non-TTY mode gets a single line. Otherwise fall back to the
+        // default trait impl so callers without a progress bar still see the
+        // original warn-line behavior.
+        if let Some(progress) = &mut self.progress {
+            if let Some(index) = self
+                .package_positions
+                .get(&format!("{pkg_name}@{pkg_version}"))
+            {
+                progress.set_package(*index, pkg_name, pkg_version);
+            }
+            progress.retry_countdown(
+                pkg_name,
+                pkg_version,
+                attempt,
+                max_attempts,
+                delay,
+                &format!("{reason:?}"),
+                message,
+            );
+        } else if !self.quiet {
+            eprintln!(
+                "[warn] {pkg_name}@{pkg_version}: {message} ({reason:?}); next attempt in {} (attempt {}/{})",
+                humantime::format_duration(delay),
+                attempt.saturating_add(1),
+                max_attempts,
+            );
+            std::thread::sleep(delay);
+        } else {
+            std::thread::sleep(delay);
+        }
     }
 }
 
@@ -612,7 +689,7 @@ pub fn run() -> Result<()> {
     let config_for_merge = config.clone().unwrap_or_default();
     let opts: RuntimeOptions = config_for_merge.build_runtime_options(cli_overrides);
 
-    let mut reporter = CliReporter { quiet: cli.quiet };
+    let mut reporter = CliReporter::new(cli.quiet);
 
     match cli.cmd {
         Commands::Plan => {
@@ -648,6 +725,13 @@ pub fn run() -> Result<()> {
 
                 let total_packages = current_planned.plan.packages.len();
                 let mut progress = ProgressReporter::new(total_packages, cli.quiet);
+                let package_positions: BTreeMap<String, usize> = current_planned
+                    .plan
+                    .packages
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, pkg)| (format!("{}@{}", pkg.name, pkg.version), idx + 1))
+                    .collect();
 
                 // Show initial progress if we have packages
                 if total_packages > 0 {
@@ -655,9 +739,16 @@ pub fn run() -> Result<()> {
                     progress.set_package(1, &first_pkg.name, &first_pkg.version);
                 }
 
+                // Install the progress handle on the reporter so the engine's
+                // retry-backoff narration (#103) can drive a live TTY
+                // countdown via ProgressReporter::retry_countdown.
+                reporter.install_progress(progress, package_positions);
+
                 let receipt = engine::run_publish(&current_planned, &current_opts, &mut reporter)?;
 
-                progress.finish();
+                if let Some(progress) = reporter.take_progress() {
+                    progress.finish();
+                }
 
                 print_receipt(
                     &receipt,
@@ -692,6 +783,13 @@ pub fn run() -> Result<()> {
 
                 let total_packages = current_planned.plan.packages.len();
                 let mut progress = ProgressReporter::new(total_packages, cli.quiet);
+                let package_positions: BTreeMap<String, usize> = current_planned
+                    .plan
+                    .packages
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, pkg)| (format!("{}@{}", pkg.name, pkg.version), idx + 1))
+                    .collect();
 
                 // Show initial progress if we have packages
                 if total_packages > 0 {
@@ -699,9 +797,16 @@ pub fn run() -> Result<()> {
                     progress.set_package(1, &first_pkg.name, &first_pkg.version);
                 }
 
+                // Install the progress handle on the reporter so the engine's
+                // retry-backoff narration (#103) can drive a live TTY
+                // countdown via ProgressReporter::retry_countdown.
+                reporter.install_progress(progress, package_positions);
+
                 let receipt = engine::run_resume(&current_planned, &current_opts, &mut reporter)?;
 
-                progress.finish();
+                if let Some(progress) = reporter.take_progress() {
+                    progress.finish();
+                }
 
                 print_receipt(
                     &receipt,
@@ -2200,10 +2305,124 @@ mod tests {
 
     #[test]
     fn cli_reporter_methods_are_callable() {
-        let mut rep = CliReporter { quiet: false };
+        let mut rep = CliReporter::new(false);
         rep.info("info");
         rep.warn("warn");
         rep.error("error");
+    }
+
+    #[test]
+    fn cli_reporter_retry_wait_without_progress_blocks_for_delay() {
+        // With no progress handle installed, retry_wait falls back to the
+        // legacy warn-line + sleep path. Assert it still blocks for the
+        // full delay (the engine relies on this).
+        use std::time::Instant;
+        let mut rep = CliReporter::new(true); // quiet to suppress stderr
+        let delay = Duration::from_millis(60);
+        let start = Instant::now();
+        rep.retry_wait(
+            "pkg",
+            "0.1.0",
+            1,
+            3,
+            delay,
+            shipper_core::types::ErrorClass::Retryable,
+            "rate limited",
+        );
+        assert!(
+            start.elapsed() >= delay,
+            "retry_wait returned early: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn cli_reporter_retry_wait_without_progress_warns_and_blocks_for_delay() {
+        use std::time::Instant;
+        let mut rep = CliReporter::new(false);
+        let delay = Duration::from_millis(40);
+        let start = Instant::now();
+        rep.retry_wait(
+            "pkg",
+            "0.1.0",
+            1,
+            3,
+            delay,
+            shipper_core::types::ErrorClass::Retryable,
+            "rate limited",
+        );
+        assert!(start.elapsed() >= delay);
+    }
+
+    #[test]
+    fn cli_reporter_retry_wait_with_progress_routes_through_countdown() {
+        // Installing a (silent) progress handle should route retry_wait
+        // through ProgressReporter::retry_countdown — still blocks for the
+        // delay, with no panic from the set_status path.
+        use std::time::Instant;
+        let mut rep = CliReporter::new(false);
+        rep.install_progress(
+            crate::output::progress::ProgressReporter::silent(2),
+            BTreeMap::from([(String::from("pkg@1.0.0"), 2usize)]),
+        );
+        let delay = Duration::from_millis(40);
+        let start = Instant::now();
+        rep.retry_wait(
+            "pkg",
+            "1.0.0",
+            2,
+            5,
+            delay,
+            shipper_core::types::ErrorClass::Retryable,
+            "server busy",
+        );
+        assert!(start.elapsed() >= delay);
+        assert!(rep.take_progress().is_some());
+    }
+
+    #[test]
+    fn cli_reporter_retry_wait_updates_progress_to_retrying_package() {
+        let mut rep = CliReporter::new(true);
+        rep.install_progress(
+            crate::output::progress::ProgressReporter::silent(3),
+            BTreeMap::from([(String::from("beta@0.2.0"), 2usize)]),
+        );
+
+        rep.retry_wait(
+            "beta",
+            "0.2.0",
+            1,
+            3,
+            Duration::from_millis(1),
+            shipper_core::types::ErrorClass::Retryable,
+            "server busy",
+        );
+
+        let progress = rep.take_progress().expect("progress handle");
+        assert_eq!(progress.current_package(), 2);
+        assert_eq!(progress.current_name(), "beta@0.2.0");
+    }
+
+    #[test]
+    fn cli_reporter_default_impl_preserves_warn_line() {
+        // Sanity check: TestReporter uses the default retry_wait, which
+        // should call warn() exactly once with the canonical format.
+        let mut tr = TestReporter::default();
+        tr.retry_wait(
+            "foo",
+            "1.2.3",
+            1,
+            5,
+            Duration::from_millis(1),
+            shipper_core::types::ErrorClass::Retryable,
+            "transient failure",
+        );
+        assert_eq!(tr.warns.len(), 1);
+        let w = &tr.warns[0];
+        assert!(w.contains("foo@1.2.3"));
+        assert!(w.contains("transient failure"));
+        assert!(w.contains("Retryable"));
+        assert!(w.contains("attempt 2/5"));
     }
 
     #[test]

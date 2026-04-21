@@ -5,7 +5,8 @@
 //! CLI-only and has no upstream library consumer.
 
 use std::io::IsTerminal;
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -154,9 +155,9 @@ impl ProgressReporter {
 
     /// Updates the message for the current package state.
     ///
-    /// Currently only exercised by tests; retained for future intra-package
-    /// status updates (uploading, verifying, etc.).
-    #[allow(dead_code)]
+    /// Used by [`ProgressReporter::retry_countdown`] to render the live retry
+    /// countdown, and available for future intra-package status updates
+    /// (uploading, verifying, etc.).
     pub(crate) fn set_status(&self, status: &str) {
         if self.quiet {
             return;
@@ -170,6 +171,69 @@ impl ProgressReporter {
             }
         } else {
             eprintln!("[status] {status}");
+        }
+    }
+
+    /// Render a live retry-backoff countdown and block for the full `delay`.
+    ///
+    /// In TTY mode, refreshes the progress-bar message every second with a
+    /// ticking `"retrying {pkg}@{ver} in {Ns}... (attempt N/M, reason: ...)"`
+    /// line so operators watching a CI log never see a silent sleep. In
+    /// non-TTY mode, emits a single one-shot `eprintln!` (avoiding stream
+    /// spam in log files) and then sleeps. In quiet mode, skips narration
+    /// entirely but still blocks for the backoff. Closes #103 PR 1 — lifts
+    /// `set_status` off the dead-code list by wiring it to the retry path.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn retry_countdown(
+        &self,
+        pkg_name: &str,
+        pkg_version: &str,
+        attempt: u32,
+        max_attempts: u32,
+        delay: Duration,
+        reason: &str,
+        message: &str,
+    ) {
+        // Quiet mode: preserve the retry wait but emit nothing.
+        if self.quiet {
+            thread::sleep(delay);
+            return;
+        }
+
+        let next_attempt = attempt.saturating_add(1);
+
+        if self.is_tty {
+            let start = Instant::now();
+            let tick = Duration::from_millis(1000);
+            // Tick down once per second. `remaining == 0` ends the loop; we
+            // still call `set_status` once on exit to show "retrying now".
+            loop {
+                let elapsed = start.elapsed();
+                let remaining = delay.saturating_sub(elapsed);
+                let remaining_secs = remaining.as_secs();
+
+                if remaining.is_zero() {
+                    self.set_status(&format!(
+                        "retrying {pkg_name}@{pkg_version} now... (attempt {next_attempt}/{max_attempts}, reason: {reason})"
+                    ));
+                    break;
+                }
+
+                self.set_status(&format!(
+                    "retrying {pkg_name}@{pkg_version} in {remaining_secs}s... (attempt {next_attempt}/{max_attempts}, reason: {reason}) — {message}"
+                ));
+
+                let sleep_for = remaining.min(tick);
+                thread::sleep(sleep_for);
+            }
+        } else {
+            // Non-TTY: one-shot line so pipelines/CI logs don't get spammed
+            // with per-second updates. Matches the pre-#103 warn shape.
+            eprintln!(
+                "[retry] {pkg_name}@{pkg_version}: {message} ({reason}); next attempt in {} (attempt {next_attempt}/{max_attempts})",
+                humantime::format_duration(delay),
+            );
+            thread::sleep(delay);
         }
     }
 

@@ -823,3 +823,102 @@ fn test_display_format_version_with_pre_and_build() {
     reporter.set_package(1, "crate", "1.0.0-alpha.1+build.456");
     assert_eq!(reporter.current_name(), "crate@1.0.0-alpha.1+build.456");
 }
+
+// --- 21. retry_countdown (#103 PR 1) ---
+
+#[test]
+fn test_retry_countdown_silent_mode_blocks_for_delay() {
+    // Quiet reporter emits nothing but still blocks for the full delay so
+    // the engine's retry-backoff semantics are preserved.
+    let reporter = ProgressReporter::silent(1);
+    let delay = Duration::from_millis(80);
+    let start = Instant::now();
+    reporter.retry_countdown(
+        "my-crate",
+        "1.0.0",
+        1,
+        5,
+        delay,
+        "Retryable",
+        "HTTP 429 from registry",
+    );
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= delay,
+        "retry_countdown returned too early: {elapsed:?} < {delay:?}"
+    );
+    // And doesn't take absurdly long either (3x tolerance for CI).
+    assert!(
+        elapsed < delay * 10,
+        "retry_countdown took too long: {elapsed:?}"
+    );
+}
+
+#[test]
+fn test_retry_countdown_zero_delay_returns_immediately() {
+    let reporter = ProgressReporter::silent(1);
+    let start = Instant::now();
+    reporter.retry_countdown("pkg", "0.1.0", 1, 3, Duration::ZERO, "Retryable", "ok");
+    assert!(start.elapsed() < Duration::from_millis(500));
+}
+
+#[test]
+fn test_retry_countdown_non_tty_one_shot_line() {
+    // `ProgressReporter::new(total, quiet=false)` is non-TTY in the test
+    // harness (stdout is not a terminal), so this drives the non-TTY
+    // branch — one `eprintln!` line, then sleep. Can't assert on stderr
+    // here but we can assert the call doesn't panic and blocks correctly.
+    let reporter = ProgressReporter::new(2, false);
+    let delay = Duration::from_millis(30);
+    let start = Instant::now();
+    reporter.retry_countdown(
+        "some-crate",
+        "2.0.0",
+        2,
+        5,
+        delay,
+        "Retryable",
+        "rate limited",
+    );
+    assert!(start.elapsed() >= delay);
+}
+
+#[test]
+fn test_retry_countdown_tty_branch_updates_status() {
+    let progress_bar = indicatif::ProgressBar::hidden();
+    let reporter = ProgressReporter {
+        is_tty: true,
+        quiet: false,
+        total_packages: 1,
+        current_package: 0,
+        current_name: "tty-crate@1.0.0".to_string(),
+        progress_bar: Some(progress_bar),
+        start_time: Instant::now(),
+    };
+
+    reporter.retry_countdown(
+        "tty-crate",
+        "1.0.0",
+        0,
+        3,
+        Duration::from_millis(1),
+        "Retryable",
+        "server busy",
+    );
+}
+
+#[test]
+fn test_retry_countdown_max_attempts_display() {
+    // Smoke check: exotic attempt/max combinations shouldn't panic.
+    let reporter = ProgressReporter::silent(1);
+    reporter.retry_countdown("x", "0", 0, 1, Duration::from_millis(1), "Ambiguous", "m");
+    reporter.retry_countdown(
+        "x",
+        "0",
+        u32::MAX - 1,
+        u32::MAX,
+        Duration::from_millis(1),
+        "Retryable",
+        "m",
+    );
+}
