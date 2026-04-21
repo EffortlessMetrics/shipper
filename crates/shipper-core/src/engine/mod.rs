@@ -2358,7 +2358,7 @@ mod tests {
     #[serial]
     fn run_preflight_errors_in_strict_mode_without_token() {
         let td = tempdir().expect("tempdir");
-        let mut ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
         let mut opts = default_opts(PathBuf::from(".shipper"));
         opts.strict_ownership = true;
         opts.skip_ownership_check = false;
@@ -2373,7 +2373,7 @@ mod tests {
             ],
             || {
                 let mut reporter = CollectingReporter::default();
-                let err = run_preflight(&mut ws, &opts, &mut reporter).expect_err("must fail");
+                let err = run_preflight(&ws, &opts, &mut reporter).expect_err("must fail");
                 assert!(
                     format!("{err:#}").contains("strict ownership requested but no token found")
                 );
@@ -2415,13 +2415,13 @@ mod tests {
                 3,
             );
 
-            let mut ws = planned_workspace(td.path(), server.base_url.clone());
+            let ws = planned_workspace(td.path(), server.base_url.clone());
             let mut opts = default_opts(PathBuf::from(".shipper"));
             opts.skip_ownership_check = false;
             opts.strict_ownership = false;
 
             let mut reporter = CollectingReporter::default();
-            let rep = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+            let rep = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
             assert!(rep.token_detected);
             assert_eq!(rep.packages.len(), 1);
             assert!(!rep.packages[0].already_published);
@@ -2479,13 +2479,13 @@ mod tests {
                 3,
             );
 
-            let mut ws = planned_workspace(td.path(), server.base_url.clone());
+            let ws = planned_workspace(td.path(), server.base_url.clone());
             let mut opts = default_opts(PathBuf::from(".shipper"));
             opts.skip_ownership_check = false;
             opts.strict_ownership = false;
 
             let mut reporter = CollectingReporter::default();
-            let rep = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+            let rep = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
             assert_eq!(rep.packages.len(), 1);
             assert!(reporter.warns.is_empty());
             server.join();
@@ -2528,13 +2528,13 @@ mod tests {
                 3,
             );
 
-            let mut ws = planned_workspace(td.path(), server.base_url.clone());
+            let ws = planned_workspace(td.path(), server.base_url.clone());
             let mut opts = default_opts(PathBuf::from(".shipper"));
             opts.skip_ownership_check = false;
             opts.strict_ownership = true;
 
             let mut reporter = CollectingReporter::default();
-            let err = run_preflight(&mut ws, &opts, &mut reporter).expect_err("must fail");
+            let err = run_preflight(&ws, &opts, &mut reporter).expect_err("must fail");
             assert!(format!("{err:#}").contains("forbidden when querying owners"));
             server.join();
         });
@@ -2716,13 +2716,13 @@ mod tests {
                 2,
             );
 
-            let mut ws = planned_workspace(td.path(), server.base_url.clone());
+            let ws = planned_workspace(td.path(), server.base_url.clone());
             let mut opts = default_opts(PathBuf::from(".shipper"));
             opts.allow_dirty = true;
             opts.skip_ownership_check = true;
 
             let mut reporter = CollectingReporter::default();
-            let _ = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+            let _ = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
             let events_path = td.path().join(".shipper").join("events.jsonl");
             let log =
@@ -2797,13 +2797,13 @@ mod tests {
                 2,
             );
 
-            let mut ws = planned_workspace(td.path(), server.base_url.clone());
+            let ws = planned_workspace(td.path(), server.base_url.clone());
             let mut opts = default_opts(PathBuf::from(".shipper"));
             opts.allow_dirty = true;
             opts.skip_ownership_check = true;
 
             let mut reporter = CollectingReporter::default();
-            let report = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+            let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
             assert!(!report.token_detected);
             assert_eq!(
@@ -2837,13 +2837,13 @@ mod tests {
                 2,
             );
 
-            let mut ws = planned_workspace(td.path(), server.base_url.clone());
+            let ws = planned_workspace(td.path(), server.base_url.clone());
             let mut opts = default_opts(PathBuf::from(".shipper"));
             opts.allow_dirty = false;
             opts.skip_ownership_check = true;
 
             let mut reporter = CollectingReporter::default();
-            let rep = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+            let rep = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
             assert_eq!(rep.packages.len(), 1);
             server.join();
         });
@@ -3665,13 +3665,13 @@ mod tests {
                     ]),
                     2,
                 );
-                let mut ws = planned_workspace(td.path(), server.base_url.clone());
+                let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.allow_dirty = true;
                 opts.skip_ownership_check = true;
 
                 let mut reporter = CollectingReporter::default();
-                let report = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+                let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
                 assert_eq!(report.packages.len(), 1);
                 assert!(report.packages[0].already_published);
@@ -3706,13 +3706,13 @@ mod tests {
                     ]),
                     2,
                 );
-                let mut ws = planned_workspace(td.path(), server.base_url.clone());
+                let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.allow_dirty = true;
                 opts.skip_ownership_check = true;
 
                 let mut reporter = CollectingReporter::default();
-                let report = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+                let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
                 assert_eq!(report.packages.len(), 1);
                 assert!(!report.packages[0].already_published);
@@ -3754,13 +3754,13 @@ mod tests {
                     ]),
                     3,
                 );
-                let mut ws = planned_workspace(td.path(), server.base_url.clone());
+                let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.allow_dirty = true;
                 opts.skip_ownership_check = false;
 
                 let mut reporter = CollectingReporter::default();
-                let report = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+                let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
                 assert_eq!(report.packages.len(), 1);
                 assert!(!report.packages[0].ownership_verified);
@@ -3797,13 +3797,13 @@ mod tests {
                     ]),
                     2,
                 );
-                let mut ws = planned_workspace(td.path(), server.base_url.clone());
+                let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.allow_dirty = true;
                 opts.skip_ownership_check = true;
 
                 let mut reporter = CollectingReporter::default();
-                let report = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+                let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
                 assert_eq!(report.packages.len(), 1);
                 assert!(!report.packages[0].dry_run_passed);
@@ -3832,14 +3832,14 @@ mod tests {
                 ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None),
             ],
             || {
-                let mut ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+                let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.allow_dirty = true;
                 opts.strict_ownership = true;
                 // No token set
 
                 let mut reporter = CollectingReporter::default();
-                let err = run_preflight(&mut ws, &opts, &mut reporter).expect_err("must fail");
+                let err = run_preflight(&ws, &opts, &mut reporter).expect_err("must fail");
                 assert!(
                     format!("{err:#}").contains("strict ownership requested but no token found")
                 );
@@ -3878,13 +3878,13 @@ mod tests {
                     ]),
                     3,
                 );
-                let mut ws = planned_workspace(td.path(), server.base_url.clone());
+                let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.allow_dirty = true;
                 opts.skip_ownership_check = false;
 
                 let mut reporter = CollectingReporter::default();
-                let report = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+                let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
                 assert_eq!(report.packages.len(), 1);
                 assert!(report.packages[0].ownership_verified);
@@ -3920,12 +3920,12 @@ mod tests {
                     ]),
                     2,
                 );
-                let mut ws = planned_workspace(td.path(), server.base_url.clone());
+                let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.policy = crate::types::PublishPolicy::Fast;
 
                 let mut reporter = CollectingReporter::default();
-                let report = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+                let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
                 // dry_run_passed should be true (skipped), not false (cargo would have failed)
                 assert!(report.packages[0].dry_run_passed);
@@ -3971,13 +3971,13 @@ mod tests {
                     ]),
                     2,
                 );
-                let mut ws = planned_workspace(td.path(), server.base_url.clone());
+                let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.policy = crate::types::PublishPolicy::Balanced;
                 opts.skip_ownership_check = false; // would check in Safe, but Balanced overrides
 
                 let mut reporter = CollectingReporter::default();
-                let report = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+                let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
                 // ownership_verified false (Balanced skips ownership)
                 assert!(!report.packages[0].ownership_verified);
@@ -4019,13 +4019,13 @@ mod tests {
                     ]),
                     3,
                 );
-                let mut ws = planned_workspace(td.path(), server.base_url.clone());
+                let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.policy = crate::types::PublishPolicy::Safe;
                 opts.skip_ownership_check = false;
 
                 let mut reporter = CollectingReporter::default();
-                let report = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+                let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
                 // All checks ran
                 assert!(report.packages[0].dry_run_passed);
@@ -4060,12 +4060,12 @@ mod tests {
                     ]),
                     2,
                 );
-                let mut ws = planned_workspace(td.path(), server.base_url.clone());
+                let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.verify_mode = crate::types::VerifyMode::None;
 
                 let mut reporter = CollectingReporter::default();
-                let report = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+                let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
                 // dry_run_passed is true because verify_mode=None skips it
                 assert!(report.packages[0].dry_run_passed);
@@ -4103,12 +4103,12 @@ mod tests {
                     ]),
                     2,
                 );
-                let mut ws = planned_workspace(td.path(), server.base_url.clone());
+                let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.verify_mode = crate::types::VerifyMode::Package;
 
                 let mut reporter = CollectingReporter::default();
-                let report = run_preflight(&mut ws, &opts, &mut reporter).expect("preflight");
+                let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
 
                 assert!(report.packages[0].dry_run_passed);
                 assert!(
