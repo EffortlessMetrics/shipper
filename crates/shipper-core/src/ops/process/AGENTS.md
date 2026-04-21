@@ -1,3 +1,7 @@
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
+
 # Layer: `ops::process` (process execution)
 
 **Position:** Layer 1 (ops). Crate-private submodule of `shipper-core`.
@@ -36,3 +40,4 @@ public API — it's an internal implementation detail that callers (primarily
 
 Absorbed from the standalone `shipper-process` microcrate (1948 LOC) in the
 Phase 2 decrating effort. See `docs/decrating-plan.md` §6.
+

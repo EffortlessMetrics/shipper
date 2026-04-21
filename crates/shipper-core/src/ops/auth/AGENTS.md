@@ -1,3 +1,7 @@
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
+
 # Module: `crate::ops::auth`
 
 **Layer:** ops (layer 1, bottom)
@@ -30,3 +34,4 @@
 - Tokens are opaque strings; NEVER log them.
 - Whitespace-trimmed; empty tokens treated as absent (at the top-level `resolve_token` layer).
 - OIDC detection: requires both `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`.
+

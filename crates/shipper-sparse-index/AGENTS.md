@@ -1,4 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
 
 This file provides agent-specific guidance for working in crate shipper-sparse-index.
 
@@ -6,7 +8,7 @@ This file provides agent-specific guidance for working in crate shipper-sparse-i
 
 - Crate: shipper-sparse-index
 - Path: crates/shipper-sparse-index
-- Workspace root: h:\Code\Rust\shipper
+- Workspace root: repository root for the current checkout; use repo-relative paths from this file
 - Primary entry: src/lib.rs
 
 ## Useful commands

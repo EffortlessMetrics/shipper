@@ -1,3 +1,7 @@
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
+
 # Module: `shipper_types::storage`
 
 **Crate:** `shipper-types` (public)
@@ -14,3 +18,4 @@
 These are pure data — no I/O, no policy decisions. Embedders need to express "use this storage backend" through the stable contract crate. The runtime backend behavior lives in `shipper-core`'s internal storage layer and is unfinished (only filesystem is implemented today).
 
 Errors here use plain structs rather than `anyhow::Error` so `shipper-types` stays free of `anyhow`.
+

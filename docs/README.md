@@ -61,7 +61,13 @@ The following live at the repo root because they carry repo-wide authority:
 - [MISSION.md](../MISSION.md) — mission, vision, audience, beliefs
 - [ROADMAP.md](../ROADMAP.md) — five pillars, nine-competency scorecard, now/next/later
 - [README.md](../README.md) — product README
-- [CLAUDE.md](../CLAUDE.md) / [GEMINI.md](../GEMINI.md) — AI-assistant orientation
+- [CLAUDE.md](../CLAUDE.md) / [GEMINI.md](../GEMINI.md) / [AGENTS.md](../AGENTS.md) — AI-assistant orientation
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — contribution guide
 - [SECURITY.md](../SECURITY.md) — security policy
 - [CHANGELOG.md](../CHANGELOG.md) — release history
+
+## Repository maintenance
+
+Internal inventories and upkeep docs for contributor and assistant context.
+
+- [Crate local-doc coverage](reference/crate-coverage.md) — maintenance matrix for crate `README.md`, `CLAUDE.md`, and `AGENTS.md` files

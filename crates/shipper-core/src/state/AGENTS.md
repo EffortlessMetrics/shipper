@@ -1,3 +1,7 @@
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
+
 # Layer: `state` (persistence)
 
 **Position in the architecture:** Layer 3. Above `runtime/` and `ops/`, below `plan/` and `engine/`.
@@ -17,3 +21,4 @@ Enforced by `.github/workflows/architecture-guard.yml`.
 - `state/execution_state/` — `ExecutionState`, receipt persistence, schema migration, and atomic filesystem I/O (was `shipper-state`)
 - `state/events/` — Append-only JSONL event log (was `shipper-events`)
 - `state/store/` — `StateStore` trait + filesystem impl (was `shipper-store`)
+

@@ -1,3 +1,7 @@
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
+
 # Module: `crate::runtime::execution`
 
 **Layer:** runtime (layer 2)
@@ -26,3 +30,4 @@ This module currently imports from `crate::state::execution_state`,
 `shipper_retry`, `shipper_types`, and `shipper_cargo_failure`. As each of the
 remaining microcrates is absorbed in subsequent PRs, these imports will be
 rewritten to `crate::*` paths.
+

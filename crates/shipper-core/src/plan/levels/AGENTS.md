@@ -1,3 +1,7 @@
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
+
 # Module: `crate::plan::levels`
 
 **Layer:** plan (layer 4)
@@ -8,3 +12,4 @@
 
 - `pub(crate) fn group_packages_by_levels<T, F>(ordered_packages, package_name, dependencies) -> Vec<PublishLevel<T>>`
 - `pub(crate) struct PublishLevel<T> { level: usize, packages: Vec<T> }`
+

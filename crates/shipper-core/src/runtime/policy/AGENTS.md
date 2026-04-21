@@ -1,3 +1,7 @@
+# AGENTS.md
+
+Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this directory.
+
 # runtime/policy
 
 Publish policy evaluation logic — derives effective safety/verify/readiness flags from `PublishPolicy` + explicit overrides.
@@ -28,3 +32,4 @@ This module lives in `crate::runtime::*` (Layer 2). It must remain:
 - Visible only within the `shipper-core` crate (`pub(crate)`).
 
 See [`../CLAUDE.md`](../CLAUDE.md) for full layer rules.
+
