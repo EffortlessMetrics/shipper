@@ -4,7 +4,7 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 # Layer: `ops::process` (process execution)
 
-**Position:** Layer 1 (ops). Crate-private submodule of `shipper`.
+**Position:** Layer 1 (ops). Crate-private submodule of `shipper-core`.
 
 ## Single responsibility
 
@@ -32,7 +32,7 @@ result types.
 
 ## Visibility
 
-Everything in this subsystem is `pub(crate)`. None of it is part of shipper's
+Everything in this subsystem is `pub(crate)`. None of it is part of shipper-core's
 public API — it's an internal implementation detail that callers (primarily
 `ops::cargo`) consume via the `ops::process` facade.
 

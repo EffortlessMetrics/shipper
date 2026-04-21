@@ -6,7 +6,7 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 **Layer:** runtime (layer 2)
 **Single responsibility:** Shared execution primitives — backoff, error classification, package keys, state update locks.
-**Was:** standalone crate `shipper-execution-core` (absorbed in this PR).
+**Was:** standalone crate `shipper-execution-core` (absorbed into the layered runtime module layout during the decrating effort).
 
 ## Public-to-crate API
 

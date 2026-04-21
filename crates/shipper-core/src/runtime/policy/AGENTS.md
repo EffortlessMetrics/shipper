@@ -6,7 +6,7 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 Publish policy evaluation logic — derives effective safety/verify/readiness flags from `PublishPolicy` + explicit overrides.
 
-Absorbed from the former `shipper-policy` microcrate (Phase 2 decrating) and now lives as a crate-private module within `shipper`.
+Absorbed from the former `shipper-policy` microcrate (Phase 2 decrating) and now lives as a crate-private module within `shipper-core`.
 
 ## API surface (crate-private)
 
@@ -29,7 +29,7 @@ This module lives in `crate::runtime::*` (Layer 2). It must remain:
 
 - Pure data + pure functions (no I/O, no orchestration).
 - Free of imports from `crate::engine::*`, `crate::plan::*`, `crate::state::*`.
-- Visible only within the `shipper` crate (`pub(crate)`).
+- Visible only within the `shipper-core` crate (`pub(crate)`).
 
 See [`../CLAUDE.md`](../CLAUDE.md) for full layer rules.
 

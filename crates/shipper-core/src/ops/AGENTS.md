@@ -4,7 +4,7 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 # Layer: `ops` (I/O primitives)
 
-**Position in the architecture:** Layer 1 (bottom). The lowest layer of the `shipper` crate.
+**Position in the architecture:** Layer 1 (bottom). The lowest layer of the `shipper-core` crate.
 
 ## Single responsibility
 
@@ -38,13 +38,13 @@ Each absorbed I/O microcrate gets its own folder under `ops/`:
 
 ## What does NOT live here
 
-- `shipper-registry`, `shipper-webhook`, `shipper-sparse-index` — these are public crates that `shipper` depends on directly. No internal wrapper inside `ops/`.
+- `shipper-registry`, `shipper-webhook`, `shipper-sparse-index` — these are public crates that `shipper-core` depends on directly. No internal wrapper inside `ops/`.
 - Domain types — those live in `shipper-types`.
 - Orchestration — that's `engine/`.
 
 ## Boundary discipline
 
 - Each subfolder has its own `mod.rs` facade. Other modules talk through the facade, not by reaching into deep paths.
-- Default visibility: `pub(crate)`. Only items truly part of `shipper`'s public API get `pub`.
-- Each subfolder has its own `CLAUDE.md` describing its single responsibility.
+- Default visibility: `pub(crate)`. Only items truly part of `shipper-core`'s public API get `pub`.
+- Each subfolder has its own local guidance files (`CLAUDE.md` and matching `AGENTS.md`) describing its single responsibility.
 

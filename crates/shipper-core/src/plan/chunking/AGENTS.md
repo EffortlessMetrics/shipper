@@ -6,7 +6,7 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 **Layer:** plan (layer 4)
 **Single responsibility:** Split a large publish plan into smaller chunks for resumable mid-flight execution.
-**Was:** standalone crate `shipper-chunking` (absorbed in this PR)
+**Was:** standalone crate `shipper-chunking` (absorbed into the layered plan module layout during the decrating effort)
 
 ## Public-to-crate API
 

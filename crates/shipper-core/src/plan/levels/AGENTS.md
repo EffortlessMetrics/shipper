@@ -6,7 +6,7 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 **Layer:** plan (layer 4)
 **Single responsibility:** Group publishable crates into parallel-eligible "waves" — crates within a wave have no dependencies on each other and can publish concurrently.
-**Was:** standalone crate `shipper-levels` (absorbed in this PR)
+**Was:** standalone crate `shipper-levels` (absorbed into the layered plan module layout during the decrating effort)
 
 ## Public-to-crate API
 
