@@ -40,7 +40,7 @@ toml = "1.0.3"
 dirs = "6.0"
 hex = "0.4.3"
 gethostname = "1.1.0"
-tokio = { version = "1.42", features = ["rt", "time", "sync", "macros"] }
+tokio = { version = "1.52", features = ["rt", "time", "sync", "macros"] }
 base64 = "0.22"
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", features = ["simple"] }
