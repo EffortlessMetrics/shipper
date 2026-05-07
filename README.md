@@ -1,5 +1,10 @@
 # shipper
 
+[![CI](https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml/badge.svg)](https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml)
+[![Codecov](https://codecov.io/gh/EffortlessMetrics/shipper/branch/main/graph/badge.svg)](https://codecov.io/gh/EffortlessMetrics/shipper)
+[![MSRV](https://img.shields.io/badge/MSRV-1.92-blue.svg)](https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 Publishing a multi-crate Rust workspace is easy to start and hard to trust. Shipper gives you a deterministic plan, resumable execution, and an audit trail you can actually use when something goes sideways.
 
 ## What Shipper does
