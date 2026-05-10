@@ -243,6 +243,7 @@ jobs:
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
         with:
+          toolchain: nightly
           components: rust-src
 
       - name: Install cargo-fuzz
@@ -293,6 +294,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Add cross-compilation target
+        run: rustup target add ${{ matrix.target }}
 
       - name: Cache Cargo
         uses: actions/cache@v5
