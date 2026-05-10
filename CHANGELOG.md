@@ -11,6 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`shipper` crate:** the `shipper-cli` dependency is now behind a default `cli` feature. `cargo install shipper` and the `shipper` binary still work unchanged (the feature is on by default). Library consumers that only want the curated `shipper-core` re-export can opt out with `shipper = { version = "...", default-features = false }`, which drops the `clap` graph. `shipper-core` remains the canonical lean embedding surface.
 
+### Planned — Rust 1.95 / 0.4.0 Quality Rollout
+
+The next release line is **0.4.0** (minor bump because MSRV increases). The rollout is tracked in [`docs/ci/rust-1.95-rollout.md`](docs/ci/rust-1.95-rollout.md) and proceeds through fifteen PRs:
+
+- Raise MSRV from Rust 1.92 to Rust 1.95.
+- Pin toolchain via `rust-toolchain.toml`.
+- Add `xtask` Rust-native policy runner.
+- Add Clippy lint ledger (`policy/clippy-lints.toml`) and checker.
+- Activate Rust 1.95 compiler lint floor (`unsafe_op_in_unsafe_fn`, `unused_must_use`, `const_item_interior_mutations`, et al.).
+- Activate Rust 1.95 Clippy ratchets (`manual_checked_ops`, `manual_take`, `manual_pop_if`, `duration_suboptimal_units`, et al.).
+- Add exact no-panic no-new-debt baseline and checker.
+- Add non-Rust file policy allowlists for workflows, generated files, executables, dependency surfaces.
+- Add advisory `ripr` PR-time exposure lane.
+- Add scoped CI lane policy and targeted mutation routing.
+- Apply Rust 1.95 API cleanup in publish and receipt paths.
+- First Clippy / no-panic debt burndown.
+- Version alignment to `0.4.0-rc.1` / `v0.4.0`.
+- Release dry-run proof.
+
 ## [0.3.0-rc.2] - 2026-04-18
 
 Nine-competency roadmap ([#109](https://github.com/EffortlessMetrics/shipper/issues/109)) landed end-to-end on `main` since `v0.3.0-rc.1`: **Prove**, **Survive**, **Reconcile**, **Narrate**, **Remediate**, **Harden** (Trusted Publishing), **Ergonomics** (three-crate split), plus consistency enforcement and operator-trust docs.
