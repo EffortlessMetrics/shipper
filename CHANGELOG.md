@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **MSRV raised from 1.92 to 1.95.** `[workspace.package] rust-version` updated to `"1.95"`. `rust-toolchain.toml` pins the toolchain to `1.95.0` (minimal profile + rustfmt + clippy). `clippy.toml` sets `msrv = "1.95"`, cognitive-complexity threshold 40, too-many-arguments threshold 8. All CI MSRV references (ci.yml, coverage.yml, release.yml) updated. Documentation and badge updated accordingly.
+
 - **`shipper` crate:** the `shipper-cli` dependency is now behind a default `cli` feature. `cargo install shipper` and the `shipper` binary still work unchanged (the feature is on by default). Library consumers that only want the curated `shipper-core` re-export can opt out with `shipper = { version = "...", default-features = false }`, which drops the `clap` graph. `shipper-core` remains the canonical lean embedding surface.
 
 ### Planned — Rust 1.95 / 0.4.0 Quality Rollout

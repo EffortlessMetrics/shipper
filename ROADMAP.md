@@ -59,7 +59,7 @@ Per [docs/INVARIANTS.md](docs/INVARIANTS.md): `events.jsonl` is authoritative an
 All domain logic lives in `crates/shipper`. `crates/shipper-cli` parses args and calls into the library. Other frontends (IDP plugins, dashboards, automation) consume the library directly.
 
 ### Forbid unsafe; respect MSRV
-`unsafe_code = "forbid"` workspace-wide. Edition 2024, MSRV 1.92.
+`unsafe_code = "forbid"` workspace-wide. Edition 2024, MSRV 1.95.
 
 ## Now / Next / Later
 

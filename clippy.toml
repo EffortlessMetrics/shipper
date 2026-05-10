@@ -1,0 +1,5 @@
+# shipper Clippy configuration.
+msrv = "1.95"
+cognitive-complexity-threshold = 40
+too-many-arguments-threshold = 8
+type-complexity-threshold = 300

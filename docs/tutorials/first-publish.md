@@ -12,7 +12,7 @@ In this tutorial you will publish a two-crate workspace to crates.io using Shipp
 
 ## What you'll need
 
-- Rust toolchain (edition 2024, MSRV 1.92 — `rustup update stable` is fine)
+- Rust toolchain (edition 2024, MSRV 1.95 — `rustup update stable` is fine)
 - A crates.io account and a token (`cargo login`)
 - A git-clean workspace with two crates, one depending on the other
 - About 15 minutes

@@ -95,7 +95,7 @@ Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is wha
 ## Conventions
 
 - **`unsafe_code = "forbid"`** is enforced workspace-wide. No unsafe blocks.
-- Edition 2024, MSRV 1.92, resolver v3.
+- Edition 2024, MSRV 1.95, resolver v3.
 - Tests that mutate environment variables or filesystem use `#[serial]` from `serial_test` for isolation.
 - Registry interactions in tests use `tiny_http` mock servers, never real registries.
 - Snapshot tests use `insta`. Property-based tests use `proptest`.
