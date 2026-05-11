@@ -89,4 +89,26 @@ cargo xtask policy-report
 
 ## Rollout
 
-The file policy checker starts in advisory mode (PR 9). It is promoted to blocking-allowlist mode in the release dry-run proof (PR 15) once the initial inventory is complete and reviewed.
+The file-policy work is decomposed into a 12-PR ladder of small, separately reviewable changes rather than one large policy-infrastructure PR. The full tracker, with issue numbers and current disposition, lives in [docs/policy/NON_RUST_ROLLOUT.md](policy/NON_RUST_ROLLOUT.md).
+
+In short:
+
+1. **PRs 1–3** are docs and ledger scaffolding. No checker, no enforcement.
+2. **PR 4** adds an `xtask` skeleton and `cargo xtask non-rust inventory`.
+3. **PRs 5–9** add the checker subcommands and the unified report. All run in advisory mode initially.
+4. **PR 10** wires the advisory checks into CI and uploads the policy report as an artifact. No merge blocking yet.
+5. **PR 11** promotes file/generated/executable/dependency/workflow checks to `blocking-allowlist`.
+6. **PR 12** promotes process and network checks to `blocking-allowlist`.
+
+`blocking-strict` mode (which fails on unused entries and stale review dates) is explicitly out of scope for the initial rollout and is deferred until after a stale/unused cleanup pass.
+
+## Receipts, not burn-down
+
+The allowlists do not mean "approved forever." They mean **known surface, owner, reason, and current disposition.** A receipt with an explicit owner and a reason that says *why* the file exists is acceptable even when the long-term plan is to remove the file.
+
+Valid `reason` values include:
+
+- A durable explanation of why the surface exists (e.g., "Codecov status and reporting configuration").
+- **"Scheduled to be converted to Rust/xtask"** when the current file exists for legacy compatibility or migration staging. Pair this reason with an `expires` date so the receipt does not silently outlive its rationale.
+
+This rule keeps the policy goal — visibility and ownership — separate from any individual cleanup deadline. Non-Rust is allowed; non-Rust is never invisible.

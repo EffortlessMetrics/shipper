@@ -140,21 +140,41 @@ Every suppression in code must have a corresponding entry in `policy/clippy-debt
 
 ## Rollout Status
 
-| Allowlist | Introduced in PR | Status |
+The 0.4.0 quality rollout is split into a ladder of small, separately reviewable PRs rather than one large policy-infrastructure PR. The full tracker for the non-Rust file-policy subset (PRs 1–12 below) lives in [docs/policy/NON_RUST_ROLLOUT.md](policy/NON_RUST_ROLLOUT.md). The broader 0.4.0 rollout (Clippy, no-panic, ripr, CI lanes, release dry-run) is tracked under [#109](https://github.com/EffortlessMetrics/shipper/issues/109).
+
+A receipt in any of these allowlists is **not** "approved forever." It is "known surface, owner, reason, and current disposition." A valid `reason` may include `"scheduled to be converted to Rust/xtask"` when the file exists for legacy compatibility or migration staging, paired with an `expires` date.
+
+### Non-Rust file-policy ladder (12 SRP PRs)
+
+| Allowlist / change | Rollout PR | Issue | Status |
+|---|---|---|---|
+| Docs: rollout-status clarification | 1/12 | [#201](https://github.com/EffortlessMetrics/shipper/issues/201) | planned |
+| All policy TOML ledgers (scaffold + receipts) | 2/12 | [#202](https://github.com/EffortlessMetrics/shipper/issues/202) | planned |
+| High-risk receipts (workflow/process/network/dep/exec/generated) | 3/12 | [#203](https://github.com/EffortlessMetrics/shipper/issues/203) | planned |
+| `xtask` skeleton + `cargo xtask non-rust inventory` | 4/12 | [#212](https://github.com/EffortlessMetrics/shipper/issues/212) | planned |
+| `cargo xtask check-file-policy` | 5/12 | [#204](https://github.com/EffortlessMetrics/shipper/issues/204) | planned |
+| `cargo xtask non-rust propose` | 6/12 | [#205](https://github.com/EffortlessMetrics/shipper/issues/205) | planned |
+| `check-generated` / `check-executable-files` / `check-dependency-surfaces` | 7/12 | [#206](https://github.com/EffortlessMetrics/shipper/issues/206) | planned |
+| `check-workflow-surfaces` / `check-process-policy` / `check-network-policy` | 8/12 | [#207](https://github.com/EffortlessMetrics/shipper/issues/207) | planned |
+| `cargo xtask policy-report` (unified) | 9/12 | [#208](https://github.com/EffortlessMetrics/shipper/issues/208) | planned |
+| CI: run all checks in advisory mode + upload artifact | 10/12 | [#209](https://github.com/EffortlessMetrics/shipper/issues/209) | planned |
+| CI: promote file/generated/executable/dependency/workflow to blocking | 11/12 | [#210](https://github.com/EffortlessMetrics/shipper/issues/210) | planned |
+| CI: promote process and network to blocking | 12/12 | [#211](https://github.com/EffortlessMetrics/shipper/issues/211) | planned |
+
+Umbrella tracking issue for the file-policy work: [#180](https://github.com/EffortlessMetrics/shipper/issues/180).
+
+### Other 0.4.0 rollout PRs (parallel work)
+
+| Allowlist / change | Issue | Status |
 |---|---|---|
-| `clippy-lints.toml` | PR 5 | planned |
-| `clippy-debt.toml` | PR 5 | planned |
-| `clippy-exceptions.toml` | PR 5 | planned |
-| `no-panic-allowlist.toml` | PR 8 | planned |
-| `no-panic-baseline.toml` | PR 8 | planned |
-| `non-rust-allowlist.toml` | PR 9 | planned |
-| `generated-allowlist.toml` | PR 9 | planned |
-| `executable-allowlist.toml` | PR 9 | planned |
-| `dependency-surface-allowlist.toml` | PR 9 | planned |
-| `workflow-allowlist.toml` | PR 9 | planned |
-| `process-allowlist.toml` | PR 9 | planned |
-| `network-allowlist.toml` | PR 9 | planned |
-| `ripr-suppressions.toml` | PR 10 | planned |
-| `ci-budget.toml` | PR 11 | planned |
-| `ci-lanes.toml` | PR 11 | planned |
-| `ci-risk-packs.toml` | PR 11 | planned |
+| `xtask` policy foundation (`package-surface`, `policy-report` stub) | [#176](https://github.com/EffortlessMetrics/shipper/issues/176) | planned |
+| `clippy-lints.toml` / `clippy-debt.toml` / `clippy-exceptions.toml` ledgers | [#179](https://github.com/EffortlessMetrics/shipper/issues/179) | planned |
+| Rust 1.95 rustc lint floor | [#198](https://github.com/EffortlessMetrics/shipper/issues/198) | planned |
+| Clippy 1.94/1.95 ratchets | [#191](https://github.com/EffortlessMetrics/shipper/issues/191) | planned |
+| `no-panic-baseline.toml` + checker | [#187](https://github.com/EffortlessMetrics/shipper/issues/187) | planned |
+| ripr advisory lane + targeted mutation scoping | [#182](https://github.com/EffortlessMetrics/shipper/issues/182) | planned |
+| CI lane policy | [#189](https://github.com/EffortlessMetrics/shipper/issues/189) | planned |
+| Rust 1.95 API cleanup | [#184](https://github.com/EffortlessMetrics/shipper/issues/184) | planned |
+| First debt burn-down (narrow owner lane) | [#190](https://github.com/EffortlessMetrics/shipper/issues/190) | planned |
+| 0.4.0-rc.1 version + changelog | [#192](https://github.com/EffortlessMetrics/shipper/issues/192) | planned |
+| 0.4.0-rc.1 release dry-run proof | [#195](https://github.com/EffortlessMetrics/shipper/issues/195) | planned |
