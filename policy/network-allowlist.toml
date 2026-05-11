@@ -4,30 +4,77 @@
 # policy. Workflows in policy/workflow-allowlist.toml reference one of these
 # profiles via `network_policy = "..."`.
 #
-# This file ships as a scaffold in PR 2 with the `ci` and `release` profiles
-# stubbed but empty. PR 3 (#203) populates the actual endpoint lists by
-# scanning the current workflows.
+# Entries are honest first-pass receipts based on what each workflow profile
+# actually contacts today. PR 8 (#207) adds the checker that scans workflows
+# for endpoint references and reconciles against these profiles.
 
 schema_version = "1.0"
 policy = "network-allowlist"
 owner = "EffortlessMetrics"
 status = "active"
 
-# Scaffold profiles. PR 3 fills these in once workflow receipts are written.
-#
-# [[policy]]
-# name = "ci"
-# allowed_endpoints = ["github.com", "githubusercontent.com", "crates.io", "static.crates.io"]
-# owner = "release/ci"
-# reason = "CI fetches actions, toolchains, crates, and registry metadata."
-#
-# [[policy]]
-# name = "release"
-# allowed_endpoints = [
-#   "crates.io",
-#   "static.crates.io",
-#   "token.actions.githubusercontent.com",
-#   "api.github.com",
-# ]
-# owner = "release/ci"
-# reason = "Trusted Publishing and release artifact workflows require crates.io and GitHub API/OIDC endpoints."
+# ─── ci ─────────────────────────────────────────────────────────────────────
+
+[[profile]]
+name = "ci"
+allowed_endpoints = [
+  "github.com",
+  "api.github.com",
+  "raw.githubusercontent.com",
+  "objects.githubusercontent.com",
+  "ghcr.io",
+  "crates.io",
+  "static.crates.io",
+  "index.crates.io",
+  "static.rust-lang.org",
+  "win.rustup.rs",
+  "sh.rustup.rs",
+  "codecov.io",
+  "app.codecov.io",
+  "cli.codecov.io",
+]
+owner = "release/ci"
+reason = "CI fetches actions, toolchains (rustup), crates (crates.io + sparse index), and uploads coverage reports to Codecov. dtolnay/rust-toolchain and taiki-e/install-action add the rustup and ghcr endpoints."
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+# ─── release ────────────────────────────────────────────────────────────────
+
+[[profile]]
+name = "release"
+allowed_endpoints = [
+  "github.com",
+  "api.github.com",
+  "uploads.github.com",
+  "objects.githubusercontent.com",
+  "token.actions.githubusercontent.com",
+  "crates.io",
+  "static.crates.io",
+  "index.crates.io",
+  "static.rust-lang.org",
+  "sh.rustup.rs",
+  "win.rustup.rs",
+]
+owner = "release/ci"
+reason = "Release workflow contacts crates.io for Trusted Publishing (token.actions.githubusercontent.com for the OIDC exchange + crates.io / index.crates.io / static.crates.io for the publish + visibility verification), GitHub for artifact uploads and release creation, and the standard rustup/toolchain endpoints."
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+# ─── droid ──────────────────────────────────────────────────────────────────
+
+[[profile]]
+name = "droid"
+allowed_endpoints = [
+  "github.com",
+  "api.github.com",
+  "raw.githubusercontent.com",
+  "objects.githubusercontent.com",
+  "token.actions.githubusercontent.com",
+  "app.factory.ai",
+  "api.factory.ai",
+  "api.minimax.io",
+]
+owner = "release/ci"
+reason = "Droid workflows fetch the Factory CLI from app.factory.ai/cli, exchange the GitHub OIDC token for a Factory app token (token.actions.githubusercontent.com -> api.factory.ai), and route MiniMax-M2.7 BYOK requests to api.minimax.io/anthropic. The actions/checkout + droid-action-safe action also need GitHub endpoints."
+created = "2026-05-11"
+review_after = "2026-08-11"

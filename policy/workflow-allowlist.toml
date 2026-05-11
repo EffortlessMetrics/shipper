@@ -4,17 +4,116 @@
 # `.github/**` wildcard. Each workflow declares the process and network
 # policies it operates under (see policy/process-allowlist.toml and
 # policy/network-allowlist.toml).
-#
-# This file ships as a scaffold in PR 2. PR 3 (#203) sweeps every current
-# workflow into a real receipt with `process_policy` and `network_policy`
-# named explicitly.
 
 schema_version = "1.0"
 policy = "workflow-allowlist"
 owner = "EffortlessMetrics"
 status = "active"
 
-# No workflows are receipted at scaffold time. PR 3 enumerates each of the
-# current workflows under .github/workflows/ and assigns its process and
-# network policies. The release workflow must explicitly use
-# `process_policy = "release"` and `network_policy = "release"`.
+# ─── CI workflows ───────────────────────────────────────────────────────────
+
+[[workflow]]
+path = ".github/workflows/ci.yml"
+kind = "required_ci"
+owner = "release/ci"
+reason = "Primary CI workflow: fmt, clippy, build matrix, nextest matrix, MSRV check, security audit, docs, BDD, fuzz smoke, release build."
+process_policy = "ci"
+network_policy = "ci"
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[workflow]]
+path = ".github/workflows/coverage.yml"
+kind = "ci"
+owner = "release/ci"
+reason = "Code coverage via cargo-llvm-cov uploaded to Codecov. Runs on main and PRs."
+process_policy = "ci"
+network_policy = "ci"
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[workflow]]
+path = ".github/workflows/architecture-guard.yml"
+kind = "ci"
+owner = "rust/architecture"
+reason = "Enforces the plan/state/runtime/ops/engine layering rules documented in crate CLAUDE.md files."
+process_policy = "ci"
+network_policy = "ci"
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[workflow]]
+path = ".github/workflows/fuzz.yml"
+kind = "ci_scheduled"
+owner = "fuzz/tests"
+reason = "Scheduled cargo-fuzz runs using nightly toolchain. Out of the default PR critical path."
+process_policy = "ci"
+network_policy = "ci"
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[workflow]]
+path = ".github/workflows/mutation.yml"
+kind = "ci_scheduled"
+owner = "rust/tests"
+reason = "Scheduled cargo-mutants runs for targeted mutation testing of trust-critical crates."
+process_policy = "ci"
+network_policy = "ci"
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+# ─── Release workflow (high risk: secrets, Trusted Publishing, registry) ────
+
+[[workflow]]
+path = ".github/workflows/release.yml"
+kind = "release"
+owner = "release/ci"
+reason = "Primary release workflow. Dogfoods shipper itself: cargo build, shipper plan/preflight/publish/resume, crates.io Trusted Publishing via OIDC, binary artifact build + upload, gh release create."
+process_policy = "release"
+network_policy = "release"
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+# ─── Droid workflows (BYOK MiniMax, external Factory CLI fetch) ─────────────
+
+[[workflow]]
+path = ".github/workflows/droid-review.yml"
+kind = "droid_auto_review"
+owner = "release/ci"
+reason = "Automatic Factory Droid review on same-repo PRs. BYOK MiniMax M2.7. Same-repo guard + allowed_bots: dependabot[bot]. See #172, #174."
+process_policy = "droid"
+network_policy = "droid"
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[workflow]]
+path = ".github/workflows/droid.yml"
+kind = "droid_manual"
+owner = "release/ci"
+reason = "Manual @droid command handling. Trusted-actor guard (OWNER/MEMBER/COLLABORATOR) on every event branch. BYOK MiniMax M2.7."
+process_policy = "droid"
+network_policy = "droid"
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[workflow]]
+path = ".github/workflows/droid-security-scan.yml"
+kind = "droid_scheduled_security"
+owner = "release/ci"
+reason = "Scheduled (Mon 08:00 UTC) and workflow_dispatch Factory Droid security scan. 7-day window, medium threshold, critical blocking."
+process_policy = "droid"
+network_policy = "droid"
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+# ─── Dependabot configuration (not a workflow, but governs the bot itself) ──
+
+[[workflow]]
+path = ".github/dependabot.yml"
+kind = "dependabot_config"
+owner = "release/ci"
+reason = "Dependabot configuration for cargo and github-actions ecosystems."
+process_policy = "ci"
+network_policy = "ci"
+created = "2026-05-11"
+review_after = "2026-08-11"
