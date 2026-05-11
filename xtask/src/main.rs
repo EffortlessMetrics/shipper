@@ -9,8 +9,9 @@
 //! See `docs/policy/NON_RUST_ROLLOUT.md` for the full ladder.
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
+mod check_file_policy;
 mod file_policy;
 
 #[derive(Parser, Debug)]
@@ -30,6 +31,10 @@ enum Command {
     /// Non-Rust file policy commands.
     #[command(subcommand, name = "non-rust")]
     NonRust(NonRustCommand),
+
+    /// Reconcile tracked non-Rust files against `policy/non-rust-allowlist.toml`.
+    #[command(name = "check-file-policy")]
+    CheckFilePolicy(CheckFilePolicyArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -37,9 +42,15 @@ enum NonRustCommand {
     /// Inventory all tracked non-Rust files in the workspace.
     ///
     /// Emits a Markdown summary and a JSON payload to `target/policy/`.
-    /// The output is consumed by later policy checkers
-    /// (`cargo xtask check-file-policy`, landing in a follow-up PR).
+    /// The output is consumed by `check-file-policy`.
     Inventory,
+}
+
+#[derive(Args, Debug)]
+struct CheckFilePolicyArgs {
+    /// Reporting / enforcement mode.
+    #[arg(long, value_enum, default_value_t = check_file_policy::Mode::Advisory)]
+    mode: check_file_policy::Mode,
 }
 
 fn main() -> Result<()> {
@@ -48,6 +59,7 @@ fn main() -> Result<()> {
         Command::NonRust(cmd) => match cmd {
             NonRustCommand::Inventory => file_policy::inventory()?,
         },
+        Command::CheckFilePolicy(args) => check_file_policy::check(args.mode)?,
     }
     Ok(())
 }
