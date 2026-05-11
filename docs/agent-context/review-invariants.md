@@ -40,6 +40,7 @@ These constrain how Factory Droid review is configured for shipper. A reviewer s
 - `cancel-in-progress: false` on the auto-review and security-scan workflows.
 - `pull_request` types include `opened`, `synchronize`, `ready_for_review`, `reopened`.
 - The auto-review job is guarded by `github.event.pull_request.head.repo.full_name == github.repository` (same-repo guard). Fork PRs are intentionally skipped because secrets must not run on untrusted fork code.
+- `allowed_bots: dependabot[bot]` is set so Dependabot dependency-bump PRs receive Droid Auto Review. The safe action rejects non-human actors by default; this list narrowly re-permits Dependabot. Do not change this to `'*'`. Adding additional bots requires an explicit follow-up PR with justification.
 - Draft PRs are intentionally reviewable.
 - `[skip-review]` in the PR title opts out of automatic review.
 - The manual `@droid` workflow is guarded by `OWNER`, `MEMBER`, or `COLLABORATOR` `author_association` on every event branch, plus the same-repo guard on the `pull_request` event branch.

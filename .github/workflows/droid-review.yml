@@ -61,6 +61,8 @@ jobs:
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
           upload_debug_artifacts: false
 
+          allowed_bots: dependabot[bot]
+
           automatic_review: true
           automatic_security_review: true
 
