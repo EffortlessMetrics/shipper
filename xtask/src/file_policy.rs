@@ -91,10 +91,8 @@ pub fn inventory() -> Result<()> {
         .with_context(|| format!("creating output directory {}", out_dir.display()))?;
 
     let json_path = out_dir.join(JSON_NAME);
-    let json = serde_json::to_string_pretty(&inventory)
-        .context("serializing inventory as JSON")?;
-    fs::write(&json_path, json)
-        .with_context(|| format!("writing {}", json_path.display()))?;
+    let json = serde_json::to_string_pretty(&inventory).context("serializing inventory as JSON")?;
+    fs::write(&json_path, json).with_context(|| format!("writing {}", json_path.display()))?;
 
     let md_path = out_dir.join(MD_NAME);
     fs::write(&md_path, render_markdown(&inventory))
