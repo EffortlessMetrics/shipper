@@ -1,0 +1,28 @@
+# Process policy allowlist.
+#
+# Named profiles enumerate which shell commands and subprocesses are permitted
+# under that policy. Workflows in policy/workflow-allowlist.toml reference one
+# of these profiles via `process_policy = "..."`.
+#
+# This file ships as a scaffold in PR 2 with the `ci` and `release` profiles
+# stubbed but empty. PR 3 (#203) populates the actual command lists by
+# scanning the current workflows.
+
+schema_version = "1.0"
+policy = "process-allowlist"
+owner = "EffortlessMetrics"
+status = "active"
+
+# Scaffold profiles. PR 3 fills these in once workflow receipts are written.
+#
+# [[policy]]
+# name = "ci"
+# allowed_processes = ["cargo", "rustup"]
+# owner = "release/ci"
+# reason = "CI compiles, lints, and tests the Rust workspace."
+#
+# [[policy]]
+# name = "release"
+# allowed_processes = ["cargo", "rustup", "shipper", "gh", "tar", "sha256sum"]
+# owner = "release/ci"
+# reason = "Release workflow builds shipper, publishes crates, uploads artifacts, and verifies registry visibility."

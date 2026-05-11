@@ -1,0 +1,33 @@
+# Network policy allowlist.
+#
+# Named profiles enumerate which external endpoints are permitted under that
+# policy. Workflows in policy/workflow-allowlist.toml reference one of these
+# profiles via `network_policy = "..."`.
+#
+# This file ships as a scaffold in PR 2 with the `ci` and `release` profiles
+# stubbed but empty. PR 3 (#203) populates the actual endpoint lists by
+# scanning the current workflows.
+
+schema_version = "1.0"
+policy = "network-allowlist"
+owner = "EffortlessMetrics"
+status = "active"
+
+# Scaffold profiles. PR 3 fills these in once workflow receipts are written.
+#
+# [[policy]]
+# name = "ci"
+# allowed_endpoints = ["github.com", "githubusercontent.com", "crates.io", "static.crates.io"]
+# owner = "release/ci"
+# reason = "CI fetches actions, toolchains, crates, and registry metadata."
+#
+# [[policy]]
+# name = "release"
+# allowed_endpoints = [
+#   "crates.io",
+#   "static.crates.io",
+#   "token.actions.githubusercontent.com",
+#   "api.github.com",
+# ]
+# owner = "release/ci"
+# reason = "Trusted Publishing and release artifact workflows require crates.io and GitHub API/OIDC endpoints."

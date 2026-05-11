@@ -1,0 +1,20 @@
+# Workflow allowlist.
+#
+# Every `.github/workflows/*.yml` file must appear here explicitly. No
+# `.github/**` wildcard. Each workflow declares the process and network
+# policies it operates under (see policy/process-allowlist.toml and
+# policy/network-allowlist.toml).
+#
+# This file ships as a scaffold in PR 2. PR 3 (#203) sweeps every current
+# workflow into a real receipt with `process_policy` and `network_policy`
+# named explicitly.
+
+schema_version = "1.0"
+policy = "workflow-allowlist"
+owner = "EffortlessMetrics"
+status = "active"
+
+# No workflows are receipted at scaffold time. PR 3 enumerates each of the
+# current workflows under .github/workflows/ and assigns its process and
+# network policies. The release workflow must explicitly use
+# `process_policy = "release"` and `network_policy = "release"`.

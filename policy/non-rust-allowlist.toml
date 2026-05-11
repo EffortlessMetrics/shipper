@@ -1,0 +1,292 @@
+# Non-Rust file allowlist.
+#
+# Every tracked non-Rust file should appear here (or in one of the more
+# specific companion allowlists: generated, executable, dependency-surface,
+# workflow). A receipt is "known surface, owner, reason, current disposition" —
+# never "approved forever".
+#
+# `reason = "Scheduled to be converted to Rust/xtask"` is acceptable for
+# legacy/migration entries, paired with an `expires` date.
+#
+# See: docs/FILE_POLICY.md and docs/policy/NON_RUST_ROLLOUT.md.
+
+schema_version = "1.0"
+policy = "non-rust-allowlist"
+owner = "EffortlessMetrics"
+status = "active"
+
+# ─── Top-level project docs ─────────────────────────────────────────────────
+
+[[file]]
+path = "README.md"
+kind = "documentation"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Top-level project README."
+covered_by = ["manual review", "future: cargo xtask check-file-policy"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = "CHANGELOG.md"
+kind = "release_documentation"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Release history and user-facing change log."
+covered_by = ["manual review", "future: cargo xtask check-file-policy"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = "CONTRIBUTING.md"
+kind = "contributor_documentation"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Contributor onboarding and conventions."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = "SECURITY.md"
+kind = "security_policy"
+surface = "docs"
+classification = "documentation"
+owner = "security"
+reason = "Security disclosure and vulnerability reporting policy."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = "MISSION.md"
+kind = "product_documentation"
+surface = "docs"
+classification = "documentation"
+owner = "product"
+reason = "Project north star: mission, vision, audience, beliefs."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = "ROADMAP.md"
+kind = "product_documentation"
+surface = "docs"
+classification = "documentation"
+owner = "product"
+reason = "Five-pillar roadmap and nine-competency thesis."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = "GAPS_CLOSEOUT.md"
+kind = "historical_documentation"
+surface = "docs"
+classification = "documentation"
+owner = "release/ci"
+reason = "Historical gap-closeout record for prior release work."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-11-11"
+
+# ─── Agent instructions ─────────────────────────────────────────────────────
+
+[[file]]
+path = "AGENTS.md"
+kind = "agent_instructions"
+surface = "tooling"
+classification = "documentation"
+owner = "agent-maintainers"
+reason = "Repository instructions for agentic maintainers."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = "CLAUDE.md"
+kind = "agent_instructions"
+surface = "tooling"
+classification = "documentation"
+owner = "agent-maintainers"
+reason = "Claude-specific repository instructions."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = "GEMINI.md"
+kind = "agent_instructions"
+surface = "tooling"
+classification = "documentation"
+owner = "agent-maintainers"
+reason = "Gemini-specific repository instructions."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+# ─── Licensing ──────────────────────────────────────────────────────────────
+
+[[file]]
+path = "LICENSE"
+kind = "license"
+surface = "legal"
+classification = "license"
+owner = "legal"
+reason = "Top-level license pointer."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2027-05-11"
+
+[[file]]
+path = "LICENSE-APACHE"
+kind = "license"
+surface = "legal"
+classification = "license"
+owner = "legal"
+reason = "Apache 2.0 license text (dual-license)."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2027-05-11"
+
+[[file]]
+path = "LICENSE-MIT"
+kind = "license"
+surface = "legal"
+classification = "license"
+owner = "legal"
+reason = "MIT license text (dual-license)."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2027-05-11"
+
+# ─── Release artifacts (historical) ─────────────────────────────────────────
+
+[[file]]
+path = "RELEASE_CHECKLIST_v0.2.0.md"
+kind = "release_artifact"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Historical release checklist for v0.2.0."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-11-11"
+
+[[file]]
+path = "RELEASE_CHECKLIST_v0.3.0.md"
+kind = "release_artifact"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Historical release checklist for v0.3.0."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-11-11"
+
+[[file]]
+path = "RELEASE_NOTES_v0.2.0.md"
+kind = "release_artifact"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Historical release notes for v0.2.0."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-11-11"
+
+[[file]]
+path = "RELEASE_NOTES_v0.3.0.md"
+kind = "release_artifact"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Historical release notes for v0.3.0."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-11-11"
+
+# ─── Build / toolchain config ───────────────────────────────────────────────
+
+[[file]]
+path = "rust-toolchain.toml"
+kind = "toolchain_config"
+surface = "build"
+classification = "config"
+owner = "rust/build"
+reason = "Pins the Rust toolchain used by local development and CI."
+covered_by = ["cargo check --workspace --locked"]
+created = "2026-05-11"
+review_after = "2026-11-11"
+
+[[file]]
+path = "clippy.toml"
+kind = "lint_config"
+surface = "build"
+classification = "config"
+owner = "rust/lints"
+reason = "Clippy configuration: MSRV and complexity thresholds."
+covered_by = ["cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"]
+created = "2026-05-11"
+review_after = "2026-11-11"
+
+[[file]]
+path = "codecov.yml"
+kind = "coverage_config"
+surface = "ci"
+classification = "config"
+owner = "release/ci"
+reason = "Codecov status and reporting configuration."
+covered_by = ["codecov upload step in coverage.yml"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+# ─── Subtrees: documentation, BDD features, templates, fuzz harness ─────────
+
+[[glob]]
+pattern = "docs/**/*.md"
+kind = "documentation"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Project documentation and policy explanations."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[glob]]
+pattern = "features/**/*.feature"
+kind = "bdd_spec"
+surface = "tests"
+classification = "test"
+owner = "bdd/tests"
+reason = "Cucumber BDD feature specifications for release and publishing behavior."
+covered_by = ["cargo test --workspace --locked"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[glob]]
+pattern = "templates/**"
+kind = "template_fixture"
+surface = "fixtures"
+classification = "test"
+owner = "release/templates"
+reason = "CI template fixtures (azure-pipelines, circleci, github-trusted-publishing) used to validate generated/release surfaces."
+covered_by = ["cargo test --workspace --locked"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[glob]]
+pattern = "fuzz/**"
+kind = "fuzz_harness"
+surface = "tests"
+classification = "test"
+owner = "fuzz/tests"
+reason = "cargo-fuzz harness and supporting files; excluded from default workspace but retained for deep validation."
+covered_by = ["cargo fuzz (manual / scheduled fuzz.yml)"]
+created = "2026-05-11"
+review_after = "2026-08-11"
