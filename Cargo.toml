@@ -13,6 +13,7 @@ members = [
   "crates/shipper-cargo-failure",
   "crates/shipper-webhook",
   "crates/shipper-output-sanitizer",
+  "xtask",
 ]
 default-members = ["crates/shipper", "crates/shipper-cli"]
 exclude = ["fuzz"]

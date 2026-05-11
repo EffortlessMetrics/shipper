@@ -1,0 +1,18 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+description = "Internal tooling for the shipper workspace (policy reports, inventory, checks). Not published."
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { workspace = true }
+serde_json = "1.0"
+
+[lints]
+workspace = true
