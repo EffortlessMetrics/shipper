@@ -12,6 +12,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 mod check_file_policy;
+mod checks;
 mod file_policy;
 mod propose;
 
@@ -36,6 +37,18 @@ enum Command {
     /// Reconcile tracked non-Rust files against `policy/non-rust-allowlist.toml`.
     #[command(name = "check-file-policy")]
     CheckFilePolicy(CheckFilePolicyArgs),
+
+    /// Validate `policy/generated-allowlist.toml` entries.
+    #[command(name = "check-generated")]
+    CheckGenerated(ChecksModeArgs),
+
+    /// Reconcile tracked executable files against `policy/executable-allowlist.toml`.
+    #[command(name = "check-executable-files")]
+    CheckExecutableFiles(ChecksModeArgs),
+
+    /// Reconcile dependency-manifest files against `policy/dependency-surface-allowlist.toml`.
+    #[command(name = "check-dependency-surfaces")]
+    CheckDependencySurfaces(ChecksModeArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -60,6 +73,13 @@ struct CheckFilePolicyArgs {
     mode: check_file_policy::Mode,
 }
 
+#[derive(Args, Debug)]
+struct ChecksModeArgs {
+    /// Reporting / enforcement mode.
+    #[arg(long, value_enum, default_value_t = checks::Mode::Advisory)]
+    mode: checks::Mode,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -68,6 +88,9 @@ fn main() -> Result<()> {
             NonRustCommand::Propose => propose::propose()?,
         },
         Command::CheckFilePolicy(args) => check_file_policy::check(args.mode)?,
+        Command::CheckGenerated(args) => checks::check_generated(args.mode)?,
+        Command::CheckExecutableFiles(args) => checks::check_executable_files(args.mode)?,
+        Command::CheckDependencySurfaces(args) => checks::check_dependency_surfaces(args.mode)?,
     }
     Ok(())
 }
