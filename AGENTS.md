@@ -106,3 +106,14 @@ Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is wha
 - `config init` uses `-o`/`--output`; `config validate` uses `-p`/`--path`.
 - `prefer_index` and `index_path` (readiness) are config-file-only settings with no CLI flags.
 
+## Automated review
+
+Factory Droid runs automated review and security review on same-repo PRs and on the `@droid` mention. Review output is treated as a repair queue consumed by follow-up coding agents, not as a human approval signal.
+
+- [`.factory/skills/review-guidelines/SKILL.md`](.factory/skills/review-guidelines/SKILL.md) — the active review skill: product contract, finding format, no-naked-LGTM record, evidence provenance, notification hygiene.
+- [`.factory/rules/droid-review.md`](.factory/rules/droid-review.md) — the compact rule version: clean-review requirements, priority surfaces, repo lenses.
+- [`docs/agent-context/review-invariants.md`](docs/agent-context/review-invariants.md) — durable product, CI, and Droid-workflow invariants a reviewer can rely on.
+- [`docs/agent-context/droid-smoke-tests.md`](docs/agent-context/droid-smoke-tests.md) — how to verify the Droid workflows after a change.
+
+When changing `.github/workflows/droid*.yml`, `.factory/`, or `docs/agent-context/`, follow the smoke-test procedure and update `review-invariants.md` if any invariant changes.
+
