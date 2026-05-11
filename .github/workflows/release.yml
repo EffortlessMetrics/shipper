@@ -70,7 +70,7 @@ jobs:
             os: windows-latest
             archive: zip
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -120,7 +120,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
       - name: Install Rust (MSRV)
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -181,7 +181,7 @@ jobs:
     outputs:
       publish_succeeded: ${{ steps.publish.outcome == 'success' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -361,7 +361,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-binaries, publish-crates-io]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Download binary artifacts
         uses: actions/download-artifact@v8
@@ -417,7 +417,7 @@ jobs:
     environment: release
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
@@ -511,7 +511,7 @@ jobs:
     environment: release
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
