@@ -13,6 +13,7 @@ use clap::{Args, Parser, Subcommand};
 
 mod check_file_policy;
 mod file_policy;
+mod propose;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -44,6 +45,12 @@ enum NonRustCommand {
     /// Emits a Markdown summary and a JSON payload to `target/policy/`.
     /// The output is consumed by `check-file-policy`.
     Inventory,
+
+    /// Propose draft allowlist entries for unreceipted non-Rust files.
+    ///
+    /// Writes `target/policy/non-rust-proposed-allowlist.toml` and
+    /// `non-rust-proposal.md`. Never mutates the real ledger.
+    Propose,
 }
 
 #[derive(Args, Debug)]
@@ -58,6 +65,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::NonRust(cmd) => match cmd {
             NonRustCommand::Inventory => file_policy::inventory()?,
+            NonRustCommand::Propose => propose::propose()?,
         },
         Command::CheckFilePolicy(args) => check_file_policy::check(args.mode)?,
     }
