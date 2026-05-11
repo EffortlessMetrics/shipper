@@ -46,7 +46,7 @@ const RETRYABLE_PATTERNS: [&str; 20] = [
     "network unreachable",
 ];
 
-const PERMANENT_PATTERNS: [&str; 22] = [
+const PERMANENT_PATTERNS: [&str; 26] = [
     "failed to parse manifest",
     "invalid",
     "missing",
@@ -69,6 +69,14 @@ const PERMANENT_PATTERNS: [&str; 22] = [
     "token is invalid",
     "invalid credentials",
     "checksum mismatch",
+    // Dep-resolution failures. These fire when cargo cannot find a
+    // required dep on the registry — the exact failure mode of a wrong
+    // publish order (#173). Without these the classifier falls through
+    // to Ambiguous and the retry loop hides the real Cargo stderr.
+    "failed to select a version for the requirement",
+    "no matching package named",
+    "candidate versions found which didn't match",
+    "required dependency is missing from the registry",
 ];
 
 /// Classify cargo publish output into retry behavior categories.
@@ -1171,6 +1179,37 @@ mod tests {
             "error: failed to publish to registry crates-io\n\
              Caused by:\n  the remote server responded with an error (status 200 OK): \
              crate version already exists: `my-crate@1.2.3`",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn realworld_dep_resolution_without_verify_framing() {
+        // Regression for #173: cargo publish can emit a dep-resolution
+        // failure WITHOUT the surrounding "failed to verify package tarball"
+        // framing — typically when the failure happens before the
+        // verify-package stage. Before the fix, this stderr contained no
+        // existing permanent pattern and was misclassified as Ambiguous,
+        // hiding the real cause behind 12 retries.
+        let o = classify_publish_failure(
+            "error: failed to select a version for the requirement `uselesskey-ecdsa = \"^0.7.0\"`\n\
+             candidate versions found which didn't match: 0.6.5, 0.6.4\n\
+             location searched: crates.io index\n\
+             required by package `uselesskey-aws-lc-rs v0.1.0 (/path/uselesskey-aws-lc-rs)`",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn realworld_no_matching_package_named() {
+        // Different cargo error shape: the package itself was not found on
+        // the registry (vs. a version-mismatch on a found package).
+        let o = classify_publish_failure(
+            "error: no matching package named `uselesskey-ed25519` found\n\
+             location searched: registry `crates-io`\n\
+             required by package `uselesskey-aws-lc-rs v0.1.0`",
             "",
         );
         assert_eq!(o.class, CargoFailureClass::Permanent);

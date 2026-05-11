@@ -79,40 +79,72 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
         })
         .collect();
 
-    // Build dependency edges A->deps (restricted to publishable workspace members).
-    let resolve = metadata
-        .resolve
-        .as_ref()
-        .context("cargo metadata did not include a resolve graph")?;
+    // Build dependency edges A->deps from manifest-level Package.dependencies.
+    //
+    // We intentionally do NOT use metadata.resolve.nodes here. resolve.nodes
+    // is feature-resolved and omits optional path+version dependencies that
+    // are not active under the default feature set. cargo publish, however,
+    // still needs every optional workspace path+version dep to be resolvable
+    // from the registry at publish time, so those edges must participate in
+    // publish ordering. See #173.
+    //
+    // We keep Normal + Build deps, including optional and target-specific
+    // ones, and exclude Dev.
+
+    // Map workspace package directory -> PackageId, used to resolve path
+    // dependencies to the workspace members they reference.
+    let pkg_dir_to_id: BTreeMap<std::path::PathBuf, PackageId> = workspace_ids
+        .iter()
+        .filter_map(|id| {
+            let pkg = pkg_map.get(id)?;
+            let dir = pkg
+                .manifest_path
+                .parent()?
+                .to_path_buf()
+                .into_std_path_buf();
+            Some((dir, id.clone()))
+        })
+        .collect();
 
     let mut deps_of: BTreeMap<PackageId, BTreeSet<PackageId>> = BTreeMap::new();
     let mut dependents_of: BTreeMap<PackageId, BTreeSet<PackageId>> = BTreeMap::new();
+    // Tracked separately so the "publishable must not depend on a
+    // non-publishable workspace member" guard can run against the same
+    // manifest-level source as the edges themselves.
+    let mut non_publishable_workspace_deps: BTreeMap<PackageId, BTreeSet<PackageId>> =
+        BTreeMap::new();
 
-    for node in &resolve.nodes {
-        if !publishable.contains(&node.id) {
-            continue;
-        }
-        for dep in &node.deps {
-            if !publishable.contains(&dep.pkg) {
+    for id in &workspace_ids {
+        let pkg = pkg_map
+            .get(id)
+            .context("workspace package missing from metadata")?;
+        for dep in &pkg.dependencies {
+            if !matches!(dep.kind, DependencyKind::Normal | DependencyKind::Build) {
                 continue;
             }
-
-            let is_relevant = dep
-                .dep_kinds
-                .iter()
-                .any(|k| matches!(k.kind, DependencyKind::Normal | DependencyKind::Build));
-            if !is_relevant {
+            let Some(dep_path) = dep.path.as_ref() else {
                 continue;
-            }
+            };
+            let dep_dir = dep_path.clone().into_std_path_buf();
+            let Some(dep_id) = pkg_dir_to_id.get(&dep_dir) else {
+                continue;
+            };
 
-            deps_of
-                .entry(node.id.clone())
-                .or_default()
-                .insert(dep.pkg.clone());
-            dependents_of
-                .entry(dep.pkg.clone())
-                .or_default()
-                .insert(node.id.clone());
+            if publishable.contains(id) && publishable.contains(dep_id) {
+                deps_of
+                    .entry(id.clone())
+                    .or_default()
+                    .insert(dep_id.clone());
+                dependents_of
+                    .entry(dep_id.clone())
+                    .or_default()
+                    .insert(id.clone());
+            } else if publishable.contains(id) && !publishable.contains(dep_id) {
+                non_publishable_workspace_deps
+                    .entry(id.clone())
+                    .or_default()
+                    .insert(dep_id.clone());
+            }
         }
     }
 
@@ -156,36 +188,31 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
         publishable.clone()
     };
 
-    // Validate: included crates must not have normal/build deps on non-publishable workspace members.
-    for node in &resolve.nodes {
-        if !included.contains(&node.id) {
+    // Validate: included crates must not have normal/build deps on
+    // non-publishable workspace members. Uses the same manifest-level source
+    // as the edge construction above so optional and target-specific deps
+    // are checked.
+    for (id, dep_ids) in &non_publishable_workspace_deps {
+        if !included.contains(id) {
             continue;
         }
-        for dep in &node.deps {
-            // Skip deps that are publishable or not workspace members
-            if publishable.contains(&dep.pkg) || !workspace_ids.contains(&dep.pkg) {
-                continue;
-            }
-            let is_normal_or_build = dep
-                .dep_kinds
-                .iter()
-                .any(|k| matches!(k.kind, DependencyKind::Normal | DependencyKind::Build));
-            if is_normal_or_build {
-                let pkg_name = pkg_map
-                    .get(&node.id)
-                    .map(|p| p.name.as_str())
-                    .unwrap_or("unknown");
-                let dep_name = pkg_map
-                    .get(&dep.pkg)
-                    .map(|p| p.name.as_str())
-                    .unwrap_or("unknown");
-                bail!(
-                    "publishable package '{}' depends on non-publishable workspace member '{}'",
-                    pkg_name,
-                    dep_name
-                );
-            }
-        }
+        let dep_id = dep_ids
+            .iter()
+            .next()
+            .expect("non_publishable_workspace_deps entries are non-empty by construction");
+        let pkg_name = pkg_map
+            .get(id)
+            .map(|p| p.name.as_str())
+            .unwrap_or("unknown");
+        let dep_name = pkg_map
+            .get(dep_id)
+            .map(|p| p.name.as_str())
+            .unwrap_or("unknown");
+        bail!(
+            "publishable package '{}' depends on non-publishable workspace member '{}'",
+            pkg_name,
+            dep_name
+        );
     }
 
     // Topological sort on included nodes.
@@ -516,6 +543,120 @@ c = { path = "../c", version = "0.1.0" }
                 "publishable package 'npdep' depends on non-publishable workspace member 'c'"
             ),
             "unexpected error: {msg2}"
+        );
+    }
+
+    #[test]
+    fn build_plan_orders_optional_workspace_dependencies() {
+        // Regression for #173. aaa-adapter has an optional path+version dep
+        // on zzz-core. cargo_metadata's feature-resolved resolve.nodes omits
+        // optional deps that aren't activated by the default feature set, so
+        // before the fix Shipper saw aaa-adapter as having indegree zero and
+        // ordered it alphabetically before zzz-core. cargo publish, however,
+        // still needs zzz-core to exist on the registry first.
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["aaa-adapter", "zzz-core"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("aaa-adapter/Cargo.toml"),
+            r#"
+[package]
+name = "aaa-adapter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zzz-core = { path = "../zzz-core", version = "0.1.0", optional = true }
+
+[features]
+default = []
+core = ["dep:zzz-core"]
+"#,
+        );
+        write_file(&td.path().join("aaa-adapter/src/lib.rs"), "");
+        write_file(
+            &td.path().join("zzz-core/Cargo.toml"),
+            r#"
+[package]
+name = "zzz-core"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&td.path().join("zzz-core/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<String> = ws.plan.packages.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(
+            names,
+            vec!["zzz-core".to_string(), "aaa-adapter".to_string()],
+            "optional path dep should still establish publish order"
+        );
+
+        let adapter_deps = ws
+            .plan
+            .dependencies
+            .get("aaa-adapter")
+            .expect("aaa-adapter in dependencies map");
+        assert_eq!(adapter_deps, &vec!["zzz-core".to_string()]);
+    }
+
+    #[test]
+    fn build_plan_rejects_optional_normal_dep_on_non_publishable_workspace_member() {
+        // Regression for #173 validation path. The same graph-source bug
+        // also let optional normal deps on non-publishable workspace members
+        // slip past the "publishable depends on non-publishable" guard.
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["adapter", "internal"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("adapter/Cargo.toml"),
+            r#"
+[package]
+name = "adapter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+internal = { path = "../internal", version = "0.1.0", optional = true }
+
+[features]
+default = []
+internal-fn = ["dep:internal"]
+"#,
+        );
+        write_file(&td.path().join("adapter/src/lib.rs"), "");
+        write_file(
+            &td.path().join("internal/Cargo.toml"),
+            r#"
+[package]
+name = "internal"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+        );
+        write_file(&td.path().join("internal/src/lib.rs"), "");
+
+        let err = build_plan(&spec_for(td.path())).expect_err("must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(
+                "publishable package 'adapter' depends on non-publishable workspace member 'internal'"
+            ),
+            "unexpected error: {msg}"
         );
     }
 
