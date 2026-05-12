@@ -18,6 +18,7 @@ mod file_policy;
 mod no_panic;
 mod policy_report;
 mod propose;
+mod ripr;
 mod workflow_checks;
 
 #[derive(Parser, Debug)]
@@ -81,6 +82,14 @@ enum Command {
     /// Validate `policy/clippy-exceptions.toml` schema, expiry, and bare-allow scan.
     #[command(name = "check-clippy-exceptions")]
     CheckClippyExceptions,
+
+    /// Run the advisory ripr lane (`ripr pilot --root .`) — #182.
+    ///
+    /// Thin wrapper around the external `ripr` CLI. Shipper consumes
+    /// ripr as an advisory PR lane; this command does not implement
+    /// RIPR analysis itself. See docs/ci/ripr.md.
+    #[command(name = "ripr-pr")]
+    RiprPr,
 }
 
 #[derive(Subcommand, Debug)]
@@ -165,6 +174,7 @@ fn main() -> Result<()> {
         Command::PolicyReport => policy_report::policy_report()?,
         Command::CheckLintPolicy => clippy_checks::check_lint_policy()?,
         Command::CheckClippyExceptions => clippy_checks::check_clippy_exceptions()?,
+        Command::RiprPr => ripr::ripr_pr()?,
     }
     Ok(())
 }

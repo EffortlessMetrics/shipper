@@ -1,14 +1,29 @@
-# ripr — Reachable Incremental PR Coverage
+# ripr — Static Mutation-Exposure Analysis
 
 This document describes the `ripr` advisory lane for `shipper`: what it does, when it runs, what it means, and how to act on its findings.
 
+`ripr` is the external [EffortlessMetrics/ripr](https://github.com/EffortlessMetrics/ripr) CLI (`crates.io/crates/ripr`). Shipper consumes ripr as an advisory PR lane; Shipper does not embed ripr's analysis. The configuration lives in `ripr.toml` at the workspace root, and the wrapper subcommand is `cargo xtask ripr-pr`.
+
 ## What ripr Does
 
-`ripr` is a PR-time exposure filter. Given the diff of a PR, it identifies which mutants are reachable from the changed code and reports which of those reachable mutants are not covered by any test. The result is a ranked list of test-coverage gaps that are immediately relevant to the PR.
+`ripr` is **static mutation-exposure analysis**. It reads a PR diff, builds mutation-shaped probes from the changed behavior, and asks whether the existing tests appear to expose that behavior to a meaningful discriminator. It does **not** find or run actual mutants — mutation testing remains the runtime backstop, scoped to targeted/nightly/release lanes.
 
-`ripr` is not a replacement for mutation testing. It does not generate and kill mutants. It answers a narrower question: "For the code this PR touches, where do tests not reach at all?"
+The question ripr answers at draft time:
 
-Full mutation testing answers: "Could a subtle semantic change survive the entire test suite?" That belongs in targeted, nightly, and release lanes.
+```text
+For the behavior changed in this diff, do the current tests include
+an assertion or check that would catch the changed behavior?
+```
+
+Under the hood ripr uses the RIPR model — **Reachability**, **Infection**, **Propagation**, **Revealability** — to classify each probe's exposure evidence.
+
+The three tiers, side by side:
+
+| Tier | Question |
+|---|---|
+| **Coverage** | Did this code execute under the test suite? |
+| **ripr** | Does the changed behavior appear exposed to a meaningful test oracle? |
+| **Mutation testing** | Did the tests fail when a concrete mutant was run? |
 
 ## Advisory Status
 
@@ -38,26 +53,33 @@ The ripr job cancels in-progress runs for the same PR when a new commit is pushe
 
 ## How to Read a ripr Report
 
-The report lists findings ranked by severity:
+ripr produces both human-readable markdown summaries and structured JSON (`repo-exposure-json` and SARIF variants). The PR-time pilot writes its outputs under `target/ripr/pilot/`.
 
-| Severity | Meaning |
+Findings classify each probe's evidence via `[severity.findings]` in `ripr.toml`. The canonical severity assignments (out of the box):
+
+| Finding shape | Default severity |
 |---|---|
-| `severe` | Changed code calls into a critical trust path (publish, reconcile, encrypt, state) that has no test coverage. |
-| `moderate` | Changed code calls into a path with partial coverage gaps. |
-| `low` | Reachable code gap in lower-risk utility paths. |
-| `informational` | Coverage gap exists but the path is already receipted in the suppression list. |
+| `exposed` | `info` |
+| `weakly_exposed` | `warning` |
+| `reachable_unrevealed` | `warning` |
+| `no_static_path` | `warning` |
+| `infection_unknown` | `warning` |
+| `propagation_unknown` | `note` |
+| `static_unknown` | `note` |
+
+ripr also classifies seam-level grip via `[severity.seams]` (off/info/warning/note across `weakly_gripped`, `ungripped`, `reachable_unrevealed`, etc.). The pilot's "Top recommendation" surfaces the highest-leverage seam first.
 
 ## When to Act on ripr Findings
 
-**Act on severe findings:** A `severe` finding means the PR changes code that directly exercises a critical trust path with no test. Add a test or add a suppression with justification.
+**Act on `warning` findings in trust-critical crates first:** if the changed behavior is `weakly_exposed` or `reachable_unrevealed` and lives in `shipper-core`, `shipper-encrypt`, `shipper-output-sanitizer`, `shipper-cargo-failure`, `shipper-sparse-index`, or `shipper-registry`, write or strengthen the test, or add a suppression with justification.
 
-**Consider acting on moderate findings:** If the gap is small and a test is cheap to write, write it. If the path is covered by BDD or integration tests not visible to ripr, note this in the suppression receipt.
+**Consider acting on warnings elsewhere:** if a gap is small and a test is cheap to write, write it. If the path is covered by BDD or integration tests not visible to ripr, note this in the suppression receipt.
 
-**Ignore informational findings:** These are already receipted.
+**`info` and `note` findings are advisory context.** They are not failures; review them when convenient.
 
 ## Triggering Full Mutation
 
-If `ripr` reports a `severe` finding in a trust-critical crate, consider adding the `mutation` label to the PR to trigger targeted mutation testing. Trust-critical crates are:
+If `ripr` raises a `warning`-level finding in a trust-critical crate that you want execution-backed confirmation for, add the `mutation` label to the PR to trigger targeted mutation testing. Trust-critical crates are:
 
 - `shipper-core` (publish, reconcile, readiness, state)
 - `shipper-encrypt`
@@ -68,47 +90,43 @@ If `ripr` reports a `severe` finding in a trust-critical crate, consider adding 
 
 ## ripr Configuration
 
-The `ripr.toml` file at the workspace root configures:
+`ripr.toml` at the workspace root carries the schema ripr 0.5.0 expects:
 
 ```toml
-[targets]
-# Crates included in ripr analysis.
-include = [
-  "shipper-core",
-  "shipper-cli",
-  "shipper-config",
-  "shipper-types",
-  "shipper-duration",
-  "shipper-retry",
-  "shipper-encrypt",
-  "shipper-registry",
-  "shipper-sparse-index",
-  "shipper-cargo-failure",
-  "shipper-webhook",
-  "shipper-output-sanitizer",
-]
+[analysis]
+mode = "draft"
+include_unchanged_tests = true
 
-[severity]
-# Crates where reachable gaps are treated as severe.
-trust_critical = [
-  "shipper-core",
-  "shipper-encrypt",
-  "shipper-output-sanitizer",
-  "shipper-cargo-failure",
-  "shipper-sparse-index",
-  "shipper-registry",
-]
+[oracles]
+snapshot_strength = "medium"
+mock_expectation_strength = "medium"
+broad_error_strength = "weak"
+
+[severity.findings]
+# … per-finding severity per `ripr init --root . --dry-run` ...
+
+[severity.seams]
+# … per-seam-shape severity per `ripr init --root . --dry-run` ...
+
+[suppressions]
+path = "policy/ripr-suppressions.toml"
 ```
+
+Regenerate the canonical defaults at any time with `ripr init --root . --dry-run` and reconcile against the live file. The only deliberate divergence Shipper carries is the `[suppressions].path` override (Shipper keeps suppressions in `policy/` for ledger consistency rather than ripr's default `.ripr/suppressions.toml`).
 
 ## Suppression Format
 
 ```toml
 [[suppression]]
-path = "crates/shipper-core/src/engine/publish.rs"
 finding_id = "ripr-2026-001"
+path = "crates/shipper-core/src/engine/publish.rs"
+owner = "engine-team"
 reason = "Covered by BDD publish_resume.feature scenarios not visible to ripr."
-owner = "team"
+created = "2026-05-12"
+review_after = "2026-08-12"
 ```
+
+`finding_id`, `path`, `owner`, and `reason` are required by ripr. `created` and `review_after` are Shipper conventions added so suppressions age out in line with the rest of `policy/`.
 
 ## Nightly Mutation Scope
 
@@ -131,15 +149,10 @@ The mutation workflow uses `.cargo/mutants.toml` to set per-mutant and minimum t
 ## xtask Integration
 
 ```bash
-# Run ripr analysis for the current PR diff.
+# Run ripr's zero-config pilot against the current workspace.
 cargo xtask ripr-pr
-
-# Run ripr with a specific base.
-cargo xtask ripr-pr --base origin/main
-
-# Dry-run targeted mutation for changed files.
-cargo xtask mutants-pr --changed --dry-run
-
-# Run targeted mutation for changed files.
-cargo xtask mutants-pr --changed
 ```
+
+`cargo xtask ripr-pr` is a thin wrapper that invokes `ripr pilot --root .` after confirming the external `ripr` binary is on PATH. If `ripr` is not installed locally, the wrapper prints install instructions and exits success — local sessions are never blocked by a missing tool. CI installs a pinned version via `cargo install ripr --locked --version <pinned>` before the wrapper runs.
+
+For richer flags (`--base`, `--diff`, `--format`, `--mode`), call `ripr` directly. Future PRs may extend the wrapper with `cargo xtask mutants-pr --changed` to scope `cargo-mutants` to a PR's changed files, but that is not part of #182.

@@ -62,6 +62,16 @@ network_policy = "ci"
 created = "2026-05-11"
 review_after = "2026-08-11"
 
+[[workflow]]
+path = ".github/workflows/ripr.yml"
+kind = "ci_advisory"
+owner = "rust/tests"
+reason = "Advisory PR lane: external EffortlessMetrics/ripr CLI for static mutation-exposure analysis. Never required; continue-on-error. See #182 and docs/ci/ripr.md."
+process_policy = "ci"
+network_policy = "ci"
+created = "2026-05-12"
+review_after = "2026-08-12"
+
 # ─── Release workflow (high risk: secrets, Trusted Publishing, registry) ────
 
 [[workflow]]
