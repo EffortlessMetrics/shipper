@@ -15,19 +15,19 @@
 //! This PR ships the detector + baseline only — the matching `check`
 //! subcommand (verify mode + release CI gate) lands in PR 8b.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use proc_macro2::LineColumn;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{
     Attribute, ExprIndex, ExprMacro, ExprMethodCall, File, ImplItemFn, ItemFn, ItemImpl, ItemMod,
-    Meta, TraitItemFn,
+    TraitItemFn,
 };
 
 const BASELINE_PATH: &str = "policy/no-panic-baseline.json";
@@ -86,13 +86,75 @@ struct BaselineEntry {
     first_line: usize,
 }
 
-pub fn baseline() -> Result<()> {
-    let workspace_root = workspace_root()?;
-    let files = enumerate_source_files(&workspace_root)?;
+/// Deserialized view of an existing `policy/no-panic-baseline.json` entry.
+/// Family/selector_kind are owned `String`s here (versus `&'static str` in
+/// the freshly-scanned `BaselineEntry`) because they come from disk.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
+struct BaselineEntryOnDisk {
+    path: String,
+    family: String,
+    selector_kind: String,
+    selector_callee: String,
+    snippet: String,
+    count: u64,
+    #[serde(default)]
+    first_line: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct BaselineFileOnDisk {
+    #[allow(dead_code)]
+    schema_version: String,
+    #[serde(default)]
+    entries: Vec<BaselineEntryOnDisk>,
+}
+
+/// Identity key shared between disk entries and fresh entries.
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+struct EntryKey {
+    path: String,
+    family: String,
+    selector_kind: String,
+    selector_callee: String,
+    snippet: String,
+}
+
+impl EntryKey {
+    fn from_disk(e: &BaselineEntryOnDisk) -> Self {
+        Self {
+            path: e.path.clone(),
+            family: e.family.clone(),
+            selector_kind: e.selector_kind.clone(),
+            selector_callee: e.selector_callee.clone(),
+            snippet: e.snippet.clone(),
+        }
+    }
+    fn from_fresh(e: &BaselineEntry) -> Self {
+        Self {
+            path: e.path.clone(),
+            family: e.family.to_string(),
+            selector_kind: e.selector_kind.to_string(),
+            selector_callee: e.selector_callee.clone(),
+            snippet: e.snippet.clone(),
+        }
+    }
+}
+
+/// Scan + group result. Owned by `baseline()` (writes to disk) and `check()`
+/// (compares to disk). Both call the same scanner so the production-vs-test
+/// classification is identical at baseline-time and check-time.
+struct ScanResult {
+    entries: Vec<BaselineEntry>,
+    counts: Counts,
+    dropped_test_sites: u64,
+}
+
+fn scan_and_group(workspace_root: &Path) -> Result<ScanResult> {
+    let files = enumerate_source_files(workspace_root)?;
+    let total_files = files.len() as u64;
 
     let mut all_findings: Vec<Finding> = Vec::new();
     let mut files_with_findings: u64 = 0;
-    let total_files = files.len() as u64;
 
     for rel in &files {
         let abs = workspace_root.join(rel);
@@ -122,9 +184,9 @@ pub fn baseline() -> Result<()> {
 
     // Test-code findings (inside `#[cfg(test)]` or `#[test]` subtrees) are
     // excluded from the production baseline per docs/NO_PANIC_POLICY.md.
-    // `**/tests.rs` files and `tests/`/`benches/`/`examples/` directories
-    // are already excluded at enumeration time; this drops the remaining
-    // test-code findings that hid inside production source files.
+    // `**/tests.rs`, `**/_tests.rs`, and `tests/`/`benches/`/`examples/`
+    // dirs are already excluded at enumeration time; this drops findings
+    // that hid inside production source files.
     let production_findings: Vec<&Finding> = all_findings.iter().filter(|f| !f.test_code).collect();
     let dropped_test_sites = (all_findings.len() - production_findings.len()) as u64;
 
@@ -160,6 +222,23 @@ pub fn baseline() -> Result<()> {
         })
         .collect();
 
+    Ok(ScanResult {
+        counts: Counts {
+            total_call_sites: total_sites,
+            total_entries: entries.len() as u64,
+            files_scanned: total_files,
+            files_with_findings,
+            by_family,
+        },
+        entries,
+        dropped_test_sites,
+    })
+}
+
+pub fn baseline() -> Result<()> {
+    let workspace_root = workspace_root()?;
+    let scan = scan_and_group(&workspace_root)?;
+
     let baseline = BaselineFile {
         schema_version: SCHEMA_VERSION,
         generated_by: "cargo xtask no-panic baseline (#187)",
@@ -169,14 +248,8 @@ pub fn baseline() -> Result<()> {
             .to_string(),
         note: "Machine-generated. Run `cargo xtask no-panic baseline` to regenerate. \
                See docs/NO_PANIC_POLICY.md for semantics.",
-        counts: Counts {
-            total_call_sites: total_sites,
-            total_entries: entries.len() as u64,
-            files_scanned: total_files,
-            files_with_findings,
-            by_family,
-        },
-        entries,
+        counts: scan.counts,
+        entries: scan.entries,
     };
 
     let out_path = workspace_root.join(BASELINE_PATH);
@@ -194,13 +267,231 @@ pub fn baseline() -> Result<()> {
         baseline.counts.files_with_findings,
         baseline.counts.total_call_sites,
         baseline.counts.total_entries,
-        dropped_test_sites,
+        scan.dropped_test_sites,
     );
     for (family, n) in &baseline.counts.by_family {
         println!("  {family}: {n}");
     }
     println!("wrote {}", BASELINE_PATH);
     Ok(())
+}
+
+/// Reporting / enforcement mode. Matches the pattern in `check_file_policy`
+/// and the `checks` module: `Blocking` exits non-zero on any violation,
+/// `Advisory` writes the report and returns success regardless.
+#[derive(Debug, Copy, Clone, clap::ValueEnum)]
+pub enum Mode {
+    Advisory,
+    Blocking,
+}
+
+#[derive(Debug, Serialize)]
+struct CheckReport {
+    tool: &'static str,
+    summary: CheckSummary,
+    new_entries: Vec<DiffEntry>,
+    count_increases: Vec<DiffCount>,
+    resolved_entries: Vec<DiffEntry>,
+    count_decreases: Vec<DiffCount>,
+}
+
+#[derive(Debug, Serialize)]
+struct CheckSummary {
+    baseline_entries: u64,
+    current_entries: u64,
+    new_debt: u64,
+    count_increases: u64,
+    resolved: u64,
+    count_decreases: u64,
+    /// Headline-eligible: new entries + count increases. Surfaces as
+    /// `unreceipted` in `cargo xtask policy-report` for parity with the
+    /// other policy areas.
+    violations: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct DiffEntry {
+    path: String,
+    family: String,
+    selector_kind: String,
+    selector_callee: String,
+    snippet: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct DiffCount {
+    path: String,
+    family: String,
+    selector_callee: String,
+    snippet: String,
+    baseline: u64,
+    current: u64,
+}
+
+const CHECK_REPORT_REL: &str = "target/policy/no-panic-report.json";
+
+pub fn check(mode: Mode) -> Result<()> {
+    let workspace_root = workspace_root()?;
+
+    // Load on-disk baseline.
+    let baseline_path = workspace_root.join(BASELINE_PATH);
+    let baseline_raw = fs::read_to_string(&baseline_path)
+        .with_context(|| format!("reading {}", baseline_path.display()))?;
+    let on_disk: BaselineFileOnDisk = serde_json::from_str(&baseline_raw)
+        .with_context(|| format!("parsing {}", baseline_path.display()))?;
+    let mut disk_by_key: BTreeMap<EntryKey, u64> = BTreeMap::new();
+    for e in &on_disk.entries {
+        disk_by_key.insert(EntryKey::from_disk(e), e.count);
+    }
+
+    // Re-scan current source.
+    let scan = scan_and_group(&workspace_root)?;
+    let mut fresh_by_key: BTreeMap<EntryKey, u64> = BTreeMap::new();
+    for e in &scan.entries {
+        fresh_by_key.insert(EntryKey::from_fresh(e), e.count);
+    }
+
+    // Categorise differences.
+    let disk_keys: BTreeSet<&EntryKey> = disk_by_key.keys().collect();
+    let fresh_keys: BTreeSet<&EntryKey> = fresh_by_key.keys().collect();
+
+    let new_debt: Vec<&EntryKey> = fresh_keys.difference(&disk_keys).copied().collect();
+    let resolved: Vec<&EntryKey> = disk_keys.difference(&fresh_keys).copied().collect();
+    let mut count_increases: Vec<(&EntryKey, u64, u64)> = Vec::new();
+    let mut count_decreases: Vec<(&EntryKey, u64, u64)> = Vec::new();
+    for key in disk_keys.intersection(&fresh_keys) {
+        let disk_count = disk_by_key[*key];
+        let fresh_count = fresh_by_key[*key];
+        if fresh_count > disk_count {
+            count_increases.push((*key, disk_count, fresh_count));
+        } else if fresh_count < disk_count {
+            count_decreases.push((*key, disk_count, fresh_count));
+        }
+    }
+
+    let violations = (new_debt.len() + count_increases.len()) as u64;
+
+    let report = CheckReport {
+        tool: "cargo xtask no-panic check",
+        summary: CheckSummary {
+            baseline_entries: on_disk.entries.len() as u64,
+            current_entries: scan.entries.len() as u64,
+            new_debt: new_debt.len() as u64,
+            count_increases: count_increases.len() as u64,
+            resolved: resolved.len() as u64,
+            count_decreases: count_decreases.len() as u64,
+            violations,
+        },
+        new_entries: new_debt
+            .iter()
+            .map(|k| DiffEntry {
+                path: k.path.clone(),
+                family: k.family.clone(),
+                selector_kind: k.selector_kind.clone(),
+                selector_callee: k.selector_callee.clone(),
+                snippet: k.snippet.clone(),
+            })
+            .collect(),
+        count_increases: count_increases
+            .iter()
+            .map(|(k, b, c)| DiffCount {
+                path: k.path.clone(),
+                family: k.family.clone(),
+                selector_callee: k.selector_callee.clone(),
+                snippet: k.snippet.clone(),
+                baseline: *b,
+                current: *c,
+            })
+            .collect(),
+        resolved_entries: resolved
+            .iter()
+            .map(|k| DiffEntry {
+                path: k.path.clone(),
+                family: k.family.clone(),
+                selector_kind: k.selector_kind.clone(),
+                selector_callee: k.selector_callee.clone(),
+                snippet: k.snippet.clone(),
+            })
+            .collect(),
+        count_decreases: count_decreases
+            .iter()
+            .map(|(k, b, c)| DiffCount {
+                path: k.path.clone(),
+                family: k.family.clone(),
+                selector_callee: k.selector_callee.clone(),
+                snippet: k.snippet.clone(),
+                baseline: *b,
+                current: *c,
+            })
+            .collect(),
+    };
+
+    // Always write the report — both advisory and blocking modes leave
+    // an artifact CI can upload.
+    let out_path = workspace_root.join(CHECK_REPORT_REL);
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let mut json = serde_json::to_string_pretty(&report).context("serialising check report")?;
+    json.push('\n');
+    fs::write(&out_path, json).with_context(|| format!("writing {}", out_path.display()))?;
+
+    println!(
+        "no-panic check: baseline_entries={} current_entries={} new={} resolved={} count_increase={} count_decrease={}",
+        report.summary.baseline_entries,
+        report.summary.current_entries,
+        report.summary.new_debt,
+        report.summary.resolved,
+        report.summary.count_increases,
+        report.summary.count_decreases,
+    );
+
+    // Resolved / decreased entries are good news; print them so the developer
+    // who reduced debt gets credit in CI logs.
+    for k in &resolved {
+        println!("  resolved: {}  {}  {}", k.path, k.family, k.snippet);
+    }
+    for (k, disk, fresh) in &count_decreases {
+        println!(
+            "  decreased: {}  {}  {} -> {}  {}",
+            k.path, k.family, disk, fresh, k.snippet
+        );
+    }
+
+    if violations == 0 {
+        return Ok(());
+    }
+
+    for k in &new_debt {
+        eprintln!(
+            "new panic-family debt: {}  family={}  selector_kind={}  callee={}  snippet={}",
+            k.path, k.family, k.selector_kind, k.selector_callee, k.snippet
+        );
+    }
+    for (k, disk, fresh) in &count_increases {
+        eprintln!(
+            "count increased: {}  family={}  {} -> {}  snippet={}",
+            k.path, k.family, disk, fresh, k.snippet
+        );
+    }
+    eprintln!();
+    eprintln!(
+        "no-panic policy: {} new entr{} and {} count increase{} since the baseline.",
+        new_debt.len(),
+        if new_debt.len() == 1 { "y" } else { "ies" },
+        count_increases.len(),
+        if count_increases.len() == 1 { "" } else { "s" },
+    );
+    eprintln!(
+        "if these additions are intentional (e.g. a refactor that legitimately moved \
+         existing debt to a new call site), regenerate the baseline with: \
+         `cargo xtask no-panic baseline`, and explain the rationale in the PR body."
+    );
+
+    match mode {
+        Mode::Advisory => Ok(()),
+        Mode::Blocking => bail!("no-panic check failed"),
+    }
 }
 
 // ─── File enumeration ──────────────────────────────────────────────────────
@@ -422,16 +713,17 @@ fn attr_implies_test(attr: &Attribute) -> bool {
         return true;
     }
     if attr.path().is_ident("cfg") {
+        // `parse_nested_meta` walks the meta items inside `cfg(...)`. We
+        // recurse into `any(...)` and `all(...)`, but NOT into `not(...)`:
+        // `cfg(not(test))` is production-only code, so a nested `test`
+        // inside `not(...)` does not imply test-classification.
         let mut hit = false;
-        // `parse_nested_meta` walks the meta items inside `cfg(...)`.
         let _ = attr.parse_nested_meta(|meta| {
-            if meta_mentions_test(&meta.path) {
+            if meta.path.is_ident("test") {
                 hit = true;
-            }
-            // Recurse into `any(test, ...)` / `all(...)` / `not(...)`.
-            if meta.path.is_ident("any") || meta.path.is_ident("all") || meta.path.is_ident("not") {
+            } else if meta.path.is_ident("any") || meta.path.is_ident("all") {
                 let _ = meta.parse_nested_meta(|inner| {
-                    if meta_mentions_test(&inner.path) {
+                    if inner.path.is_ident("test") {
                         hit = true;
                     }
                     Ok(())
@@ -442,18 +734,8 @@ fn attr_implies_test(attr: &Attribute) -> bool {
         if hit {
             return true;
         }
-        // Fallback: inspect the meta as a parsed `Meta::List`.
-        if let Meta::List(list) = &attr.meta
-            && list.tokens.to_string().contains("test")
-        {
-            return true;
-        }
     }
     false
-}
-
-fn meta_mentions_test(path: &syn::Path) -> bool {
-    path.is_ident("test")
 }
 
 // ─── Workspace root ────────────────────────────────────────────────────────
@@ -467,4 +749,121 @@ fn workspace_root() -> Result<PathBuf> {
         .with_context(|| format!("xtask manifest dir has no parent: {}", xtask_dir.display()))?
         .to_path_buf();
     Ok(root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_attrs(src: &str) -> Vec<Attribute> {
+        // Parse a synthetic item that carries `src` as its attribute(s) so
+        // the parser produces real `Attribute` nodes against the same syn
+        // grammar the visitor uses.
+        let item: syn::Item = syn::parse_str(&format!("{src}\nfn _probe() {{}}"))
+            .expect("synthetic attr probe parses");
+        match item {
+            syn::Item::Fn(f) => f.attrs,
+            _ => panic!("probe must be a fn"),
+        }
+    }
+
+    #[test]
+    fn attrs_test_attribute_is_test() {
+        assert!(attrs_imply_test(&parse_attrs("#[test]")));
+    }
+
+    #[test]
+    fn attrs_bench_attribute_is_test() {
+        assert!(attrs_imply_test(&parse_attrs("#[bench]")));
+    }
+
+    #[test]
+    fn attrs_cfg_test_is_test() {
+        assert!(attrs_imply_test(&parse_attrs("#[cfg(test)]")));
+    }
+
+    #[test]
+    fn attrs_cfg_any_test_is_test() {
+        assert!(attrs_imply_test(&parse_attrs(
+            "#[cfg(any(test, feature = \"experimental\"))]"
+        )));
+    }
+
+    #[test]
+    fn attrs_cfg_all_unix_test_is_test() {
+        assert!(attrs_imply_test(&parse_attrs("#[cfg(all(unix, test))]")));
+    }
+
+    #[test]
+    fn attrs_cfg_not_test_is_not_test() {
+        // `cfg(not(test))` is production-only code. A naive "any mention of
+        // `test`" heuristic would misclassify this — see the regression note
+        // in `attr_implies_test`.
+        assert!(!attrs_imply_test(&parse_attrs("#[cfg(not(test))]")));
+    }
+
+    #[test]
+    fn attrs_inline_doc_is_not_test() {
+        assert!(!attrs_imply_test(&parse_attrs("/// docs")));
+    }
+
+    #[test]
+    fn attrs_must_use_is_not_test() {
+        assert!(!attrs_imply_test(&parse_attrs("#[must_use]")));
+    }
+
+    #[test]
+    fn excluded_dir_tests_directory() {
+        assert!(is_excluded_dir(Path::new(
+            "crates/shipper-core/tests/foo.rs"
+        )));
+    }
+
+    #[test]
+    fn excluded_dir_benches() {
+        assert!(is_excluded_dir(Path::new(
+            "crates/shipper-core/benches/bench.rs"
+        )));
+    }
+
+    #[test]
+    fn excluded_dir_examples() {
+        assert!(is_excluded_dir(Path::new(
+            "crates/shipper-core/examples/demo.rs"
+        )));
+    }
+
+    #[test]
+    fn excluded_dir_tests_dot_rs_file() {
+        assert!(is_excluded_dir(Path::new(
+            "crates/shipper-core/src/state/store/tests.rs"
+        )));
+    }
+
+    #[test]
+    fn excluded_dir_suffix_tests_dot_rs_file() {
+        assert!(is_excluded_dir(Path::new(
+            "crates/shipper-core/src/ops/process/cross_platform_edge_case_tests.rs"
+        )));
+    }
+
+    #[test]
+    fn excluded_dir_does_not_exclude_production() {
+        assert!(!is_excluded_dir(Path::new(
+            "crates/shipper-core/src/engine/mod.rs"
+        )));
+        assert!(!is_excluded_dir(Path::new(
+            "crates/shipper-core/src/lib.rs"
+        )));
+    }
+
+    #[test]
+    fn excluded_dir_does_not_exclude_test_helper_in_production_filename() {
+        // A file that just happens to have `test` in its name (not as a
+        // suffix `_tests.rs`) is still production. The cfg-test attribute
+        // walk handles `#[cfg(test)]` blocks inside.
+        assert!(!is_excluded_dir(Path::new(
+            "crates/shipper-core/src/engine/testable_seam.rs"
+        )));
+    }
 }

@@ -138,6 +138,44 @@ jobs:
         run: cargo check --workspace
 
   # ---------------------------------------------------------------------------
+  # Policy gate. Enforces release-time policy invariants that PR-time CI also
+  # checks, but pinned to the publish train so a tag push cannot publish if
+  # the baselines have drifted (e.g., new panic-family debt landed without a
+  # baseline regen). Lives here in addition to PR-time CI because the tag
+  # might be cut from an older SHA where the PR-time gate had different
+  # contents.
+  # ---------------------------------------------------------------------------
+  policy-gate:
+    name: Policy gate (no-panic + invariants)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-policy-gate-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-policy-gate-
+      - name: cargo xtask no-panic check (blocking)
+        run: cargo xtask no-panic check --mode blocking
+      - name: cargo xtask check-lint-policy
+        run: cargo xtask check-lint-policy
+      - name: Upload no-panic report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-policy-gate
+          path: target/policy/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
   # The dogfood publish train.
   #
   # Execution order:
@@ -175,7 +213,7 @@ jobs:
     name: Publish to crates.io (via shipper)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    needs: [msrv-gate]
+    needs: [msrv-gate, policy-gate]
     environment: release
     timeout-minutes: 180
     outputs:

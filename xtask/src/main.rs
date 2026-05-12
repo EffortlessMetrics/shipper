@@ -104,9 +104,21 @@ enum NoPanicCommand {
     ///
     /// Walks `crates/*/src/**/*.rs` (excluding tests/benches/examples and
     /// `#[cfg(test)]`/`#[test]` subtrees), classifies every panic-family
-    /// call site via syn, and writes the count-keyed baseline. The check
-    /// subcommand (verify mode) lands in PR 8b.
+    /// call site via syn, and writes the count-keyed baseline.
     Baseline,
+
+    /// Verify that no new panic-family debt has been added since the
+    /// baseline. Compares a fresh scan against `policy/no-panic-baseline.json`
+    /// and exits non-zero (blocking) on any new entry or count increase.
+    /// Resolved entries / count decreases are reported but do not fail.
+    Check(NoPanicCheckArgs),
+}
+
+#[derive(Args, Debug)]
+struct NoPanicCheckArgs {
+    /// Reporting / enforcement mode.
+    #[arg(long, value_enum, default_value_t = no_panic::Mode::Blocking)]
+    mode: no_panic::Mode,
 }
 
 #[derive(Args, Debug)]
@@ -139,6 +151,7 @@ fn main() -> Result<()> {
         },
         Command::NoPanic(cmd) => match cmd {
             NoPanicCommand::Baseline => no_panic::baseline()?,
+            NoPanicCommand::Check(args) => no_panic::check(args.mode)?,
         },
         Command::CheckFilePolicy(args) => check_file_policy::check(args.mode)?,
         Command::CheckGenerated(args) => checks::check_generated(args.mode)?,

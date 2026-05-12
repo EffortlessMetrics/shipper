@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{check_file_policy, checks, workflow_checks};
+use crate::{check_file_policy, checks, no_panic, workflow_checks};
 
 const OUTPUT_DIR_REL: &str = "target/policy";
 
@@ -58,6 +58,7 @@ pub fn policy_report() -> Result<()> {
     workflow_checks::check_workflow_surfaces(workflow_checks::Mode::Advisory)?;
     workflow_checks::check_process_policy(workflow_checks::Mode::Advisory)?;
     workflow_checks::check_network_policy(workflow_checks::Mode::Advisory)?;
+    no_panic::check(no_panic::Mode::Advisory)?;
 
     // Step 2: read each sub-report and lift its `summary` block.
     let registrations: &[(&'static str, &str)] = &[
@@ -68,6 +69,7 @@ pub fn policy_report() -> Result<()> {
         ("Workflow surfaces", "workflow-policy-report"),
         ("Process policy", "process-policy-report"),
         ("Network policy", "network-policy-report"),
+        ("No-panic baseline", "no-panic-report"),
     ];
 
     let mut areas: Vec<AreaSummary> = Vec::with_capacity(registrations.len());
@@ -126,6 +128,7 @@ fn headline_for(area: &'static str, summary: &Value) -> Option<HeadlineRow> {
         "unreceipted",
         "invalid_policy_refs",
         "unknown_total",
+        "violations",
         "missing_fields",
         "expired",
         "stale",
@@ -148,6 +151,7 @@ fn headline_for(area: &'static str, summary: &Value) -> Option<HeadlineRow> {
         "universe_size",
         "tracked_workflow_files",
         "workflows",
+        "baseline_entries",
     ]
     .into_iter()
     .find_map(|k| s.get(k).and_then(|v| v.as_u64()))
@@ -164,6 +168,7 @@ fn static_metric(name: &str) -> &'static str {
         "unreceipted" => "unreceipted",
         "invalid_policy_refs" => "invalid_policy_refs",
         "unknown_total" => "unknown_total",
+        "violations" => "violations",
         "missing_fields" => "missing_fields",
         "expired" => "expired",
         "stale" => "stale",
