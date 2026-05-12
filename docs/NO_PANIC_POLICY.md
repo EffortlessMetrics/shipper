@@ -1,6 +1,6 @@
 # No-Panic Policy
 
-This document describes the no-panic discipline for `shipper`. The authoritative state is `policy/no-panic-baseline.toml` and `policy/no-panic-allowlist.toml`; this document explains the rationale and operating rules.
+This document describes the no-panic discipline for `shipper`. The authoritative state is `policy/no-panic-baseline.json` (machine-generated, see PR 8a / #187) and `policy/no-panic-allowlist.toml` (human-curated, future); this document explains the rationale and operating rules.
 
 ## Goals
 
@@ -29,13 +29,16 @@ The policy operates in `no-new-debt` mode. Existing panic-family calls that exis
 
 Each baseline entry is identified by exact shape, not coarse file + family:
 
-```toml
-path = "crates/shipper-core/src/publish/engine.rs"
-family = "unwrap"
-selector_kind = "method_call"
-selector_callee = "unwrap"
-snippet = "state.packages.get(&name).unwrap()"
-count = 1
+```json
+{
+  "path": "crates/shipper-core/src/engine/parallel/publish.rs",
+  "family": "unwrap",
+  "selector_kind": "method_call",
+  "selector_callee": "unwrap",
+  "snippet": "let mut log = event_log.lock().unwrap();",
+  "count": 15,
+  "first_line": 67
+}
 ```
 
 This means one allowed `unwrap` does not mask unrelated calls in the same file.
@@ -43,22 +46,37 @@ This means one allowed `unwrap` does not mask unrelated calls in the same file.
 ## Allowlist vs Baseline
 
 - **`policy/no-panic-allowlist.toml`**: Permanent receipts. Calls that are genuinely invariant assertions (truly cannot fail given the surrounding logic) and are owned indefinitely.
-- **`policy/no-panic-baseline.toml`**: Debt snapshot. Calls that exist today but are not yet converted. The baseline is frozen and may only shrink; it cannot grow.
+- **`policy/no-panic-baseline.json`**: Debt snapshot. Calls that exist today but are not yet converted. The baseline is frozen and may only shrink; it cannot grow. JSON rather than TOML because the file is machine-generated and entries are dense; TOML's table-per-entry shape is awkward at this density.
 
 The baseline is marked `linguist-generated=true` in `.gitattributes` to indicate it is machine-maintained.
 
 ## Commands
 
 ```bash
-# Check that no new debt has been added since the baseline.
-cargo xtask check-no-panic-family
+# Regenerate `policy/no-panic-baseline.json` (PR 8a — landed).
+cargo xtask no-panic baseline
 
-# Regenerate the baseline (only in PR 8; do not run in other PRs).
-cargo xtask no-panic baseline --reset
+# Check that no new debt has been added since the baseline (PR 8b — planned).
+cargo xtask no-panic check
 
 # Report current policy state including panic-family debt.
 cargo xtask policy-report
 ```
+
+## Scope
+
+The detector walks every tracked source file under `crates/*/src/**/*.rs` that
+is not classified as test code. Test code is identified by:
+
+- **File path / name**: any path containing a `/tests/`, `/benches/`, or
+  `/examples/` directory segment; any file named `tests.rs` or whose name ends
+  in `_tests.rs` (Cargo's convention for `#[cfg(test)] mod tests;` modules and
+  per-feature test modules).
+- **AST attributes**: any item inside a `#[cfg(test)]` `mod` or `impl`, or any
+  `#[test]`/`#[bench]` `fn`. The detector walks `Visit`-style and pushes/pops a
+  cfg-test depth counter as it enters/exits these scopes.
+
+`xtask/` is outside `crates/*/`, so the policy-tooling crate is not in scope.
 
 ## Permitted Patterns
 

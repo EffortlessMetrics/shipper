@@ -15,6 +15,7 @@ mod check_file_policy;
 mod checks;
 mod clippy_checks;
 mod file_policy;
+mod no_panic;
 mod policy_report;
 mod propose;
 mod workflow_checks;
@@ -36,6 +37,10 @@ enum Command {
     /// Non-Rust file policy commands.
     #[command(subcommand, name = "non-rust")]
     NonRust(NonRustCommand),
+
+    /// No-panic baseline + checker commands (#187).
+    #[command(subcommand, name = "no-panic")]
+    NoPanic(NoPanicCommand),
 
     /// Reconcile tracked non-Rust files against `policy/non-rust-allowlist.toml`.
     #[command(name = "check-file-policy")]
@@ -93,6 +98,17 @@ enum NonRustCommand {
     Propose,
 }
 
+#[derive(Subcommand, Debug)]
+enum NoPanicCommand {
+    /// Regenerate `policy/no-panic-baseline.json` from current source.
+    ///
+    /// Walks `crates/*/src/**/*.rs` (excluding tests/benches/examples and
+    /// `#[cfg(test)]`/`#[test]` subtrees), classifies every panic-family
+    /// call site via syn, and writes the count-keyed baseline. The check
+    /// subcommand (verify mode) lands in PR 8b.
+    Baseline,
+}
+
 #[derive(Args, Debug)]
 struct CheckFilePolicyArgs {
     /// Reporting / enforcement mode.
@@ -120,6 +136,9 @@ fn main() -> Result<()> {
         Command::NonRust(cmd) => match cmd {
             NonRustCommand::Inventory => file_policy::inventory()?,
             NonRustCommand::Propose => propose::propose()?,
+        },
+        Command::NoPanic(cmd) => match cmd {
+            NoPanicCommand::Baseline => no_panic::baseline()?,
         },
         Command::CheckFilePolicy(args) => check_file_policy::check(args.mode)?,
         Command::CheckGenerated(args) => checks::check_generated(args.mode)?,

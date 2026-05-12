@@ -1,0 +1,5 @@
+# Machine-generated policy artifacts. Marking these `linguist-generated=true`
+# hides them from GitHub's "files changed" default view (they show up but
+# collapsed) and excludes them from language statistics.
+
+policy/no-panic-baseline.json linguist-generated=true

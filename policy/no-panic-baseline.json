@@ -1,0 +1,271 @@
+{
+  "schema_version": "1.0",
+  "generated_by": "cargo xtask no-panic baseline (#187)",
+  "generated_on": "2026-05-12",
+  "note": "Machine-generated. Run `cargo xtask no-panic baseline` to regenerate. See docs/NO_PANIC_POLICY.md for semantics.",
+  "counts": {
+    "total_call_sites": 59,
+    "total_entries": 28,
+    "files_scanned": 50,
+    "files_with_findings": 25,
+    "by_family": {
+      "expect": 4,
+      "index": 7,
+      "unwrap": 48
+    }
+  },
+  "entries": [
+    {
+      "path": "crates/shipper-core/src/engine/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": ".verify_ownership(&p.name, token.as_deref().unwrap())",
+      "count": 1,
+      "first_line": 422
+    },
+    {
+      "path": "crates/shipper-core/src/engine/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "reg.list_owners(&p.name, token.as_deref().unwrap())?;",
+      "count": 1,
+      "first_line": 417
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "let st_guard = st_arc.lock().unwrap();",
+      "count": 2,
+      "first_line": 293
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "let updated_st = st_arc.lock().unwrap();",
+      "count": 1,
+      "first_line": 370
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "self.errors.lock().unwrap().push(msg.to_string());",
+      "count": 1,
+      "first_line": 137
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "self.infos.lock().unwrap().push(msg.to_string());",
+      "count": 1,
+      "first_line": 129
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "self.retry_waits.lock().unwrap().drain(..).collect()",
+      "count": 1,
+      "first_line": 177
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "self.retry_waits.lock().unwrap().push_back(RetryWaitNotice {",
+      "count": 1,
+      "first_line": 151
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "self.warns.lock().unwrap().push(msg.to_string());",
+      "count": 1,
+      "first_line": 133
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "std::mem::take(&mut *self.errors.lock().unwrap())",
+      "count": 1,
+      "first_line": 173
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "std::mem::take(&mut *self.infos.lock().unwrap())",
+      "count": 1,
+      "first_line": 165
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "std::mem::take(&mut *self.warns.lock().unwrap())",
+      "count": 1,
+      "first_line": 169
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/publish.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "attempts: st",
+      "count": 2,
+      "first_line": 804
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/publish.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "let current_state = st",
+      "count": 1,
+      "first_line": 744
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/publish.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "let mut log = event_log.lock().unwrap();",
+      "count": 15,
+      "first_line": 67
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/publish.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "let mut state = st.lock().unwrap();",
+      "count": 13,
+      "first_line": 139
+    },
+    {
+      "path": "crates/shipper-core/src/engine/parallel/publish.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "let state = st.lock().unwrap();",
+      "count": 2,
+      "first_line": 188
+    },
+    {
+      "path": "crates/shipper-core/src/ops/cargo/mod.rs",
+      "family": "index",
+      "selector_kind": "syntax",
+      "selector_callee": "[]",
+      "snippet": "if chars[0].is_ascii_digit() || chars[0] == '-' {",
+      "count": 2,
+      "first_line": 511
+    },
+    {
+      "path": "crates/shipper-core/src/plan/chunking/mod.rs",
+      "family": "index",
+      "selector_kind": "syntax",
+      "selector_callee": "[]",
+      "snippet": "chunks.push(items[index..next].to_vec());",
+      "count": 1,
+      "first_line": 36
+    },
+    {
+      "path": "crates/shipper-core/src/plan/mod.rs",
+      "family": "expect",
+      "selector_kind": "method_call",
+      "selector_callee": "expect",
+      "snippet": "let d = indegree",
+      "count": 1,
+      "first_line": 326
+    },
+    {
+      "path": "crates/shipper-core/src/plan/mod.rs",
+      "family": "expect",
+      "selector_kind": "method_call",
+      "selector_callee": "expect",
+      "snippet": "let dep_id = dep_ids",
+      "count": 1,
+      "first_line": 199
+    },
+    {
+      "path": "crates/shipper-core/src/plan/mod.rs",
+      "family": "expect",
+      "selector_kind": "method_call",
+      "selector_callee": "expect",
+      "snippet": "let pkg = pkg_map.get(id).expect(\"pkg exists\");",
+      "count": 2,
+      "first_line": 224
+    },
+    {
+      "path": "crates/shipper-core/src/plan/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "let name = pkg_map.get(dep).unwrap().name.to_string();",
+      "count": 1,
+      "first_line": 331
+    },
+    {
+      "path": "crates/shipper-core/src/plan/mod.rs",
+      "family": "unwrap",
+      "selector_kind": "method_call",
+      "selector_callee": "unwrap",
+      "snippet": "ready.remove(&(pkg_map.get(&id).unwrap().name.to_string(), id.clone()));",
+      "count": 1,
+      "first_line": 318
+    },
+    {
+      "path": "crates/shipper-core/src/runtime/environment/mod.rs",
+      "family": "index",
+      "selector_kind": "syntax",
+      "selector_callee": "[]",
+      "snippet": "Some(normalized[1].to_string())",
+      "count": 1,
+      "first_line": 96
+    },
+    {
+      "path": "crates/shipper-core/src/state/execution_state/mod.rs",
+      "family": "index",
+      "selector_kind": "syntax",
+      "selector_callee": "[]",
+      "snippet": "receipt[\"environment\"] = serde_json::to_value(environment)",
+      "count": 1,
+      "first_line": 262
+    },
+    {
+      "path": "crates/shipper-core/src/state/execution_state/mod.rs",
+      "family": "index",
+      "selector_kind": "syntax",
+      "selector_callee": "[]",
+      "snippet": "receipt[\"git_context\"] = serde_json::Value::Null;",
+      "count": 1,
+      "first_line": 256
+    },
+    {
+      "path": "crates/shipper-core/src/state/execution_state/mod.rs",
+      "family": "index",
+      "selector_kind": "syntax",
+      "selector_callee": "[]",
+      "snippet": "receipt[\"receipt_version\"] = serde_json::Value::String(CURRENT_RECEIPT_VERSION.to_string());",
+      "count": 1,
+      "first_line": 267
+    }
+  ]
+}
