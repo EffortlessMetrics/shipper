@@ -359,6 +359,17 @@ covered_by = ["manual review"]
 created = "2026-05-11"
 review_after = "2026-11-11"
 
+[[file]]
+path = ".gitattributes"
+kind = "git_config"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Top-level git attributes (linguist-generated markers for machine-maintained policy artifacts)."
+covered_by = ["manual review"]
+created = "2026-05-12"
+review_after = "2026-11-12"
+
 # ─── Per-crate agent docs and per-crate README ──────────────────────────────
 
 [[glob]]
