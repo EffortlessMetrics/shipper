@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`shipper` crate:** the `shipper-cli` dependency is now behind a default `cli` feature. `cargo install shipper` and the `shipper` binary still work unchanged (the feature is on by default). Library consumers that only want the curated `shipper-core` re-export can opt out with `shipper = { version = "...", default-features = false }`, which drops the `clap` graph. `shipper-core` remains the canonical lean embedding surface.
 
+- **Clippy 1.94/1.95 ratchets activated** ([#191](https://github.com/EffortlessMetrics/shipper/issues/191)). Eight lints moved from `[[planned]]` to `[[active]]` in `policy/clippy-lints.toml` and added to `[workspace.lints.clippy]`: `same_length_and_capacity` (deny), `manual_ilog2`, `decimal_bitwise_operands`, `needless_type_cast`, `manual_checked_ops`, `manual_take`, `unnecessary_trailing_comma`, `disallowed_fields` (deny). All eight had zero workspace fallout at activation. `duration_suboptimal_units` (1.95) stays in `[[planned]]` with measured fallout of 204 sites across 20 files, pending a focused cleanup PR. `manual_pop_if` was listed in the original #191 plan but is not a real clippy lint — `[workspace.lints.rust] unknown_lints = "deny"` rejected it via E0602; the omission is recorded in the ledger.
+
 ### Planned — Rust 1.95 / 0.4.0 Quality Rollout
 
 The next release line is **0.4.0** (minor bump because MSRV increases). The rollout is tracked in [`docs/ci/rust-1.95-rollout.md`](docs/ci/rust-1.95-rollout.md) and proceeds through fifteen PRs:
@@ -22,7 +24,7 @@ The next release line is **0.4.0** (minor bump because MSRV increases). The roll
 - Add `xtask` Rust-native policy runner.
 - Add Clippy lint ledger (`policy/clippy-lints.toml`) and checker.
 - Activate Rust 1.95 compiler lint floor (`unsafe_op_in_unsafe_fn`, `unused_must_use`, `const_item_interior_mutations`, et al.).
-- Activate Rust 1.95 Clippy ratchets (`manual_checked_ops`, `manual_take`, `manual_pop_if`, `duration_suboptimal_units`, et al.).
+- Activate Rust 1.95 Clippy ratchets (`manual_checked_ops`, `manual_take`, `unnecessary_trailing_comma`, `disallowed_fields`, et al.). `duration_suboptimal_units` deferred; `manual_pop_if` from the original plan turned out not to be a real clippy lint.
 - Add exact no-panic no-new-debt baseline and checker.
 - Add non-Rust file policy allowlists for workflows, generated files, executables, dependency surfaces.
 - Add advisory `ripr` PR-time exposure lane.
