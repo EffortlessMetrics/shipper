@@ -89,7 +89,7 @@ enum Command {
     /// ripr as an advisory PR lane; this command does not implement
     /// RIPR analysis itself. See docs/ci/ripr.md.
     #[command(name = "ripr-pr")]
-    RiprPr,
+    RiprPr(ripr::Args),
 }
 
 #[derive(Subcommand, Debug)]
@@ -174,7 +174,7 @@ fn main() -> Result<()> {
         Command::PolicyReport => policy_report::policy_report()?,
         Command::CheckLintPolicy => clippy_checks::check_lint_policy()?,
         Command::CheckClippyExceptions => clippy_checks::check_clippy_exceptions()?,
-        Command::RiprPr => ripr::ripr_pr()?,
+        Command::RiprPr(args) => ripr::ripr_pr(&args)?,
     }
     Ok(())
 }
