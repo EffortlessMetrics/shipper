@@ -3654,6 +3654,7 @@ dependencies = [
  "chrono",
  "clap",
  "globset",
+ "regex",
  "serde",
  "serde_json",
  "toml 0.8.23",

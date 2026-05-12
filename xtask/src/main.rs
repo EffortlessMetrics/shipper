@@ -15,6 +15,7 @@ mod check_file_policy;
 mod checks;
 mod file_policy;
 mod propose;
+mod workflow_checks;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -49,6 +50,18 @@ enum Command {
     /// Reconcile dependency-manifest files against `policy/dependency-surface-allowlist.toml`.
     #[command(name = "check-dependency-surfaces")]
     CheckDependencySurfaces(ChecksModeArgs),
+
+    /// Reconcile `.github/workflows/*.yml` against `policy/workflow-allowlist.toml`.
+    #[command(name = "check-workflow-surfaces")]
+    CheckWorkflowSurfaces(WorkflowModeArgs),
+
+    /// Scan workflow contents for commands not in their declared process profile.
+    #[command(name = "check-process-policy")]
+    CheckProcessPolicy(WorkflowModeArgs),
+
+    /// Scan workflow contents for endpoints not in their declared network profile.
+    #[command(name = "check-network-policy")]
+    CheckNetworkPolicy(WorkflowModeArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -80,6 +93,13 @@ struct ChecksModeArgs {
     mode: checks::Mode,
 }
 
+#[derive(Args, Debug)]
+struct WorkflowModeArgs {
+    /// Reporting / enforcement mode.
+    #[arg(long, value_enum, default_value_t = workflow_checks::Mode::Advisory)]
+    mode: workflow_checks::Mode,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -91,6 +111,11 @@ fn main() -> Result<()> {
         Command::CheckGenerated(args) => checks::check_generated(args.mode)?,
         Command::CheckExecutableFiles(args) => checks::check_executable_files(args.mode)?,
         Command::CheckDependencySurfaces(args) => checks::check_dependency_surfaces(args.mode)?,
+        Command::CheckWorkflowSurfaces(args) => {
+            workflow_checks::check_workflow_surfaces(args.mode)?
+        }
+        Command::CheckProcessPolicy(args) => workflow_checks::check_process_policy(args.mode)?,
+        Command::CheckNetworkPolicy(args) => workflow_checks::check_network_policy(args.mode)?,
     }
     Ok(())
 }
