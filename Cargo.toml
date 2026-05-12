@@ -26,7 +26,18 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 
 [workspace.lints.rust]
+# Rust 1.95 compiler-side lint floor. Zero current fallout per the audit in
+# #198. Sources of truth: docs/CLIPPY_POLICY.md and policy/clippy-lints.toml.
+#
+# Issue #198 listed two lint names that turned out not to be real rustc lints
+# in 1.95 (`function_casts_as_integer` and `unused_visibilities`). They are
+# omitted here. `const_item_interior_mutations` from the issue maps to the
+# real `const_item_mutation`.
 unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+unexpected_cfgs = "warn"
+const_item_mutation = "deny"
 
 [workspace.dependencies]
 # Intra-workspace crates (path + version for publish-readiness).
