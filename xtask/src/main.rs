@@ -13,6 +13,7 @@ use clap::{Args, Parser, Subcommand};
 
 mod check_file_policy;
 mod checks;
+mod clippy_checks;
 mod file_policy;
 mod policy_report;
 mod propose;
@@ -67,6 +68,14 @@ enum Command {
     /// Run every advisory check and emit a unified policy report.
     #[command(name = "policy-report")]
     PolicyReport,
+
+    /// Validate Clippy lint policy: MSRV alignment + workspace.lints coverage.
+    #[command(name = "check-lint-policy")]
+    CheckLintPolicy,
+
+    /// Validate `policy/clippy-exceptions.toml` schema, expiry, and bare-allow scan.
+    #[command(name = "check-clippy-exceptions")]
+    CheckClippyExceptions,
 }
 
 #[derive(Subcommand, Debug)]
@@ -122,6 +131,8 @@ fn main() -> Result<()> {
         Command::CheckProcessPolicy(args) => workflow_checks::check_process_policy(args.mode)?,
         Command::CheckNetworkPolicy(args) => workflow_checks::check_network_policy(args.mode)?,
         Command::PolicyReport => policy_report::policy_report()?,
+        Command::CheckLintPolicy => clippy_checks::check_lint_policy()?,
+        Command::CheckClippyExceptions => clippy_checks::check_clippy_exceptions()?,
     }
     Ok(())
 }

@@ -1,0 +1,115 @@
+# Clippy lint ledger.
+#
+# Authoritative record of active and planned Clippy lints for the shipper
+# workspace. Mirrors the tables in docs/CLIPPY_POLICY.md.
+#
+# `msrv` here must equal the MSRV set in clippy.toml and
+# `[workspace.package] rust-version` in Cargo.toml. The `cargo xtask
+# check-lint-policy` command verifies all three agree.
+#
+# `[[active]]` entries are the lints that are (or will be, at lint-activation
+# time) live in `[workspace.lints.clippy]`. The check-lint-policy command
+# verifies every member of `[workspace.lints.clippy]` has a ledger entry
+# here. Reverse direction is NOT enforced — entries here may be
+# aspirational until the activation PR lands (see PR 7 / #191).
+#
+# `[[planned]]` entries activate once MSRV reaches `min_msrv`. Activation
+# itself is a separate PR after measurement; see docs/CLIPPY_POLICY.md.
+
+schema_version = "1.0"
+policy = "clippy-lints"
+owner = "rust/lints"
+status = "active"
+msrv = "1.95"
+
+# ─── Active lints ───────────────────────────────────────────────────────────
+
+[[active]]
+name = "rust::unsafe_code"
+level = "forbid"
+class = "unsafe-memory"
+reason = "shipper has no unsafe code"
+since = "1.92"
+
+[[active]]
+name = "clippy::dbg_macro"
+level = "deny"
+class = "hygiene"
+reason = "Debug macros are not a reviewable diagnostics path"
+since = "0.0.0"
+
+[[active]]
+name = "clippy::todo"
+level = "deny"
+class = "panic"
+reason = "TODO execution paths are not allowed"
+since = "0.0.0"
+
+[[active]]
+name = "clippy::unimplemented"
+level = "deny"
+class = "panic"
+reason = "Unimplemented execution paths are not allowed"
+since = "0.0.0"
+
+# ─── Planned lints (MSRV-gated) ─────────────────────────────────────────────
+
+[[planned]]
+name = "clippy::same_length_and_capacity"
+level = "deny"
+min_msrv = "1.94"
+reason = "Catch raw-parts reconstruction mistakes"
+
+[[planned]]
+name = "clippy::manual_ilog2"
+level = "warn"
+min_msrv = "1.94"
+reason = "Prefer standard integer log helper"
+
+[[planned]]
+name = "clippy::decimal_bitwise_operands"
+level = "warn"
+min_msrv = "1.94"
+reason = "Make bit masks visually inspectable"
+
+[[planned]]
+name = "clippy::needless_type_cast"
+level = "warn"
+min_msrv = "1.94"
+reason = "Avoid stale numeric type drift"
+
+[[planned]]
+name = "clippy::manual_checked_ops"
+level = "warn"
+min_msrv = "1.95"
+reason = "Prefer checked arithmetic over manual guards"
+
+[[planned]]
+name = "clippy::manual_take"
+level = "warn"
+min_msrv = "1.95"
+reason = "Use standard ownership helper"
+
+[[planned]]
+name = "clippy::manual_pop_if"
+level = "warn"
+min_msrv = "1.95"
+reason = "Use predicate-and-pop collection APIs"
+
+[[planned]]
+name = "clippy::duration_suboptimal_units"
+level = "warn"
+min_msrv = "1.95"
+reason = "Make durations legible"
+
+[[planned]]
+name = "clippy::unnecessary_trailing_comma"
+level = "warn"
+min_msrv = "1.95"
+reason = "Keep format macro calls clean"
+
+[[planned]]
+name = "clippy::disallowed_fields"
+level = "deny"
+min_msrv = "1.95"
+reason = "Ban direct field access across protected seams (pending seam configuration; see docs/CLIPPY_POLICY.md)"
