@@ -57,3 +57,14 @@ reason = "cargo-fuzz harness manifest. Excluded from the default workspace."
 covered_by = ["cargo fuzz (manual)"]
 created = "2026-05-11"
 review_after = "2026-08-11"
+
+[[file]]
+path = "xtask/Cargo.toml"
+kind = "rust_crate_manifest"
+surface = "build"
+classification = "config"
+owner = "rust/build"
+reason = "Internal xtask crate manifest. publish = false; not on crates.io."
+covered_by = ["cargo check -p xtask --locked"]
+created = "2026-05-11"
+review_after = "2026-08-11"

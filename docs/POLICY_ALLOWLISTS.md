@@ -157,8 +157,8 @@ A receipt in any of these allowlists is **not** "approved forever." It is "known
 | `check-generated` / `check-executable-files` / `check-dependency-surfaces` | 7/12 | [#206](https://github.com/EffortlessMetrics/shipper/issues/206) | planned |
 | `check-workflow-surfaces` / `check-process-policy` / `check-network-policy` | 8/12 | [#207](https://github.com/EffortlessMetrics/shipper/issues/207) | planned |
 | `cargo xtask policy-report` (unified) | 9/12 | [#208](https://github.com/EffortlessMetrics/shipper/issues/208) | planned |
-| CI: run all checks in advisory mode + upload artifact | 10/12 | [#209](https://github.com/EffortlessMetrics/shipper/issues/209) | in flight |
-| CI: promote file/generated/executable/dependency/workflow to blocking | 11/12 | [#210](https://github.com/EffortlessMetrics/shipper/issues/210) | planned |
+| CI: run all checks in advisory mode + upload artifact | 10/12 | [#209](https://github.com/EffortlessMetrics/shipper/issues/209) | landed |
+| CI: promote file/generated/executable/dependency/workflow to blocking | 11/12 | [#210](https://github.com/EffortlessMetrics/shipper/issues/210) | in flight |
 | CI: promote process and network to blocking | 12/12 | [#211](https://github.com/EffortlessMetrics/shipper/issues/211) | planned |
 
 Umbrella tracking issue for the file-policy work: [#180](https://github.com/EffortlessMetrics/shipper/issues/180).

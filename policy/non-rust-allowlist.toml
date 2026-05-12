@@ -280,13 +280,140 @@ covered_by = ["cargo test --workspace --locked"]
 created = "2026-05-11"
 review_after = "2026-08-11"
 
+# ─── Repo-level dotfiles / agent / GH config ────────────────────────────────
+
 [[glob]]
-pattern = "fuzz/**"
-kind = "fuzz_harness"
+pattern = ".cargo/**"
+kind = "cargo_workspace_config"
+surface = "build"
+classification = "config"
+owner = "rust/build"
+reason = "Cargo workspace-level config (config.toml aliases, mutants.toml for cargo-mutants)."
+covered_by = ["cargo check --workspace --locked"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[glob]]
+pattern = ".config/**"
+kind = "tool_config"
+surface = "build"
+classification = "config"
+owner = "rust/build"
+reason = "Per-tool configuration (nextest config, etc.)."
+covered_by = ["cargo test --workspace --locked", "cargo xtask check-file-policy"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[glob]]
+pattern = ".factory/**"
+kind = "droid_review_config"
+surface = "ci"
+classification = "config"
+owner = "release/ci"
+reason = "Factory Droid review skill + rules (review-guidelines/SKILL.md, droid-review.md). Consumed by the Droid Auto Review workflow."
+covered_by = ["docs/agent-context/droid-smoke-tests.md"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = ".github/CODEOWNERS"
+kind = "github_codeowners"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "GitHub CODEOWNERS for review routing."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = ".github/copilot-instructions.md"
+kind = "agent_instructions"
+surface = "tooling"
+classification = "documentation"
+owner = "agent-maintainers"
+reason = "Copilot-specific repository instructions."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = ".github/settings.yml"
+kind = "github_repo_settings"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Probot-style declarative repository settings."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = ".gitignore"
+kind = "git_config"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Top-level git ignore rules."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-11-11"
+
+# ─── Per-crate agent docs and per-crate README ──────────────────────────────
+
+[[glob]]
+pattern = "crates/**/AGENTS.md"
+kind = "agent_instructions"
+surface = "docs"
+classification = "documentation"
+owner = "agent-maintainers"
+reason = "Per-crate agent-context AGENTS.md files (root and nested directories under crates/*/src/)."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[glob]]
+pattern = "crates/**/CLAUDE.md"
+kind = "agent_instructions"
+surface = "docs"
+classification = "documentation"
+owner = "agent-maintainers"
+reason = "Per-crate Claude-specific instructions (root and nested directories under crates/*/src/)."
+covered_by = ["manual review"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[glob]]
+pattern = "crates/*/README.md"
+kind = "crate_readme"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Per-crate README displayed on crates.io and on the crate's docs.rs page."
+covered_by = ["manual review", "cargo publish --dry-run"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[glob]]
+pattern = "crates/*/proptest-regressions/**"
+kind = "proptest_regression_seed"
 surface = "tests"
 classification = "test"
-owner = "fuzz/tests"
-reason = "cargo-fuzz harness and supporting files; excluded from default workspace but retained for deep validation."
-covered_by = ["cargo fuzz (manual / scheduled fuzz.yml)"]
+owner = "tests/proptest"
+reason = "Proptest regression seed files capturing inputs that previously failed; kept under git to ensure those cases keep running."
+covered_by = ["cargo test --workspace --locked"]
+created = "2026-05-11"
+review_after = "2026-11-11"
+
+# ─── Policy ledgers themselves ──────────────────────────────────────────────
+
+[[glob]]
+pattern = "policy/**"
+kind = "policy_ledger"
+surface = "build"
+classification = "config"
+owner = "rust/build"
+reason = "Authoritative TOML ledgers consumed by the cargo xtask check-* family."
+covered_by = ["cargo xtask check-file-policy", "cargo xtask policy-report"]
 created = "2026-05-11"
 review_after = "2026-08-11"

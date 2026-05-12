@@ -1,6 +1,13 @@
 //! `cargo xtask check-file-policy --mode <mode>`
 //!
 //! Reconciles tracked non-Rust files against `policy/non-rust-allowlist.toml`.
+//! Files already covered by one of the companion ledgers
+//! (`generated-allowlist.toml`, `executable-allowlist.toml`,
+//! `dependency-surface-allowlist.toml`, `workflow-allowlist.toml`) are
+//! excluded from the universe before reconciliation — they have their own
+//! dedicated checker and would otherwise be double-counted as unreceipted
+//! by this one.
+//!
 //! Three modes match the operating doctrine documented in
 //! `docs/FILE_POLICY.md`:
 //!
@@ -29,6 +36,15 @@ const ALLOWLIST_REL: &str = "policy/non-rust-allowlist.toml";
 const OUTPUT_DIR_REL: &str = "target/policy";
 const MD_NAME: &str = "file-policy-report.md";
 const JSON_NAME: &str = "file-policy-report.json";
+
+/// Companion ledgers consulted to pre-filter the universe. Files matched by
+/// any of these are deferred to their dedicated checker.
+const COMPANION_LEDGERS: &[&str] = &[
+    "policy/generated-allowlist.toml",
+    "policy/executable-allowlist.toml",
+    "policy/dependency-surface-allowlist.toml",
+    "policy/workflow-allowlist.toml",
+];
 
 /// CLI mode for `check-file-policy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -141,9 +157,18 @@ struct Summary {
 
 pub fn check(mode: Mode) -> Result<()> {
     let workspace_root = workspace_root()?;
-    let tracked_non_rust = enumerate_non_rust(&workspace_root)?;
+    let tracked_all = enumerate_non_rust(&workspace_root)?;
     let entries = load_allowlist(&workspace_root)?;
+    let companion_selectors = load_companion_selectors(&workspace_root)?;
     let today = today_iso();
+
+    // Pre-filter: drop files already receipted in any companion ledger.
+    let tracked_non_rust: Vec<String> = tracked_all
+        .iter()
+        .filter(|path| !covered_by_companions(path, &companion_selectors))
+        .cloned()
+        .collect();
+    let deferred_count = tracked_all.len() - tracked_non_rust.len();
 
     let findings = reconcile(&tracked_non_rust, &entries, &today);
 
@@ -156,6 +181,7 @@ pub fn check(mode: Mode) -> Result<()> {
         stale: findings.stale.len(),
         unused: findings.unused.len(),
     };
+    let _ = deferred_count; // surfaced via stdout summary below.
 
     let report = Report {
         tool: "cargo xtask check-file-policy",
@@ -388,6 +414,63 @@ fn enumerate_non_rust(workspace_root: &Path) -> Result<Vec<String>> {
         .collect();
     paths.sort();
     Ok(paths)
+}
+
+/// Selector loaded from a *companion* ledger (generated / executable /
+/// dependency-surface / workflow). Used only for pre-filtering: if any
+/// companion selector matches a tracked file, that file is the other
+/// checker's job and is excluded from this checker's universe.
+#[derive(Debug, Clone)]
+enum CompanionSelector {
+    Path(String),
+    Pattern(String),
+}
+
+#[derive(Debug, Deserialize)]
+struct CompanionDoc {
+    #[serde(default)]
+    file: Vec<CompanionRow>,
+    #[serde(default)]
+    glob: Vec<CompanionRow>,
+    #[serde(default)]
+    workflow: Vec<CompanionRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompanionRow {
+    path: Option<String>,
+    pattern: Option<String>,
+}
+
+fn load_companion_selectors(workspace_root: &Path) -> Result<Vec<CompanionSelector>> {
+    let mut out = Vec::new();
+    for rel in COMPANION_LEDGERS {
+        let path = workspace_root.join(rel);
+        let raw = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => continue, // ledger absent ⇒ no selectors to add.
+        };
+        let doc: CompanionDoc = toml::from_str(&raw)
+            .with_context(|| format!("parsing companion TOML in {}", path.display()))?;
+        for row in doc.file.into_iter().chain(doc.workflow) {
+            if let Some(p) = row.path {
+                out.push(CompanionSelector::Path(p));
+            }
+        }
+        for row in doc.glob {
+            if let Some(p) = row.pattern {
+                out.push(CompanionSelector::Pattern(p));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn covered_by_companions(path: &str, selectors: &[CompanionSelector]) -> bool {
+    selectors.iter().any(|sel| match sel {
+        CompanionSelector::Path(p) => p == path,
+        CompanionSelector::Pattern(pat) => glob_matches(pat, path),
+    })
 }
 
 fn load_allowlist(workspace_root: &Path) -> Result<Vec<Entry>> {

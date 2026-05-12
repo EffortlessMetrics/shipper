@@ -24,8 +24,8 @@ This is the working tracker for the 12-PR rollout that turns Shipper's planned f
 | 7/12 | [#206](https://github.com/EffortlessMetrics/shipper/issues/206) | `feat(policy): check generated, executable, and dependency surfaces` | planned | PR 2, PR 4 |
 | 8/12 | [#207](https://github.com/EffortlessMetrics/shipper/issues/207) | `feat(policy): check workflow, process, and network surfaces` | planned | PR 2, PR 3, PR 4 |
 | 9/12 | [#208](https://github.com/EffortlessMetrics/shipper/issues/208) | `feat(policy): add unified policy report` | landed | PR 5–8 |
-| 10/12 | [#209](https://github.com/EffortlessMetrics/shipper/issues/209) | `ci(policy): run file policy checks advisory` | in flight | PR 5–9 |
-| 11/12 | [#210](https://github.com/EffortlessMetrics/shipper/issues/210) | `ci(policy): require non-Rust file policy allowlist` | planned | PR 10 |
+| 10/12 | [#209](https://github.com/EffortlessMetrics/shipper/issues/209) | `ci(policy): run file policy checks advisory` | landed | PR 5–9 |
+| 11/12 | [#210](https://github.com/EffortlessMetrics/shipper/issues/210) | `ci(policy): require non-Rust file policy allowlist` | in flight | PR 10 |
 | 12/12 | [#211](https://github.com/EffortlessMetrics/shipper/issues/211) | `ci(policy): require process and network policy receipts` | planned | PR 10, PR 11 |
 
 Tracked under milestone [`0.4.0-rc.1`](https://github.com/EffortlessMetrics/shipper/milestone/1).

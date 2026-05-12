@@ -50,15 +50,22 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   policy:
-    # Advisory-only policy report. Runs the seven xtask file-policy
-    # checks (file / generated / executable / dependency-surface /
-    # workflow / process / network) and uploads the aggregated report
-    # under target/policy/. Never blocks merge.
+    # File-policy enforcement.
     #
-    # Promotion to blocking is the job of rollout PR 11 / #210
-    # (file/generated/executable/dependency/workflow) and PR 12 / #211
-    # (process/network). See docs/policy/NON_RUST_ROLLOUT.md.
-    name: Policy (advisory)
+    # As of rollout PR 11 (#210):
+    #   - check-file-policy, check-generated, check-executable-files,
+    #     check-dependency-surfaces, check-workflow-surfaces are
+    #     promoted to --mode blocking-allowlist. CI fails on
+    #     unreceipted files, missing required fields, or expired
+    #     entries in these scopes.
+    #   - check-process-policy, check-network-policy stay at
+    #     --mode advisory. PR 12 (#211) promotes them after a clean
+    #     observational window.
+    #
+    # The unified policy-report still runs at the end of the job and
+    # uploads target/policy/ as a `policy-reports` artifact regardless
+    # of pass/fail (`if: always()`). See docs/policy/NON_RUST_ROLLOUT.md.
+    name: Policy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
@@ -76,7 +83,29 @@ jobs:
           key: ${{ runner.os }}-cargo-policy-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-policy-
 
-      - name: Run all advisory checks + unified policy report
+      - name: check-file-policy (blocking-allowlist)
+        run: cargo xtask check-file-policy --mode blocking-allowlist
+
+      - name: check-generated (blocking-allowlist)
+        run: cargo xtask check-generated --mode blocking-allowlist
+
+      - name: check-executable-files (blocking-allowlist)
+        run: cargo xtask check-executable-files --mode blocking-allowlist
+
+      - name: check-dependency-surfaces (blocking-allowlist)
+        run: cargo xtask check-dependency-surfaces --mode blocking-allowlist
+
+      - name: check-workflow-surfaces (blocking-allowlist)
+        run: cargo xtask check-workflow-surfaces --mode blocking-allowlist
+
+      - name: check-process-policy (advisory)
+        run: cargo xtask check-process-policy --mode advisory
+
+      - name: check-network-policy (advisory)
+        run: cargo xtask check-network-policy --mode advisory
+
+      - name: Unified policy report
+        if: always()
         run: cargo xtask policy-report
 
       - name: Upload policy reports
