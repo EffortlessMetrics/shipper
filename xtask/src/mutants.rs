@@ -9,12 +9,14 @@
 //!
 //! Behaviour:
 //!
+//! ```text
 //!   --changed          (required) limit mutation to files modified
 //!                      vs `<base>` (default `origin/main`)
 //!   --base <REF>       diff base ref (default `origin/main`)
 //!   --dry-run          enumerate the mutants `cargo mutants` would
 //!                      generate without running tests against any of
 //!                      them (maps to `cargo mutants --list`)
+//! ```
 //!
 //! Local advisory: if `cargo-mutants` is missing on PATH, prints install
 //! instructions and exits success. CI installs the tool before invoking.
