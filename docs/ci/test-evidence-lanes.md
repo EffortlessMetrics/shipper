@@ -10,7 +10,7 @@ Nightly: deeper mutation / fuzz / proptest lanes
 Release: publish / readiness / security proof must be clean to ship
 ```
 
-`ripr` is the PR-time exposure filter: a fast signal on which mutants are reachable from changed code. Full mutation belongs in targeted, nightly, and release lanes rather than on every PR.
+`ripr` is the PR-time exposure filter: static mutation-exposure analysis that asks whether changed behavior appears exposed to a meaningful test oracle. It does not run mutants. Full mutation testing is the runtime backstop and belongs in label-gated PRs, nightly, and release lanes — never the default PR hot path.
 
 ## Lane Map
 
@@ -40,7 +40,8 @@ Release: publish / readiness / security proof must be clean to ship
 | Job | Trigger | What it proves |
 |---|---|---|
 | `coverage` | main / dispatch / `coverage` / `full-ci` labels | Line/branch coverage, Codecov integration. |
-| `ripr` | PRs touching `crates/**`, `xtask/**`, policy files | Reachable mutant exposure from changed code (advisory). |
+| `ripr` | PRs touching `crates/**`, `xtask/**`, policy files | Static mutation-exposure analysis: does the diff appear exposed to a meaningful test oracle? Advisory. |
+| `mutants-pr` | PRs labeled `mutation` or `full-ci` | Runtime mutation backstop scoped to the PR's changed files via `cargo xtask mutants-pr --changed`. Blocking when run. |
 
 ### Nightly and Scheduled
 
@@ -52,10 +53,29 @@ Release: publish / readiness / security proof must be clean to ship
 
 ### Targeted Mutation (PR-Triggered)
 
-Full mutation runs on a PR when:
-- PR carries the `mutation` or `full-ci` label.
-- Changes touch: `shipper-core` publish/reconcile/readiness, `shipper-encrypt`, `shipper-output-sanitizer`, `shipper-cargo-failure`, `shipper-sparse-index`, `shipper-webhook`, state/event/receipt types.
-- `ripr` reports a severe reachable weak-coverage exposure.
+Mutation testing runs on a PR when the PR carries the `mutation` or `full-ci` label. The job is implemented in `.github/workflows/mutation.yml` as `mutants-pr`, and it scopes mutation to the files the PR changed by invoking:
+
+```bash
+cargo xtask mutants-pr --changed --base origin/<PR base>
+```
+
+The wrapper computes `git diff <base>...HEAD --name-only -- '*.rs'`, filters out `tests/` and `benches/` paths (cargo-mutants only mutates production source), and runs `cargo mutants --no-shuffle --file <each-path>`. A `--dry-run` mode (`cargo mutants --list`) is available locally for shape inspection without running tests.
+
+Local invocation pattern:
+
+```bash
+# Inspect which mutants the PR would generate, no tests run.
+cargo xtask mutants-pr --changed --dry-run
+
+# Real run.
+cargo xtask mutants-pr --changed
+```
+
+If `cargo-mutants` is missing locally, the wrapper prints install instructions and exits advisory-success rather than erroring; CI installs the tool before invoking.
+
+A maintainer should apply the label when:
+- Changes touch `shipper-core` publish/reconcile/readiness, `shipper-encrypt`, `shipper-output-sanitizer`, `shipper-cargo-failure`, `shipper-sparse-index`, `shipper-webhook`, or state/event/receipt types.
+- `ripr` raises a `warning`-level finding in a trust-critical crate that benefits from execution-backed confirmation.
 
 ### Release Proof
 

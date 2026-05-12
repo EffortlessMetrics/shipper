@@ -15,6 +15,7 @@ mod check_file_policy;
 mod checks;
 mod clippy_checks;
 mod file_policy;
+mod mutants;
 mod no_panic;
 mod policy_report;
 mod propose;
@@ -102,6 +103,14 @@ enum Command {
     /// regenerating them with stale numbers is worse than failing loud.
     #[command(name = "repo-ripr-badge-artifacts")]
     RepoRiprBadgeArtifacts,
+
+    /// Run `cargo mutants` against PR-changed files only (#182 PR 3).
+    ///
+    /// Label-gated PR-time mutation lane. Scopes mutation testing to
+    /// files modified vs `--base` so it stays off the default PR hot
+    /// path. Whole-workspace mutation remains in the weekly schedule.
+    #[command(name = "mutants-pr")]
+    MutantsPr(mutants::Args),
 }
 
 #[derive(Subcommand, Debug)]
@@ -188,6 +197,7 @@ fn main() -> Result<()> {
         Command::CheckClippyExceptions => clippy_checks::check_clippy_exceptions()?,
         Command::RiprPr(args) => ripr::ripr_pr(&args)?,
         Command::RepoRiprBadgeArtifacts => ripr::repo_badge_artifacts()?,
+        Command::MutantsPr(args) => mutants::mutants_pr(&args)?,
     }
     Ok(())
 }
