@@ -502,19 +502,15 @@ pub fn get_package_name(manifest_path: &Path) -> Result<String> {
 /// - Cannot start with a digit or hyphen
 /// - Only ASCII lowercase letters, digits, hyphens, and underscores
 pub fn is_valid_package_name(name: &str) -> bool {
-    if name.is_empty() {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if first.is_ascii_digit() || first == '-' {
         return false;
     }
-
-    let chars: Vec<char> = name.chars().collect();
-
-    if chars[0].is_ascii_digit() || chars[0] == '-' {
-        return false;
-    }
-
-    chars
-        .iter()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-' || *c == '_')
+    let valid = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_';
+    valid(first) && chars.all(valid)
 }
 
 /// All workspace member package names.

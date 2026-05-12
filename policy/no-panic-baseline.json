@@ -4,13 +4,13 @@
   "generated_on": "2026-05-12",
   "note": "Machine-generated. Run `cargo xtask no-panic baseline` to regenerate. See docs/NO_PANIC_POLICY.md for semantics.",
   "counts": {
-    "total_call_sites": 59,
-    "total_entries": 28,
+    "total_call_sites": 55,
+    "total_entries": 25,
     "files_scanned": 50,
     "files_with_findings": 25,
     "by_family": {
       "expect": 4,
-      "index": 7,
+      "index": 3,
       "unwrap": 48
     }
   },
@@ -169,24 +169,6 @@
       "first_line": 188
     },
     {
-      "path": "crates/shipper-core/src/ops/cargo/mod.rs",
-      "family": "index",
-      "selector_kind": "syntax",
-      "selector_callee": "[]",
-      "snippet": "if chars[0].is_ascii_digit() || chars[0] == '-' {",
-      "count": 2,
-      "first_line": 511
-    },
-    {
-      "path": "crates/shipper-core/src/plan/chunking/mod.rs",
-      "family": "index",
-      "selector_kind": "syntax",
-      "selector_callee": "[]",
-      "snippet": "chunks.push(items[index..next].to_vec());",
-      "count": 1,
-      "first_line": 36
-    },
-    {
       "path": "crates/shipper-core/src/plan/mod.rs",
       "family": "expect",
       "selector_kind": "method_call",
@@ -230,15 +212,6 @@
       "snippet": "ready.remove(&(pkg_map.get(&id).unwrap().name.to_string(), id.clone()));",
       "count": 1,
       "first_line": 318
-    },
-    {
-      "path": "crates/shipper-core/src/runtime/environment/mod.rs",
-      "family": "index",
-      "selector_kind": "syntax",
-      "selector_callee": "[]",
-      "snippet": "Some(normalized[1].to_string())",
-      "count": 1,
-      "first_line": 96
     },
     {
       "path": "crates/shipper-core/src/state/execution_state/mod.rs",

@@ -91,12 +91,7 @@ pub(crate) fn is_ci() -> bool {
 ///
 /// Preserves the PR #53 shim helper name for backward reference.
 fn normalize_version(raw: &str) -> Option<String> {
-    let normalized = raw.split_whitespace().collect::<Vec<_>>();
-    if normalized.len() >= 2 {
-        Some(normalized[1].to_string())
-    } else {
-        None
-    }
+    raw.split_whitespace().nth(1).map(|s| s.to_string())
 }
 
 /// Collect a structured environment fingerprint compatible with `shipper` runtime types.

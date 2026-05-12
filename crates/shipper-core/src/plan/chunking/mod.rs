@@ -24,20 +24,7 @@
 /// ```
 pub fn chunk_by_max_concurrent<T: Clone>(items: &[T], max_concurrent: usize) -> Vec<Vec<T>> {
     let batch_size = max_concurrent.max(1);
-    if items.is_empty() {
-        return Vec::new();
-    }
-
-    let mut chunks = Vec::new();
-    let mut index = 0usize;
-
-    while index < items.len() {
-        let next = (index + batch_size).min(items.len());
-        chunks.push(items[index..next].to_vec());
-        index = next;
-    }
-
-    chunks
+    items.chunks(batch_size).map(<[T]>::to_vec).collect()
 }
 
 #[cfg(test)]
