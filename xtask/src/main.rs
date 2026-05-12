@@ -14,6 +14,7 @@ use clap::{Args, Parser, Subcommand};
 mod check_file_policy;
 mod checks;
 mod file_policy;
+mod policy_report;
 mod propose;
 mod workflow_checks;
 
@@ -62,6 +63,10 @@ enum Command {
     /// Scan workflow contents for endpoints not in their declared network profile.
     #[command(name = "check-network-policy")]
     CheckNetworkPolicy(WorkflowModeArgs),
+
+    /// Run every advisory check and emit a unified policy report.
+    #[command(name = "policy-report")]
+    PolicyReport,
 }
 
 #[derive(Subcommand, Debug)]
@@ -116,6 +121,7 @@ fn main() -> Result<()> {
         }
         Command::CheckProcessPolicy(args) => workflow_checks::check_process_policy(args.mode)?,
         Command::CheckNetworkPolicy(args) => workflow_checks::check_network_policy(args.mode)?,
+        Command::PolicyReport => policy_report::policy_report()?,
     }
     Ok(())
 }
