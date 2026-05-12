@@ -492,7 +492,7 @@ pub fn check_process_policy(mode: Mode) -> Result<()> {
             .unwrap_or_default();
 
         let content = read_workflow_content(&workspace_root, path).unwrap_or_default();
-        let detected = detect_tokens(&content, KNOWN_COMMANDS);
+        let detected = detect_commands_in_runs(&content, KNOWN_COMMANDS);
         let unknown: Vec<String> = detected
             .iter()
             .filter(|c| !allowed.contains(c.as_str()))
@@ -685,43 +685,116 @@ fn read_workflow_content(workspace_root: &Path, rel: &str) -> Result<String> {
     fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
 }
 
-fn detect_tokens(haystack: &str, vocabulary: &[&str]) -> Vec<String> {
+/// Position-aware command detection inside `run:` blocks only.
+///
+/// The previous implementation grep-matched the whole YAML for known
+/// command tokens, which produced false positives where a command name
+/// appears as a cargo build target (`-p shipper`), an action ref
+/// (`taiki-e/install-action`), or in a step `name:` line. This refined
+/// scanner:
+///
+/// 1. Walks the YAML by indentation and picks out content under
+///    `run:` keys — both inline (`run: cargo build`) and block scalars
+///    (`run: |` followed by indented lines).
+/// 2. Splits each run-block's content by shell statement separators
+///    (newline, `;`, `&&`, `||`, `|`).
+/// 3. Looks at the **first word** of each segment. Only that first
+///    word can be a command in shell semantics; subsequent tokens are
+///    arguments.
+/// 4. Strips leading redirections and environment-variable assignments
+///    (`FOO=bar cmd ...` ⇒ `cmd`).
+///
+/// `cargo build -p shipper` now flags `cargo` and nothing else.
+/// `sudo apt-get install -y gcc` flags `sudo`.
+/// `mkdir -p /tmp/x` flags `mkdir`.
+fn detect_commands_in_runs(yaml_text: &str, vocabulary: &[&str]) -> Vec<String> {
     let mut found: BTreeSet<String> = BTreeSet::new();
-    for tok in vocabulary {
-        // Word-boundary match: surrounded by start-of-string, whitespace, or
-        // a small set of shell-meaningful delimiters.
-        if word_present(haystack, tok) {
-            found.insert((*tok).to_string());
+    let vocab: BTreeSet<&str> = vocabulary.iter().copied().collect();
+
+    let mut buffer = String::new();
+    let mut in_run_block = false;
+    let mut run_indent: usize = 0;
+
+    for line in yaml_text.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim_start();
+
+        // If we're inside a run block and the next line's indentation
+        // returns to or below the run's `run:` key indent, the block ends.
+        if in_run_block && !trimmed.is_empty() && indent <= run_indent {
+            scan_run_content(&buffer, &vocab, &mut found);
+            buffer.clear();
+            in_run_block = false;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("run:") {
+            // Flush any prior unterminated block (defensive).
+            if in_run_block {
+                scan_run_content(&buffer, &vocab, &mut found);
+                buffer.clear();
+            }
+            in_run_block = true;
+            run_indent = indent;
+            let value = rest.trim();
+            // Block-scalar markers: `|`, `>`, `|-`, `>-`, `|+`, `>+`.
+            if !value.is_empty() && !matches!(value, "|" | ">" | "|-" | ">-" | "|+" | ">+") {
+                buffer.push_str(value);
+                buffer.push('\n');
+            }
+            continue;
+        }
+
+        if in_run_block {
+            // Skip blank lines (don't end the block; YAML allows them inside).
+            if !trimmed.is_empty() {
+                buffer.push_str(trimmed);
+                buffer.push('\n');
+            }
         }
     }
+    if in_run_block && !buffer.is_empty() {
+        scan_run_content(&buffer, &vocab, &mut found);
+    }
+
     found.into_iter().collect()
 }
 
-fn word_present(haystack: &str, needle: &str) -> bool {
-    let bytes = haystack.as_bytes();
-    let nbytes = needle.as_bytes();
-    if nbytes.is_empty() {
-        return false;
-    }
-    let mut i = 0;
-    while let Some(off) = haystack[i..].find(needle) {
-        let start = i + off;
-        let end = start + nbytes.len();
-        let before_ok = start == 0 || !is_word_char(bytes[start - 1]);
-        let after_ok = end >= bytes.len() || !is_word_char(bytes[end]);
-        if before_ok && after_ok {
-            return true;
+fn scan_run_content(content: &str, vocab: &BTreeSet<&str>, found: &mut BTreeSet<String>) {
+    // Split by shell separators. We don't try to honor quoted strings;
+    // false-negatives there are acceptable (an attacker hiding a command
+    // inside quoted strings would also need to break out of them, and the
+    // policy stack assumes review).
+    let separators: &[char] = &['\n', ';', '|', '&'];
+    for raw_segment in content.split(separators) {
+        let segment = raw_segment.trim();
+        if segment.is_empty() {
+            continue;
         }
-        i = start + 1;
-        if i >= bytes.len() {
+        // Drop leading shell glue and env-var assignments.
+        let mut tokens = segment.split_whitespace();
+        let mut first = loop {
+            match tokens.next() {
+                Some(t) if t.contains('=') && !t.starts_with('=') => continue, // FOO=bar
+                Some(t) if t == "\\" || t == "&&" || t == "||" => continue,
+                Some(t) => break Some(t),
+                None => break None,
+            }
+        };
+        // Strip leading `(`, `!`, etc.
+        while let Some(t) = first {
+            let stripped = t.trim_start_matches(['(', '{', '!', ' ']);
+            if stripped != t {
+                first = Some(stripped);
+                continue;
+            }
             break;
         }
+        if let Some(t) = first
+            && vocab.contains(t)
+        {
+            found.insert(t.to_string());
+        }
     }
-    false
-}
-
-fn is_word_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
 fn is_dependabot_config(e: &RawWorkflowEntry) -> bool {

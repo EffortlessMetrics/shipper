@@ -52,19 +52,29 @@ jobs:
   policy:
     # File-policy enforcement.
     #
-    # As of rollout PR 11 (#210):
-    #   - check-file-policy, check-generated, check-executable-files,
-    #     check-dependency-surfaces, check-workflow-surfaces are
-    #     promoted to --mode blocking-allowlist. CI fails on
-    #     unreceipted files, missing required fields, or expired
-    #     entries in these scopes.
-    #   - check-process-policy, check-network-policy stay at
-    #     --mode advisory. PR 12 (#211) promotes them after a clean
-    #     observational window.
+    # As of rollout PR 12 (#211): all seven file-policy checks run in
+    # --mode blocking-allowlist. CI fails on unreceipted files, missing
+    # required fields, or expired entries in any of:
     #
-    # The unified policy-report still runs at the end of the job and
-    # uploads target/policy/ as a `policy-reports` artifact regardless
-    # of pass/fail (`if: always()`). See docs/policy/NON_RUST_ROLLOUT.md.
+    #   - non-Rust file allowlist (policy/non-rust-allowlist.toml)
+    #   - generated allowlist
+    #   - executable allowlist
+    #   - dependency-surface allowlist
+    #   - workflow allowlist
+    #   - process policy (per-workflow command set)
+    #   - network policy (per-workflow endpoint set)
+    #
+    # The check-process-policy detector was refined in PR 12 to only
+    # consider the first word of each shell command inside `run:` blocks
+    # (see xtask/src/workflow_checks.rs::detect_commands_in_runs), so
+    # build-target names like `shipper` no longer false-positive.
+    #
+    # `blocking-strict` mode (fails on unused entries + stale review
+    # dates) remains out of scope until a dedicated cleanup pass.
+    #
+    # The unified policy-report runs at the end and uploads
+    # target/policy/ as a `policy-reports` artifact regardless of
+    # pass/fail (`if: always()`). See docs/policy/NON_RUST_ROLLOUT.md.
     name: Policy
     runs-on: ubuntu-latest
     steps:
@@ -98,11 +108,11 @@ jobs:
       - name: check-workflow-surfaces (blocking-allowlist)
         run: cargo xtask check-workflow-surfaces --mode blocking-allowlist
 
-      - name: check-process-policy (advisory)
-        run: cargo xtask check-process-policy --mode advisory
+      - name: check-process-policy (blocking-allowlist)
+        run: cargo xtask check-process-policy --mode blocking-allowlist
 
-      - name: check-network-policy (advisory)
-        run: cargo xtask check-network-policy --mode advisory
+      - name: check-network-policy (blocking-allowlist)
+        run: cargo xtask check-network-policy --mode blocking-allowlist
 
       - name: Unified policy report
         if: always()

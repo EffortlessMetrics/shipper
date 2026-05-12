@@ -97,8 +97,8 @@ In short:
 2. **PR 4** adds an `xtask` skeleton and `cargo xtask non-rust inventory`.
 3. **PRs 5–9** add the checker subcommands and the unified report. All run in advisory mode initially.
 4. **PR 10** wires the advisory checks into CI as a `Policy (advisory)` job and uploads the aggregated report from `target/policy/` as a `policy-reports` artifact. The job never blocks merge.
-5. **PR 11** promotes file/generated/executable/dependency/workflow checks to `blocking-allowlist`. The CI job is renamed from `Policy (advisory)` to `Policy`, and an unreceipted non-Rust file fails the merge. Process and network stay at advisory. _This is the current state of the rollout._
-6. **PR 12** promotes process and network checks to `blocking-allowlist`.
+5. **PR 11** promotes file/generated/executable/dependency/workflow checks to `blocking-allowlist`. The CI job is renamed from `Policy (advisory)` to `Policy`, and an unreceipted non-Rust file fails the merge. Process and network stay at advisory.
+6. **PR 12** promotes process and network checks to `blocking-allowlist`. The process detector is refined to only consider the first word of each shell command inside `run:` blocks, so build-target names like `shipper` no longer false-positive. **The full file-policy rollout is now complete.**
 
 `blocking-strict` mode (which fails on unused entries and stale review dates) is explicitly out of scope for the initial rollout and is deferred until after a stale/unused cleanup pass.
 
