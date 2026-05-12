@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0-rc.1] - 2026-05-12
+
+This is the first release candidate of the **0.4.0** line. The line bumps MSRV from 1.92 to 1.95 (and therefore takes a minor-version step per semver), threads the Rust 1.95 lint floor and Clippy ratchets through the workspace, lands an exact no-panic baseline + check + release CI gate, adopts the external `ripr` static-exposure tool as an advisory PR lane, sets up policy receipts for every non-Rust surface, and stabilises a long-standing macOS test flake. See the per-area entries below for citations.
+
 ### Changed
 
 - **MSRV raised from 1.92 to 1.95.** `[workspace.package] rust-version` updated to `"1.95"`. `rust-toolchain.toml` pins the toolchain to `1.95.0` (minimal profile + rustfmt + clippy). `clippy.toml` sets `msrv = "1.95"`, cognitive-complexity threshold 40, too-many-arguments threshold 8. All CI MSRV references (ci.yml, coverage.yml, release.yml) updated. Documentation and badge updated accordingly.
@@ -37,24 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **First no-panic burn-down: three indexing sites in `shipper-core`** ([#190](https://github.com/EffortlessMetrics/shipper/issues/190)). Refactored three safe-by-construction indexing operations to their idiomatic Rust equivalents, removing them from the no-panic baseline: `is_valid_package_name` in `ops/cargo/mod.rs` (replaced the `name.is_empty()` + `chars: Vec<char>` + `chars[0]` dance with `chars.next()` returning `Option<char>`); `normalize_version` in `runtime/environment/mod.rs` (replaced `.collect::<Vec<_>>()` + `.len() >= 2` + `[1]` with `.nth(1)`); `chunk_by_max_concurrent` in `plan/chunking/mod.rs` (replaced the manual index/while loop with `slice::chunks(batch_size)`). All three were already provably safe — the panic surface was statically unreachable — but the new forms make that obvious and remove the entries from `policy/no-panic-baseline.json`. Baseline: 28 → 25 entries, 59 → 55 production sites, `index` family 7 → 3. `cargo xtask no-panic check` correctly reported `resolved=3` against the prior baseline, validating the check loop end-to-end. The issue's chosen target (`shipper-duration`) had zero production debt — all 53 sites flagged in the issue body were in test code, already excluded from the baseline — so the burn-down moved into `shipper-core` where the real debt lives.
 
-### Planned — Rust 1.95 / 0.4.0 Quality Rollout
+### Carry-over to follow
 
-The next release line is **0.4.0** (minor bump because MSRV increases). The rollout is tracked in [`docs/ci/rust-1.95-rollout.md`](docs/ci/rust-1.95-rollout.md) and proceeds through fifteen PRs:
+These items are planned for the 0.4.0 line but did not land in rc.1:
 
-- Raise MSRV from Rust 1.92 to Rust 1.95.
-- Pin toolchain via `rust-toolchain.toml`.
-- Add `xtask` Rust-native policy runner.
-- Add Clippy lint ledger (`policy/clippy-lints.toml`) and checker.
-- Activate Rust 1.95 compiler lint floor (`unsafe_op_in_unsafe_fn`, `unused_must_use`, `const_item_interior_mutations`, et al.).
-- Activate Rust 1.95 Clippy ratchets (`manual_checked_ops`, `manual_take`, `unnecessary_trailing_comma`, `disallowed_fields`, et al.). `duration_suboptimal_units` deferred; `manual_pop_if` from the original plan turned out not to be a real clippy lint.
-- Add exact no-panic no-new-debt baseline and checker.
-- Add non-Rust file policy allowlists for workflows, generated files, executables, dependency surfaces.
-- Add advisory `ripr` PR-time exposure lane.
-- Add scoped CI lane policy and targeted mutation routing.
-- Apply Rust 1.95 API cleanup in publish and receipt paths.
-- First Clippy / no-panic debt burndown.
-- Version alignment to `0.4.0-rc.1` / `v0.4.0`.
-- Release dry-run proof.
+- Mutation-workflow crate-list expansion to the full trust-critical surface (today the weekly job only covers `shipper-duration` / `shipper-types` / `shipper-config`).
+- `duration_suboptimal_units` clippy lint activation (204-site cleanup; deferred from #191).
+- `engine/parallel/` `.lock().unwrap()` Mutex-poisoning posture (~35 sites; tracked in the no-panic baseline).
+- CI lane routing changes documented as deferred in [`docs/ci/test-evidence-lanes.md`](docs/ci/test-evidence-lanes.md#routing-changes-deferred-to-follow-up-prs).
+- Final release dry-run proof against the actual tag-push pipeline.
 
 ## [0.3.0-rc.2] - 2026-04-18
 
