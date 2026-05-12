@@ -3,3 +3,4 @@
 # collapsed) and excludes them from language statistics.
 
 policy/no-panic-baseline.json linguist-generated=true
+badges/*.json                 linguist-generated=true

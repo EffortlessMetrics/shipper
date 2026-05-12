@@ -22,7 +22,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use serde_json::Value;
 
 const RIPR_INSTALL_HINT: &str =
     "ripr not found on PATH. Install with: `cargo install ripr --locked --version 0.5.0`";
@@ -126,6 +127,110 @@ fn which_ripr() -> Option<()> {
     }
 }
 
+// ─── repo-ripr-badge-artifacts ──────────────────────────────────────────────
+//
+// Repo-scoped Shields endpoint JSON for the public README badges. Per
+// ripr's badge policy (docs/BADGE_POLICY.md upstream), README badges
+// must be repo-scoped — a diff-scoped artifact would read `0` on `main`
+// simply because nothing changed, not because the repo is clean.
+//
+// This command runs `ripr check --root . --mode ready --format
+// repo-exposure-json`, captures the resulting repo summary, extracts
+// `metrics.headline_eligible` (the count of repo seams the configured
+// `[severity.seams]` policy treats as non-off), maps the number to a
+// Shields color, and writes two Shields-compatible endpoint JSON files
+// under `badges/`. Both badges currently project the same metric;
+// `ripr+` is a forward-looking name kept aligned with upstream's pair.
+// Differentiating it requires combining test-efficiency findings with
+// exposure gaps and is deferred.
+
+const SHIELDS_RIPR_PATH: &str = "badges/ripr.json";
+const SHIELDS_RIPR_PLUS_PATH: &str = "badges/ripr-plus.json";
+const RIPR_CHECK_REPO_OUT: &str = "target/ripr/check-repo.json";
+
+pub fn repo_badge_artifacts() -> Result<()> {
+    if which_ripr().is_none() {
+        bail!(
+            "ripr not found on PATH. Install with: `cargo install ripr --locked --version 0.5.0` \
+             before regenerating badges."
+        );
+    }
+
+    // `ripr check` streams its JSON output on stdout; capture it directly.
+    let output = Command::new("ripr")
+        .args([
+            "check",
+            "--root",
+            ".",
+            "--mode",
+            "ready",
+            "--format",
+            "repo-exposure-json",
+        ])
+        .output()
+        .context("spawning `ripr check`")?;
+    if !output.status.success() {
+        bail!(
+            "`ripr check` exited with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    // Persist the raw repo-exposure JSON so the badge inputs are inspectable.
+    if let Some(parent) = Path::new(RIPR_CHECK_REPO_OUT).parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    fs::write(RIPR_CHECK_REPO_OUT, &output.stdout)
+        .with_context(|| format!("writing {RIPR_CHECK_REPO_OUT}"))?;
+
+    let value: Value =
+        serde_json::from_slice(&output.stdout).context("parsing ripr repo-exposure JSON")?;
+    let headline = value
+        .get("metrics")
+        .and_then(|m| m.get("headline_eligible"))
+        .and_then(|v| v.as_u64())
+        .context("`metrics.headline_eligible` missing from ripr repo-exposure JSON")?;
+
+    fs::create_dir_all("badges").context("creating badges/")?;
+    write_shields_endpoint(SHIELDS_RIPR_PATH, "ripr", headline)?;
+    // `ripr+` upstream-aligned name. Pinned to the same count for now;
+    // the differentiation between exposure-only (ripr) and exposure +
+    // test-efficiency (ripr+) is upstream territory and not yet projected
+    // here. Documented in `docs/ci/ripr.md`.
+    write_shields_endpoint(SHIELDS_RIPR_PLUS_PATH, "ripr+", headline)?;
+
+    println!(
+        "repo-ripr-badge-artifacts: headline_eligible={headline} -> {SHIELDS_RIPR_PATH}, {SHIELDS_RIPR_PLUS_PATH}"
+    );
+    Ok(())
+}
+
+fn write_shields_endpoint(path: &str, label: &str, count: u64) -> Result<()> {
+    let endpoint = serde_json::json!({
+        "schemaVersion": 1,
+        "label": label,
+        "message": count.to_string(),
+        "color": shields_color(count),
+    });
+    let mut s =
+        serde_json::to_string_pretty(&endpoint).with_context(|| format!("serialising {path}"))?;
+    s.push('\n');
+    fs::write(path, s).with_context(|| format!("writing {path}"))
+}
+
+fn shields_color(count: u64) -> &'static str {
+    // Color thresholds mirror ripr's own dogfood pattern: `0` is the
+    // inbox-zero goal (brightgreen); any non-zero count is concern. The
+    // exact thresholds will tune over time as Shipper's debt shrinks.
+    match count {
+        0 => "brightgreen",
+        1..=99 => "yellowgreen",
+        100..=999 => "orange",
+        _ => "red",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +277,37 @@ mod tests {
             !Path::new("target/policy/ripr-projection-skip-probe.txt").exists(),
             "no destination should be written when the source is missing"
         );
+    }
+
+    #[test]
+    fn shields_color_thresholds() {
+        // Guard against accidental threshold drift — these influence the
+        // visual signal of the public badges.
+        assert_eq!(shields_color(0), "brightgreen");
+        assert_eq!(shields_color(1), "yellowgreen");
+        assert_eq!(shields_color(99), "yellowgreen");
+        assert_eq!(shields_color(100), "orange");
+        assert_eq!(shields_color(999), "orange");
+        assert_eq!(shields_color(1000), "red");
+        assert_eq!(shields_color(u64::MAX), "red");
+    }
+
+    #[test]
+    fn write_shields_endpoint_shape() {
+        // Round-trip via serde_json to confirm the four required keys are
+        // present and that the count goes into the `message` field as a
+        // string (Shields rejects numeric `message`).
+        let dir = std::env::temp_dir().join("shipper-ripr-badge-test");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("ripr-probe.json");
+        write_shields_endpoint(path.to_str().unwrap(), "ripr", 42).unwrap();
+        let raw = fs::read_to_string(&path).unwrap();
+        let v: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["schemaVersion"], 1);
+        assert_eq!(v["label"], "ripr");
+        assert_eq!(v["message"], "42");
+        assert_eq!(v["color"], "yellowgreen");
+        let _ = fs::remove_file(path);
     }
 
     #[test]

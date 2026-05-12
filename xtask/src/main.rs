@@ -90,6 +90,18 @@ enum Command {
     /// RIPR analysis itself. See docs/ci/ripr.md.
     #[command(name = "ripr-pr")]
     RiprPr(ripr::Args),
+
+    /// Regenerate repo-scoped Shields badge endpoints (#182 PR 2).
+    ///
+    /// Runs `ripr check --root . --mode ready --format
+    /// repo-exposure-json`, extracts `metrics.headline_eligible`, and
+    /// writes `badges/ripr.json` and `badges/ripr-plus.json` as
+    /// Shields-compatible endpoint JSON. README badges link these via
+    /// raw.githubusercontent.com. Unlike `ripr-pr`, this command
+    /// REQUIRES `ripr` on PATH — the badge artifacts are repo-truth and
+    /// regenerating them with stale numbers is worse than failing loud.
+    #[command(name = "repo-ripr-badge-artifacts")]
+    RepoRiprBadgeArtifacts,
 }
 
 #[derive(Subcommand, Debug)]
@@ -175,6 +187,7 @@ fn main() -> Result<()> {
         Command::CheckLintPolicy => clippy_checks::check_lint_policy()?,
         Command::CheckClippyExceptions => clippy_checks::check_clippy_exceptions()?,
         Command::RiprPr(args) => ripr::ripr_pr(&args)?,
+        Command::RepoRiprBadgeArtifacts => ripr::repo_badge_artifacts()?,
     }
     Ok(())
 }

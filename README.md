@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml/badge.svg)](https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml)
 [![Codecov](https://codecov.io/gh/EffortlessMetrics/shipper/branch/main/graph/badge.svg)](https://codecov.io/gh/EffortlessMetrics/shipper)
+[![ripr](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/EffortlessMetrics/shipper/main/badges/ripr.json)](docs/ci/ripr.md)
+[![ripr+](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/EffortlessMetrics/shipper/main/badges/ripr-plus.json)](docs/ci/ripr.md)
 [![MSRV](https://img.shields.io/badge/MSRV-1.95-blue.svg)](https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 

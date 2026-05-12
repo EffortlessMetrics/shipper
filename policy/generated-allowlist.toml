@@ -36,3 +36,16 @@ reason = "Machine-generated snapshot of every production panic-family call site 
 covered_by = ["cargo xtask no-panic check (PR 8b)"]
 created = "2026-05-12"
 review_after = "2026-11-12"
+
+[[glob]]
+pattern = "badges/*.json"
+kind = "shields_badge_endpoint"
+surface = "docs"
+classification = "generated"
+owner = "rust/tests"
+generator = "cargo xtask repo-ripr-badge-artifacts"
+regen_command = "cargo xtask repo-ripr-badge-artifacts"
+reason = "Shields-compatible endpoint JSON for the public ripr README badges (#182 PR 2). Repo-scoped count of unresolved seam-native exposure gaps under the configured [severity.seams] policy. Marked `linguist-generated=true` in .gitattributes; refresh cadence is manual."
+covered_by = ["manual review"]
+created = "2026-05-12"
+review_after = "2026-11-12"
