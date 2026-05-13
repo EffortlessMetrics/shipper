@@ -1,0 +1,52 @@
+# Support Tiers
+
+Status: accepted
+Owner: EffortlessMetrics
+Created: 2026-05-13
+Milestone: 0.4.0
+Linked proposal: docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md
+Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md
+Linked ADRs:
+Linked plan:
+Linked issues: #109, #195
+Linked PRs:
+Support-tier impact: source of truth
+Policy impact: policy ledgers remain the source of truth for exceptions and receipts
+Proof commands: cargo xtask check-file-policy --mode blocking-allowlist; cargo xtask policy-report; cargo fmt --all -- --check
+
+Support tiers are Shipper's claim-to-proof map. README and product docs must not
+make stronger claims than this file supports.
+
+## Tier Model
+
+| Tier | Meaning |
+|---|---|
+| stable | Implemented, tested, documented, and backed by a proof command or artifact. |
+| stable/internal | Stable internal or CI contract, not necessarily a public user promise. |
+| advisory | Useful signal exists, but it is non-blocking or incomplete. |
+| experimental | Behavior exists, but is not yet a user promise. |
+| planned | Roadmap intent only. |
+
+## Claim Map
+
+| Claim | Tier | Proof / Source | Owner |
+|---|---|---|---|
+| Manifest-level topological publish planning | stable | Planner regression tests; `shipper plan`; roadmap #109 | engine |
+| File-policy enforcement | stable/internal | `cargo xtask check-file-policy --mode blocking-allowlist`; `cargo xtask policy-report`; CI `Policy` job | release/ci |
+| Rust 1.95 / 0.4 policy floor | stable/internal | Workspace lints; `cargo xtask check-lint-policy`; `cargo clippy --workspace --all-targets --all-features -- -D warnings` | rust/lints |
+| No-panic production baseline | stable/internal | `cargo xtask no-panic check`; `policy/no-panic-baseline.toml` | rust/lints |
+| ripr exposure signal | advisory | `cargo xtask ripr-pr`; repo-scoped badge artifacts | release/ci |
+| Mutation PR lane | advisory / opt-in | `cargo xtask mutants-pr --changed` | tests |
+| 0.4.0 release readiness proof | planned until #195 | `docs/release/0.4.0-readiness.md` | release/ci |
+| Ambiguous publish reconciliation | planned | Future Reconcile spec and #99 / #102 | engine |
+| Resume under real interruption | planned | Future interruption rehearsal proof | engine |
+| Trusted Publishing default | planned/advisory | Future Trusted Publishing spec and #96 | release/ci |
+
+## Rules
+
+- Stable claims need a proof command or artifact.
+- Advisory claims may guide maintainers, but must not be described as hard
+  release gates unless policy promotes them.
+- Planned claims should point to roadmap, proposal, spec, or issue context.
+- Internal claims should stay internal unless user-facing proof exists.
+- When README or product docs change, update this file or narrow the claim.
