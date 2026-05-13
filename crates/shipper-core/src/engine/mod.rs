@@ -8,7 +8,6 @@ use chrono::Utc;
 
 use crate::cargo;
 use crate::git;
-use crate::lock;
 use crate::ops::auth;
 use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
@@ -20,9 +19,9 @@ use crate::runtime::execution::{
 use crate::state::events;
 use crate::state::execution_state as state;
 use crate::types::{
-    AttemptEvidence, ErrorClass, EventType, ExecutionResult, ExecutionState, Finishability,
-    PackageProgress, PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent,
-    PublishRegime, ReadinessEvidence, Receipt, ReconciliationOutcome, Registry, RuntimeOptions,
+    AttemptEvidence, ErrorClass, EventType, ExecutionState, Finishability, PackageProgress,
+    PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent, PublishRegime,
+    ReadinessEvidence, Receipt, ReconciliationOutcome, Registry, RuntimeOptions,
 };
 use crate::webhook::{self, WebhookEvent};
 
@@ -626,27 +625,13 @@ pub fn run_publish(
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
     let effects = policy_effects(opts);
 
-    // Validate resume_from if specified
-    if let Some(ref target) = opts.resume_from
-        && !ws.plan.packages.iter().any(|p| &p.name == target)
-    {
-        bail!("resume-from package '{}' not found in publish plan", target);
-    }
+    publish::lifecycle::validate_resume_target(ws, opts)?;
 
     // #97 PR 3: rehearsal hard gate. Only fires when a rehearsal registry
     // is configured; opt-in until rehearsal phase-2 is stable.
     enforce_rehearsal_gate(ws, opts, &state_dir, reporter)?;
 
-    // Acquire lock
-    let lock_timeout = if opts.force {
-        Duration::ZERO
-    } else {
-        opts.lock_timeout
-    };
-    let _lock =
-        lock::LockFile::acquire_with_timeout(&state_dir, Some(workspace_root), lock_timeout)
-            .context("failed to acquire publish lock")?;
-    _lock.set_plan_id(&ws.plan.plan_id)?;
+    let _lock = publish::lifecycle::acquire_publish_lock(ws, opts, &state_dir)?;
 
     // Collect git context and environment fingerprint at start of execution
     let git_context = git::collect_git_context();
@@ -662,69 +647,16 @@ pub fn run_publish(
     let events_path = events::events_path(&state_dir);
     let mut event_log = events::EventLog::new();
 
-    // Load existing state (if any), or initialize.
-    let mut st = match state::load_state(&state_dir)? {
-        Some(existing) => {
-            if existing.plan_id != ws.plan.plan_id {
-                if !opts.force_resume {
-                    bail!(
-                        "existing state plan_id {} does not match current plan_id {}; delete state or use --force-resume",
-                        existing.plan_id,
-                        ws.plan.plan_id
-                    );
-                }
-                reporter.warn("forcing resume with mismatched plan_id (unsafe)");
-            }
-            existing
-        }
-        None => init_state(ws, &state_dir)?,
-    };
+    let mut st = publish::lifecycle::load_or_init_state(ws, opts, &state_dir, reporter)?;
 
     reporter.info(&format!("state dir: {}", state_dir.as_path().display()));
 
     let mut receipts: Vec<PackageReceipt> = Vec::new();
     let run_started = Utc::now();
 
-    // Event: ExecutionStarted
-    event_log.record(PublishEvent {
-        timestamp: run_started,
-        event_type: EventType::ExecutionStarted,
-        package: "all".to_string(),
-    });
-    // Send webhook notification: publish started
-    webhook::maybe_send_event(
-        &opts.webhook,
-        WebhookEvent::PublishStarted {
-            plan_id: ws.plan.plan_id.clone(),
-            package_count: ws.plan.packages.len(),
-            registry: ws.plan.registry.name.clone(),
-        },
-    );
-    // Event: PlanCreated
-    event_log.record(PublishEvent {
-        timestamp: run_started,
-        event_type: EventType::PlanCreated {
-            plan_id: ws.plan.plan_id.clone(),
-            package_count: ws.plan.packages.len(),
-        },
-        package: "all".to_string(),
-    });
-    event_log.write_to_file(&events_path)?;
-    event_log.clear();
+    publish::lifecycle::record_execution_start(ws, opts, &state_dir, &mut event_log, run_started)?;
 
-    // Ensure we have entries for all packages in plan.
-    for p in &ws.plan.packages {
-        let key = pkg_key(&p.name, &p.version);
-        st.packages.entry(key).or_insert_with(|| PackageProgress {
-            name: p.name.clone(),
-            version: p.version.clone(),
-            attempts: 0,
-            state: PackageState::Pending,
-            last_updated_at: Utc::now(),
-        });
-    }
-    st.updated_at = Utc::now();
-    state::save_state(&state_dir, &st)?;
+    publish::lifecycle::ensure_package_state_entries(ws, &state_dir, &mut st)?;
 
     // Track if we've reached the resume point if one was specified
     let mut reached_resume_point = opts.resume_from.is_none();
@@ -735,58 +667,21 @@ pub fn run_publish(
             ws, opts, &mut st, &state_dir, &reg, reporter,
         )?;
 
-        // End-of-run events-as-truth consistency check. Events are
-        // authoritative; state.json is a projection. Any drift means either
-        // the projection got stale or something bypassed the event log —
-        // surface it loudly rather than trust a bad resume. See #93 and
-        // docs/INVARIANTS.md.
-        match crate::state::consistency::verify_events_state_consistency(&events_path, &st) {
-            Ok(drift) if !drift.is_consistent() => {
-                reporter.warn(&crate::state::consistency::format_drift_summary(&drift));
-                event_log.record(PublishEvent {
-                    timestamp: Utc::now(),
-                    event_type: EventType::StateEventDriftDetected { drift },
-                    package: "all".to_string(),
-                });
-            }
-            Ok(_) => {}
-            Err(e) => reporter.warn(&format!("end-of-run consistency check failed: {e}")),
-        }
-
-        // Event: ExecutionFinished
-        let exec_result = if parallel_receipts.iter().all(|r| {
-            matches!(
-                r.state,
-                PackageState::Published | PackageState::Skipped { .. }
-            )
-        }) {
-            ExecutionResult::Success
-        } else {
-            ExecutionResult::PartialFailure
-        };
-        event_log.record(PublishEvent {
-            timestamp: Utc::now(),
-            event_type: EventType::ExecutionFinished {
-                result: exec_result,
+        return publish::receipt::finalize_parallel_publish(
+            publish::receipt::ReceiptContext {
+                plan_id: ws.plan.plan_id.clone(),
+                registry: ws.plan.registry.clone(),
+                state_dir: state_dir.clone(),
+                git_context,
+                environment,
+                started_at: run_started,
             },
-            package: "all".to_string(),
-        });
-        event_log.write_to_file(&events_path)?;
-
-        let receipt = Receipt {
-            receipt_version: "shipper.receipt.v2".to_string(),
-            plan_id: ws.plan.plan_id.clone(),
-            registry: ws.plan.registry.clone(),
-            started_at: run_started,
-            finished_at: Utc::now(),
-            packages: parallel_receipts,
-            event_log_path: state_dir.join("events.jsonl"),
-            git_context,
-            environment,
-        };
-
-        state::write_receipt(&state_dir, &receipt)?;
-        return Ok(receipt);
+            opts,
+            &st,
+            &mut event_log,
+            reporter,
+            parallel_receipts,
+        );
     }
 
     for p in &ws.plan.packages {
@@ -1352,90 +1247,21 @@ pub fn run_publish(
         });
     }
 
-    // End-of-run events-as-truth consistency check. Events are authoritative;
-    // state.json is a projection. Any drift means either the projection got
-    // stale or something bypassed the event log — surface it loudly rather
-    // than trust a bad resume. See #93 and docs/INVARIANTS.md.
-    match crate::state::consistency::verify_events_state_consistency(&events_path, &st) {
-        Ok(drift) if !drift.is_consistent() => {
-            reporter.warn(&crate::state::consistency::format_drift_summary(&drift));
-            event_log.record(PublishEvent {
-                timestamp: Utc::now(),
-                event_type: EventType::StateEventDriftDetected { drift },
-                package: "all".to_string(),
-            });
-        }
-        Ok(_) => {}
-        Err(e) => reporter.warn(&format!("end-of-run consistency check failed: {e}")),
-    }
-
-    // Event: ExecutionFinished
-    let exec_result = if receipts.iter().all(|r| {
-        matches!(
-            r.state,
-            PackageState::Published | PackageState::Uploaded | PackageState::Skipped { .. }
-        )
-    }) {
-        ExecutionResult::Success
-    } else {
-        ExecutionResult::PartialFailure
-    };
-    event_log.record(PublishEvent {
-        timestamp: Utc::now(),
-        event_type: EventType::ExecutionFinished {
-            result: exec_result.clone(),
-        },
-        package: "all".to_string(),
-    });
-    event_log.write_to_file(&events_path)?;
-
-    // Calculate publish completion statistics
-    let total_packages = receipts.len();
-    let success_count = receipts
-        .iter()
-        .filter(|r| matches!(r.state, PackageState::Published))
-        .count();
-    let failure_count = receipts
-        .iter()
-        .filter(|r| matches!(r.state, PackageState::Failed { .. }))
-        .count();
-    let skipped_count = receipts
-        .iter()
-        .filter(|r| matches!(r.state, PackageState::Skipped { .. }))
-        .count();
-
-    // Send webhook notification: all complete
-    webhook::maybe_send_event(
-        &opts.webhook,
-        WebhookEvent::PublishCompleted {
+    publish::receipt::finalize_serial_publish(
+        publish::receipt::ReceiptContext {
             plan_id: ws.plan.plan_id.clone(),
-            total_packages,
-            success_count,
-            failure_count,
-            skipped_count,
-            result: match exec_result {
-                ExecutionResult::Success => "success".to_string(),
-                ExecutionResult::PartialFailure => "partial_failure".to_string(),
-                ExecutionResult::CompleteFailure => "complete_failure".to_string(),
-            },
+            registry: ws.plan.registry.clone(),
+            state_dir: state_dir.clone(),
+            git_context,
+            environment,
+            started_at: run_started,
         },
-    );
-
-    let receipt = Receipt {
-        receipt_version: "shipper.receipt.v2".to_string(),
-        plan_id: ws.plan.plan_id.clone(),
-        registry: ws.plan.registry.clone(),
-        started_at: run_started,
-        finished_at: Utc::now(),
-        packages: receipts,
-        event_log_path: state_dir.join("events.jsonl"),
-        git_context,
-        environment,
-    };
-
-    state::write_receipt(&state_dir, &receipt)?;
-
-    Ok(receipt)
+        opts,
+        &st,
+        &mut event_log,
+        reporter,
+        receipts,
+    )
 }
 
 /// Resume a previously interrupted publish operation.
@@ -5232,7 +5058,7 @@ mod tests {
             assert_eq!(finish_events.len(), 1);
             if let EventType::ExecutionFinished { result } = &finish_events[0].event_type {
                 assert!(
-                    matches!(result, ExecutionResult::Success),
+                    matches!(result, crate::types::ExecutionResult::Success),
                     "expected Success, got {result:?}"
                 );
             }
@@ -7736,6 +7562,7 @@ mod tests {
 
 /// Wave-based parallel publishing engine.
 pub mod parallel;
+mod publish;
 
 /// Plan-yank: reverse-topological containment plan from a receipt (#98 PR 2).
 pub mod plan_yank;
