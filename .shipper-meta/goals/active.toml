@@ -1,39 +1,33 @@
-id = "shipper-0-4-source-of-truth-stack"
-title = "Shipper 0.4 source-of-truth and release evidence system"
+id = "shipper-reconcile-registry-truth"
+title = "Registry-truth reconciliation for ambiguous publish outcomes"
 status = "active"
 owner = "EffortlessMetrics"
 created = "2026-05-13"
 
 objective = """
-Make Shipper spec-addressable: proposals explain why, specs define behavior,
-ADRs record durable decisions, plans define sequencing, support tiers map claims
-to proof, and active goals give Codex a machine-readable execution target.
+Implement Reconcile from the source-of-truth stack: ambiguous cargo publish
+outcomes must reconcile against registry truth before retrying or resuming.
 """
 
 end_state = [
-  "Source-of-truth stack exists and is documented.",
-  "Templates exist for proposals, specs, ADRs, plans, and goals.",
-  "Support tiers map major Shipper claims to proof commands or artifacts.",
-  "Doc-contract checker exists in advisory mode.",
-  "0.4.0 release-readiness proof can be executed using this stack.",
+  "Ambiguous publish outcomes resolve to Published, NotPublished, or StillUnknown.",
+  "Registry evidence is persisted in events and execution state.",
+  "Resume honors persisted reconciliation outcomes.",
+  "StillUnknown stops before blind retry and requires operator action.",
+  "Support-tier and product claims are promoted only after proof exists.",
 ]
 
 [[work_item]]
-id = "release-readiness-proof"
-status = "in_review"
-proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md"
-plan = "plans/0.4.0/release-readiness-proof.md"
-issue = "195"
+id = "reconciliation-types-events"
+status = "ready"
+proposal = "docs/proposals/SHIPPER-PROP-0002-registry-truth-and-reconciliation.md"
+spec = "docs/specs/SHIPPER-SPEC-0003-registry-reconciliation.md"
+plan = "plans/reconcile/implementation-plan.md"
+issue = "102"
 commands = [
   "cargo fmt --all -- --check",
-  "cargo clippy --workspace --all-targets --all-features -- -D warnings",
-  "cargo test --workspace --all-features",
-  "cargo test --workspace --doc",
-  "cargo check --workspace",
-  "cargo audit",
-  "cargo doc --workspace --no-deps --document-private-items",
-  "cargo test -p shipper-cli --test bdd_publish",
+  "cargo test -p shipper-types",
+  "cargo test -p shipper-core state",
   "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask policy-report",
 ]
