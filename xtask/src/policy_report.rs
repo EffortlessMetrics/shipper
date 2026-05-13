@@ -1,7 +1,8 @@
 //! `cargo xtask policy-report`
 //!
-//! Runs all seven advisory checks (file-policy, generated, executable,
-//! dependency-surface, workflow, process, network), reads each one's
+//! Runs all advisory checks (file-policy, generated, executable,
+//! dependency-surface, workflow, process, network, doc-contracts, no-panic),
+//! reads each one's
 //! `target/policy/*-report.json` artifact, and writes a unified
 //! `target/policy/policy-report.{md,json}`.
 //!
@@ -18,7 +19,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{check_file_policy, checks, no_panic, workflow_checks};
+use crate::{check_file_policy, checks, doc_contracts, no_panic, workflow_checks};
 
 const OUTPUT_DIR_REL: &str = "target/policy";
 
@@ -58,6 +59,7 @@ pub fn policy_report() -> Result<()> {
     workflow_checks::check_workflow_surfaces(workflow_checks::Mode::Advisory)?;
     workflow_checks::check_process_policy(workflow_checks::Mode::Advisory)?;
     workflow_checks::check_network_policy(workflow_checks::Mode::Advisory)?;
+    doc_contracts::check(doc_contracts::Mode::Advisory)?;
     no_panic::check(no_panic::Mode::Advisory)?;
 
     // Step 2: read each sub-report and lift its `summary` block.
@@ -69,6 +71,7 @@ pub fn policy_report() -> Result<()> {
         ("Workflow surfaces", "workflow-policy-report"),
         ("Process policy", "process-policy-report"),
         ("Network policy", "network-policy-report"),
+        ("Doc contracts", "doc-contracts-report"),
         ("No-panic baseline", "no-panic-report"),
     ];
 
@@ -128,6 +131,8 @@ fn headline_for(area: &'static str, summary: &Value) -> Option<HeadlineRow> {
         "unreceipted",
         "invalid_policy_refs",
         "unknown_total",
+        "blocking_findings",
+        "findings",
         "violations",
         "missing_fields",
         "expired",
@@ -151,6 +156,7 @@ fn headline_for(area: &'static str, summary: &Value) -> Option<HeadlineRow> {
         "universe_size",
         "tracked_workflow_files",
         "workflows",
+        "documents_checked",
         "baseline_entries",
     ]
     .into_iter()
