@@ -50,7 +50,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   policy:
-    # File-policy enforcement.
+    # File-policy enforcement plus advisory doc-contract reporting.
     #
     # As of rollout PR 12 (#211): all seven file-policy checks run in
     # --mode blocking-allowlist. CI fails on unreceipted files, missing
@@ -71,6 +71,9 @@ jobs:
     #
     # `blocking-strict` mode (fails on unused entries + stale review
     # dates) remains out of scope until a dedicated cleanup pass.
+    #
+    # Doc-contracts are advisory in this lane. They write source-of-truth graph
+    # reports but do not block CI until the evidence has burned in.
     #
     # The unified policy-report runs at the end and uploads
     # target/policy/ as a `policy-reports` artifact regardless of
@@ -95,6 +98,9 @@ jobs:
 
       - name: check-file-policy (blocking-allowlist)
         run: cargo xtask check-file-policy --mode blocking-allowlist
+
+      - name: check-doc-contracts (advisory)
+        run: cargo xtask check-doc-contracts --mode advisory
 
       - name: check-generated (blocking-allowlist)
         run: cargo xtask check-generated --mode blocking-allowlist
