@@ -14,7 +14,6 @@ use clap::{Args, Parser, Subcommand};
 mod check_file_policy;
 mod checks;
 mod clippy_checks;
-mod doc_contracts;
 mod file_policy;
 mod mutants;
 mod no_panic;
@@ -48,10 +47,6 @@ enum Command {
     /// Reconcile tracked non-Rust files against `policy/non-rust-allowlist.toml`.
     #[command(name = "check-file-policy")]
     CheckFilePolicy(CheckFilePolicyArgs),
-
-    /// Validate source-of-truth document headers, IDs, links, and active goals.
-    #[command(name = "check-doc-contracts")]
-    CheckDocContracts(CheckDocContractsArgs),
 
     /// Validate `policy/generated-allowlist.toml` entries.
     #[command(name = "check-generated")]
@@ -164,13 +159,6 @@ struct CheckFilePolicyArgs {
 }
 
 #[derive(Args, Debug)]
-struct CheckDocContractsArgs {
-    /// Reporting / enforcement mode.
-    #[arg(long, value_enum, default_value_t = doc_contracts::Mode::Advisory)]
-    mode: doc_contracts::Mode,
-}
-
-#[derive(Args, Debug)]
 struct ChecksModeArgs {
     /// Reporting / enforcement mode.
     #[arg(long, value_enum, default_value_t = checks::Mode::Advisory)]
@@ -196,7 +184,6 @@ fn main() -> Result<()> {
             NoPanicCommand::Check(args) => no_panic::check(args.mode)?,
         },
         Command::CheckFilePolicy(args) => check_file_policy::check(args.mode)?,
-        Command::CheckDocContracts(args) => doc_contracts::check(args.mode)?,
         Command::CheckGenerated(args) => checks::check_generated(args.mode)?,
         Command::CheckExecutableFiles(args) => checks::check_executable_files(args.mode)?,
         Command::CheckDependencySurfaces(args) => checks::check_dependency_surfaces(args.mode)?,

@@ -90,7 +90,6 @@ pub(super) fn ensure_git_clean_legacy(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
     use std::fs;
     use tempfile::tempdir;
 
@@ -180,7 +179,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn ensure_git_clean_new_phrasing() {
         let td = tempdir().expect("tempdir");
         init_git_repo(td.path());

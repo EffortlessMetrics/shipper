@@ -1,7 +1,7 @@
 //! `cargo xtask policy-report`
 //!
-//! Runs all advisory checks (file-policy, document contracts, generated,
-//! executable, dependency-surface, workflow, process, network, no-panic), reads each one's
+//! Runs all seven advisory checks (file-policy, generated, executable,
+//! dependency-surface, workflow, process, network), reads each one's
 //! `target/policy/*-report.json` artifact, and writes a unified
 //! `target/policy/policy-report.{md,json}`.
 //!
@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{check_file_policy, checks, doc_contracts, no_panic, workflow_checks};
+use crate::{check_file_policy, checks, no_panic, workflow_checks};
 
 const OUTPUT_DIR_REL: &str = "target/policy";
 
@@ -52,7 +52,6 @@ pub fn policy_report() -> Result<()> {
     // don't have to worry about short-circuiting.
     println!("running all advisory checks for unified report…");
     check_file_policy::check(check_file_policy::Mode::Advisory)?;
-    doc_contracts::check(doc_contracts::Mode::Advisory)?;
     checks::check_generated(checks::Mode::Advisory)?;
     checks::check_executable_files(checks::Mode::Advisory)?;
     checks::check_dependency_surfaces(checks::Mode::Advisory)?;
@@ -64,7 +63,6 @@ pub fn policy_report() -> Result<()> {
     // Step 2: read each sub-report and lift its `summary` block.
     let registrations: &[(&'static str, &str)] = &[
         ("Non-Rust file policy", "file-policy-report"),
-        ("Doc contracts", "doc-contracts-report"),
         ("Generated files", "generated-policy-report"),
         ("Executable files", "executable-policy-report"),
         ("Dependency surfaces", "dependency-surface-policy-report"),
@@ -129,10 +127,6 @@ fn headline_for(area: &'static str, summary: &Value) -> Option<HeadlineRow> {
     let metric_priority = [
         "unreceipted",
         "invalid_policy_refs",
-        "parse_errors",
-        "broken_links",
-        "invalid_ids",
-        "invalid_statuses",
         "unknown_total",
         "violations",
         "missing_fields",
@@ -154,7 +148,6 @@ fn headline_for(area: &'static str, summary: &Value) -> Option<HeadlineRow> {
     // Everything is zero. Surface a "clean" row keyed on the universe metric.
     let universe = [
         "tracked_non_rust",
-        "documents",
         "universe_size",
         "tracked_workflow_files",
         "workflows",
@@ -174,10 +167,6 @@ fn static_metric(name: &str) -> &'static str {
     match name {
         "unreceipted" => "unreceipted",
         "invalid_policy_refs" => "invalid_policy_refs",
-        "parse_errors" => "parse_errors",
-        "broken_links" => "broken_links",
-        "invalid_ids" => "invalid_ids",
-        "invalid_statuses" => "invalid_statuses",
         "unknown_total" => "unknown_total",
         "violations" => "violations",
         "missing_fields" => "missing_fields",
