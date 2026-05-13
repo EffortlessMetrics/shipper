@@ -1,0 +1,32 @@
+id = "shipper-0-4-source-of-truth-stack"
+title = "Shipper 0.4 source-of-truth and release evidence system"
+status = "active"
+owner = "EffortlessMetrics"
+created = "2026-05-13"
+
+objective = """
+Make Shipper spec-addressable: proposals explain why, specs define behavior,
+ADRs record durable decisions, plans define sequencing, support tiers map claims
+to proof, and active goals give Codex a machine-readable execution target.
+"""
+
+end_state = [
+  "Source-of-truth stack exists and is documented.",
+  "Templates exist for proposals, specs, ADRs, plans, and goals.",
+  "Support tiers map major Shipper claims to proof commands or artifacts.",
+  "Doc-contract checker exists in advisory mode.",
+  "0.4.0 release-readiness proof can be executed using this stack.",
+]
+
+[[work_item]]
+id = "doc-contract-checker"
+status = "ready"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md"
+plan = "plans/0.4.0/source-of-truth-stack.md"
+issue = "109"
+commands = [
+  "cargo xtask check-file-policy --mode blocking-allowlist",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+]
