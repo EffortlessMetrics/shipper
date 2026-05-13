@@ -72,6 +72,9 @@ jobs:
     # `blocking-strict` mode (fails on unused entries + stale review
     # dates) remains out of scope until a dedicated cleanup pass.
     #
+    # Source-of-truth document contracts run in advisory mode first. They
+    # produce target/policy/doc-contracts-report.* but do not gate merges yet.
+    #
     # The unified policy-report runs at the end and uploads
     # target/policy/ as a `policy-reports` artifact regardless of
     # pass/fail (`if: always()`). See docs/policy/NON_RUST_ROLLOUT.md.
@@ -113,6 +116,9 @@ jobs:
 
       - name: check-network-policy (blocking-allowlist)
         run: cargo xtask check-network-policy --mode blocking-allowlist
+
+      - name: check-doc-contracts (advisory)
+        run: cargo xtask check-doc-contracts --mode advisory
 
       - name: Unified policy report
         if: always()
