@@ -14,6 +14,7 @@ use clap::{Args, Parser, Subcommand};
 mod check_file_policy;
 mod checks;
 mod clippy_checks;
+mod doc_contracts;
 mod file_policy;
 mod mutants;
 mod no_panic;
@@ -83,6 +84,10 @@ enum Command {
     /// Validate `policy/clippy-exceptions.toml` schema, expiry, and bare-allow scan.
     #[command(name = "check-clippy-exceptions")]
     CheckClippyExceptions,
+
+    /// Validate source-of-truth document contracts.
+    #[command(name = "check-doc-contracts")]
+    CheckDocContracts(DocContractsArgs),
 
     /// Run the advisory ripr lane (`ripr pilot --root .`) — #182.
     ///
@@ -172,6 +177,13 @@ struct WorkflowModeArgs {
     mode: workflow_checks::Mode,
 }
 
+#[derive(Args, Debug)]
+struct DocContractsArgs {
+    /// Reporting / enforcement mode.
+    #[arg(long, value_enum, default_value_t = doc_contracts::Mode::Advisory)]
+    mode: doc_contracts::Mode,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -195,6 +207,7 @@ fn main() -> Result<()> {
         Command::PolicyReport => policy_report::policy_report()?,
         Command::CheckLintPolicy => clippy_checks::check_lint_policy()?,
         Command::CheckClippyExceptions => clippy_checks::check_clippy_exceptions()?,
+        Command::CheckDocContracts(args) => doc_contracts::check(args.mode)?,
         Command::RiprPr(args) => ripr::ripr_pr(&args)?,
         Command::RepoRiprBadgeArtifacts => ripr::repo_badge_artifacts()?,
         Command::MutantsPr(args) => mutants::mutants_pr(&args)?,
