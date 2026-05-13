@@ -1,0 +1,19 @@
+id = "shipper-goal-id"
+title = ""
+status = "active"
+owner = ""
+created = "YYYY-MM-DD"
+
+objective = """
+"""
+
+end_state = []
+
+[[work_item]]
+id = ""
+status = "ready"
+proposal = ""
+spec = ""
+plan = ""
+issue = ""
+commands = []

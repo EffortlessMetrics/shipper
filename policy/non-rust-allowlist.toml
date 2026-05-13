@@ -348,6 +348,17 @@ covered_by = ["manual review", "cargo xtask check-file-policy"]
 created = "2026-05-13"
 review_after = "2026-08-13"
 
+[[glob]]
+pattern = ".shipper-meta/goals/*.toml"
+kind = "agent_goal_manifest"
+surface = "tooling"
+classification = "config"
+owner = "agent-maintainers"
+reason = "Machine-readable active goal manifests and templates for Codex/Droid execution state. Kept outside `.shipper/` so runtime state remains separate from repo-management state."
+covered_by = ["manual review", "future: cargo xtask check-doc-contracts"]
+created = "2026-05-13"
+review_after = "2026-08-13"
+
 [[file]]
 path = ".github/CODEOWNERS"
 kind = "github_codeowners"
