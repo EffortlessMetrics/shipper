@@ -37,7 +37,7 @@ make stronger claims than this file supports.
 | No-panic production baseline | stable/internal | `cargo xtask no-panic check`; `policy/no-panic-baseline.toml` | rust/lints |
 | ripr exposure signal | advisory | `cargo xtask ripr-pr`; repo-scoped badge artifacts | release/ci |
 | Mutation PR lane | advisory / opt-in | `cargo xtask mutants-pr --changed` | tests |
-| 0.4.0 release readiness proof | planned until #195 | `docs/release/0.4.0-readiness.md` | release/ci |
+| 0.4.0 release readiness proof | stable | `docs/release/0.4.0-readiness.md`; `cargo xtask policy-report`; `cargo publish --dry-run --workspace` | release/ci |
 | Ambiguous publish reconciliation | planned | Future Reconcile spec and #99 / #102 | engine |
 | Resume under real interruption | planned | Future interruption rehearsal proof | engine |
 | Trusted Publishing default | planned/advisory | Future Trusted Publishing spec and #96 | release/ci |

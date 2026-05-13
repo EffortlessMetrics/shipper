@@ -19,14 +19,21 @@ end_state = [
 ]
 
 [[work_item]]
-id = "doc-contract-checker"
-status = "ready"
+id = "release-readiness-proof"
+status = "in_review"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md"
-plan = "plans/0.4.0/source-of-truth-stack.md"
-issue = "109"
+spec = "docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md"
+plan = "plans/0.4.0/release-readiness-proof.md"
+issue = "195"
 commands = [
-  "cargo xtask check-file-policy --mode blocking-allowlist",
-  "cargo xtask policy-report",
   "cargo fmt --all -- --check",
+  "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+  "cargo test --workspace --all-features",
+  "cargo test --workspace --doc",
+  "cargo check --workspace",
+  "cargo audit",
+  "cargo doc --workspace --no-deps --document-private-items",
+  "cargo test -p shipper-cli --test bdd_publish",
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask policy-report",
 ]
