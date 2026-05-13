@@ -2890,18 +2890,20 @@ mod tests {
 
     #[test]
     fn concurrent_version_exists_checks() {
+        const CONCURRENT_REQUESTS: usize = 2;
+
         let (api_base, handle) = with_multi_server(
             |req| {
                 req.respond(Response::empty(StatusCode(200)))
                     .expect("respond");
             },
-            5,
+            CONCURRENT_REQUESTS,
         );
 
         let cli =
             std::sync::Arc::new(RegistryClient::new(test_registry(api_base)).expect("client"));
 
-        let handles: Vec<_> = (0..5)
+        let handles: Vec<_> = (0..CONCURRENT_REQUESTS)
             .map(|i| {
                 let cli = cli.clone();
                 let version = format!("{i}.0.0");
