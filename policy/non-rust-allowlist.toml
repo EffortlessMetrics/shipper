@@ -283,6 +283,28 @@ review_after = "2026-08-11"
 # ─── Repo-level dotfiles / agent / GH config ────────────────────────────────
 
 [[glob]]
+pattern = "plans/*.md"
+kind = "implementation_plan_documentation"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Top-level implementation plan documentation for source-of-truth sequencing and proof commands."
+covered_by = ["manual review", "cargo xtask check-file-policy"]
+created = "2026-05-13"
+review_after = "2026-08-13"
+
+[[glob]]
+pattern = "plans/**/*.md"
+kind = "implementation_plan_documentation"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Lane-specific implementation plans for source-of-truth sequencing and proof commands."
+covered_by = ["manual review", "cargo xtask check-file-policy"]
+created = "2026-05-13"
+review_after = "2026-08-13"
+
+[[glob]]
 pattern = ".cargo/**"
 kind = "cargo_workspace_config"
 surface = "build"
@@ -314,6 +336,17 @@ reason = "Factory Droid review skill + rules (review-guidelines/SKILL.md, droid-
 covered_by = ["docs/agent-context/droid-smoke-tests.md"]
 created = "2026-05-11"
 review_after = "2026-08-11"
+
+[[file]]
+path = ".shipper-meta/goals/README.md"
+kind = "agent_goal_documentation"
+surface = "tooling"
+classification = "documentation"
+owner = "agent-maintainers"
+reason = "Documents the repo-management goal manifest namespace. Kept outside `.shipper/` so Shipper runtime state remains separate from agent execution state."
+covered_by = ["manual review", "cargo xtask check-file-policy"]
+created = "2026-05-13"
+review_after = "2026-08-13"
 
 [[file]]
 path = ".github/CODEOWNERS"
