@@ -70,6 +70,7 @@ pub(in crate::engine) fn finish_sequential_run(
 #[allow(clippy::too_many_arguments)]
 pub(in crate::engine) fn finish_parallel_run(
     ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
     state_dir: &Path,
     events_path: &Path,
     event_log: &mut events::EventLog,
@@ -82,11 +83,13 @@ pub(in crate::engine) fn finish_parallel_run(
     event_log.record(PublishEvent {
         timestamp: Utc::now(),
         event_type: EventType::ExecutionFinished {
-            result: exec_result,
+            result: exec_result.clone(),
         },
         package: "all".to_string(),
     });
     event_log.write_to_file(events_path)?;
+
+    send_completion_webhook(ws, opts, &receipts, &exec_result);
 
     write_receipt(
         ws,
@@ -127,7 +130,7 @@ fn sequential_execution_result(receipts: &[PackageReceipt]) -> ExecutionResult {
     if receipts.iter().all(|r| {
         matches!(
             r.state,
-            PackageState::Published | PackageState::Uploaded | PackageState::Skipped { .. }
+            PackageState::Published | PackageState::Skipped { .. }
         )
     }) {
         ExecutionResult::Success
@@ -184,4 +187,52 @@ fn send_completion_webhook(
             },
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+
+    use super::{parallel_execution_result, sequential_execution_result};
+    use crate::types::{ExecutionResult, PackageEvidence, PackageReceipt, PackageState};
+
+    fn receipt(state: PackageState) -> PackageReceipt {
+        let now = Utc::now();
+        PackageReceipt {
+            name: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            attempts: 1,
+            state,
+            started_at: now,
+            finished_at: now,
+            duration_ms: 0,
+            evidence: PackageEvidence {
+                attempts: vec![],
+                readiness_checks: vec![],
+            },
+            compromised_at: None,
+            compromised_by: None,
+            superseded_by: None,
+        }
+    }
+
+    #[test]
+    fn sequential_uploaded_receipt_is_not_terminal_success() {
+        let receipts = [receipt(PackageState::Uploaded)];
+
+        assert_eq!(
+            sequential_execution_result(&receipts),
+            ExecutionResult::PartialFailure
+        );
+    }
+
+    #[test]
+    fn parallel_uploaded_receipt_is_not_terminal_success() {
+        let receipts = [receipt(PackageState::Uploaded)];
+
+        assert_eq!(
+            parallel_execution_result(&receipts),
+            ExecutionResult::PartialFailure
+        );
+    }
 }

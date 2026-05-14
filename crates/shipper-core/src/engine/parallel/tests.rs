@@ -1607,7 +1607,9 @@ fn test_webhook_events_sent_on_publish() {
         1,
     );
 
-    // Webhook receiver: expect 2 POSTs (PublishStarted + PublishCompleted)
+    // The parallel executor announces the start. The outer publish finalizer
+    // owns PublishCompleted so serial and parallel terminal notifications stay
+    // in one place.
     let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
     let webhook_url = format!("http://{}", webhook_server.server_addr());
     let webhook_received = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -1657,11 +1659,8 @@ fn test_webhook_events_sent_on_publish() {
     registry_server.join();
 
     let received = webhook_received.lock().unwrap();
-    assert!(
-        received.len() >= 2,
-        "expected at least 2 webhook POSTs (started + completed), got {}",
-        received.len()
-    );
+    assert_eq!(received.len(), 1, "expected only PublishStarted");
+    assert!(received[0].contains("PublishStarted") || received[0].contains("publish_started"));
 }
 
 // ---------------------------------------------------------------------------

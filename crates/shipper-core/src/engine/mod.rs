@@ -658,6 +658,7 @@ pub fn run_publish(
         publish::finalize::record_consistency_drift(&events_path, &st, &mut event_log, reporter);
         return publish::finalize::finish_parallel_run(
             ws,
+            opts,
             &state_dir,
             &events_path,
             &mut event_log,
