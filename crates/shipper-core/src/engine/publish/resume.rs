@@ -24,7 +24,12 @@ pub(in crate::engine) fn apply_resume_from_gate(
         return ResumeGate::Publish;
     }
 
-    if Some(&package.name) == opts.resume_from.as_ref() {
+    let Some(resume_from) = opts.resume_from.as_ref() else {
+        *reached_resume_point = true;
+        return ResumeGate::Publish;
+    };
+
+    if &package.name == resume_from {
         *reached_resume_point = true;
         return ResumeGate::Publish;
     }
@@ -40,9 +45,7 @@ pub(in crate::engine) fn apply_resume_from_gate(
     } else {
         reporter.warn(&format!(
             "{}@{}: skipping (before resume point {})",
-            package.name,
-            package.version,
-            opts.resume_from.as_ref().expect("resume_from was checked")
+            package.name, package.version, resume_from
         ));
     }
 
