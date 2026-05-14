@@ -31,7 +31,7 @@ In that case, the process result alone cannot tell the operator whether retrying
 is safe. Shipper's value is release control, not just command execution, so this
 ambiguity must be closed against registry truth.
 
-The roadmap marks Reconcile as the largest missing safety gap. The source of
+The roadmap marked Reconcile as the largest missing safety gap. The source of
 truth for behavior is `SHIPPER-SPEC-0003`; this ADR records the durable
 architecture decision behind that behavior.
 
@@ -46,8 +46,8 @@ architecture decision behind that behavior.
 - Event logs must expose reconciliation start and result.
 - Cargo output parsing can remain useful for classification, but it cannot be
   the final safety-critical answer.
-- Product docs and README claims must not say Reconcile is stable until support
-  tiers are promoted with implementation proof.
+- Product docs and README claims must not exceed the Reconcile support tier in
+  `docs/status/SUPPORT_TIERS.md`.
 
 ## Alternatives Considered
 

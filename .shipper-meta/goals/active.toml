@@ -1,12 +1,13 @@
 id = "shipper-reconcile-registry-truth"
 title = "Registry-truth reconciliation for ambiguous publish outcomes"
-status = "active"
+status = "complete"
 owner = "EffortlessMetrics"
 created = "2026-05-13"
 
 objective = """
-Implement Reconcile from the source-of-truth stack: ambiguous cargo publish
-outcomes must reconcile against registry truth before retrying or resuming.
+Close Reconcile from the source-of-truth stack: ambiguous cargo publish outcomes
+must reconcile against registry truth before retrying or resuming, and the
+support-tier claim must match implementation proof.
 """
 
 end_state = [
@@ -18,16 +19,18 @@ end_state = [
 ]
 
 [[work_item]]
-id = "reconciliation-types-events"
-status = "ready"
+id = "reconcile-claim-proof"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0002-registry-truth-and-reconciliation.md"
 spec = "docs/specs/SHIPPER-SPEC-0003-registry-reconciliation.md"
 plan = "plans/reconcile/implementation-plan.md"
 issue = "102"
 commands = [
   "cargo fmt --all -- --check",
-  "cargo test -p shipper-types",
-  "cargo test -p shipper-core state",
+  "cargo test -p shipper-types --locked",
+  "cargo test -p shipper-core reconcile --lib --locked",
+  "cargo test -p shipper-core state --lib --locked",
+  "cargo test -p shipper-cli --test bdd_publish --locked",
   "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask policy-report",
 ]

@@ -1,6 +1,6 @@
 # Plan: Registry Reconciliation
 
-Status: accepted
+Status: implemented
 Owner: EffortlessMetrics
 Created: 2026-05-13
 Milestone: post-0.4.0
@@ -20,8 +20,9 @@ Shipper reconciles ambiguous `cargo publish` outcomes against registry truth
 before retrying or resuming. Ambiguous outcomes resolve to `Published`,
 `NotPublished`, or `StillUnknown`, with structured evidence in events and state.
 
-The support-tier claim remains `planned` until implementation and tests prove
-all required outcomes and resume behavior.
+The support-tier claim remained `planned` until implementation and tests proved
+all required outcomes and resume behavior. The current claim tier is maintained
+in `docs/status/SUPPORT_TIERS.md`.
 
 ## PR Sequence
 

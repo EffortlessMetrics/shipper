@@ -34,11 +34,11 @@ make stronger claims than this file supports.
 | Manifest-level topological publish planning | stable | Planner regression tests; `shipper plan`; roadmap #109 | engine |
 | File-policy enforcement | stable/internal | `cargo xtask check-file-policy --mode blocking-allowlist`; `cargo xtask policy-report`; CI `Policy` job | release/ci |
 | Rust 1.95 / 0.4 policy floor | stable/internal | Workspace lints; `cargo xtask check-lint-policy`; `cargo clippy --workspace --all-targets --all-features -- -D warnings` | rust/lints |
-| No-panic production baseline | stable/internal | `cargo xtask no-panic check`; `policy/no-panic-baseline.toml` | rust/lints |
+| No-panic production baseline | stable/internal | `cargo xtask no-panic check`; `policy/no-panic-baseline.json` | rust/lints |
 | ripr exposure signal | advisory | `cargo xtask ripr-pr`; repo-scoped badge artifacts | release/ci |
 | Mutation PR lane | advisory / opt-in | `cargo xtask mutants-pr --changed` | tests |
 | 0.4.0 release readiness proof | stable | `docs/release/0.4.0-readiness.md`; `cargo xtask policy-report`; `cargo publish --dry-run --workspace` | release/ci |
-| Ambiguous publish reconciliation | planned | Future Reconcile spec and #99 / #102 | engine |
+| Ambiguous publish reconciliation | stable | `cargo test -p shipper-core reconcile --lib`; `cargo test -p shipper-core state --lib`; `cargo test -p shipper-cli --test bdd_publish`; `PublishReconciling` / `PublishReconciled` events | engine |
 | Resume under real interruption | planned | Future interruption rehearsal proof | engine |
 | Trusted Publishing default | planned/advisory | Future Trusted Publishing spec and #96 | release/ci |
 

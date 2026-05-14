@@ -1,6 +1,6 @@
 # SHIPPER-SPEC-0003: Registry Reconciliation
 
-Status: proposed
+Status: implemented
 Owner: EffortlessMetrics
 Created: 2026-05-13
 Milestone: post-0.4.0
@@ -126,15 +126,19 @@ state machine and resume behavior.
 
 ## Promotion Rule
 
-`docs/status/SUPPORT_TIERS.md` must keep ambiguous publish reconciliation as
+`docs/status/SUPPORT_TIERS.md` kept ambiguous publish reconciliation as
 `planned` until:
 
 - this spec is accepted
 - the registry-truth ADR is accepted
 - the implementation plan exists
-- the implementation is complete
-- tests cover `Published`, `NotPublished`, `StillUnknown`, and resume behavior
-- README and product docs are aligned with the proven tier
+- the implementation was complete
+- tests covered `Published`, `NotPublished`, `StillUnknown`, and resume behavior
+- README and product docs were aligned with the proven tier
+
+The current support tier is owned by `docs/status/SUPPORT_TIERS.md`, not this
+spec. If future evidence weakens or expands the claim, update the support-tier
+entry and proof commands first.
 
 ## Open Questions
 

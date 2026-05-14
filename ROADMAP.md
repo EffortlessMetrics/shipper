@@ -16,11 +16,11 @@ Cargo 1.90 stabilized multi-package workspace publishing. "Publish several crate
 |---|---|---|
 | **Prove** | Can I show this release is safe *before* the irreversible step? | Partial — workspace dry-run + ownership; rehearsal-registry pending ([#97](https://github.com/EffortlessMetrics/shipper/issues/97)) |
 | **Dispatch** | Is the publish executed in a registry-aware, paced way? | Partial — generic exponential backoff; documented-constraint + Retry-After layering pending ([#94](https://github.com/EffortlessMetrics/shipper/issues/94)) |
-| **Reconcile** | When the result is ambiguous, do I check registry truth before retrying? | **Missing** ([#99](https://github.com/EffortlessMetrics/shipper/issues/99) / [#102](https://github.com/EffortlessMetrics/shipper/issues/102)) — biggest open gap |
+| **Reconcile** | When the result is ambiguous, do I check registry truth before retrying? | Implemented — ambiguous exits reconcile to Published / NotPublished / StillUnknown before retry ([#99](https://github.com/EffortlessMetrics/shipper/issues/99) / [#102](https://github.com/EffortlessMetrics/shipper/issues/102)) |
 | **Recover** | If the runner dies mid-train, can I converge from durable state without losing or duplicating work? | Partial — implemented; verification under real interruption pending ([#90](https://github.com/EffortlessMetrics/shipper/issues/90)) |
 | **Remediate** | If a partial release goes bad, can I contain or fix-forward it mechanically? | **Missing** ([#98](https://github.com/EffortlessMetrics/shipper/issues/98) / [#104](https://github.com/EffortlessMetrics/shipper/issues/104)) |
 
-These five are the existential pillars: a publishing tool that doesn't own them is a publishing tool that asks too much trust from the operator. Today Shipper is two-thirds of the way through pillars 1, 2, and 4; pillars 3 and 5 are the work that turns "useful release executor" into "trustworthy release-closure system."
+These five are the existential pillars: a publishing tool that doesn't own them is a publishing tool that asks too much trust from the operator. Today Shipper has closed the first Reconcile implementation path and remains mid-flight on Prove, Dispatch, Recover, and Remediate. The remaining work turns "useful release executor" into "trustworthy release-closure system."
 
 ## Nine competencies (the full scorecard)
 
@@ -30,7 +30,7 @@ The five pillars cover the safety story. Four more competencies — narrate, har
 |---|---|---|---|---|
 | 1 | **Prove** | Establish before the irreversible step that the publish can succeed | Partial | [#100](https://github.com/EffortlessMetrics/shipper/issues/100) |
 | 2 | **Survive** | Recover from interruption without losing or duplicating work | Partial | [#101](https://github.com/EffortlessMetrics/shipper/issues/101) |
-| 3 | **Reconcile** | Close ambiguous outcomes against registry truth | **Missing** | [#102](https://github.com/EffortlessMetrics/shipper/issues/102) |
+| 3 | **Reconcile** | Close ambiguous outcomes against registry truth | Implemented | [#102](https://github.com/EffortlessMetrics/shipper/issues/102) |
 | 4 | **Narrate** | Tell the operator what's happening live, not just after the fact | Partial | [#103](https://github.com/EffortlessMetrics/shipper/issues/103) |
 | 5 | **Remediate** | Mechanically recover from bad partial outcomes (yank, fix-forward) | **Missing** | [#104](https://github.com/EffortlessMetrics/shipper/issues/104) |
 | 6 | **Harden** | Default to safe auth posture; minimize long-lived secret blast radius | Partial | [#105](https://github.com/EffortlessMetrics/shipper/issues/105) |
@@ -40,7 +40,7 @@ The five pillars cover the safety story. Four more competencies — narrate, har
 
 **Master tracking issue: [#109](https://github.com/EffortlessMetrics/shipper/issues/109)**
 
-The biggest single gap is **#3 Reconcile**: when `cargo publish` returns ambiguously (it uploads first, then polls the index, and the poll can time out without affecting the upload), Shipper today retries blindly. Without ambiguity reconciliation against registry truth, the safety pitch has a hole at the worst possible spot.
+The biggest single gap used to be **#3 Reconcile**: when `cargo publish` returns ambiguously (it uploads first, then polls the index, and the poll can time out without affecting the upload), Shipper could retry blindly. Shipper now reconciles ambiguous outcomes against registry truth before retry; remaining safety work is concentrated in registry-aware pacing, live interruption proof, and remediation.
 
 ## Design principles
 
@@ -65,17 +65,16 @@ All domain logic lives in `crates/shipper`. `crates/shipper-cli` parses args and
 
 Sequencing follows the master roadmap ([#109](https://github.com/EffortlessMetrics/shipper/issues/109)).
 
-### Now — gates v0.3.0 stable
-1. **[#102](https://github.com/EffortlessMetrics/shipper/issues/102) Reconcile** — implement the ambiguous-outcome state machine ([#99](https://github.com/EffortlessMetrics/shipper/issues/99)). Without this, Shipper cannot truthfully claim to be safer than naive `cargo publish`.
-2. **[#105](https://github.com/EffortlessMetrics/shipper/issues/105) Harden** — make Trusted Publishing the default ([#96](https://github.com/EffortlessMetrics/shipper/issues/96)). Most of the wiring exists.
-3. **[#103](https://github.com/EffortlessMetrics/shipper/issues/103) Narrate** — surface retry/backoff state ([#91](https://github.com/EffortlessMetrics/shipper/issues/91)). Operators currently fly blind for ~60 minutes during rate-limited publishes.
-4. **[#101](https://github.com/EffortlessMetrics/shipper/issues/101) Survive** — execute the rehearsal procedure ([#90](https://github.com/EffortlessMetrics/shipper/issues/90)) and document the events-as-truth invariant ([#93](https://github.com/EffortlessMetrics/shipper/issues/93)). Resume is currently unverified under real interruption.
-5. **[#108](https://github.com/EffortlessMetrics/shipper/issues/108) Ergonomics** — `cargo install shipper` should work ([#95](https://github.com/EffortlessMetrics/shipper/issues/95)).
+### Now — gates v0.4.0 stable
+1. **[#105](https://github.com/EffortlessMetrics/shipper/issues/105) Harden** — make Trusted Publishing the default ([#96](https://github.com/EffortlessMetrics/shipper/issues/96)). Most of the wiring exists.
+2. **[#103](https://github.com/EffortlessMetrics/shipper/issues/103) Narrate** — surface retry/backoff state ([#91](https://github.com/EffortlessMetrics/shipper/issues/91)). Operators currently fly blind for ~60 minutes during rate-limited publishes.
+3. **[#101](https://github.com/EffortlessMetrics/shipper/issues/101) Survive** — execute the rehearsal procedure ([#90](https://github.com/EffortlessMetrics/shipper/issues/90)) and document the events-as-truth invariant ([#93](https://github.com/EffortlessMetrics/shipper/issues/93)). Resume is currently unverified under real interruption.
+4. **[#108](https://github.com/EffortlessMetrics/shipper/issues/108) Ergonomics** — `cargo install shipper` should work ([#95](https://github.com/EffortlessMetrics/shipper/issues/95)).
+5. **[#106](https://github.com/EffortlessMetrics/shipper/issues/106) Profile** — registry-aware backoff layered on the regime tag preflight already detects ([#94](https://github.com/EffortlessMetrics/shipper/issues/94)).
 
 ### Next — past stable
-6. **[#106](https://github.com/EffortlessMetrics/shipper/issues/106) Profile** — registry-aware backoff layered on the regime tag preflight already detects ([#94](https://github.com/EffortlessMetrics/shipper/issues/94)). Preflight discovers `is_new_crate`; publish discards it. Threading the tag through is the entire mechanism.
-7. **[#104](https://github.com/EffortlessMetrics/shipper/issues/104) Remediate** — receipt-driven yank/fix-forward for compromised releases ([#98](https://github.com/EffortlessMetrics/shipper/issues/98)).
-8. **[#100](https://github.com/EffortlessMetrics/shipper/issues/100) Prove tier 2** — rehearsal registry as the next preflight strength ([#97](https://github.com/EffortlessMetrics/shipper/issues/97)). Promotes preflight from "we believe" to "we proved against a registry-shaped target".
+6. **[#104](https://github.com/EffortlessMetrics/shipper/issues/104) Remediate** — receipt-driven yank/fix-forward for compromised releases ([#98](https://github.com/EffortlessMetrics/shipper/issues/98)).
+7. **[#100](https://github.com/EffortlessMetrics/shipper/issues/100) Prove tier 2** — rehearsal registry as the next preflight strength ([#97](https://github.com/EffortlessMetrics/shipper/issues/97)). Promotes preflight from "we believe" to "we proved against a registry-shaped target".
 
 ### Later — once the engine is closure-complete
 9. **[#107](https://github.com/EffortlessMetrics/shipper/issues/107) Integrate** — IDP plugin examples (Backstage / Port / Cortex), HTTP query API, webhook reliability semantics, library consumer guide. Best done after the engine offers a stable closure story to integrate against.

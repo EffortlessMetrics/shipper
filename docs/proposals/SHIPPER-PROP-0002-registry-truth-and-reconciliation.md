@@ -1,6 +1,6 @@
 # SHIPPER-PROP-0002: Registry Truth and Reconciliation
 
-Status: proposed
+Status: implemented
 Owner: EffortlessMetrics
 Created: 2026-05-13
 Milestone: post-0.4.0
@@ -16,18 +16,19 @@ Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask pol
 
 ## Problem
 
-Shipper's largest remaining safety gap is Reconcile. When `cargo publish`
+Shipper's largest historical safety gap was Reconcile. When `cargo publish`
 returns an ambiguous outcome, the upload may have succeeded even though the
 process result looks like failure. Cargo process output is not registry truth.
 
-Today the roadmap still marks Reconcile as missing. Issue #102 identifies the
-gap directly: ambiguous outcomes can become blind retries instead of registry
-checks. Issue #99 defines the desired state machine, but Shipper still needs a
-spec, ADR, plan, and implementation sequence before runtime behavior changes.
+Issue #102 identified the gap directly: ambiguous outcomes could become blind
+retries instead of registry checks. Issue #99 defined the desired state machine.
+Shipper now has the proposal/spec/ADR/plan stack and the first implementation
+path for ambiguous publish reconciliation.
 
 This matters because Shipper's product is trust. Without registry-truth
-reconciliation, Shipper cannot honestly claim to be safer than a naive
-`cargo publish` retry loop in the highest-stakes failure case.
+reconciliation, Shipper could not honestly claim to be safer than a naive
+`cargo publish` retry loop in the highest-stakes failure case. That specific
+gap is now implemented and remains governed by `docs/status/SUPPORT_TIERS.md`.
 
 ## Users and Value
 
@@ -102,8 +103,8 @@ publish branch is where Shipper can prevent the unsafe retry.
 ### Promote README Claims Before Implementation
 
 Rejected. Existing or future product docs must not exceed
-`docs/status/SUPPORT_TIERS.md`. Ambiguous publish reconciliation remains
-planned until implementation, tests, and proof artifacts exist.
+`docs/status/SUPPORT_TIERS.md`. Ambiguous publish reconciliation must not be
+promoted beyond the proof recorded there.
 
 ## Evidence Plan
 
@@ -134,7 +135,8 @@ The implementation lane must later prove:
 ## Non-Goals
 
 - Implementing publish-engine behavior in this proposal PR.
-- Promoting ambiguous publish reconciliation from `planned`.
+- Promoting ambiguous publish reconciliation beyond the proof recorded in
+  `docs/status/SUPPORT_TIERS.md`.
 - Replacing readiness checks with reconciliation checks.
 - Making registry API availability the only source of truth; sparse index
   evidence remains part of the design.
@@ -142,11 +144,13 @@ The implementation lane must later prove:
 
 ## Exit Criteria
 
-This proposal is complete when it is followed by:
+This proposal is complete. It was followed by:
 
 - a behavior spec for registry reconciliation
 - an ADR recording registry truth over Cargo process output
 - an implementation plan with PR sequencing and proof commands
 - an active goal manifest pointing at the Reconcile lane
+- implementation proof for the three reconciliation outcomes and resume path
 
-Runtime implementation begins only after those artifacts exist.
+Further Reconcile claims must continue to flow through support tiers and proof
+commands rather than README text alone.
