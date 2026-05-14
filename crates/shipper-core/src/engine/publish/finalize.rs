@@ -127,12 +127,10 @@ fn write_receipt(
 }
 
 fn sequential_execution_result(receipts: &[PackageReceipt]) -> ExecutionResult {
-    if receipts.iter().all(|r| {
-        matches!(
-            r.state,
-            PackageState::Published | PackageState::Skipped { .. }
-        )
-    }) {
+    if receipts
+        .iter()
+        .all(|r| is_successful_terminal_state(&r.state))
+    {
         ExecutionResult::Success
     } else {
         ExecutionResult::PartialFailure
@@ -140,16 +138,21 @@ fn sequential_execution_result(receipts: &[PackageReceipt]) -> ExecutionResult {
 }
 
 fn parallel_execution_result(receipts: &[PackageReceipt]) -> ExecutionResult {
-    if receipts.iter().all(|r| {
-        matches!(
-            r.state,
-            PackageState::Published | PackageState::Skipped { .. }
-        )
-    }) {
+    if receipts
+        .iter()
+        .all(|r| is_successful_terminal_state(&r.state))
+    {
         ExecutionResult::Success
     } else {
         ExecutionResult::PartialFailure
     }
+}
+
+fn is_successful_terminal_state(state: &PackageState) -> bool {
+    matches!(
+        state,
+        PackageState::Published | PackageState::Skipped { .. }
+    )
 }
 
 fn send_completion_webhook(
@@ -165,7 +168,7 @@ fn send_completion_webhook(
         .count();
     let failure_count = receipts
         .iter()
-        .filter(|r| matches!(r.state, PackageState::Failed { .. }))
+        .filter(|r| !is_successful_terminal_state(&r.state))
         .count();
     let skipped_count = receipts
         .iter()
@@ -193,7 +196,9 @@ fn send_completion_webhook(
 mod tests {
     use chrono::Utc;
 
-    use super::{parallel_execution_result, sequential_execution_result};
+    use super::{
+        is_successful_terminal_state, parallel_execution_result, sequential_execution_result,
+    };
     use crate::types::{ExecutionResult, PackageEvidence, PackageReceipt, PackageState};
 
     fn receipt(state: PackageState) -> PackageReceipt {
@@ -234,5 +239,16 @@ mod tests {
             parallel_execution_result(&receipts),
             ExecutionResult::PartialFailure
         );
+    }
+
+    #[test]
+    fn completion_metrics_count_uploaded_as_failure() {
+        let receipts = [receipt(PackageState::Uploaded)];
+        let failure_count = receipts
+            .iter()
+            .filter(|receipt| !is_successful_terminal_state(&receipt.state))
+            .count();
+
+        assert_eq!(failure_count, 1);
     }
 }

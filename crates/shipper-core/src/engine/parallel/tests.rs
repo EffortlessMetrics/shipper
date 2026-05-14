@@ -1616,17 +1616,21 @@ fn test_webhook_events_sent_on_publish() {
     let webhook_received_clone = Arc::clone(&webhook_received);
 
     let webhook_handle = std::thread::spawn(move || {
-        // Collect up to 3 requests with a timeout
-        for _ in 0..3 {
-            match webhook_server.recv_timeout(Duration::from_secs(30)) {
-                Ok(Some(mut req)) => {
-                    let mut body = Vec::new();
-                    let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
-                    let text = String::from_utf8_lossy(&body).to_string();
-                    webhook_received_clone.lock().unwrap().push(text);
-                    req.respond(Response::from_string("ok")).expect("respond");
-                }
-                _ => break,
+        if let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_secs(2)) {
+            let mut body = Vec::new();
+            let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+            let text = String::from_utf8_lossy(&body).to_string();
+            webhook_received_clone.lock().unwrap().push(text);
+            req.respond(Response::from_string("ok")).expect("respond");
+        }
+        while let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_millis(50)) {
+            let mut body = Vec::new();
+            let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+            let text = String::from_utf8_lossy(&body).to_string();
+            webhook_received_clone.lock().unwrap().push(text);
+            req.respond(Response::from_string("ok")).expect("respond");
+            if webhook_received_clone.lock().unwrap().len() > 1 {
+                break;
             }
         }
     });
