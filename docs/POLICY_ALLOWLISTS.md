@@ -167,7 +167,7 @@ Umbrella tracking issue for the file-policy work: [#180](https://github.com/Effo
 
 | Allowlist / change | Issue | Status |
 |---|---|---|
-| `xtask` policy foundation (`package-surface`, `policy-report` stub) | [#176](https://github.com/EffortlessMetrics/shipper/issues/176) | planned |
+| `xtask` policy foundation (`package-surface`, `policy-report` stub) | [#176](https://github.com/EffortlessMetrics/shipper/issues/176) | landed |
 | `clippy-lints.toml` / `clippy-debt.toml` / `clippy-exceptions.toml` ledgers | [#179](https://github.com/EffortlessMetrics/shipper/issues/179) | planned |
 | Rust 1.95 rustc lint floor | [#198](https://github.com/EffortlessMetrics/shipper/issues/198) | planned |
 | Clippy 1.94/1.95 ratchets | [#191](https://github.com/EffortlessMetrics/shipper/issues/191) | planned |

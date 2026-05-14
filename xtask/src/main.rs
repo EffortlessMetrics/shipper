@@ -2,9 +2,8 @@
 //!
 //! This crate is intentionally non-publishable (`publish = false`). It hosts
 //! workspace-wide policy commands that need to run from a real Rust process —
-//! beginning with the non-Rust file inventory (`cargo xtask non-rust
-//! inventory`) which feeds the file-policy checker that lands in later
-//! rollout PRs.
+//! beginning with package-surface and non-Rust file inventory commands which
+//! feed the policy checker ladder.
 //!
 //! See `docs/policy/NON_RUST_ROLLOUT.md` for the full ladder.
 
@@ -18,6 +17,7 @@ mod doc_contracts;
 mod file_policy;
 mod mutants;
 mod no_panic;
+mod package_surface;
 mod policy_report;
 mod propose;
 mod ripr;
@@ -40,6 +40,10 @@ enum Command {
     /// Non-Rust file policy commands.
     #[command(subcommand, name = "non-rust")]
     NonRust(NonRustCommand),
+
+    /// Report the workspace package surface from `cargo metadata`.
+    #[command(name = "package-surface")]
+    PackageSurface,
 
     /// No-panic baseline + checker commands (#187).
     #[command(subcommand, name = "no-panic")]
@@ -191,6 +195,7 @@ fn main() -> Result<()> {
             NonRustCommand::Inventory => file_policy::inventory()?,
             NonRustCommand::Propose => propose::propose()?,
         },
+        Command::PackageSurface => package_surface::package_surface()?,
         Command::NoPanic(cmd) => match cmd {
             NoPanicCommand::Baseline => no_panic::baseline()?,
             NoPanicCommand::Check(args) => no_panic::check(args.mode)?,

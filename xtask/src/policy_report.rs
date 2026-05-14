@@ -1,8 +1,8 @@
 //! `cargo xtask policy-report`
 //!
-//! Runs all advisory checks (file-policy, generated, executable,
-//! dependency-surface, workflow, process, network, doc-contracts, no-panic),
-//! reads each one's
+//! Runs all advisory checks (package-surface, file-policy, generated,
+//! executable, dependency-surface, workflow, process, network, doc-contracts,
+//! no-panic), reads each one's
 //! `target/policy/*-report.json` artifact, and writes a unified
 //! `target/policy/policy-report.{md,json}`.
 //!
@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{check_file_policy, checks, doc_contracts, no_panic, workflow_checks};
+use crate::{check_file_policy, checks, doc_contracts, no_panic, package_surface, workflow_checks};
 
 const OUTPUT_DIR_REL: &str = "target/policy";
 
@@ -52,6 +52,7 @@ pub fn policy_report() -> Result<()> {
     // `target/policy/*-report.json`. Advisory mode never bails, so we
     // don't have to worry about short-circuiting.
     println!("running all advisory checks for unified report…");
+    package_surface::package_surface()?;
     check_file_policy::check(check_file_policy::Mode::Advisory)?;
     checks::check_generated(checks::Mode::Advisory)?;
     checks::check_executable_files(checks::Mode::Advisory)?;
@@ -64,6 +65,7 @@ pub fn policy_report() -> Result<()> {
 
     // Step 2: read each sub-report and lift its `summary` block.
     let registrations: &[(&'static str, &str)] = &[
+        ("Package surface", "package-surface-report"),
         ("Non-Rust file policy", "file-policy-report"),
         ("Generated files", "generated-policy-report"),
         ("Executable files", "executable-policy-report"),
@@ -158,6 +160,7 @@ fn headline_for(area: &'static str, summary: &Value) -> Option<HeadlineRow> {
         "workflows",
         "documents_checked",
         "baseline_entries",
+        "workspace_packages",
     ]
     .into_iter()
     .find_map(|k| s.get(k).and_then(|v| v.as_u64()))
