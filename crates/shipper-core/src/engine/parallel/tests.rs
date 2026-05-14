@@ -1607,24 +1607,30 @@ fn test_webhook_events_sent_on_publish() {
         1,
     );
 
-    // Webhook receiver: expect 2 POSTs (PublishStarted + PublishCompleted)
+    // The parallel executor announces the start. The outer publish finalizer
+    // owns PublishCompleted so serial and parallel terminal notifications stay
+    // in one place.
     let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
     let webhook_url = format!("http://{}", webhook_server.server_addr());
     let webhook_received = Arc::new(Mutex::new(Vec::<String>::new()));
     let webhook_received_clone = Arc::clone(&webhook_received);
 
     let webhook_handle = std::thread::spawn(move || {
-        // Collect up to 3 requests with a timeout
-        for _ in 0..3 {
-            match webhook_server.recv_timeout(Duration::from_secs(30)) {
-                Ok(Some(mut req)) => {
-                    let mut body = Vec::new();
-                    let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
-                    let text = String::from_utf8_lossy(&body).to_string();
-                    webhook_received_clone.lock().unwrap().push(text);
-                    req.respond(Response::from_string("ok")).expect("respond");
-                }
-                _ => break,
+        if let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_secs(2)) {
+            let mut body = Vec::new();
+            let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+            let text = String::from_utf8_lossy(&body).to_string();
+            webhook_received_clone.lock().unwrap().push(text);
+            req.respond(Response::from_string("ok")).expect("respond");
+        }
+        while let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_millis(50)) {
+            let mut body = Vec::new();
+            let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+            let text = String::from_utf8_lossy(&body).to_string();
+            webhook_received_clone.lock().unwrap().push(text);
+            req.respond(Response::from_string("ok")).expect("respond");
+            if webhook_received_clone.lock().unwrap().len() > 1 {
+                break;
             }
         }
     });
@@ -1657,11 +1663,8 @@ fn test_webhook_events_sent_on_publish() {
     registry_server.join();
 
     let received = webhook_received.lock().unwrap();
-    assert!(
-        received.len() >= 2,
-        "expected at least 2 webhook POSTs (started + completed), got {}",
-        received.len()
-    );
+    assert_eq!(received.len(), 1, "expected only PublishStarted");
+    assert!(received[0].contains("PublishStarted") || received[0].contains("publish_started"));
 }
 
 // ---------------------------------------------------------------------------
