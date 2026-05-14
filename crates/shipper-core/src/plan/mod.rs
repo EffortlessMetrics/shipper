@@ -17,15 +17,13 @@
 //! The resulting [`PlannedWorkspace`](shipper_types::PlannedWorkspace) is the
 //! input to preflight and publish operations in the engine crate.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Context, Result, bail};
-use cargo_metadata::{DependencyKind, Metadata, PackageId};
+use anyhow::Result;
+use cargo_metadata::PackageId;
 use chrono::Utc;
-use sha2::{Digest, Sha256};
-use shipper_types::{PlannedPackage, ReleasePlan, ReleaseSpec};
 pub use shipper_types::{PlannedWorkspace, SkippedPackage};
+use shipper_types::{ReleasePlan, ReleaseSpec};
 
 /// Build a deterministic publish plan from a [`ReleaseSpec`].
 ///
@@ -49,213 +47,22 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
         .iter()
         .map(|p| (p.id.clone(), p))
         .collect::<BTreeMap<PackageId, &cargo_metadata::Package>>();
-
     let workspace_ids: BTreeSet<PackageId> = metadata.workspace_members.iter().cloned().collect();
 
-    // Track skipped packages (publish=false or not in registry list)
-    let mut skipped: Vec<SkippedPackage> = Vec::new();
+    let publishability = analyze_publishability(&workspace_ids, &pkg_map, &spec.registry.name);
+    let graph = build_dependency_graph(&workspace_ids, &publishability.publishable, &pkg_map)?;
+    let included = resolve_included_packages(
+        spec.selected_packages.as_deref(),
+        &publishability.publishable,
+        &graph.deps_of,
+        &pkg_map,
+    )?;
 
-    // Workspace publishable set (restricted by `[package] publish` where possible).
-    let publishable: BTreeSet<PackageId> = workspace_ids
-        .iter()
-        .filter_map(|id| {
-            let pkg = pkg_map.get(id)?;
-            if publish_allowed(pkg, &spec.registry.name) {
-                Some(id.clone())
-            } else {
-                // Track why this package was skipped
-                let reason = match &pkg.publish {
-                    None => "publish not specified (default allowed)".to_string(),
-                    Some(list) if list.is_empty() => "publish = false".to_string(),
-                    Some(list) => format!("publish = {} (registry not in list)", list.join(", ")),
-                };
-                skipped.push(SkippedPackage {
-                    name: pkg.name.to_string(),
-                    version: pkg.version.to_string(),
-                    reason,
-                });
-                None
-            }
-        })
-        .collect();
+    validate_publishable_dependencies(&included, &graph, &pkg_map)?;
 
-    // Build dependency edges A->deps from manifest-level Package.dependencies.
-    //
-    // We intentionally do NOT use metadata.resolve.nodes here. resolve.nodes
-    // is feature-resolved and omits optional path+version dependencies that
-    // are not active under the default feature set. cargo publish, however,
-    // still needs every optional workspace path+version dep to be resolvable
-    // from the registry at publish time, so those edges must participate in
-    // publish ordering. See #173.
-    //
-    // We keep Normal + Build deps, including optional and target-specific
-    // ones, and exclude Dev.
-
-    // Map workspace package directory -> PackageId, used to resolve path
-    // dependencies to the workspace members they reference.
-    let pkg_dir_to_id: BTreeMap<std::path::PathBuf, PackageId> = workspace_ids
-        .iter()
-        .filter_map(|id| {
-            let pkg = pkg_map.get(id)?;
-            let dir = pkg
-                .manifest_path
-                .parent()?
-                .to_path_buf()
-                .into_std_path_buf();
-            Some((dir, id.clone()))
-        })
-        .collect();
-
-    let mut deps_of: BTreeMap<PackageId, BTreeSet<PackageId>> = BTreeMap::new();
-    let mut dependents_of: BTreeMap<PackageId, BTreeSet<PackageId>> = BTreeMap::new();
-    // Tracked separately so the "publishable must not depend on a
-    // non-publishable workspace member" guard can run against the same
-    // manifest-level source as the edges themselves.
-    let mut non_publishable_workspace_deps: BTreeMap<PackageId, BTreeSet<PackageId>> =
-        BTreeMap::new();
-
-    for id in &workspace_ids {
-        let pkg = pkg_map
-            .get(id)
-            .context("workspace package missing from metadata")?;
-        for dep in &pkg.dependencies {
-            if !matches!(dep.kind, DependencyKind::Normal | DependencyKind::Build) {
-                continue;
-            }
-            let Some(dep_path) = dep.path.as_ref() else {
-                continue;
-            };
-            let dep_dir = dep_path.clone().into_std_path_buf();
-            let Some(dep_id) = pkg_dir_to_id.get(&dep_dir) else {
-                continue;
-            };
-
-            if publishable.contains(id) && publishable.contains(dep_id) {
-                deps_of
-                    .entry(id.clone())
-                    .or_default()
-                    .insert(dep_id.clone());
-                dependents_of
-                    .entry(dep_id.clone())
-                    .or_default()
-                    .insert(id.clone());
-            } else if publishable.contains(id) && !publishable.contains(dep_id) {
-                non_publishable_workspace_deps
-                    .entry(id.clone())
-                    .or_default()
-                    .insert(dep_id.clone());
-            }
-        }
-    }
-
-    // Determine which nodes to include.
-    let included: BTreeSet<PackageId> = if let Some(sel) = &spec.selected_packages {
-        // Map package name -> id (workspace publishable only).
-        let mut name_to_id: BTreeMap<String, PackageId> = BTreeMap::new();
-        for id in &publishable {
-            let pkg = pkg_map
-                .get(id)
-                .context("workspace package missing from metadata")?;
-            name_to_id.insert(pkg.name.to_string(), id.clone());
-        }
-
-        let mut queue: VecDeque<PackageId> = VecDeque::new();
-        let mut set: BTreeSet<PackageId> = BTreeSet::new();
-
-        for name in sel {
-            let id = name_to_id
-                .get(name)
-                .with_context(|| format!("selected package not found or not publishable: {name}"))?
-                .clone();
-            if set.insert(id.clone()) {
-                queue.push_back(id);
-            }
-        }
-
-        // Include internal dependencies transitively.
-        while let Some(id) = queue.pop_front() {
-            if let Some(deps) = deps_of.get(&id) {
-                for dep in deps {
-                    if set.insert(dep.clone()) {
-                        queue.push_back(dep.clone());
-                    }
-                }
-            }
-        }
-
-        set
-    } else {
-        publishable.clone()
-    };
-
-    // Validate: included crates must not have normal/build deps on
-    // non-publishable workspace members. Uses the same manifest-level source
-    // as the edge construction above so optional and target-specific deps
-    // are checked.
-    for (id, dep_ids) in &non_publishable_workspace_deps {
-        if !included.contains(id) {
-            continue;
-        }
-        let dep_id = dep_ids
-            .iter()
-            .next()
-            .expect("non_publishable_workspace_deps entries are non-empty by construction");
-        let pkg_name = pkg_map
-            .get(id)
-            .map(|p| p.name.as_str())
-            .unwrap_or("unknown");
-        let dep_name = pkg_map
-            .get(dep_id)
-            .map(|p| p.name.as_str())
-            .unwrap_or("unknown");
-        bail!(
-            "publishable package '{}' depends on non-publishable workspace member '{}'",
-            pkg_name,
-            dep_name
-        );
-    }
-
-    // Topological sort on included nodes.
-    let order = topo_sort(&included, &deps_of, &dependents_of, &pkg_map)?;
-
-    let packages: Vec<PlannedPackage> = order
-        .iter()
-        .map(|id| {
-            let pkg = pkg_map.get(id).expect("pkg exists");
-            PlannedPackage {
-                name: pkg.name.to_string(),
-                version: pkg.version.to_string(),
-                manifest_path: pkg.manifest_path.clone().into_std_path_buf(),
-                regime: None,
-            }
-        })
-        .collect();
-
-    // Build dependency map for level-based parallel publishing
-    let mut dependencies: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for id in &order {
-        let pkg = pkg_map.get(id).expect("pkg exists");
-        let pkg_name = pkg.name.to_string();
-
-        // Get all dependencies of this package that are in the plan
-        let dep_names: Vec<String> = deps_of
-            .get(id)
-            .map(|deps| {
-                deps.iter()
-                    .filter_map(|dep_id| {
-                        if included.contains(dep_id) {
-                            pkg_map.get(dep_id).map(|p| p.name.to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        dependencies.insert(pkg_name, dep_names);
-    }
-
+    let order = topo_sort(&included, &graph.deps_of, &graph.dependents_of, &pkg_map)?;
+    let packages = planned_packages(&order, &pkg_map);
+    let dependencies = dependency_map(&order, &included, &graph.deps_of, &pkg_map);
     let plan_id = compute_plan_id(&spec.registry.api_base, &packages);
 
     Ok(PlannedWorkspace {
@@ -268,96 +75,25 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
             packages,
             dependencies,
         },
-        skipped,
+        skipped: publishability.skipped,
     })
 }
 
-fn load_metadata(manifest_path: &Path) -> Result<Metadata> {
-    crate::ops::cargo::load_metadata(manifest_path)
-}
-
-fn publish_allowed(pkg: &cargo_metadata::Package, registry_name: &str) -> bool {
-    match &pkg.publish {
-        None => true,
-        Some(list) if list.is_empty() => false,
-        Some(list) => {
-            // Cargo uses `crates-io` as the default registry name.
-            list.iter().any(|r| r == registry_name)
-        }
-    }
-}
-
-fn topo_sort(
-    included: &BTreeSet<PackageId>,
-    deps_of: &BTreeMap<PackageId, BTreeSet<PackageId>>,
-    dependents_of: &BTreeMap<PackageId, BTreeSet<PackageId>>,
-    pkg_map: &BTreeMap<PackageId, &cargo_metadata::Package>,
-) -> Result<Vec<PackageId>> {
-    let mut indegree: BTreeMap<PackageId, usize> = BTreeMap::new();
-    for id in included {
-        let deps = deps_of.get(id).cloned().unwrap_or_default();
-        let count = deps.into_iter().filter(|d| included.contains(d)).count();
-        indegree.insert(id.clone(), count);
-    }
-
-    // Deterministic queue: sort by package name.
-    let mut ready: BTreeSet<(String, PackageId)> = BTreeSet::new();
-    for (id, deg) in &indegree {
-        if *deg == 0 {
-            let name = pkg_map
-                .get(id)
-                .map(|p| p.name.to_string())
-                .unwrap_or_else(|| String::from("unknown"));
-            ready.insert((name, id.clone()));
-        }
-    }
-
-    let mut out: Vec<PackageId> = Vec::with_capacity(included.len());
-
-    while let Some((_, id)) = ready.iter().next().cloned() {
-        ready.remove(&(pkg_map.get(&id).unwrap().name.to_string(), id.clone()));
-        out.push(id.clone());
-
-        if let Some(deps) = dependents_of.get(&id) {
-            for dep in deps {
-                if !included.contains(dep) {
-                    continue;
-                }
-                let d = indegree
-                    .get_mut(dep)
-                    .expect("included package must have indegree");
-                *d = d.saturating_sub(1);
-                if *d == 0 {
-                    let name = pkg_map.get(dep).unwrap().name.to_string();
-                    ready.insert((name, dep.clone()));
-                }
-            }
-        }
-    }
-
-    if out.len() != included.len() {
-        bail!("dependency cycle detected within workspace publish set");
-    }
-
-    Ok(out)
-}
-
-fn compute_plan_id(registry_api_base: &str, packages: &[PlannedPackage]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(registry_api_base.as_bytes());
-    hasher.update(b"\n");
-    for p in packages {
-        hasher.update(p.name.as_bytes());
-        hasher.update(b"@");
-        hasher.update(p.version.as_bytes());
-        hasher.update(b"\n");
-    }
-    let digest = hasher.finalize();
-    hex::encode(digest)
-}
-
+mod assembly;
 pub(crate) mod chunking;
+mod graph;
 pub(crate) mod levels;
+mod metadata;
+mod publishability;
+mod selection;
+
+use assembly::{compute_plan_id, dependency_map, planned_packages};
+use graph::{build_dependency_graph, topo_sort, validate_publishable_dependencies};
+use metadata::load_metadata;
+use publishability::analyze_publishability;
+#[cfg(test)]
+use publishability::publish_allowed;
+use selection::resolve_included_packages;
 
 #[cfg(test)]
 mod tests {
@@ -366,7 +102,7 @@ mod tests {
 
     use cargo_metadata::{MetadataCommand, PackageId};
     use proptest::prelude::*;
-    use shipper_types::Registry;
+    use shipper_types::{PlannedPackage, Registry};
     use tempfile::tempdir;
 
     use super::*;
