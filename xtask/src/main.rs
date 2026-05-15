@@ -84,7 +84,7 @@ enum Command {
     #[command(name = "check-clippy-exceptions")]
     CheckClippyExceptions,
 
-    /// Run the advisory ripr lane (`ripr pilot --root .`) — #182.
+    /// Produce advisory PR-scoped RIPR evidence.
     ///
     /// Thin wrapper around the external `ripr` CLI. Shipper consumes
     /// ripr as an advisory PR lane; this command does not implement
@@ -92,17 +92,17 @@ enum Command {
     #[command(name = "ripr-pr")]
     RiprPr(ripr::Args),
 
-    /// Regenerate repo-scoped Shields badge endpoints (#182 PR 2).
-    ///
-    /// Runs `ripr check --root . --mode ready --format
-    /// repo-exposure-json`, extracts `metrics.headline_eligible`, and
-    /// writes `badges/ripr.json` and `badges/ripr-plus.json` as
-    /// Shields-compatible endpoint JSON. README badges link these via
-    /// raw.githubusercontent.com. Unlike `ripr-pr`, this command
-    /// REQUIRES `ripr` on PATH — the badge artifacts are repo-truth and
-    /// regenerating them with stale numbers is worse than failing loud.
+    /// Regenerate public repo-scoped Shields badge endpoints.
+    #[command(name = "badges")]
+    Badges(ripr::BadgeArgs),
+
+    /// Back-compat alias for the previous badge endpoint command name.
     #[command(name = "repo-ripr-badge-artifacts")]
     RepoRiprBadgeArtifacts,
+
+    /// Produce advisory RIPR review guidance for PR summaries and artifacts.
+    #[command(name = "ripr-review-comments")]
+    RiprReviewComments(ripr::ReviewArgs),
 
     /// Run `cargo mutants` against PR-changed files only (#182 PR 3).
     ///
@@ -196,7 +196,9 @@ fn main() -> Result<()> {
         Command::CheckLintPolicy => clippy_checks::check_lint_policy()?,
         Command::CheckClippyExceptions => clippy_checks::check_clippy_exceptions()?,
         Command::RiprPr(args) => ripr::ripr_pr(&args)?,
+        Command::Badges(args) => ripr::badges(&args)?,
         Command::RepoRiprBadgeArtifacts => ripr::repo_badge_artifacts()?,
+        Command::RiprReviewComments(args) => ripr::ripr_review_comments(&args)?,
         Command::MutantsPr(args) => mutants::mutants_pr(&args)?,
     }
     Ok(())

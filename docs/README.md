@@ -7,6 +7,7 @@ Organized by reader purpose ([Diátaxis](https://diataxis.fr/)). Pick the column
 | **Learn** by doing a task end-to-end | [Tutorials](#tutorials) |
 | **Solve** a specific problem you already understand | [How-to guides](#how-to-guides) |
 | **Look up** exact command, flag, or schema | [Reference](#reference) |
+| **Verify** badges, generated endpoints, and PR evidence boundaries | [Verification](VERIFICATION.md) |
 | **Understand** why Shipper works the way it does | [Explanation](#explanation) |
 
 ---

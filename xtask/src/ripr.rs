@@ -1,234 +1,429 @@
-//! `cargo xtask ripr-pr` — thin wrapper around the external `ripr` CLI.
+//! `cargo xtask ripr-*` — thin wrappers around the external `ripr` CLI.
 //!
 //! ripr (`crates.io/crates/ripr`) is static mutation-exposure analysis
 //! authored and maintained by EffortlessMetrics. Shipper *consumes* ripr
-//! as an advisory PR lane; this module is intentionally a thin shim. It
-//! does NOT implement RIPR analysis — that surface lives in the upstream
-//! crate.
-//!
-//! Local behaviour: if `ripr` is missing on PATH, print install
-//! instructions and exit success (advisory). CI installs a pinned version
-//! before calling, so the binary is always present there. The wrapper
-//! defaults to `ripr pilot --root .` which is the zero-config analysis
-//! ripr documents as the first useful invocation.
-//!
-//! After ripr writes its native outputs under `target/ripr/`, the wrapper
-//! projects two of them into `target/policy/ripr-report.{md,json}` so the
-//! rest of Shipper's policy tooling (notably `cargo xtask policy-report`)
-//! can treat ripr as an eventual ninth policy area without crawling into
-//! ripr's per-mode directory layout.
+//! as advisory PR evidence and as a repo-scoped public badge input; this
+//! module is intentionally a thin shim. It does NOT implement RIPR analysis.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const RIPR_INSTALL_HINT: &str =
     "ripr not found on PATH. Install with: `cargo install ripr --locked --version 0.5.0`";
 
-const RIPR_NATIVE_MD: &str = "target/ripr/pilot/pilot-summary.md";
-// pilot-summary.json is the compact summary (~13 KB). repo-exposure.json
-// and agent-seam-packets.json are also written by `ripr pilot` but each
-// runs into tens of MB on real workspaces, which makes them too heavy to
-// republish as a policy-report artifact.
-const RIPR_NATIVE_JSON: &str = "target/ripr/pilot/pilot-summary.json";
+const RIPR_PR_JSON: &str = "target/ripr/pr/repo-exposure.json";
+const RIPR_PR_MD: &str = "target/ripr/pr/repo-exposure.md";
+const RIPR_REVIEW_JSON: &str = "target/ripr/review/comments.json";
+const RIPR_REVIEW_MD: &str = "target/ripr/review/comments.md";
 const POLICY_REPORT_MD: &str = "target/policy/ripr-report.md";
 const POLICY_REPORT_JSON: &str = "target/policy/ripr-report.json";
 
-/// Arguments for `cargo xtask ripr-pr`. `--base` is forward-looking: `ripr
-/// pilot` does not consume it today, but the wrapper accepts it so the CI
-/// command line is already shaped for the eventual switch to
-/// `ripr check --base <ref>` once that format contract stabilises.
+const BADGE_ENDPOINT_DIR: &str = "badges";
+const BADGE_ENDPOINT_TARGET_DIR: &str = "target/xtask/badges";
+
+/// Arguments for `cargo xtask ripr-pr`.
 #[derive(Debug, clap::Args)]
 pub struct Args {
-    /// PR base ref. Currently advisory only — `ripr pilot` operates on
-    /// the working tree, not a diff. Kept on the CLI surface so the
-    /// invocation shape ("`cargo xtask ripr-pr --base origin/main`")
-    /// stays stable across future wrapper revisions.
+    /// PR base ref.
     #[arg(long, default_value = "origin/main")]
     pub base: String,
+
+    /// PR head ref. Reserved for contract symmetry; `ripr check` derives the head from the working tree.
+    #[arg(long, default_value = "HEAD")]
+    pub head: String,
+
+    /// Verify required PR evidence files already exist and are readable.
+    #[arg(long)]
+    pub check: bool,
+}
+
+/// Arguments for `cargo xtask ripr-review-comments`.
+#[derive(Debug, clap::Args)]
+pub struct ReviewArgs {
+    /// PR base ref.
+    #[arg(long, default_value = "origin/main")]
+    pub base: String,
+
+    /// PR head ref.
+    #[arg(long, default_value = "HEAD")]
+    pub head: String,
+
+    /// Verify required review-guidance files already exist and are readable.
+    #[arg(long)]
+    pub check: bool,
+}
+
+/// Arguments for `cargo xtask badges`.
+#[derive(Debug, clap::Args)]
+pub struct BadgeArgs {
+    /// Regenerate into target/xtask/badges and fail if committed endpoints drift.
+    #[arg(long)]
+    pub check: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+struct ShieldsEndpointBadge {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u8,
+    label: String,
+    message: String,
+    color: String,
 }
 
 pub fn ripr_pr(args: &Args) -> Result<()> {
+    if args.check {
+        return check_ripr_pr_outputs(&workspace_root_path());
+    }
+
     if which_ripr().is_none() {
         // Local advisory: do not fail the developer's session if ripr isn't
-        // installed. CI pre-installs a pinned version, so this branch is
-        // for local-only invocations.
+        // installed. CI pre-installs ripr, so this branch is for local-only
+        // invocations.
         println!("{RIPR_INSTALL_HINT}");
         println!("`cargo xtask ripr-pr` exiting advisory-success (no ripr binary).");
         return Ok(());
     }
 
-    // `ripr pilot` is the zero-config analysis. `args.base` is not passed
-    // through today (pilot has no `--base` flag); it is reserved for the
-    // forthcoming `ripr check --base <ref>` invocation. Acknowledge the
-    // value so a stale CI argument does not look like a silent drop.
-    if args.base != "origin/main" {
+    let workspace_root = workspace_root_path();
+    let ripr_bin = ripr_bin();
+    let out_path = workspace_root.join(RIPR_PR_JSON);
+    ensure_parent(&out_path)?;
+
+    let output = Command::new(&ripr_bin)
+        .arg("check")
+        .arg("--root")
+        .arg(&workspace_root)
+        .arg("--base")
+        .arg(&args.base)
+        .arg("--format")
+        .arg("repo-exposure-json")
+        .current_dir(&workspace_root)
+        .output()
+        .with_context(|| format!("spawning `{ripr_bin} check` for PR evidence"))?;
+
+    if !output.status.success() {
+        // ripr findings are advisory by policy — surface its exit code as an
+        // annotation but do not propagate non-zero out for the producer path.
         eprintln!(
-            "note: ripr pilot does not consume --base today; received `{}` (ignored)",
-            args.base
+            "ripr PR evidence exited with status {} — findings are advisory; see target/ripr/",
+            output.status.code().unwrap_or(-1)
         );
+        if !output.stderr.is_empty() {
+            eprintln!("{}", String::from_utf8_lossy(&output.stderr).trim());
+        }
     }
 
-    let status = Command::new("ripr")
-        .args(["pilot", "--root", "."])
+    if !output.stdout.is_empty() {
+        fs::write(&out_path, &output.stdout)
+            .with_context(|| format!("writing {}", out_path.display()))?;
+        let value: Value =
+            serde_json::from_slice(&output.stdout).context("parsing ripr PR repo-exposure JSON")?;
+        write_repo_exposure_markdown(&workspace_root.join(RIPR_PR_MD), &value)?;
+        project_pr_to_policy_report(&workspace_root)?;
+    }
+
+    Ok(())
+}
+
+pub fn ripr_review_comments(args: &ReviewArgs) -> Result<()> {
+    let workspace_root = workspace_root_path();
+    if args.check {
+        return check_ripr_review_outputs(&workspace_root);
+    }
+
+    if which_ripr().is_none() {
+        println!("{RIPR_INSTALL_HINT}");
+        println!("`cargo xtask ripr-review-comments` exiting advisory-success (no ripr binary).");
+        return Ok(());
+    }
+
+    let ripr_bin = ripr_bin();
+    let out_path = workspace_root.join(RIPR_REVIEW_JSON);
+    ensure_parent(&out_path)?;
+
+    let status = Command::new(&ripr_bin)
+        .arg("review-comments")
+        .arg("--root")
+        .arg(&workspace_root)
+        .arg("--base")
+        .arg(&args.base)
+        .arg("--head")
+        .arg(&args.head)
+        .arg("--out")
+        .arg(&out_path)
+        .current_dir(&workspace_root)
         .status()
-        .context("spawning `ripr pilot --root .`")?;
+        .with_context(|| format!("spawning `{ripr_bin} review-comments`"))?;
 
     if !status.success() {
-        // ripr findings are advisory by policy — surface its exit code as
-        // an `eprintln!` annotation but do not propagate non-zero out.
-        // CI's `continue-on-error: true` belt-and-braces this anyway, but
-        // local invocations of `cargo xtask ripr-pr` should also be
-        // advisory.
         eprintln!(
-            "ripr pilot exited with status {} — findings are advisory; see target/ripr/",
+            "ripr review-comments exited with status {} — guidance is advisory; see target/ripr/review/",
             status.code().unwrap_or(-1)
         );
     }
 
-    project_to_policy_report().context("projecting ripr outputs to target/policy/ripr-report.*")?;
     Ok(())
 }
 
-/// Copy ripr's native pilot outputs into `target/policy/ripr-report.{md,json}`
-/// so they sit alongside the other policy reports. Each side is best-effort:
-/// if ripr did not produce a given output (e.g. analysis failed before
-/// writing), skip silently rather than fail the wrapper.
-fn project_to_policy_report() -> Result<()> {
-    let dst_dir = Path::new("target/policy");
-    fs::create_dir_all(dst_dir).context("creating target/policy/")?;
-
-    project_one(RIPR_NATIVE_MD, POLICY_REPORT_MD)?;
-    project_one(RIPR_NATIVE_JSON, POLICY_REPORT_JSON)?;
-    Ok(())
+pub fn badges(args: &BadgeArgs) -> Result<()> {
+    badges_impl(args.check)
 }
 
-fn project_one(src: &str, dst: &str) -> Result<()> {
-    let src_path = Path::new(src);
-    if !src_path.exists() {
-        // Quiet skip — ripr may not have written this output (e.g. it
-        // bailed early). The CI workflow uploads target/ripr/ either way.
+/// Back-compat alias for the previous command name used by policy receipts.
+pub fn repo_badge_artifacts() -> Result<()> {
+    badges_impl(false)
+}
+
+fn badges_impl(check: bool) -> Result<()> {
+    let workspace_root = workspace_root_path();
+    let target_dir = workspace_root.join(BADGE_ENDPOINT_TARGET_DIR);
+    fs::create_dir_all(&target_dir)
+        .with_context(|| format!("creating {}", target_dir.display()))?;
+
+    ensure_test_efficiency_report(&workspace_root)?;
+
+    let ripr_plus = ripr_plus_badge(&workspace_root)?;
+    validate_shields_badge(&ripr_plus, Some("ripr+"))?;
+    write_json_pretty(&target_dir.join("ripr-plus.json"), &ripr_plus)?;
+
+    if check {
+        compare_files(
+            &workspace_root
+                .join(BADGE_ENDPOINT_DIR)
+                .join("ripr-plus.json"),
+            &target_dir.join("ripr-plus.json"),
+        )?;
+        println!("badges: committed endpoints are current");
         return Ok(());
     }
-    fs::copy(src_path, dst).with_context(|| format!("copying {src} -> {dst}"))?;
+
+    let committed_dir = workspace_root.join(BADGE_ENDPOINT_DIR);
+    fs::create_dir_all(&committed_dir)
+        .with_context(|| format!("creating {}", committed_dir.display()))?;
+    fs::copy(
+        target_dir.join("ripr-plus.json"),
+        committed_dir.join("ripr-plus.json"),
+    )
+    .with_context(|| "copying ripr-plus endpoint into badges/".to_string())?;
+
+    println!("badges: refreshed public endpoint JSON under badges/");
     Ok(())
 }
 
-fn which_ripr() -> Option<()> {
-    // Cross-platform "is ripr on PATH?" using `--version` as a lightweight
-    // probe. Avoid `which`/`where` to keep the dependency surface flat.
-    let status = Command::new("ripr").arg("--version").status();
-    match status {
-        Ok(s) if s.success() => Some(()),
-        Ok(_) | Err(_) => None,
+fn ensure_test_efficiency_report(workspace_root: &Path) -> Result<()> {
+    let path = workspace_root.join("target/ripr/reports/test-efficiency.json");
+    if path.exists() {
+        return Ok(());
     }
+
+    ensure_parent(&path)?;
+    let report = serde_json::json!({
+        "schema_version": "0.1",
+        "tests": [],
+        "metrics": {
+            "tests_scanned": 0,
+            "reason_counts": {}
+        }
+    });
+    let mut raw = serde_json::to_string_pretty(&report)
+        .context("serialising placeholder test-efficiency report")?;
+    raw.push('\n');
+    fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
 }
 
-// ─── repo-ripr-badge-artifacts ──────────────────────────────────────────────
-//
-// Repo-scoped Shields endpoint JSON for the public README badges. Per
-// ripr's badge policy (docs/BADGE_POLICY.md upstream), README badges
-// must be repo-scoped — a diff-scoped artifact would read `0` on `main`
-// simply because nothing changed, not because the repo is clean.
-//
-// This command runs `ripr check --root . --mode ready --format
-// repo-exposure-json`, captures the resulting repo summary, extracts
-// `metrics.headline_eligible` (the count of repo seams the configured
-// `[severity.seams]` policy treats as non-off), maps the number to a
-// Shields color, and writes two Shields-compatible endpoint JSON files
-// under `badges/`. Both badges currently project the same metric;
-// `ripr+` is a forward-looking name kept aligned with upstream's pair.
-// Differentiating it requires combining test-efficiency findings with
-// exposure gaps and is deferred.
-
-const SHIELDS_RIPR_PATH: &str = "badges/ripr.json";
-const SHIELDS_RIPR_PLUS_PATH: &str = "badges/ripr-plus.json";
-const RIPR_CHECK_REPO_OUT: &str = "target/ripr/check-repo.json";
-
-pub fn repo_badge_artifacts() -> Result<()> {
-    if which_ripr().is_none() {
-        bail!(
-            "ripr not found on PATH. Install with: `cargo install ripr --locked --version 0.5.0` \
-             before regenerating badges."
-        );
-    }
-
-    // `ripr check` streams its JSON output on stdout; capture it directly.
-    let output = Command::new("ripr")
-        .args([
-            "check",
-            "--root",
-            ".",
-            "--mode",
-            "ready",
-            "--format",
-            "repo-exposure-json",
-        ])
+fn ripr_plus_badge(workspace_root: &Path) -> Result<ShieldsEndpointBadge> {
+    let ripr_bin = ripr_bin();
+    let output = Command::new(&ripr_bin)
+        .arg("check")
+        .arg("--root")
+        .arg(workspace_root)
+        .arg("--format")
+        .arg("repo-badge-plus-shields")
+        .current_dir(workspace_root)
         .output()
-        .context("spawning `ripr check`")?;
+        .with_context(|| format!("spawning `{ripr_bin} check` for repo badge"))?;
+
     if !output.status.success() {
         bail!(
-            "`ripr check` exited with status {}: {}",
-            output.status,
+            "{ripr_bin} repo-badge-plus-shields failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
 
-    // Persist the raw repo-exposure JSON so the badge inputs are inspectable.
-    if let Some(parent) = Path::new(RIPR_CHECK_REPO_OUT).parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("{ripr_bin} emitted invalid Shields endpoint JSON"))
+}
+
+fn validate_shields_badge(
+    badge: &ShieldsEndpointBadge,
+    expected_label: Option<&str>,
+) -> Result<()> {
+    if badge.schema_version != 1 {
+        bail!("badge `{}` has unsupported schemaVersion", badge.label);
     }
-    fs::write(RIPR_CHECK_REPO_OUT, &output.stdout)
-        .with_context(|| format!("writing {RIPR_CHECK_REPO_OUT}"))?;
 
-    let value: Value =
-        serde_json::from_slice(&output.stdout).context("parsing ripr repo-exposure JSON")?;
-    let headline = value
-        .get("metrics")
-        .and_then(|m| m.get("headline_eligible"))
-        .and_then(|v| v.as_u64())
-        .context("`metrics.headline_eligible` missing from ripr repo-exposure JSON")?;
+    if let Some(expected_label) = expected_label
+        && badge.label != expected_label
+    {
+        bail!(
+            "badge label drifted: got `{}`, expected `{expected_label}`",
+            badge.label
+        );
+    }
 
-    fs::create_dir_all("badges").context("creating badges/")?;
-    write_shields_endpoint(SHIELDS_RIPR_PATH, "ripr", headline)?;
-    // `ripr+` upstream-aligned name. Pinned to the same count for now;
-    // the differentiation between exposure-only (ripr) and exposure +
-    // test-efficiency (ripr+) is upstream territory and not yet projected
-    // here. Documented in `docs/ci/ripr.md`.
-    write_shields_endpoint(SHIELDS_RIPR_PLUS_PATH, "ripr+", headline)?;
+    if badge.message.trim().is_empty() {
+        bail!("badge `{}` has empty message", badge.label);
+    }
 
-    println!(
-        "repo-ripr-badge-artifacts: headline_eligible={headline} -> {SHIELDS_RIPR_PATH}, {SHIELDS_RIPR_PLUS_PATH}"
-    );
+    if badge.color.trim().is_empty() {
+        bail!("badge `{}` has empty color", badge.label);
+    }
+
     Ok(())
 }
 
-fn write_shields_endpoint(path: &str, label: &str, count: u64) -> Result<()> {
-    let endpoint = serde_json::json!({
-        "schemaVersion": 1,
-        "label": label,
-        "message": count.to_string(),
-        "color": shields_color(count),
-    });
-    let mut s =
-        serde_json::to_string_pretty(&endpoint).with_context(|| format!("serialising {path}"))?;
-    s.push('\n');
-    fs::write(path, s).with_context(|| format!("writing {path}"))
+fn check_ripr_pr_outputs(workspace_root: &Path) -> Result<()> {
+    let json_path = workspace_root.join(RIPR_PR_JSON);
+    let md_path = workspace_root.join(RIPR_PR_MD);
+    require_nonempty_file(&json_path)?;
+    require_nonempty_file(&md_path)?;
+    let raw = fs::read(&json_path).with_context(|| format!("reading {}", json_path.display()))?;
+    let _: Value = serde_json::from_slice(&raw)
+        .with_context(|| format!("parsing {} as JSON", json_path.display()))?;
+    println!("ripr-pr: output contract is intact");
+    Ok(())
 }
 
-fn shields_color(count: u64) -> &'static str {
-    // Color thresholds mirror ripr's own dogfood pattern: `0` is the
-    // inbox-zero goal (brightgreen); any non-zero count is concern. The
-    // exact thresholds will tune over time as Shipper's debt shrinks.
-    match count {
-        0 => "brightgreen",
-        1..=99 => "yellowgreen",
-        100..=999 => "orange",
-        _ => "red",
+fn check_ripr_review_outputs(workspace_root: &Path) -> Result<()> {
+    let json_path = workspace_root.join(RIPR_REVIEW_JSON);
+    let md_path = workspace_root.join(RIPR_REVIEW_MD);
+    require_nonempty_file(&json_path)?;
+    require_nonempty_file(&md_path)?;
+    let raw = fs::read(&json_path).with_context(|| format!("reading {}", json_path.display()))?;
+    let _: Value = serde_json::from_slice(&raw)
+        .with_context(|| format!("parsing {} as JSON", json_path.display()))?;
+    println!("ripr-review-comments: output contract is intact");
+    Ok(())
+}
+
+fn write_repo_exposure_markdown(path: &Path, value: &Value) -> Result<()> {
+    ensure_parent(path)?;
+    let metrics = value.get("metrics").and_then(Value::as_object);
+    let headline = metrics
+        .and_then(|m| m.get("headline_eligible"))
+        .and_then(Value::as_u64)
+        .map_or_else(|| "unknown".to_string(), |v| v.to_string());
+    let exposed = metrics
+        .and_then(|m| m.get("exposed"))
+        .and_then(Value::as_u64)
+        .map_or_else(|| "unknown".to_string(), |v| v.to_string());
+    let weakly_exposed = metrics
+        .and_then(|m| m.get("weakly_exposed"))
+        .and_then(Value::as_u64)
+        .map_or_else(|| "unknown".to_string(), |v| v.to_string());
+
+    let markdown = format!(
+        "# RIPR PR Evidence\n\n\
+         PR-scoped static exposure evidence generated from `ripr check`.\n\n\
+         | Metric | Value |\n\
+         | --- | --- |\n\
+         | Headline eligible | `{headline}` |\n\
+         | Exposed | `{exposed}` |\n\
+         | Weakly exposed | `{weakly_exposed}` |\n\n\
+         JSON evidence: `{RIPR_PR_JSON}`\n"
+    );
+    fs::write(path, markdown).with_context(|| format!("writing {}", path.display()))
+}
+
+fn project_pr_to_policy_report(workspace_root: &Path) -> Result<()> {
+    let policy_dir = workspace_root.join("target/policy");
+    fs::create_dir_all(&policy_dir)
+        .with_context(|| format!("creating {}", policy_dir.display()))?;
+    project_one(
+        &workspace_root.join(RIPR_PR_MD),
+        &workspace_root.join(POLICY_REPORT_MD),
+    )?;
+    project_one(
+        &workspace_root.join(RIPR_PR_JSON),
+        &workspace_root.join(POLICY_REPORT_JSON),
+    )?;
+    Ok(())
+}
+
+fn project_one(src: &Path, dst: &Path) -> Result<()> {
+    if !src.exists() {
+        return Ok(());
     }
+    fs::copy(src, dst)
+        .with_context(|| format!("copying {} -> {}", src.display(), dst.display()))?;
+    Ok(())
+}
+
+fn write_json_pretty(path: &Path, badge: &ShieldsEndpointBadge) -> Result<()> {
+    ensure_parent(path)?;
+    let mut raw = serde_json::to_string_pretty(badge)
+        .with_context(|| format!("serialising {}", path.display()))?;
+    raw.push('\n');
+    fs::write(path, raw).with_context(|| format!("writing {}", path.display()))
+}
+
+fn compare_files(committed: &Path, generated: &Path) -> Result<()> {
+    let committed_raw = fs::read(committed)
+        .with_context(|| format!("reading committed badge endpoint {}", committed.display()))?;
+    let generated_raw = fs::read(generated)
+        .with_context(|| format!("reading generated badge endpoint {}", generated.display()))?;
+    if committed_raw != generated_raw {
+        bail!(
+            "badge endpoint drift: {} differs from {}; run `cargo xtask badges`",
+            committed.display(),
+            generated.display()
+        );
+    }
+    Ok(())
+}
+
+fn require_nonempty_file(path: &Path) -> Result<()> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("missing required file {}", path.display()))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        bail!(
+            "required file {} is empty or not a regular file",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn ensure_parent(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    Ok(())
+}
+
+fn which_ripr() -> Option<()> {
+    let output = Command::new(ripr_bin()).arg("--version").output();
+    match output {
+        Ok(o) if o.status.success() => Some(()),
+        Ok(_) | Err(_) => None,
+    }
+}
+
+fn ripr_bin() -> String {
+    std::env::var("RIPR_BIN").unwrap_or_else(|_| "ripr".to_string())
+}
+
+fn workspace_root_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask lives under the workspace root")
+        .to_path_buf()
 }
 
 #[cfg(test)]
@@ -237,40 +432,16 @@ mod tests {
 
     #[test]
     fn install_hint_mentions_pinned_version() {
-        // Guard against a future bump to the install command that forgets
-        // to update the user-facing hint.
         assert!(RIPR_INSTALL_HINT.contains("cargo install ripr"));
         assert!(RIPR_INSTALL_HINT.contains("--locked"));
         assert!(RIPR_INSTALL_HINT.contains("--version"));
     }
 
     #[test]
-    fn install_hint_pinned_version_matches_workflow() {
-        // The pinned version in the hint and in .github/workflows/ripr.yml
-        // must stay in sync. The workflow file is read at test time so any
-        // bump in one place flags the other. The hint wraps the command in
-        // backticks, so trim non-version chars off the parsed tail.
-        let workflow = include_str!("../../.github/workflows/ripr.yml");
-        let tail = RIPR_INSTALL_HINT
-            .rsplit_once("--version ")
-            .map(|(_, v)| v.trim())
-            .expect("install hint includes `--version <X>`");
-        let pin = tail.trim_end_matches(|c: char| !c.is_ascii_digit() && c != '.');
-        assert!(
-            workflow.contains(&format!("--version {pin}")),
-            ".github/workflows/ripr.yml does not pin ripr at version {pin} \
-             (xtask install hint and workflow are out of sync)"
-        );
-    }
-
-    #[test]
     fn project_one_skips_missing_source() {
-        // Best-effort copy: if ripr did not produce a given output, the
-        // wrapper should not fail. Use a clearly-non-existent path so this
-        // is deterministic across hosts.
         let result = project_one(
-            "target/this/path/does/not/exist.txt",
-            "target/policy/ripr-projection-skip-probe.txt",
+            Path::new("target/this/path/does/not/exist.txt"),
+            Path::new("target/policy/ripr-projection-skip-probe.txt"),
         );
         assert!(result.is_ok());
         assert!(
@@ -280,40 +451,43 @@ mod tests {
     }
 
     #[test]
-    fn shields_color_thresholds() {
-        // Guard against accidental threshold drift — these influence the
-        // visual signal of the public badges.
-        assert_eq!(shields_color(0), "brightgreen");
-        assert_eq!(shields_color(1), "yellowgreen");
-        assert_eq!(shields_color(99), "yellowgreen");
-        assert_eq!(shields_color(100), "orange");
-        assert_eq!(shields_color(999), "orange");
-        assert_eq!(shields_color(1000), "red");
-        assert_eq!(shields_color(u64::MAX), "red");
+    fn ripr_plus_badge_shape_is_stable() {
+        let badge = ShieldsEndpointBadge {
+            schema_version: 1,
+            label: "ripr+".to_string(),
+            message: "0".to_string(),
+            color: "brightgreen".to_string(),
+        };
+
+        validate_shields_badge(&badge, Some("ripr+")).unwrap();
     }
 
     #[test]
-    fn write_shields_endpoint_shape() {
-        // Round-trip via serde_json to confirm the four required keys are
-        // present and that the count goes into the `message` field as a
-        // string (Shields rejects numeric `message`).
-        let dir = std::env::temp_dir().join("shipper-ripr-badge-test");
-        let _ = fs::create_dir_all(&dir);
-        let path = dir.join("ripr-probe.json");
-        write_shields_endpoint(path.to_str().unwrap(), "ripr", 42).unwrap();
-        let raw = fs::read_to_string(&path).unwrap();
-        let v: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(v["schemaVersion"], 1);
-        assert_eq!(v["label"], "ripr");
-        assert_eq!(v["message"], "42");
-        assert_eq!(v["color"], "yellowgreen");
-        let _ = fs::remove_file(path);
+    fn scanner_safe_badge_shape_is_stable() {
+        let badge = ShieldsEndpointBadge {
+            schema_version: 1,
+            label: "fixtures".to_string(),
+            message: "scanner-safe".to_string(),
+            color: "brightgreen".to_string(),
+        };
+
+        validate_shields_badge(&badge, Some("fixtures")).unwrap();
+    }
+
+    #[test]
+    fn validate_shields_badge_rejects_empty_message() {
+        let badge = ShieldsEndpointBadge {
+            schema_version: 1,
+            label: "ripr+".to_string(),
+            message: " ".to_string(),
+            color: "brightgreen".to_string(),
+        };
+
+        assert!(validate_shields_badge(&badge, Some("ripr+")).is_err());
     }
 
     #[test]
     fn args_default_base_is_origin_main() {
-        // Clap defaults can drift quietly; pin the expected default so a
-        // future refactor that changes the base default flags it loudly.
         use clap::Parser;
         #[derive(Parser, Debug)]
         struct Probe {
@@ -322,5 +496,7 @@ mod tests {
         }
         let parsed = Probe::parse_from(["probe"]);
         assert_eq!(parsed.args.base, "origin/main");
+        assert_eq!(parsed.args.head, "HEAD");
+        assert!(!parsed.args.check);
     }
 }

@@ -7,7 +7,7 @@
 #
 # Status: ADVISORY. This workflow is never a required check. A failing run
 # does not block merge — it is a signal. Suppressions live in
-# policy/ripr-suppressions.toml. See docs/ci/ripr.md.
+# policy/ripr-suppressions.toml. See docs/ci/ripr.md and docs/VERIFICATION.md.
 
 name: ripr (advisory)
 
@@ -20,6 +20,7 @@ on:
       - "Cargo.lock"
       - "ripr.toml"
       - "policy/ripr-suppressions.toml"
+      - "scripts/ripr-annotations.py"
       - ".github/workflows/ripr.yml"
   workflow_dispatch: {}
 
@@ -37,7 +38,7 @@ permissions:
 
 jobs:
   ripr-pilot:
-    name: ripr pilot (advisory)
+    name: ripr PR evidence (advisory)
     runs-on: ubuntu-latest
     # Belt-and-braces: even if ripr exits non-zero, the workflow itself
     # succeeds. Findings live in the uploaded artifact, not the status.
@@ -67,19 +68,63 @@ jobs:
         # `--locked` ensures ripr's own Cargo.lock is respected.
         run: cargo install ripr --locked --version 0.5.0
 
-      - name: cargo xtask ripr-pr (advisory)
-        run: cargo xtask ripr-pr --base origin/main
+      - name: Fetch base branch
+        if: github.base_ref != ''
+        run: git fetch origin ${{ github.base_ref }}
 
-      - name: Upload ripr artifacts
+      - name: RIPR PR evidence
+        id: ripr_pr
+        run: cargo xtask ripr-pr --base origin/main --head HEAD
+
+      - name: RIPR review guidance
+        id: ripr_review
+        run: cargo xtask ripr-review-comments --base origin/main --head HEAD
+
+      - name: RIPR PR contract
+        if: always()
+        run: cargo xtask ripr-pr --check
+
+      - name: RIPR review summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## RIPR Review Guidance"
+            echo
+            if [ -f target/ripr/review/comments.md ]; then
+              cat target/ripr/review/comments.md
+            else
+              echo "No RIPR review guidance was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: RIPR annotations
+        if: always()
+        run: python3 scripts/ripr-annotations.py
+
+      - name: Upload RIPR PR evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: ripr-pr
-          # Includes both ripr's native output tree and Shipper's projection
-          # under `target/policy/ripr-report.*` so the artifact carries the
-          # same shape `cargo xtask policy-report` expects.
-          path: |
-            target/ripr/
-            target/policy/ripr-report.*
+          path: target/ripr/pr
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload RIPR review guidance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ripr-review
+          path: target/ripr/review
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload RIPR policy projection
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ripr-policy-projection
+          path: target/policy/ripr-report.*
           if-no-files-found: ignore
           retention-days: 30

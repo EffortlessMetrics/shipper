@@ -471,6 +471,29 @@ covered_by = ["cargo test --workspace --locked"]
 created = "2026-05-11"
 review_after = "2026-11-11"
 
+
+[[glob]]
+pattern = "badges/*.md"
+kind = "badge_endpoint_documentation"
+surface = "docs"
+classification = "documentation"
+owner = "release/ci"
+reason = "Documents generated Shields endpoint JSON under badges/."
+covered_by = ["manual review", "cargo xtask badges --check"]
+created = "2026-05-13"
+review_after = "2026-08-13"
+
+[[glob]]
+pattern = "scripts/*.py"
+kind = "ci_helper_script"
+surface = "ci"
+classification = "tooling"
+owner = "release/ci"
+reason = "Small checked-in helper scripts used by GitHub Actions, including non-blocking RIPR annotation emission."
+covered_by = ["manual review", "cargo xtask check-file-policy"]
+created = "2026-05-13"
+review_after = "2026-08-13"
+
 # ─── Policy ledgers themselves ──────────────────────────────────────────────
 
 [[glob]]
