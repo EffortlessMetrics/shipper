@@ -2040,6 +2040,8 @@ fn run_doctor(
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
 ) -> Result<()> {
+    let mut findings = Vec::new();
+
     println!("Shipper Doctor - Diagnostics Report");
     println!("----------------------------------");
     println!("workspace_root: {}", ws.workspace_root.display());
@@ -2057,6 +2059,23 @@ fn run_doctor(
         None => "NONE FOUND (set CARGO_REGISTRY_TOKEN)",
     };
     println!("auth_type: {}", auth_label);
+    if auth_type.is_none() {
+        findings.push(DoctorFinding {
+            id: "registry-auth-missing",
+            severity: DoctorFindingLevel::Blocked,
+            status: DoctorFindingLevel::Blocked,
+            title: "crates.io auth is missing",
+            why_it_matters:
+                "ownership checks and live publish require registry credentials before Shipper can prove or execute a release",
+            evidence: "auth_type: NONE FOUND (set CARGO_REGISTRY_TOKEN)".to_string(),
+            try_next: vec![
+                "run `cargo login <token>` for local token auth",
+                "configure Trusted Publishing for GitHub Actions releases",
+                "rerun `shipper doctor` and `shipper preflight`",
+            ],
+            docs: Some("docs/how-to/run-in-github-actions.md"),
+        });
+    }
 
     // 2. Check State Directory
     let abs_state = if opts.state_dir.is_absolute() {
@@ -2068,7 +2087,25 @@ fn run_doctor(
 
     if abs_state.exists() {
         if let Ok(meta) = std::fs::metadata(&abs_state) {
-            println!("state_dir_writable: {}", !meta.permissions().readonly());
+            let writable = !meta.permissions().readonly();
+            println!("state_dir_writable: {}", writable);
+            if !writable {
+                findings.push(DoctorFinding {
+                    id: "state-dir-readonly",
+                    severity: DoctorFindingLevel::Blocked,
+                    status: DoctorFindingLevel::Blocked,
+                    title: "state directory is read-only",
+                    why_it_matters:
+                        "publish and resume need to write state, events, receipts, and lock files continuously",
+                    evidence: format!("state_dir: {}", abs_state.display()),
+                    try_next: vec![
+                        "fix filesystem permissions for the state directory",
+                        "choose a writable directory with `--state-dir <path>`",
+                        "rerun `shipper doctor`",
+                    ],
+                    docs: Some("docs/reference/state-files.md"),
+                });
+            }
         }
     } else {
         println!("state_dir_exists: false (will be created)");
@@ -2086,7 +2123,25 @@ fn run_doctor(
 
     match reg_client.crate_exists("serde") {
         Ok(_) => println!("registry_reachable: true"),
-        Err(e) => reporter.warn(&format!("registry_reachable: false ({e:#})")),
+        Err(e) => {
+            let evidence = format!("registry_reachable: false ({e:#})");
+            reporter.warn(&evidence);
+            findings.push(DoctorFinding {
+                id: "registry-unreachable",
+                severity: DoctorFindingLevel::Blocked,
+                status: DoctorFindingLevel::Blocked,
+                title: "registry is unreachable",
+                why_it_matters:
+                    "preflight, publish readiness checks, and reconciliation need registry truth",
+                evidence,
+                try_next: vec![
+                    "check network access to the configured registry",
+                    "verify `--registry` and `--api-base` settings",
+                    "rerun `shipper doctor` before publishing",
+                ],
+                docs: Some("docs/failure-modes.md"),
+            });
+        }
     }
 
     let index_base = ws.plan.registry.get_index_base();
@@ -2096,9 +2151,10 @@ fn run_doctor(
     println!();
     match shipper_core::git::collect_git_context() {
         Some(git) => {
+            let dirty = git.dirty.unwrap_or(false);
             println!("git_commit: {}", git.commit.unwrap_or_else(|| "-".into()));
             println!("git_branch: {}", git.branch.unwrap_or_else(|| "-".into()));
-            println!("git_dirty: {}", git.dirty.unwrap_or(false));
+            println!("git_dirty: {}", dirty);
         }
         None => println!("git_context: not a git repository"),
     }
@@ -2113,13 +2169,87 @@ fn run_doctor(
             let present = std::env::var(env_var).is_ok();
             println!("encryption_key_source: env ({})", env_var);
             println!("encryption_key_present: {}", present);
+            if !present {
+                findings.push(DoctorFinding {
+                    id: "encryption-key-missing",
+                    severity: DoctorFindingLevel::Blocked,
+                    status: DoctorFindingLevel::Blocked,
+                    title: "state encryption key is missing",
+                    why_it_matters:
+                        "encrypted state cannot be written or resumed unless the configured key source is present",
+                    evidence: format!("encryption_key_present: false ({env_var})"),
+                    try_next: vec![
+                        "set the configured encryption environment variable",
+                        "or disable state encryption for this run",
+                        "rerun `shipper doctor`",
+                    ],
+                    docs: Some("docs/configuration.md"),
+                });
+            }
         }
     }
+
+    print_doctor_findings(&findings);
 
     println!();
     println!("Diagnostics complete.");
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DoctorFindingLevel {
+    Blocked,
+}
+
+impl DoctorFindingLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            DoctorFindingLevel::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DoctorFinding {
+    id: &'static str,
+    severity: DoctorFindingLevel,
+    status: DoctorFindingLevel,
+    title: &'static str,
+    why_it_matters: &'static str,
+    evidence: String,
+    try_next: Vec<&'static str>,
+    docs: Option<&'static str>,
+}
+
+fn print_doctor_findings(findings: &[DoctorFinding]) {
+    println!();
+    println!("Findings:");
+    println!("---------");
+    if findings.is_empty() {
+        println!("  none");
+        return;
+    }
+
+    for finding in findings {
+        println!(
+            "  [{}] {} ({})",
+            finding.status.as_str(),
+            finding.title,
+            finding.id
+        );
+        println!("    status: {}", finding.status.as_str());
+        println!("    severity: {}", finding.severity.as_str());
+        println!("    why: {}", finding.why_it_matters);
+        println!("    evidence: {}", finding.evidence);
+        println!("    try next:");
+        for step in &finding.try_next {
+            println!("      - {step}");
+        }
+        if let Some(docs) = finding.docs {
+            println!("    docs: {docs}");
+        }
+    }
 }
 
 fn print_cmd_version(cmd: &str, reporter: &mut dyn Reporter) {
