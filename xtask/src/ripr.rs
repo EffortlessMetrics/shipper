@@ -19,8 +19,8 @@
 //! ripr's per-mode directory layout.
 
 use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -37,60 +37,197 @@ const RIPR_NATIVE_JSON: &str = "target/ripr/pilot/pilot-summary.json";
 const POLICY_REPORT_MD: &str = "target/policy/ripr-report.md";
 const POLICY_REPORT_JSON: &str = "target/policy/ripr-report.json";
 
-/// Arguments for `cargo xtask ripr-pr`. `--base` is forward-looking: `ripr
-/// pilot` does not consume it today, but the wrapper accepts it so the CI
-/// command line is already shaped for the eventual switch to
-/// `ripr check --base <ref>` once that format contract stabilises.
+/// Arguments for `cargo xtask ripr-pr`.
 #[derive(Debug, clap::Args)]
 pub struct Args {
-    /// PR base ref. Currently advisory only — `ripr pilot` operates on
-    /// the working tree, not a diff. Kept on the CLI surface so the
-    /// invocation shape ("`cargo xtask ripr-pr --base origin/main`")
-    /// stays stable across future wrapper revisions.
+    /// PR base ref used by diff-scoped RIPR evidence.
     #[arg(long, default_value = "origin/main")]
     pub base: String,
+
+    /// Verify the required PR evidence files exist and remain readable.
+    #[arg(long)]
+    pub check: bool,
+}
+
+/// Arguments for `cargo xtask ripr-review-comments`.
+#[derive(Debug, clap::Args)]
+pub struct ReviewCommentsArgs {
+    /// PR base ref used by diff-scoped RIPR review guidance.
+    #[arg(long, default_value = "origin/main")]
+    pub base: String,
+
+    /// PR head ref used by diff-scoped RIPR review guidance.
+    #[arg(long, default_value = "HEAD")]
+    pub head: String,
+
+    /// Verify the required review guidance files exist and remain readable.
+    #[arg(long)]
+    pub check: bool,
 }
 
 pub fn ripr_pr(args: &Args) -> Result<()> {
+    if args.check {
+        return check_ripr_pr_contract();
+    }
+
+    let workspace_root = workspace_root()?;
+    let out_dir = workspace_root.join("target/ripr/pr");
+    fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
+
     if which_ripr().is_none() {
-        // Local advisory: do not fail the developer's session if ripr isn't
-        // installed. CI pre-installs a pinned version, so this branch is
-        // for local-only invocations.
         println!("{RIPR_INSTALL_HINT}");
         println!("`cargo xtask ripr-pr` exiting advisory-success (no ripr binary).");
         return Ok(());
     }
 
-    // `ripr pilot` is the zero-config analysis. `args.base` is not passed
-    // through today (pilot has no `--base` flag); it is reserved for the
-    // forthcoming `ripr check --base <ref>` invocation. Acknowledge the
-    // value so a stale CI argument does not look like a silent drop.
-    if args.base != "origin/main" {
+    let ripr_bin = ripr_bin();
+    let json_out = out_dir.join("repo-exposure.json");
+    let markdown_out = out_dir.join("repo-exposure.md");
+    run_ripr_check_to_file(
+        &ripr_bin,
+        &workspace_root,
+        &args.base,
+        "repo-exposure-json",
+        &json_out,
+    )?;
+    run_ripr_check_to_file(
+        &ripr_bin,
+        &workspace_root,
+        &args.base,
+        "repo-exposure-md",
+        &markdown_out,
+    )?;
+    ensure_markdown_companion(&json_out, &markdown_out)?;
+    project_to_policy_report().context("projecting ripr outputs to target/policy/ripr-report.*")?;
+    Ok(())
+}
+
+fn run_ripr_check_to_file(
+    ripr_bin: &str,
+    workspace_root: &Path,
+    base: &str,
+    format: &str,
+    out: &Path,
+) -> Result<()> {
+    let output = Command::new(ripr_bin)
+        .arg("check")
+        .arg("--root")
+        .arg(workspace_root)
+        .arg("--base")
+        .arg(base)
+        .arg("--format")
+        .arg(format)
+        .current_dir(workspace_root)
+        .output()
+        .with_context(|| format!("spawning `{ripr_bin} check --format {format}`"))?;
+
+    if !output.status.success() {
         eprintln!(
-            "note: ripr pilot does not consume --base today; received `{}` (ignored)",
-            args.base
+            "ripr check --format {format} exited with status {} — findings are advisory; see target/ripr/pr/",
+            output.status.code().unwrap_or(-1)
         );
+        eprintln!("{}", String::from_utf8_lossy(&output.stderr).trim());
+        return Ok(());
     }
 
-    let status = Command::new("ripr")
-        .args(["pilot", "--root", "."])
+    fs::write(out, output.stdout).with_context(|| format!("writing {}", out.display()))
+}
+
+pub fn ripr_review_comments(args: &ReviewCommentsArgs) -> Result<()> {
+    if args.check {
+        return check_ripr_review_contract();
+    }
+
+    let workspace_root = workspace_root()?;
+    let out_dir = workspace_root.join("target/ripr/review");
+    fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
+
+    if which_ripr().is_none() {
+        println!("{RIPR_INSTALL_HINT}");
+        println!("`cargo xtask ripr-review-comments` exiting advisory-success (no ripr binary).");
+        return Ok(());
+    }
+
+    let ripr_bin = ripr_bin();
+    let json_out = out_dir.join("comments.json");
+    let status = Command::new(&ripr_bin)
+        .arg("review-comments")
+        .arg("--root")
+        .arg(&workspace_root)
+        .arg("--base")
+        .arg(&args.base)
+        .arg("--head")
+        .arg(&args.head)
+        .arg("--out")
+        .arg(&json_out)
+        .current_dir(&workspace_root)
         .status()
-        .context("spawning `ripr pilot --root .`")?;
+        .with_context(|| format!("spawning `{ripr_bin} review-comments`"))?;
 
     if !status.success() {
-        // ripr findings are advisory by policy — surface its exit code as
-        // an `eprintln!` annotation but do not propagate non-zero out.
-        // CI's `continue-on-error: true` belt-and-braces this anyway, but
-        // local invocations of `cargo xtask ripr-pr` should also be
-        // advisory.
         eprintln!(
-            "ripr pilot exited with status {} — findings are advisory; see target/ripr/",
+            "ripr review-comments exited with status {} — guidance is advisory; see target/ripr/review/",
             status.code().unwrap_or(-1)
         );
     }
 
-    project_to_policy_report().context("projecting ripr outputs to target/policy/ripr-report.*")?;
+    ensure_markdown_companion(&json_out, &out_dir.join("comments.md"))?;
     Ok(())
+}
+
+fn check_ripr_pr_contract() -> Result<()> {
+    let workspace_root = workspace_root()?;
+    let json = workspace_root.join("target/ripr/pr/repo-exposure.json");
+    let markdown = workspace_root.join("target/ripr/pr/repo-exposure.md");
+    require_json(&json)?;
+    require_non_empty_file(&markdown)?;
+    println!("ripr-pr: output contract is intact");
+    Ok(())
+}
+
+fn check_ripr_review_contract() -> Result<()> {
+    let workspace_root = workspace_root()?;
+    let json = workspace_root.join("target/ripr/review/comments.json");
+    let markdown = workspace_root.join("target/ripr/review/comments.md");
+    require_json(&json)?;
+    require_non_empty_file(&markdown)?;
+    println!("ripr-review-comments: output contract is intact");
+    Ok(())
+}
+
+fn require_json(path: &Path) -> Result<()> {
+    let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let _: Value = serde_json::from_slice(&raw)
+        .with_context(|| format!("parsing JSON from {}", path.display()))?;
+    if raw.is_empty() {
+        bail!("{} is empty", path.display());
+    }
+    Ok(())
+}
+
+fn require_non_empty_file(path: &Path) -> Result<()> {
+    let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    if raw.is_empty() {
+        bail!("{} is empty", path.display());
+    }
+    Ok(())
+}
+
+fn ensure_markdown_companion(json_out: &Path, markdown_out: &Path) -> Result<()> {
+    if markdown_out.exists() {
+        return Ok(());
+    }
+    if !json_out.exists() {
+        return Ok(());
+    }
+    fs::write(
+        markdown_out,
+        "# RIPR
+
+RIPR produced JSON evidence; no Markdown companion was emitted by this tool version.
+",
+    )
+    .with_context(|| format!("writing {}", markdown_out.display()))
 }
 
 /// Copy ripr's native pilot outputs into `target/policy/ripr-report.{md,json}`
@@ -117,10 +254,19 @@ fn project_one(src: &str, dst: &str) -> Result<()> {
     Ok(())
 }
 
+fn ripr_bin() -> String {
+    std::env::var("RIPR_BIN").unwrap_or_else(|_| "ripr".to_string())
+}
+
 fn which_ripr() -> Option<()> {
     // Cross-platform "is ripr on PATH?" using `--version` as a lightweight
     // probe. Avoid `which`/`where` to keep the dependency surface flat.
-    let status = Command::new("ripr").arg("--version").status();
+    let bin = ripr_bin();
+    let status = Command::new(bin)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     match status {
         Ok(s) if s.success() => Some(()),
         Ok(_) | Err(_) => None,
@@ -157,7 +303,8 @@ pub fn repo_badge_artifacts() -> Result<()> {
     }
 
     // `ripr check` streams its JSON output on stdout; capture it directly.
-    let output = Command::new("ripr")
+    let ripr_bin = ripr_bin();
+    let output = Command::new(&ripr_bin)
         .args([
             "check",
             "--root",
@@ -229,6 +376,16 @@ fn shields_color(count: u64) -> &'static str {
         100..=999 => "orange",
         _ => "red",
     }
+}
+
+fn workspace_root() -> Result<PathBuf> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .context("CARGO_MANIFEST_DIR not set; run via `cargo xtask`")?;
+    let xtask_dir = PathBuf::from(manifest_dir);
+    xtask_dir
+        .parent()
+        .with_context(|| format!("xtask manifest dir has no parent: {}", xtask_dir.display()))
+        .map(Path::to_path_buf)
 }
 
 #[cfg(test)]
@@ -322,5 +479,6 @@ mod tests {
         }
         let parsed = Probe::parse_from(["probe"]);
         assert_eq!(parsed.args.base, "origin/main");
+        assert!(!parsed.args.check);
     }
 }

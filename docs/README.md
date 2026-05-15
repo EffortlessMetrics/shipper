@@ -53,6 +53,7 @@ Design decisions and reasoning. Read these to understand *why* things are the wa
 - [Product overview](product.md)
 - [Repository structure](structure.md)
 - [Tech stack](tech.md)
+- [Verification](VERIFICATION.md) — README badge meanings, generated endpoints, and PR evidence boundaries
 
 ## Root-level orientation
 

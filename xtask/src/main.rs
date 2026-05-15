@@ -11,6 +11,7 @@
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
+mod badges;
 mod check_file_policy;
 mod checks;
 mod clippy_checks;
@@ -43,6 +44,10 @@ enum Command {
     /// No-panic baseline + checker commands (#187).
     #[command(subcommand, name = "no-panic")]
     NoPanic(NoPanicCommand),
+
+    /// Regenerate/check public README Shields endpoint JSON under badges/.
+    #[command(name = "badges")]
+    Badges(badges::Args),
 
     /// Reconcile tracked non-Rust files against `policy/non-rust-allowlist.toml`.
     #[command(name = "check-file-policy")]
@@ -91,6 +96,10 @@ enum Command {
     /// RIPR analysis itself. See docs/ci/ripr.md.
     #[command(name = "ripr-pr")]
     RiprPr(ripr::Args),
+
+    /// Produce diff-scoped RIPR review guidance for PR summaries and artifacts.
+    #[command(name = "ripr-review-comments")]
+    RiprReviewComments(ripr::ReviewCommentsArgs),
 
     /// Regenerate repo-scoped Shields badge endpoints (#182 PR 2).
     ///
@@ -183,6 +192,7 @@ fn main() -> Result<()> {
             NoPanicCommand::Baseline => no_panic::baseline()?,
             NoPanicCommand::Check(args) => no_panic::check(args.mode)?,
         },
+        Command::Badges(args) => badges::badges(&args)?,
         Command::CheckFilePolicy(args) => check_file_policy::check(args.mode)?,
         Command::CheckGenerated(args) => checks::check_generated(args.mode)?,
         Command::CheckExecutableFiles(args) => checks::check_executable_files(args.mode)?,
@@ -196,6 +206,7 @@ fn main() -> Result<()> {
         Command::CheckLintPolicy => clippy_checks::check_lint_policy()?,
         Command::CheckClippyExceptions => clippy_checks::check_clippy_exceptions()?,
         Command::RiprPr(args) => ripr::ripr_pr(&args)?,
+        Command::RiprReviewComments(args) => ripr::ripr_review_comments(&args)?,
         Command::RepoRiprBadgeArtifacts => ripr::repo_badge_artifacts()?,
         Command::MutantsPr(args) => mutants::mutants_pr(&args)?,
     }

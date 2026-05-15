@@ -46,6 +46,10 @@ pub struct Args {
     /// run tests against any of them. Maps to `cargo mutants --list`.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Reserved CI routing flag for full-owner targeted mutation lanes.
+    #[arg(long)]
+    pub full_owner: bool,
 }
 
 pub fn mutants_pr(args: &Args) -> Result<()> {
@@ -170,6 +174,7 @@ mod tests {
         assert!(parsed.args.changed);
         assert_eq!(parsed.args.base, "origin/main");
         assert!(!parsed.args.dry_run);
+        assert!(!parsed.args.full_owner);
     }
 
     #[test]
@@ -180,6 +185,7 @@ mod tests {
             changed: false,
             base: "origin/main".to_string(),
             dry_run: false,
+            full_owner: false,
         };
         let err = mutants_pr(&args).unwrap_err();
         assert!(

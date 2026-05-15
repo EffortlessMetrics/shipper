@@ -88,6 +88,8 @@ jobs:
     if: >
       github.event_name == 'pull_request' && (
         contains(github.event.pull_request.labels.*.name, 'mutation') ||
+        contains(github.event.pull_request.labels.*.name, 'release-risk') ||
+        contains(github.event.pull_request.labels.*.name, 'mutation/full-owner') ||
         contains(github.event.pull_request.labels.*.name, 'full-ci')
       )
     runs-on: ubuntu-latest
@@ -117,7 +119,16 @@ jobs:
           key: ${{ runner.os }}-cargo-mutants-pr-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-mutants-pr-
 
-      - name: cargo xtask mutants-pr --changed
+      - name: Targeted full-owner mutation
+        if: ${{ contains(github.event.pull_request.labels.*.name, 'mutation/full-owner') }}
+        run: |
+          cargo xtask mutants-pr \
+            --changed \
+            --full-owner \
+            --base "origin/${{ github.event.pull_request.base.ref }}"
+
+      - name: Targeted mutation
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'mutation/full-owner') }}
         run: |
           cargo xtask mutants-pr \
             --changed \
