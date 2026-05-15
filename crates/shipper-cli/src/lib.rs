@@ -1731,6 +1731,16 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
             println!("  New crates: {}", new_crates);
             println!("  Ownership verified: {}", ownership_verified);
             println!("  Dry-run passed: {}", dry_run_passed);
+            if let Some(estimate) = &rep.estimated_publish_duration {
+                println!(
+                    "  Estimated registry pacing: at least {}",
+                    humantime::format_duration(estimate.minimum_registry_pacing)
+                );
+                println!(
+                    "    profile={} first_publish={} updates={}",
+                    estimate.registry_profile, estimate.first_publish_count, estimate.update_count
+                );
+            }
             println!();
 
             // What to do next guidance

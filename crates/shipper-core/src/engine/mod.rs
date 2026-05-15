@@ -16,8 +16,8 @@ use crate::runtime::environment;
 #[cfg(test)]
 use crate::runtime::execution::short_state;
 use crate::runtime::execution::{
-    backoff_delay, classify_cargo_failure, pkg_key, registry_aware_backoff, resolve_state_dir,
-    update_state,
+    RegistryProfile, backoff_delay, classify_cargo_failure, pkg_key, registry_aware_backoff,
+    resolve_state_dir, update_state,
 };
 use crate::state::events;
 use crate::state::execution_state as state;
@@ -25,8 +25,9 @@ use crate::state::execution_state as state;
 use crate::types::ExecutionResult;
 use crate::types::{
     AttemptEvidence, ErrorClass, EventType, ExecutionState, Finishability, PackageProgress,
-    PackageReceipt, PackageState, PreflightPackage, PreflightReport, PublishEvent, PublishRegime,
-    ReadinessEvidence, Receipt, ReconciliationOutcome, Registry, RuntimeOptions,
+    PackageReceipt, PackageState, PreflightDurationEstimate, PreflightPackage, PreflightReport,
+    PublishEvent, PublishRegime, ReadinessEvidence, Receipt, ReconciliationOutcome, Registry,
+    RuntimeOptions,
 };
 use crate::webhook::{self, WebhookEvent};
 
@@ -486,18 +487,51 @@ pub fn run_preflight_in_place_with_options(
     });
     flush_events(&event_log, &events_path)?;
 
+    let estimated_publish_duration = estimate_preflight_duration(&ws.plan.registry.name, &packages);
+
     Ok(PreflightReport {
         plan_id: ws.plan.plan_id.clone(),
         token_detected,
         finishability,
         packages,
         timestamp: Utc::now(),
+        estimated_publish_duration,
         dry_run_output: if opts.verify_mode == VerifyMode::Workspace {
             Some(workspace_dry_run_output)
         } else {
             None
         },
     })
+}
+
+fn estimate_preflight_duration(
+    registry_name: &str,
+    packages: &[PreflightPackage],
+) -> Option<PreflightDurationEstimate> {
+    let profile = RegistryProfile::for_registry_name(registry_name);
+    let first_publish_refill = profile.first_publish_refill?;
+    let first_publish_burst = profile.first_publish_burst.unwrap_or(0) as usize;
+    let first_publish_count = packages.iter().filter(|p| p.is_new_crate).count();
+    let update_count = packages.len().saturating_sub(first_publish_count);
+    let paced_publishes = first_publish_count.saturating_sub(first_publish_burst);
+    let minimum_registry_pacing = multiply_duration(first_publish_refill, paced_publishes);
+
+    Some(PreflightDurationEstimate {
+        registry_profile: profile.name.to_string(),
+        first_publish_count,
+        update_count,
+        minimum_registry_pacing,
+        notes: vec![
+            "Estimate includes documented registry pacing only.".to_string(),
+            "It excludes build time, upload time, readiness polling, retries, and human pauses."
+                .to_string(),
+        ],
+    })
+}
+
+fn multiply_duration(duration: Duration, count: usize) -> Duration {
+    let count = u32::try_from(count).unwrap_or(u32::MAX);
+    duration.checked_mul(count).unwrap_or(Duration::MAX)
 }
 
 /// Enforce the rehearsal hard gate (#97 PR 3).
@@ -3624,6 +3658,47 @@ mod tests {
 
     // Preflight-specific tests
 
+    fn preflight_pkg(name: &str, is_new_crate: bool) -> PreflightPackage {
+        PreflightPackage {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            already_published: false,
+            is_new_crate,
+            auth_type: Some(AuthType::Token),
+            ownership_verified: true,
+            dry_run_passed: true,
+            dry_run_output: None,
+        }
+    }
+
+    #[test]
+    fn estimate_preflight_duration_accounts_for_crates_io_first_publish_burst() {
+        let packages: Vec<_> = (0..6)
+            .map(|i| preflight_pkg(&format!("crate-{i}"), true))
+            .collect();
+
+        let estimate = estimate_preflight_duration("crates-io", &packages)
+            .expect("crates.io profile should estimate");
+
+        assert_eq!(estimate.registry_profile, "crates-io");
+        assert_eq!(estimate.first_publish_count, 6);
+        assert_eq!(estimate.update_count, 0);
+        assert_eq!(estimate.minimum_registry_pacing, Duration::from_secs(600));
+        assert!(
+            estimate
+                .notes
+                .iter()
+                .any(|note| note.contains("documented registry pacing"))
+        );
+    }
+
+    #[test]
+    fn estimate_preflight_duration_is_none_for_unknown_registry() {
+        let packages = vec![preflight_pkg("demo", true)];
+
+        assert!(estimate_preflight_duration("private", &packages).is_none());
+    }
+
     #[test]
     fn preflight_report_serializes_correctly() {
         let report = PreflightReport {
@@ -3641,6 +3716,7 @@ mod tests {
                 dry_run_output: None,
             }],
             timestamp: Utc::now(),
+            estimated_publish_duration: None,
             dry_run_output: None,
         };
 
@@ -3669,6 +3745,7 @@ mod tests {
                 dry_run_output: None,
             }],
             timestamp: Utc::now(),
+            estimated_publish_duration: None,
             dry_run_output: None,
         };
 
@@ -3692,6 +3769,7 @@ mod tests {
                 dry_run_output: None,
             }],
             timestamp: Utc::now(),
+            estimated_publish_duration: None,
             dry_run_output: None,
         };
 
@@ -3715,6 +3793,7 @@ mod tests {
                 dry_run_output: None,
             }],
             timestamp: Utc::now(),
+            estimated_publish_duration: None,
             dry_run_output: None,
         };
 

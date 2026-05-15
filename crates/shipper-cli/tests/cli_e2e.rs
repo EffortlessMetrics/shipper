@@ -415,6 +415,8 @@ Summary:
   New crates: 1
   Ownership verified: 0
   Dry-run passed: 1
+  Estimated registry pacing: at least 0s
+    profile=crates-io first_publish=1 updates=0
 
 What to do next:
 -----------------
@@ -1146,6 +1148,19 @@ fn preflight_command_json_output_structure() {
     assert!(json.get("finishability").is_some());
     assert!(json.get("packages").is_some());
     assert!(json.get("timestamp").is_some());
+    assert_eq!(
+        json.pointer("/estimated_publish_duration/registry_profile"),
+        Some(&serde_json::Value::String("crates-io".to_string()))
+    );
+    assert_eq!(
+        json.pointer("/estimated_publish_duration/first_publish_count")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+    assert!(
+        json.pointer("/estimated_publish_duration/minimum_registry_pacing")
+            .is_some()
+    );
 
     // Verify packages array structure
     let packages = json.get("packages").unwrap().as_array().unwrap();
