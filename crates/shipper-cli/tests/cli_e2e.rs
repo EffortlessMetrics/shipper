@@ -186,8 +186,13 @@ fn plan_command_snapshot() {
     workspace_root: <WORKSPACE_ROOT>
 
     Total packages to publish: 1
+    Plan summary:
+      Publishable packages: 1
+      Skipped packages: 0
+      Internal dependency edges: 0
+      Publish levels: 1
 
-      1. demo@0.1.0
+      1. demo@0.1.0 (no workspace dependencies)
     "
     );
 }
