@@ -29,9 +29,25 @@ Summary:
   Estimated registry pacing: at least 0s
     profile=crates-io first_publish=1 updates=0
 
+Proof explanation:
+  Proven now:
+    - local package dry-run passed for 1 of 1 package.
+    - registry version/new-crate checks completed for 1 package.
+    - registry pacing estimate generated from the crates-io profile.
+  Proof gaps:
+    - ownership was not verified for 1 of 1 package: demo@0.1.0.
+    - no registry token or Trusted Publishing context was detected.
+  Failed checks:
+    - none.
+  Live-release evidence:
+    - registry acceptance and post-publish visibility are recorded during publish/resume.
+
 What to do next:
 -----------------
-⚠ Some checks could not be verified. You can still publish, but may encounter permission issues. Use `shipper publish --policy fast` to proceed.
+⚠ Preflight did not prove every release prerequisite.
+  - configure registry auth or Trusted Publishing if ownership is unverified
+  - rerun `shipper preflight`
+  - if you accept the uncertainty, run `shipper publish` with an explicit policy choice
 --- stderr ---
 [info] initializing registry client...
 [info] running workspace dry-run verification...

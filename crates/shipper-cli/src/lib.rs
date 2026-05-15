@@ -40,8 +40,8 @@ use shipper_core::config::{CliOverrides, ShipperConfig};
 use shipper_core::engine::{self, Reporter};
 use shipper_core::plan;
 use shipper_core::types::{
-    Finishability, PlannedPackage, PreflightReport, Registry, ReleasePlan, ReleaseSpec,
-    RuntimeOptions,
+    Finishability, PlannedPackage, PreflightPackage, PreflightReport, Registry, ReleasePlan,
+    ReleaseSpec, RuntimeOptions,
 };
 
 mod output;
@@ -1932,28 +1932,116 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
             }
             println!();
 
+            print_preflight_proof_explanation(rep, total, dry_run_passed);
+
             // What to do next guidance
             println!("What to do next:");
             println!("-----------------");
             match rep.finishability {
                 Finishability::Proven => {
                     println!(
-                        "\x1b[32m✓ All checks passed. Ready to publish with: shipper publish\x1b[0m"
+                        "\x1b[32m✓ All local preflight checks passed. Next: shipper publish\x1b[0m"
                     );
                 }
                 Finishability::NotProven => {
                     println!(
-                        "\x1b[33m⚠ Some checks could not be verified. You can still publish, but may encounter permission issues. Use `shipper publish --policy fast` to proceed.\x1b[0m"
+                        "\x1b[33m⚠ Preflight did not prove every release prerequisite.\x1b[0m"
+                    );
+                    println!(
+                        "  - configure registry auth or Trusted Publishing if ownership is unverified"
+                    );
+                    println!("  - rerun `shipper preflight`");
+                    println!(
+                        "  - if you accept the uncertainty, run `shipper publish` with an explicit policy choice"
                     );
                 }
                 Finishability::Failed => {
                     println!(
-                        "\x1b[31m✗ Preflight failed. Please fix the issues above before publishing.\x1b[0m"
+                        "\x1b[31m✗ Preflight failed. Fix the failed checks above, then rerun `shipper preflight`.\x1b[0m"
                     );
                 }
             }
         }
     }
+}
+
+fn print_preflight_proof_explanation(rep: &PreflightReport, total: usize, dry_run_passed: usize) {
+    let dry_run_failed = rep
+        .packages
+        .iter()
+        .filter(|package| !package.dry_run_passed)
+        .collect::<Vec<_>>();
+    let ownership_unverified = rep
+        .packages
+        .iter()
+        .filter(|package| !package.ownership_verified)
+        .collect::<Vec<_>>();
+
+    println!("Proof explanation:");
+    println!("  Proven now:");
+    println!(
+        "    - local package dry-run passed for {} of {} {}.",
+        dry_run_passed,
+        total,
+        package_noun(total)
+    );
+    println!(
+        "    - registry version/new-crate checks completed for {} {}.",
+        total,
+        package_noun(total)
+    );
+    if let Some(estimate) = &rep.estimated_publish_duration {
+        println!(
+            "    - registry pacing estimate generated from the {} profile.",
+            estimate.registry_profile
+        );
+    }
+
+    println!("  Proof gaps:");
+    if ownership_unverified.is_empty() {
+        println!("    - none from local preflight.");
+    } else {
+        println!(
+            "    - ownership was not verified for {} of {} {}: {}.",
+            ownership_unverified.len(),
+            total,
+            package_noun(total),
+            package_refs(ownership_unverified.iter().copied())
+        );
+    }
+    if !rep.token_detected {
+        println!("    - no registry token or Trusted Publishing context was detected.");
+    }
+
+    println!("  Failed checks:");
+    if dry_run_failed.is_empty() {
+        println!("    - none.");
+    } else {
+        println!(
+            "    - dry-run failed for {} of {} {}: {}.",
+            dry_run_failed.len(),
+            total,
+            package_noun(total),
+            package_refs(dry_run_failed.iter().copied())
+        );
+    }
+
+    println!("  Live-release evidence:");
+    println!(
+        "    - registry acceptance and post-publish visibility are recorded during publish/resume."
+    );
+    println!();
+}
+
+fn package_refs<'a>(packages: impl Iterator<Item = &'a PreflightPackage>) -> String {
+    packages
+        .map(|package| format!("{}@{}", package.name, package.version))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn package_noun(count: usize) -> &'static str {
+    if count == 1 { "package" } else { "packages" }
 }
 
 fn print_receipt(
