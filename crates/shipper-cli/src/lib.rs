@@ -34,11 +34,15 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
+use serde::Serialize;
 
 use shipper_core::config::{CliOverrides, ShipperConfig};
 use shipper_core::engine::{self, Reporter};
 use shipper_core::plan;
-use shipper_core::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
+use shipper_core::types::{
+    Finishability, PlannedPackage, PreflightReport, Registry, ReleasePlan, ReleaseSpec,
+    RuntimeOptions,
+};
 
 mod output;
 
@@ -797,7 +801,7 @@ pub fn run() -> Result<()> {
 
     match cli.cmd.expect("subcommand checked above") {
         Commands::Plan => {
-            print_plan(&planned, cli.verbose);
+            print_plan(&planned, cli.verbose, &cli.format);
         }
         Commands::Preflight { preflight_only } => {
             let rep = engine::run_preflight_in_place_with_options(
@@ -1502,7 +1506,53 @@ fn print_version(verbose: bool) {
     }
 }
 
-fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool) {
+#[derive(Debug, Serialize)]
+struct PlanReport {
+    plan_id: String,
+    registry: PlanRegistryReport,
+    workspace_root: String,
+    publishable_count: usize,
+    skipped_count: usize,
+    internal_dependency_edges: usize,
+    publish_levels: usize,
+    packages: Vec<PlanPackageReport>,
+    skipped: Vec<PlanSkippedPackageReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanRegistryReport {
+    name: String,
+    api_base: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index_base: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanPackageReport {
+    order: usize,
+    name: String,
+    version: String,
+    manifest_path: String,
+    level: Option<usize>,
+    dependencies: Vec<String>,
+    order_reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanSkippedPackageReport {
+    name: String,
+    version: String,
+    reason: String,
+}
+
+fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool, format: &str) {
+    if format == "json" {
+        let report = build_plan_report(ws);
+        let json = serde_json::to_string_pretty(&report).expect("serialize plan report");
+        println!("{}", json);
+        return;
+    }
+
     println!("plan_id: {}", ws.plan.plan_id);
     println!(
         "registry: {} ({})",
@@ -1513,6 +1563,14 @@ fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool) {
 
     let total_packages = ws.plan.packages.len();
     println!("Total packages to publish: {}", total_packages);
+    println!("Plan summary:");
+    println!("  Publishable packages: {}", total_packages);
+    println!("  Skipped packages: {}", ws.skipped.len());
+    println!(
+        "  Internal dependency edges: {}",
+        internal_dependency_edges(&ws.plan)
+    );
+    println!("  Publish levels: {}", ws.plan.group_by_levels().len());
     println!();
 
     if !ws.skipped.is_empty() {
@@ -1529,9 +1587,103 @@ fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool) {
     } else {
         // Simple output
         for (idx, p) in ws.plan.packages.iter().enumerate() {
-            println!("{:>3}. {}@{}", idx + 1, p.name, p.version);
+            println!(
+                "{:>3}. {}@{} ({})",
+                idx + 1,
+                p.name,
+                p.version,
+                dependency_summary(&ws.plan, p)
+            );
         }
     }
+}
+
+fn build_plan_report(ws: &plan::PlannedWorkspace) -> PlanReport {
+    let levels = ws.plan.group_by_levels();
+    let packages = ws
+        .plan
+        .packages
+        .iter()
+        .enumerate()
+        .map(|(idx, package)| {
+            let dependencies = dependency_names(&ws.plan, package);
+            let level = levels
+                .iter()
+                .find(|level| {
+                    level
+                        .packages
+                        .iter()
+                        .any(|level_pkg| level_pkg.name == package.name)
+                })
+                .map(|level| level.level);
+
+            PlanPackageReport {
+                order: idx + 1,
+                name: package.name.clone(),
+                version: package.version.clone(),
+                manifest_path: package.manifest_path.display().to_string(),
+                level,
+                dependencies,
+                order_reason: dependency_summary(&ws.plan, package),
+            }
+        })
+        .collect();
+
+    let skipped = ws
+        .skipped
+        .iter()
+        .map(|package| PlanSkippedPackageReport {
+            name: package.name.clone(),
+            version: package.version.clone(),
+            reason: package.reason.clone(),
+        })
+        .collect();
+
+    PlanReport {
+        plan_id: ws.plan.plan_id.clone(),
+        registry: PlanRegistryReport {
+            name: ws.plan.registry.name.clone(),
+            api_base: ws.plan.registry.api_base.clone(),
+            index_base: ws.plan.registry.index_base.clone(),
+        },
+        workspace_root: ws.workspace_root.display().to_string(),
+        publishable_count: ws.plan.packages.len(),
+        skipped_count: ws.skipped.len(),
+        internal_dependency_edges: internal_dependency_edges(&ws.plan),
+        publish_levels: levels.len(),
+        packages,
+        skipped,
+    }
+}
+
+fn internal_dependency_edges(plan: &ReleasePlan) -> usize {
+    plan.dependencies.values().map(Vec::len).sum()
+}
+
+fn dependency_summary(plan: &ReleasePlan, package: &PlannedPackage) -> String {
+    let dependencies = dependency_names(plan, package);
+    if dependencies.is_empty() {
+        "no workspace dependencies".to_string()
+    } else {
+        format!("depends on: {}", dependencies.join(", "))
+    }
+}
+
+fn dependency_names(plan: &ReleasePlan, package: &PlannedPackage) -> Vec<String> {
+    plan.dependencies
+        .get(&package.name)
+        .map(|dependencies| {
+            dependencies
+                .iter()
+                .filter_map(|dependency| {
+                    plan.packages
+                        .iter()
+                        .find(|candidate| candidate.name == *dependency)
+                        .map(|candidate| format!("{}@{}", candidate.name, candidate.version))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
@@ -1559,24 +1711,13 @@ fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
     println!("Dependency Graph:");
     println!();
     for (idx, p) in ws.plan.packages.iter().enumerate() {
-        let deps = ws.plan.dependencies.get(&p.name);
-        let deps_str = match deps {
-            Some(deps) if !deps.is_empty() => {
-                let dep_versions: Vec<String> = deps
-                    .iter()
-                    .filter_map(|dep_name| {
-                        ws.plan
-                            .packages
-                            .iter()
-                            .find(|pkg| &pkg.name == dep_name)
-                            .map(|pkg| format!("{}@{}", dep_name, pkg.version))
-                    })
-                    .collect();
-                format!("depends on: {}", dep_versions.join(", "))
-            }
-            _ => String::from("no workspace dependencies"),
-        };
-        println!("  {:>3}. {}@{} ({})", idx + 1, p.name, p.version, deps_str);
+        println!(
+            "  {:>3}. {}@{} ({})",
+            idx + 1,
+            p.name,
+            p.version,
+            dependency_summary(&ws.plan, p)
+        );
     }
     println!();
 

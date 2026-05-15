@@ -1,11 +1,28 @@
 ---
 source: crates/shipper-cli/tests/e2e_expanded.rs
-expression: normalize_output(&stdout)
+expression: "normalize_tempdir_json_output(&stdout, td.path())"
 ---
-plan_id: <PLAN_ID>
-registry: crates-io (https://crates.io)
-workspace_root: <WORKSPACE_ROOT>
-
-Total packages to publish: 1
-
-  1. demo@0.1.0
+{
+  "plan_id": "affac35fb544fb5b3de322fb4c6b26c2be6c9bf3eb7d7edd4af4a29b7b59fd3f",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io"
+  },
+  "workspace_root": "<WORKSPACE_ROOT>",
+  "publishable_count": 1,
+  "skipped_count": 0,
+  "internal_dependency_edges": 0,
+  "publish_levels": 1,
+  "packages": [
+    {
+      "order": 1,
+      "name": "demo",
+      "version": "0.1.0",
+      "manifest_path": "<WORKSPACE_ROOT>/demo/Cargo.toml",
+      "level": 0,
+      "dependencies": [],
+      "order_reason": "no workspace dependencies"
+    }
+  ],
+  "skipped": []
+}

@@ -175,6 +175,17 @@ fn normalize_tempdir_stderr(raw: &str, tempdir: &Path) -> String {
     )
 }
 
+fn normalize_tempdir_json_output(raw: &str, tempdir: &Path) -> String {
+    let tempdir = tempdir.to_string_lossy();
+    let escaped_tempdir = tempdir.replace('\\', "\\\\");
+    normalize_output(
+        &raw.replace(&escaped_tempdir, "<WORKSPACE_ROOT>")
+            .replace(tempdir.as_ref(), "<WORKSPACE_ROOT>")
+            .replace(&tempdir.replace('\\', "/"), "<WORKSPACE_ROOT>")
+            .replace("\\\\", "/"),
+    )
+}
+
 /// Create a simple workspace with a single publishable crate.
 fn create_workspace(root: &Path) {
     write_file(
@@ -2522,7 +2533,10 @@ fn plan_format_json_flag_snapshot() {
         .clone();
 
     let stdout = String::from_utf8(output).expect("utf8");
-    assert_snapshot!("plan_format_json_flag", normalize_output(&stdout));
+    assert_snapshot!(
+        "plan_format_json_flag",
+        normalize_tempdir_json_output(&stdout, td.path())
+    );
 }
 
 // ===========================================================================
@@ -3285,7 +3299,10 @@ fn plan_format_json_multi_crate_snapshot() {
         .clone();
 
     let stdout = String::from_utf8(output).expect("utf8");
-    assert_snapshot!("plan_format_json_multi_crate", normalize_output(&stdout));
+    assert_snapshot!(
+        "plan_format_json_multi_crate",
+        normalize_tempdir_json_output(&stdout, td.path())
+    );
 }
 
 // ===========================================================================
