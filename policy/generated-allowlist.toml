@@ -39,13 +39,13 @@ review_after = "2026-11-12"
 
 [[glob]]
 pattern = "badges/*.json"
-kind = "shields_badge_endpoint"
+kind = "generated_badge_endpoint"
 surface = "docs"
 classification = "generated"
-owner = "rust/tests"
-generator = "cargo xtask repo-ripr-badge-artifacts"
-regen_command = "cargo xtask repo-ripr-badge-artifacts"
-reason = "Shields-compatible endpoint JSON for the public ripr README badges (#182 PR 2). Repo-scoped count of unresolved seam-native exposure gaps under the configured [severity.seams] policy. Marked `linguist-generated=true` in .gitattributes; refresh cadence is manual."
-covered_by = ["manual review"]
+owner = "release/ci"
+generator = "cargo xtask badges"
+regen_command = "cargo xtask badges"
+reason = "Generated Shields endpoint JSON for public README badges. Repo-scoped static evidence only; detailed PR-scoped reports stay under target/ and CI artifacts."
+covered_by = ["cargo xtask badges --check"]
 created = "2026-05-12"
 review_after = "2026-11-12"

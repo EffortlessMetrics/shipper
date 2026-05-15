@@ -483,3 +483,36 @@ reason = "Authoritative TOML ledgers consumed by the cargo xtask check-* family.
 covered_by = ["cargo xtask check-file-policy", "cargo xtask policy-report"]
 created = "2026-05-11"
 review_after = "2026-08-11"
+
+[[file]]
+path = "badges/README.md"
+kind = "badge_endpoint_documentation"
+surface = "docs"
+classification = "documentation"
+owner = "release/ci"
+reason = "Documents generated Shields endpoint JSON used by public README badges."
+covered_by = ["cargo xtask badges --check", "manual review"]
+created = "2026-05-13"
+review_after = "2026-08-13"
+
+[[file]]
+path = "docs/VERIFICATION.md"
+kind = "verification_documentation"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Explains README badge meanings, generated endpoints, and PR evidence boundaries."
+covered_by = ["manual review"]
+created = "2026-05-13"
+review_after = "2026-08-13"
+
+[[file]]
+path = "scripts/ripr-annotations.py"
+kind = "ci_helper_script"
+surface = "ci"
+classification = "tooling"
+owner = "rust/tests"
+reason = "Converts line-placeable RIPR review guidance into non-blocking GitHub Actions warning annotations."
+covered_by = ["python3 scripts/ripr-annotations.py", ".github/workflows/ripr.yml"]
+created = "2026-05-13"
+review_after = "2026-08-13"

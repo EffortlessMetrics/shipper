@@ -41,6 +41,7 @@ Exhaustive, precise, stable specs.
 - [Preflight checks](preflight.md)
 - [Readiness verification](readiness.md)
 - [Failure modes](failure-modes.md)
+- [VERIFICATION.md](VERIFICATION.md) — README badge meanings, generated endpoints, and PR evidence boundaries
 
 ## Explanation
 
