@@ -1,5 +1,12 @@
 ---
 source: crates/shipper-cli/tests/e2e_expanded.rs
-expression: normalize_stderr(&stderr)
+expression: "normalize_tempdir_stderr(&stderr, td.path())"
 ---
-Error: selected package not found or not publishable: nonexistent
+Error: failed to load release plan for `plan` - next steps:
+  * verify `--manifest-path` points at the workspace Cargo.toml: <TMPDIR>/Cargo.toml
+  * run `cargo metadata --manifest-path "<TMPDIR>/Cargo.toml"` to inspect the underlying Cargo error
+  * run `shipper plan` without `--package` to list publishable crates
+  * verify each selected `--package` is publishable and not marked `publish = false`
+
+Caused by:
+    selected package not found or not publishable: nonexistent

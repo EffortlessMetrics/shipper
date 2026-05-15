@@ -665,7 +665,13 @@ pub fn run() -> Result<()> {
         },
     };
 
-    let mut planned = plan::build_plan(&spec)?;
+    let command_name = cli
+        .cmd
+        .as_ref()
+        .map(command_name_for_hint)
+        .unwrap_or("command");
+    let mut planned = plan::build_plan(&spec)
+        .with_context(|| plan_failure_hint(&spec.manifest_path, &cli.packages, command_name))?;
 
     // Load configuration file
     let config =
@@ -1402,6 +1408,48 @@ fn resume_failure_hint(state_dir: &Path) -> String {
          * run `shipper status` to compare local versions to the registry",
         dir = state_dir.display()
     )
+}
+
+fn plan_failure_hint(manifest_path: &Path, packages: &[String], command_name: &str) -> String {
+    let mut hint = format!(
+        "failed to load release plan for `{command_name}` - next steps:\n  \
+         * verify `--manifest-path` points at the workspace Cargo.toml: {}\n  \
+         * run `cargo metadata --manifest-path \"{}\"` to inspect the underlying Cargo error",
+        manifest_path.display(),
+        manifest_path.display()
+    );
+
+    if packages.is_empty() {
+        hint.push_str("\n  * run `shipper plan` first to inspect publishable and skipped crates");
+    } else {
+        hint.push_str(
+            "\n  * run `shipper plan` without `--package` to list publishable crates\n  \
+             * verify each selected `--package` is publishable and not marked `publish = false`",
+        );
+    }
+
+    hint
+}
+
+fn command_name_for_hint(command: &Commands) -> &'static str {
+    match command {
+        Commands::Plan => "plan",
+        Commands::Preflight { .. } => "preflight",
+        Commands::Publish => "publish",
+        Commands::Resume => "resume",
+        Commands::Rehearse => "rehearse",
+        Commands::Status => "status",
+        Commands::Doctor => "doctor",
+        Commands::InspectEvents => "inspect-events",
+        Commands::InspectReceipt => "inspect-receipt",
+        Commands::Ci(_) => "ci",
+        Commands::Clean { .. } => "clean",
+        Commands::Yank { .. } => "yank",
+        Commands::PlanYank { .. } => "plan-yank",
+        Commands::FixForward { .. } => "fix-forward",
+        Commands::Config(_) => "config",
+        Commands::Completion { .. } => "completion",
+    }
 }
 
 fn parse_duration(s: &str) -> Result<Duration> {

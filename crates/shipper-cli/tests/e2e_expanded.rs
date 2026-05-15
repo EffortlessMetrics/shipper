@@ -962,7 +962,10 @@ fn error_nonexistent_package_snapshot() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_snapshot!("error_nonexistent_package", normalize_stderr(&stderr));
+    assert_snapshot!(
+        "error_nonexistent_package",
+        normalize_tempdir_stderr(&stderr, td.path())
+    );
 }
 
 /// Snapshot: error when an invalid --retry-strategy value is provided.
