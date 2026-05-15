@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use shipper_retry::{RetryStrategyConfig, RetryStrategyType, calculate_delay};
 use shipper_types::{ErrorClass, ExecutionState, PackageState, PublishRegime};
@@ -203,6 +203,47 @@ pub fn looks_like_rate_limit(message: &str) -> bool {
         || m.contains("too many requests")
 }
 
+/// Parse a `Retry-After` header value from cargo/registry output.
+///
+/// Cargo exposes registry failures through human-facing stderr/stdout rather
+/// than a structured HTTP response. When that text contains a `Retry-After`
+/// header, this returns the registry's requested wait as a duration.
+pub fn retry_after_delay(message: &str) -> Option<Duration> {
+    retry_after_delay_at(message, Utc::now())
+}
+
+fn retry_after_delay_at(message: &str, now: DateTime<Utc>) -> Option<Duration> {
+    message.lines().find_map(|line| {
+        let line = line
+            .trim_start()
+            .trim_start_matches(['<', '>'])
+            .trim_start();
+        let (name, value) = line.split_once(':')?;
+        if !name.trim().eq_ignore_ascii_case("retry-after") {
+            return None;
+        }
+
+        parse_retry_after_value(value.trim(), now)
+    })
+}
+
+fn parse_retry_after_value(value: &str, now: DateTime<Utc>) -> Option<Duration> {
+    let value = value.trim_matches('"').trim_matches('\'').trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if value.bytes().all(|b| b.is_ascii_digit()) {
+        return value.parse::<u64>().ok().map(Duration::from_secs);
+    }
+
+    let target = DateTime::parse_from_rfc2822(value)
+        .ok()?
+        .with_timezone(&Utc);
+    let delta = target.signed_duration_since(now);
+    delta.to_std().ok().or(Some(Duration::ZERO))
+}
+
 /// Registry-aware backoff. Layered on top of the generic [`backoff_delay`]:
 /// if we're publishing a brand-new crate and the retry is caused by a
 /// rate-limit signal, floor the delay at [`CRATES_IO_NEW_CRATE_WINDOW`]
@@ -254,9 +295,13 @@ pub fn registry_profile_aware_backoff(
     error_message: &str,
 ) -> Duration {
     let generic = backoff_delay(base, max, attempt, strategy, jitter);
-    profile
-        .retry_floor_for(regime, error_message)
-        .map_or(generic, |floor| generic.max(floor))
+    [
+        profile.retry_floor_for(regime, error_message),
+        retry_after_delay(error_message),
+    ]
+    .into_iter()
+    .flatten()
+    .fold(generic, Duration::max)
 }
 
 /// Update a package state inside an in-memory execution state.
@@ -345,6 +390,82 @@ mod tests {
             RegistryProfile::crates_io(),
             PublishRegime::FirstPublish,
             "HTTP 429 Too Many Requests",
+        );
+
+        assert_eq!(d, CRATES_IO_NEW_CRATE_WINDOW);
+    }
+
+    #[test]
+    fn retry_after_delay_parses_delta_seconds() {
+        assert_eq!(
+            retry_after_delay("HTTP 429\r\nRetry-After: 90\r\n"),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(
+            retry_after_delay("< retry-after: \"120\""),
+            Some(Duration::from_secs(120))
+        );
+    }
+
+    #[test]
+    fn retry_after_delay_parses_http_date() {
+        let now = DateTime::parse_from_rfc2822("Wed, 21 Oct 2015 07:27:00 GMT")
+            .expect("valid rfc2822")
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            retry_after_delay_at("Retry-After: Wed, 21 Oct 2015 07:28:00 GMT", now),
+            Some(Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn retry_after_delay_past_http_date_is_zero() {
+        let now = DateTime::parse_from_rfc2822("Wed, 21 Oct 2015 07:29:00 GMT")
+            .expect("valid rfc2822")
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            retry_after_delay_at("Retry-After: Wed, 21 Oct 2015 07:28:00 GMT", now),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn retry_after_delay_ignores_invalid_headers() {
+        assert_eq!(retry_after_delay("Retry-After:"), None);
+        assert_eq!(retry_after_delay("X-Retry-After: 60"), None);
+        assert_eq!(retry_after_delay("retry-after: not a date"), None);
+        assert_eq!(retry_after_delay("HTTP 429 Too Many Requests"), None);
+    }
+
+    #[test]
+    fn registry_profile_aware_backoff_honors_retry_after_floor() {
+        let d = registry_profile_aware_backoff(
+            Duration::from_secs(10),
+            Duration::from_secs(120),
+            1,
+            RetryStrategyType::Exponential,
+            0.0,
+            RegistryProfile::unknown(),
+            PublishRegime::Update,
+            "HTTP 429 Too Many Requests\nRetry-After: 75",
+        );
+
+        assert_eq!(d, Duration::from_secs(75));
+    }
+
+    #[test]
+    fn registry_profile_aware_backoff_uses_larger_floor() {
+        let d = registry_profile_aware_backoff(
+            Duration::from_secs(10),
+            Duration::from_secs(120),
+            1,
+            RetryStrategyType::Exponential,
+            0.0,
+            RegistryProfile::crates_io(),
+            PublishRegime::FirstPublish,
+            "HTTP 429 Too Many Requests\nRetry-After: 30",
         );
 
         assert_eq!(d, CRATES_IO_NEW_CRATE_WINDOW);

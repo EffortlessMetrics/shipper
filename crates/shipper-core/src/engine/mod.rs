@@ -966,6 +966,7 @@ pub fn run_publish(
                         break;
                     }
 
+                    let failure_output = format!("{}\n{}", out.stderr_tail, out.stdout_tail);
                     let (class, msg) = classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
                     last_err = Some((class.clone(), msg.clone()));
 
@@ -997,14 +998,15 @@ pub fn run_publish(
                             ));
                         }
                         ErrorClass::Retryable | ErrorClass::Ambiguous => {
-                            let is_new_crate =
-                                if crate::runtime::execution::looks_like_rate_limit(&msg) {
-                                    *is_new_crate_cached.get_or_insert_with(|| {
-                                        reg.check_new_crate(&p.name).unwrap_or(false)
-                                    })
-                                } else {
-                                    false
-                                };
+                            let is_new_crate = if crate::runtime::execution::looks_like_rate_limit(
+                                &failure_output,
+                            ) {
+                                *is_new_crate_cached.get_or_insert_with(|| {
+                                    reg.check_new_crate(&p.name).unwrap_or(false)
+                                })
+                            } else {
+                                false
+                            };
                             let delay = registry_aware_backoff(
                                 opts.base_delay,
                                 opts.max_delay,
@@ -1012,7 +1014,7 @@ pub fn run_publish(
                                 opts.retry_strategy,
                                 opts.retry_jitter,
                                 is_new_crate,
-                                &msg,
+                                &failure_output,
                             );
                             emit_retry_backoff_event(
                                 &mut event_log,
