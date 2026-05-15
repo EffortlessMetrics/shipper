@@ -258,6 +258,19 @@ fn doctor_command_snapshot() {
     git_branch: <GIT_BRANCH>
     git_dirty: <GIT_DIRTY>
 
+    Findings:
+    ---------
+      [blocked] crates.io auth is missing (registry-auth-missing)
+        status: blocked
+        severity: blocked
+        why: ownership checks and live publish require registry credentials before Shipper can prove or execute a release
+        evidence: auth_type: NONE FOUND (set CARGO_REGISTRY_TOKEN)
+        try next:
+          - run `cargo login <token>` for local token auth
+          - configure Trusted Publishing for GitHub Actions releases
+          - rerun `shipper doctor` and `shipper preflight`
+        docs: docs/how-to/run-in-github-actions.md
+
     Diagnostics complete.
     "
     );
@@ -311,6 +324,10 @@ fn doctor_command_detects_trusted_publishing_auth() {
     git_commit: <GIT_COMMIT>
     git_branch: <GIT_BRANCH>
     git_dirty: <GIT_DIRTY>
+
+    Findings:
+    ---------
+      none
 
     Diagnostics complete.
     "
