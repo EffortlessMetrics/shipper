@@ -183,6 +183,38 @@ jobs:
           path: target/nextest/ci/junit.xml
           retention-days: 14
 
+  install-smoke:
+    name: Install Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-install-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-install-
+
+      - name: Install shipper facade crate
+        run: |
+          cargo install --path crates/shipper --locked --root "$RUNNER_TEMP/shipper-install"
+          echo "$RUNNER_TEMP/shipper-install/bin" >> "$GITHUB_PATH"
+
+      - name: Verify installed shipper
+        run: |
+          shipper --version
+          shipper --help
+          shipper doctor --help
+          shipper plan --help
+          shipper preflight --help
+
   crypto-proptests-heavy:
     name: Crypto Proptests (full strength, ubuntu)
     # Deep crypto proving lane. The PR matrix above runs proptests with

@@ -179,7 +179,7 @@ jobs:
   # The dogfood publish train.
   #
   # Execution order:
-  #   1.  Build shipper (release profile) and install it to PATH.
+  #   1.  Install shipper from the supported facade crate and verify it.
   #   2.  `shipper plan`  — persist plan to .shipper/, also dump JSON to
   #       .shipper/plan.json for artifact review.
   #   3.  Upload .shipper/ as an artifact BEFORE preflight runs (belt-and-
@@ -234,13 +234,14 @@ jobs:
           key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-publish-
 
-      # --- Step 1: build and install shipper ----------------------------
-      - name: Build shipper (release)
-        run: cargo build --release -p shipper
-
-      - name: Install shipper to PATH
+      # --- Step 1: install shipper from the supported facade crate ---------
+      - name: Install shipper facade crate
         run: |
-          sudo install -m 0755 target/release/shipper /usr/local/bin/shipper
+          cargo install --path crates/shipper --locked --root "$RUNNER_TEMP/shipper-install"
+          echo "$RUNNER_TEMP/shipper-install/bin" >> "$GITHUB_PATH"
+
+      - name: Verify installed shipper
+        run: |
           shipper --version
 
       # --- Step 2: plan -----------------------------------------------------
@@ -472,12 +473,13 @@ jobs:
           key: ${{ runner.os }}-cargo-rehearse-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-rehearse-
 
-      - name: Build shipper (release)
-        run: cargo build --release -p shipper
-
-      - name: Install shipper to PATH
+      - name: Install shipper facade crate
         run: |
-          sudo install -m 0755 target/release/shipper /usr/local/bin/shipper
+          cargo install --path crates/shipper --locked --root "$RUNNER_TEMP/shipper-install"
+          echo "$RUNNER_TEMP/shipper-install/bin" >> "$GITHUB_PATH"
+
+      - name: Verify installed shipper
+        run: |
           shipper --version
 
       - name: shipper plan (verbose)
@@ -566,12 +568,13 @@ jobs:
           key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-publish-
 
-      - name: Build shipper (release)
-        run: cargo build --release -p shipper
-
-      - name: Install shipper to PATH
+      - name: Install shipper facade crate
         run: |
-          sudo install -m 0755 target/release/shipper /usr/local/bin/shipper
+          cargo install --path crates/shipper --locked --root "$RUNNER_TEMP/shipper-install"
+          echo "$RUNNER_TEMP/shipper-install/bin" >> "$GITHUB_PATH"
+
+      - name: Verify installed shipper
+        run: |
           shipper --version
 
       - name: Download prior .shipper/ state

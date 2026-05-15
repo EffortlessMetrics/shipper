@@ -25,6 +25,7 @@ allowed_processes = [
   "cargo",
   "rustup",
   "rustc",
+  "shipper",
   "cargo-fuzz",
   "cargo-mutants",
   "cargo-llvm-cov",
@@ -34,7 +35,7 @@ allowed_processes = [
   "python3",
 ]
 owner = "release/ci"
-reason = "CI compiles, lints, tests, fuzzes, and measures coverage on the Rust workspace. Tools (cargo-fuzz, cargo-mutants, cargo-llvm-cov, cargo-nextest) are installed via taiki-e/install-action. `sudo` is used for cross-compile prep (apt-get install gcc-aarch64-linux-gnu); `mkdir` for ad-hoc directory creation; `python3` for small helper scripts."
+reason = "CI compiles, lints, tests, fuzzes, measures coverage, and smoke-tests the supported `cargo install --path crates/shipper --locked` facade path. Tools (cargo-fuzz, cargo-mutants, cargo-llvm-cov, cargo-nextest) are installed via taiki-e/install-action. `shipper` is the locally installed facade binary used only by the install-smoke job. `sudo` is used for cross-compile prep (apt-get install gcc-aarch64-linux-gnu); `mkdir` for ad-hoc directory creation; `python3` for small helper scripts."
 created = "2026-05-11"
 review_after = "2026-08-11"
 
@@ -54,12 +55,10 @@ allowed_processes = [
   "gh",
   "tar",
   "sha256sum",
-  "install",
-  "sudo",
   "mkdir",
 ]
 owner = "release/ci"
-reason = "Release workflow dogfoods shipper itself, builds the release binary, packages it (tar + sha256sum), installs it to PATH (via install / sudo), and creates the GitHub release with gh. Trusted Publishing supplies registry credentials via OIDC."
+reason = "Release workflow dogfoods shipper itself, installs the supported facade path with `cargo install --path crates/shipper --locked`, packages release binaries (tar + sha256sum), and creates the GitHub release with gh. Trusted Publishing supplies registry credentials via OIDC."
 created = "2026-05-11"
 review_after = "2026-08-11"
 

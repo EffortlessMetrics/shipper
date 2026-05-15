@@ -32,6 +32,7 @@ make stronger claims than this file supports.
 | Claim | Tier | Proof / Source | Owner |
 |---|---|---|---|
 | Facade / CLI / core crate boundary | stable/internal | `docs/architecture.md`; `cargo xtask package-surface`; `crates/shipper/Cargo.toml`; `crates/shipper-cli/Cargo.toml`; `crates/shipper-core/Cargo.toml` | architecture |
+| `cargo install shipper` install facade | stable | `cargo install --path crates/shipper --locked`; CI `Install Smoke` job; `shipper --version`; `shipper --help`; `shipper doctor --help`; `shipper plan --help`; `shipper preflight --help` | packaging/ux |
 | Manifest-level topological publish planning | stable | Planner regression tests; `shipper plan`; roadmap #109 | engine |
 | File-policy enforcement | stable/internal | `cargo xtask check-file-policy --mode blocking-allowlist`; `cargo xtask policy-report`; CI `Policy` job | release/ci |
 | Rust 1.95 / 0.4 policy floor | stable/internal | Workspace lints; `cargo xtask check-lint-policy`; `cargo clippy --workspace --all-targets --all-features -- -D warnings` | rust/lints |

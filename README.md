@@ -18,10 +18,25 @@ Publishing a multi-crate Rust workspace is easy to start and hard to trust. Ship
 - Reconciles ambiguous `cargo publish` outcomes against registry truth instead of blind-retrying.
 - Records events, state, and receipts for post-run auditing and remediation.
 
-## Try it
+## Install
+
+Shipper's supported install handle is the product facade crate:
 
 ```bash
 cargo install shipper --locked
+shipper --version
+```
+
+For local checkout validation before a release, use the same facade crate:
+
+```bash
+cargo install --path crates/shipper --locked
+shipper --help
+```
+
+## Try it
+
+```bash
 shipper plan        # preview the publish order
 shipper preflight   # check readiness
 shipper publish     # execute the plan
@@ -34,7 +49,7 @@ Shipper does not decide version numbers, generate changelogs, tag releases, or c
 
 ## Where to go next
 
-- **Learn** → [docs/tutorials](docs/tutorials) (first publish, recovery walkthrough)
+- **Learn** → [docs/tutorials](docs/tutorials) (five-minute confidence path, first publish, recovery walkthrough)
 - **Do** → [docs/how-to](docs/how-to) (CI integration, stalled-run triage, remediation)
 - **Look up** → [docs/reference](docs/reference) (CLI, state files, `.shipper.toml`)
 - **Understand** → [docs/explanation](docs/explanation) (why Shipper, `not_proven`, invariants)
