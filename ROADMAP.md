@@ -15,7 +15,7 @@ Cargo 1.90 stabilized multi-package workspace publishing. "Publish several crate
 | Pillar | Question it answers | Status |
 |---|---|---|
 | **Prove** | Can I show this release is safe *before* the irreversible step? | Partial — workspace dry-run + ownership; rehearsal-registry pending ([#97](https://github.com/EffortlessMetrics/shipper/issues/97)) |
-| **Dispatch** | Is the publish executed in a registry-aware, paced way? | Partial — generic exponential backoff; documented-constraint + Retry-After layering pending ([#94](https://github.com/EffortlessMetrics/shipper/issues/94)) |
+| **Dispatch** | Is the publish executed in a registry-aware, paced way? | Partial — crates.io first-publish backoff is regime-aware; Retry-After, duration estimates, and alternative registry profiles pending ([#94](https://github.com/EffortlessMetrics/shipper/issues/94) / [#106](https://github.com/EffortlessMetrics/shipper/issues/106)) |
 | **Reconcile** | When the result is ambiguous, do I check registry truth before retrying? | Implemented — ambiguous exits reconcile to Published / NotPublished / StillUnknown before retry ([#99](https://github.com/EffortlessMetrics/shipper/issues/99) / [#102](https://github.com/EffortlessMetrics/shipper/issues/102)) |
 | **Recover** | If the runner dies mid-train, can I converge from durable state without losing or duplicating work? | Partial — implemented; verification under real interruption pending ([#90](https://github.com/EffortlessMetrics/shipper/issues/90)) |
 | **Remediate** | If a partial release goes bad, can I contain or fix-forward it mechanically? | **Missing** ([#98](https://github.com/EffortlessMetrics/shipper/issues/98) / [#104](https://github.com/EffortlessMetrics/shipper/issues/104)) |
@@ -70,7 +70,7 @@ Sequencing follows the master roadmap ([#109](https://github.com/EffortlessMetri
 2. **[#103](https://github.com/EffortlessMetrics/shipper/issues/103) Narrate** — surface retry/backoff state ([#91](https://github.com/EffortlessMetrics/shipper/issues/91)). Operators currently fly blind for ~60 minutes during rate-limited publishes.
 3. **[#101](https://github.com/EffortlessMetrics/shipper/issues/101) Survive** — execute the rehearsal procedure ([#90](https://github.com/EffortlessMetrics/shipper/issues/90)) and document the events-as-truth invariant ([#93](https://github.com/EffortlessMetrics/shipper/issues/93)). Resume is currently unverified under real interruption.
 4. **[#108](https://github.com/EffortlessMetrics/shipper/issues/108) Ergonomics** — `cargo install shipper` should work ([#95](https://github.com/EffortlessMetrics/shipper/issues/95)).
-5. **[#106](https://github.com/EffortlessMetrics/shipper/issues/106) Profile** — registry-aware backoff layered on the regime tag preflight already detects ([#94](https://github.com/EffortlessMetrics/shipper/issues/94)).
+5. **[#106](https://github.com/EffortlessMetrics/shipper/issues/106) Profile** — registry-aware backoff now has a crates.io `RegistryProfile` surface; next work is Retry-After parsing and preflight duration estimates.
 
 ### Next — past stable
 6. **[#104](https://github.com/EffortlessMetrics/shipper/issues/104) Remediate** — receipt-driven yank/fix-forward for compromised releases ([#98](https://github.com/EffortlessMetrics/shipper/issues/98)).

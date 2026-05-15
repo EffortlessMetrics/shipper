@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 
 use shipper_retry::{RetryStrategyConfig, RetryStrategyType, calculate_delay};
-use shipper_types::{ErrorClass, ExecutionState, PackageState};
+use shipper_types::{ErrorClass, ExecutionState, PackageState, PublishRegime};
 
 /// Update a package state and persist the entire execution state to disk.
 pub fn update_state(
@@ -103,6 +103,93 @@ pub fn backoff_delay(
 /// <https://crates.io/docs/rate-limits>.
 pub const CRATES_IO_NEW_CRATE_WINDOW: Duration = Duration::from_secs(10 * 60);
 
+/// How Shipper expects a registry to propagate newly published packages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryPropagationModel {
+    /// No registry-specific propagation model is known.
+    Unknown,
+    /// The registry exposes both an HTTP API and sparse index path that can
+    /// be checked for visibility.
+    ApiAndSparseIndex,
+}
+
+/// How Shipper should treat ambiguous cargo publish output for this registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryAmbiguityModel {
+    /// No registry-specific ambiguity model is known.
+    Unknown,
+    /// Cargo process output is only a hint; registry visibility decides.
+    RegistryTruth,
+}
+
+/// Registry-specific publish constraints that affect retry pacing and
+/// operator estimates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegistryProfile {
+    /// Stable registry profile name.
+    pub name: &'static str,
+    /// Initial first-publish burst, when documented.
+    pub first_publish_burst: Option<u32>,
+    /// First-publish refill interval, when documented.
+    pub first_publish_refill: Option<Duration>,
+    /// Initial version-update burst, when documented.
+    pub version_publish_burst: Option<u32>,
+    /// Version-update refill interval, when documented.
+    pub version_publish_refill: Option<Duration>,
+    /// Registry visibility model used by readiness/reconciliation.
+    pub propagation_model: RegistryPropagationModel,
+    /// Registry ambiguity model used after cargo exits unclearly.
+    pub ambiguity_model: RegistryAmbiguityModel,
+}
+
+impl RegistryProfile {
+    /// Built-in crates.io profile.
+    pub const fn crates_io() -> Self {
+        Self {
+            name: "crates-io",
+            first_publish_burst: Some(5),
+            first_publish_refill: Some(CRATES_IO_NEW_CRATE_WINDOW),
+            version_publish_burst: None,
+            version_publish_refill: None,
+            propagation_model: RegistryPropagationModel::ApiAndSparseIndex,
+            ambiguity_model: RegistryAmbiguityModel::RegistryTruth,
+        }
+    }
+
+    /// Conservative profile for registries without documented constraints.
+    pub const fn unknown() -> Self {
+        Self {
+            name: "unknown",
+            first_publish_burst: None,
+            first_publish_refill: None,
+            version_publish_burst: None,
+            version_publish_refill: None,
+            propagation_model: RegistryPropagationModel::Unknown,
+            ambiguity_model: RegistryAmbiguityModel::Unknown,
+        }
+    }
+
+    /// Resolve Shipper's built-in profile for a registry name.
+    pub fn for_registry_name(name: &str) -> Self {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "crates-io" | "crates.io" | "crates_io" => Self::crates_io(),
+            _ => Self::unknown(),
+        }
+    }
+
+    /// Return the documented retry floor for this publish regime, if any.
+    pub fn retry_floor_for(self, regime: PublishRegime, error_message: &str) -> Option<Duration> {
+        if !looks_like_rate_limit(error_message) {
+            return None;
+        }
+
+        match regime {
+            PublishRegime::FirstPublish => self.first_publish_refill,
+            PublishRegime::Update => self.version_publish_refill,
+        }
+    }
+}
+
 /// Return `true` if an error message looks like a rate-limit signal
 /// (HTTP 429 / "too many requests" / "rate limit" phrasings that appear
 /// in cargo publish stderr or common registry error bodies). Used to gate
@@ -134,12 +221,42 @@ pub fn registry_aware_backoff(
     is_new_crate: bool,
     error_message: &str,
 ) -> Duration {
-    let generic = backoff_delay(base, max, attempt, strategy, jitter);
-    if is_new_crate && looks_like_rate_limit(error_message) {
-        generic.max(CRATES_IO_NEW_CRATE_WINDOW)
+    let regime = if is_new_crate {
+        PublishRegime::FirstPublish
     } else {
-        generic
-    }
+        PublishRegime::Update
+    };
+    registry_profile_aware_backoff(
+        base,
+        max,
+        attempt,
+        strategy,
+        jitter,
+        RegistryProfile::crates_io(),
+        regime,
+        error_message,
+    )
+}
+
+/// Registry-profile-aware backoff.
+///
+/// This is the explicit version of [`registry_aware_backoff`]. It keeps the
+/// existing crates.io behavior while giving later Profile / Adapt work a
+/// named profile object to thread through plan, preflight, and publish.
+pub fn registry_profile_aware_backoff(
+    base: Duration,
+    max: Duration,
+    attempt: u32,
+    strategy: RetryStrategyType,
+    jitter: f64,
+    profile: RegistryProfile,
+    regime: PublishRegime,
+    error_message: &str,
+) -> Duration {
+    let generic = backoff_delay(base, max, attempt, strategy, jitter);
+    profile
+        .retry_floor_for(regime, error_message)
+        .map_or(generic, |floor| generic.max(floor))
 }
 
 /// Update a package state inside an in-memory execution state.
@@ -180,6 +297,73 @@ mod tests {
         assert!(!looks_like_rate_limit("invalid manifest"));
         assert!(!looks_like_rate_limit("500 internal server error"));
         assert!(!looks_like_rate_limit(""));
+    }
+
+    #[test]
+    fn crates_io_profile_captures_documented_first_publish_window() {
+        let profile = RegistryProfile::crates_io();
+
+        assert_eq!(profile.name, "crates-io");
+        assert_eq!(profile.first_publish_burst, Some(5));
+        assert_eq!(
+            profile.retry_floor_for(PublishRegime::FirstPublish, "HTTP 429 Too Many Requests"),
+            Some(CRATES_IO_NEW_CRATE_WINDOW)
+        );
+        assert_eq!(
+            profile.retry_floor_for(PublishRegime::Update, "HTTP 429 Too Many Requests"),
+            None
+        );
+        assert_eq!(
+            profile.retry_floor_for(PublishRegime::FirstPublish, "connection reset"),
+            None
+        );
+    }
+
+    #[test]
+    fn registry_profile_lookup_recognizes_cargo_crates_io_spellings() {
+        for name in ["crates-io", "crates.io", "crates_io", " CRATES-IO "] {
+            assert_eq!(
+                RegistryProfile::for_registry_name(name),
+                RegistryProfile::crates_io()
+            );
+        }
+
+        assert_eq!(
+            RegistryProfile::for_registry_name("private-registry"),
+            RegistryProfile::unknown()
+        );
+    }
+
+    #[test]
+    fn registry_profile_aware_backoff_uses_profile_floor() {
+        let d = registry_profile_aware_backoff(
+            Duration::from_secs(10),
+            Duration::from_secs(120),
+            1,
+            RetryStrategyType::Exponential,
+            0.0,
+            RegistryProfile::crates_io(),
+            PublishRegime::FirstPublish,
+            "HTTP 429 Too Many Requests",
+        );
+
+        assert_eq!(d, CRATES_IO_NEW_CRATE_WINDOW);
+    }
+
+    #[test]
+    fn unknown_registry_profile_keeps_generic_backoff() {
+        let d = registry_profile_aware_backoff(
+            Duration::from_secs(10),
+            Duration::from_secs(120),
+            1,
+            RetryStrategyType::Exponential,
+            0.0,
+            RegistryProfile::unknown(),
+            PublishRegime::FirstPublish,
+            "HTTP 429 Too Many Requests",
+        );
+
+        assert!(d < CRATES_IO_NEW_CRATE_WINDOW);
     }
 
     #[test]

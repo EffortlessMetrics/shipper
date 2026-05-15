@@ -39,6 +39,7 @@ make stronger claims than this file supports.
 | Mutation PR lane | advisory / opt-in | `cargo xtask mutants-pr --changed` | tests |
 | 0.4.0 release readiness proof | stable | `docs/release/0.4.0-readiness.md`; `cargo xtask policy-report`; `cargo publish --dry-run --workspace` | release/ci |
 | Ambiguous publish reconciliation | stable | `cargo test -p shipper-core reconcile --lib`; `cargo test -p shipper-core state --lib`; `cargo test -p shipper-cli --test bdd_publish`; `PublishReconciling` / `PublishReconciled` events | engine |
+| crates.io first-publish backoff profile | stable | `cargo test -p shipper-core runtime::execution --lib`; `cargo test -p shipper-core publish --lib`; `RegistryProfile::crates_io()` | engine |
 | Resume under real interruption | planned | Future interruption rehearsal proof | engine |
 | Trusted Publishing default | planned/advisory | Future Trusted Publishing spec and #96 | release/ci |
 
