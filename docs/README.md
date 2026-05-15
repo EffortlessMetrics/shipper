@@ -71,3 +71,5 @@ The following live at the repo root because they carry repo-wide authority:
 Internal inventories and upkeep docs for contributor and assistant context.
 
 - [Crate local-doc coverage](reference/crate-coverage.md) — maintenance matrix for crate `README.md`, `CLAUDE.md`, and `AGENTS.md` files
+
+- [VERIFICATION.md](VERIFICATION.md) — README badge meanings, generated endpoints, and PR evidence boundaries

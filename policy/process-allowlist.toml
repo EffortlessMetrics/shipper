@@ -32,9 +32,10 @@ allowed_processes = [
   "sudo",
   "mkdir",
   "python3",
+  "cat",
 ]
 owner = "release/ci"
-reason = "CI compiles, lints, tests, fuzzes, and measures coverage on the Rust workspace. Tools (cargo-fuzz, cargo-mutants, cargo-llvm-cov, cargo-nextest) are installed via taiki-e/install-action. `sudo` is used for cross-compile prep (apt-get install gcc-aarch64-linux-gnu); `mkdir` for ad-hoc directory creation; `python3` for small helper scripts."
+reason = "CI compiles, lints, tests, fuzzes, and measures coverage on the Rust workspace. Tools (cargo-fuzz, cargo-mutants, cargo-llvm-cov, cargo-nextest) are installed via taiki-e/install-action. `sudo` is used for cross-compile prep (apt-get install gcc-aarch64-linux-gnu); `mkdir` for ad-hoc directory creation; `python3` for small helper scripts; `cat` for appending generated Markdown into job summaries."
 created = "2026-05-11"
 review_after = "2026-08-11"
 

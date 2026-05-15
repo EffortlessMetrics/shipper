@@ -72,6 +72,17 @@ network_policy = "ci"
 created = "2026-05-12"
 review_after = "2026-08-12"
 
+
+[[workflow]]
+path = ".github/workflows/badge-endpoints.yml"
+kind = "ci_generated_badges"
+owner = "release/ci"
+reason = "Refreshes generated Shields endpoint JSON on main/workflow_dispatch and opens a pull request instead of pushing directly."
+process_policy = "ci"
+network_policy = "ci"
+created = "2026-05-13"
+review_after = "2026-08-13"
+
 # ─── Release workflow (high risk: secrets, Trusted Publishing, registry) ────
 
 [[workflow]]

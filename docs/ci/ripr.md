@@ -149,11 +149,21 @@ The mutation workflow uses `.cargo/mutants.toml` to set per-mutant and minimum t
 ## xtask Integration
 
 ```bash
-# Run ripr's zero-config pilot against the current workspace.
+# Run ripr's zero-config pilot against the current workspace and project
+# the minimum PR evidence contract into target/ripr/pr/.
 cargo xtask ripr-pr
 
-# Regenerate the public README badge endpoints.
-cargo xtask repo-ripr-badge-artifacts
+# Verify required PR evidence files exist and contain readable JSON/Markdown.
+cargo xtask ripr-pr --check
+
+# Produce diff-scoped review guidance artifacts under target/ripr/review/.
+cargo xtask ripr-review-comments --base origin/main --head HEAD
+
+# Regenerate the public README badge endpoint.
+cargo xtask badges
+
+# Check committed endpoint drift without updating badges/.
+cargo xtask badges --check
 ```
 
 `cargo xtask ripr-pr` is a thin wrapper that invokes `ripr pilot --root .` after confirming the external `ripr` binary is on PATH. If `ripr` is not installed locally, the wrapper prints install instructions and exits success — local sessions are never blocked by a missing tool. CI installs a pinned version via `cargo install ripr --locked --version <pinned>` before the wrapper runs.
@@ -162,13 +172,12 @@ For richer flags (`--base`, `--diff`, `--format`, `--mode`), call `ripr` directl
 
 ## Repo Badges
 
-The public README badges (`ripr` and `ripr+`) are **repo-scoped**, not diff-scoped. Per upstream ripr policy, README badges should count unresolved seam-native exposure gaps under the configured `[severity.seams]` policy — a diff-scoped badge would read `0` on `main` simply because no diff exists, not because the repo is clean. The PR-time pilot artifact remains diff-scoped and is never republished as a README badge.
+The public README badge (`ripr+`) is **repo-scoped**, not diff-scoped. Per upstream ripr policy, README badges should count unresolved seam-native exposure gaps plus actionable test-efficiency findings under repository policy — a diff-scoped badge would read `0` on `main` simply because no diff exists, not because the repo is clean. PR-time artifacts remain diff-scoped and are never republished as README badges.
 
-Both endpoint JSON files are committed to `badges/` and served via `raw.githubusercontent.com`:
+The endpoint JSON file is committed to `badges/` and served via `raw.githubusercontent.com`:
 
 | Path | Shields URL |
 |---|---|
-| `badges/ripr.json` | `https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/EffortlessMetrics/shipper/main/badges/ripr.json` |
 | `badges/ripr-plus.json` | `https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/EffortlessMetrics/shipper/main/badges/ripr-plus.json` |
 
 The schema is the standard Shields endpoint shape:
@@ -176,20 +185,18 @@ The schema is the standard Shields endpoint shape:
 ```json
 {
   "schemaVersion": 1,
-  "label": "ripr",
+  "label": "ripr+",
   "message": "<count>",
-  "color": "<brightgreen|yellowgreen|orange|red>"
+  "color": "<color>"
 }
 ```
 
 Regenerate with:
 
 ```bash
-cargo xtask repo-ripr-badge-artifacts
+cargo xtask badges
 ```
 
-The command requires `ripr` on PATH (unlike `cargo xtask ripr-pr` which is advisory-only locally). It runs `ripr check --root . --mode ready --format repo-exposure-json`, extracts `metrics.headline_eligible`, maps the count to a Shields color via thresholds `0 -> brightgreen`, `1..=99 -> yellowgreen`, `100..=999 -> orange`, `1000+ -> red`, and writes both endpoint files.
+The command requires `ripr` on PATH or a `RIPR_BIN` override. It first requests `ripr check --root <workspace> --mode ready --format repo-badge-plus-shields`; while the current ripr release requires auxiliary test-efficiency inputs and stricter suppression schema for that projection, the wrapper falls back to the repo-scoped `repo-badge-shields` count and preserves the public `ripr+` label. In both paths it validates the Shields endpoint shape, writes generated output under `target/xtask/badges/`, and copies only the public endpoint JSON into `badges/`.
 
-`ripr+` is upstream-aligned naming kept here for pairing. In the current implementation both badges project the same `headline_eligible` count; differentiating `ripr+` to add unsuppressed test-efficiency findings is upstream territory and deferred.
-
-Refresh cadence is intentionally manual: run the command locally and commit the regenerated badges in their own PR. The badge is a repo health endpoint, not a PR tax.
+Refresh cadence is automated by `.github/workflows/badge-endpoints.yml`, which opens a pull request with regenerated endpoint JSON. The badge is a repo health endpoint, not a PR tax.
