@@ -1,214 +1,276 @@
 # Architecture
 
-Shipper is a **publishing reliability layer** for Rust workspaces. It wraps `cargo publish` with deterministic ordering, preflight checks, retry/backoff, ambiguity reconciliation, state persistence, and audit evidence — making multi-crate publishes safe to start, safe to interrupt, and safe to re-run.
+Shipper is a **publishing reliability layer** for Rust workspaces. It wraps
+`cargo publish` with deterministic ordering, preflight checks, retry/backoff,
+ambiguity reconciliation, state persistence, and audit evidence. The goal is to
+make multi-crate publishes safe to start, safe to interrupt, and safe to re-run.
 
-> See [MISSION.md](../MISSION.md) for the *why*. This doc is the *how*.
+See [MISSION.md](../MISSION.md) for the why. This document is the crate and
+module contract that keeps the implementation aligned with that product shape.
 
----
-
-## The architectural rule
+## The Architectural Rule
 
 **Crates are semver promises. Folders are ownership boundaries.**
 
-Every published crate on crates.io is a public API surface that downstream users will pin and depend on. Every published crate is a versioning commitment we have to honor. So we do not split a crate every time we want a new ownership boundary — we use **modules** for that. We split a crate only when:
+Every published crate on crates.io is a public API surface that downstream users
+can pin and depend on. Every published crate is a versioning commitment we have
+to honor. We do not split a crate every time we want a new ownership boundary;
+we use modules for that. We split a crate only when:
 
-- it has a genuinely independent value as a library to other consumers, OR
-- it carries a stable contract that we want to commit to versioning separately
+- it has genuinely independent value as a library to other consumers, or
+- it carries a stable contract that should be versioned separately.
 
-Most of the time, an internal subsystem (auth, lock, planning, execution core, parallel engine, state store, events writer, etc.) is one of those things. It deserves an owner; it does not deserve a published crate.
+This rule has three consequences:
 
-This rule produces three consequences we hold to:
+1. **The public crate count stays small.** Today: 13 publishable crates. We do
+   not grow that lightly.
+2. **`pub(crate)` is the default.** Crate roots are curated facades; subsystems
+   stay crate-private unless externally consumed.
+3. **No deep lateral imports.** Subsystems talk through owner-facing module
+   roots, not through each other's internal helpers.
 
-1. **The public crate count stays small.** Today: 12 crates. We don't grow that lightly.
-2. **`pub(crate)` is the default.** Crate roots are curated facades; subsystems stay crate-private unless externally consumed.
-3. **No deep lateral imports.** Subsystems talk through owner-facing module roots, not through each other's internal helpers. That preserves SRP without preserving every microcrate.
+## Product Crate Contract
 
----
+The three product crates have separate jobs:
 
-## Workspace layout
-
-The workspace has **12 crates**, all published. There is no separate "workspace-internal" tier. When a concern needs an owner that doesn't deserve a public crate, it lives as a module inside the relevant owner crate.
-
-### Primary surface
-
-| Crate | Purpose |
-|---|---|
-| `shipper` | Core library — engine, plan, state, runtime, ops |
-| `shipper-cli` | Thin CLI binary (`shipper` command) |
-| `shipper-config` | `.shipper.toml` parsing, validation, and CLI-overlay |
-| `shipper-types` | Shared domain types (Plan, ExecutionState, Receipt, events, schema) |
-| `shipper-registry` | Registry HTTP client (REST API: version-existence, owners) |
-
-### Published support crates
-
-These are leaf utilities with genuine standalone value to other consumers:
-
-| Crate | Purpose |
-|---|---|
-| `shipper-duration` | Human-friendly duration parsing + serde codecs |
-| `shipper-retry` | Retry/backoff strategies (exponential, linear, constant) with jitter |
-| `shipper-encrypt` | AES-256-GCM encryption for state files |
-| `shipper-webhook` | Webhook notifications for publish lifecycle events |
-| `shipper-sparse-index` | Cargo sparse-index path derivation and version lookup |
-| `shipper-cargo-failure` | Classify `cargo publish` stderr into typed failure categories |
-| `shipper-output-sanitizer` | Redact tokens and secrets from captured cargo output |
-
-### Workspace internals — modules, not crates
-
-Many subsystems that started as crates have been consolidated into modules under `shipper`, `shipper-config`, or `shipper-cli`. Each of these has a clear owner module root and a `pub(crate)` boundary; they are not on crates.io.
-
-Examples (non-exhaustive — see [structure.md](structure.md) for the full module map):
-
-- `shipper_core::ops::auth` — token resolution + OIDC detection
-- `shipper_core::ops::lock` — file-based distributed locking
-- `shipper_core::ops::process` — subprocess invocation + capture
-- `shipper_core::plan` — workspace analysis, topo-sort, plan_id, levels, chunking
-- `shipper_core::engine` — preflight + parallel publish + readiness verification
-- `shipper_core::runtime::execution` — error classification, retry coordination
-- `shipper_core::runtime::policy` — publish/verify/readiness policy resolution
-- `shipper_core::runtime::environment` — environment fingerprinting
-- `shipper_core::state::execution_state` — `state.json` writer (atomic)
-- `shipper_core::state::events` — `events.jsonl` writer (append-only)
-- `shipper_core::state::store` — `StateStore` trait
-- `shipper-config::runtime` — config + CLI → `RuntimeOptions` conversion
-- `shipper-cli::output::progress` — progress bars and TTY rendering
-
----
-
-## Pipeline
-
-The core flow is **plan → preflight → publish → (resume if interrupted)**.
-
+```text
+shipper (install face and curated product-name library re-export)
+  -> shipper-cli (CLI adapter: clap, subcommands, output, pub fn run())
+       -> shipper-core (engine/library: plan, preflight, publish, resume)
 ```
-                                  ┌─────────────────────────────┐
-shipper plan ──────────────────► │ ReleasePlan (plan_id stable) │
-                                  └─────────────────────────────┘
-                                                │
-                                                ▼
-                                  ┌─────────────────────────────┐
-shipper preflight ──────────────► │ Finishability assessment    │
-                                  │ (Proven / NotProven / Failed)│
-                                  └─────────────────────────────┘
-                                                │
-                                                ▼
-                                  ┌─────────────────────────────┐
-shipper publish ────────────────► │ ExecutionState              │
-                                  │ events.jsonl (append)       │
-                                  │ state.json (atomic update)  │
-                                  │ receipt.json (end-of-run)   │
-                                  └─────────────────────────────┘
-                                                │
-                                            ⚠ killed?
-                                                │
-                                                ▼
-                                  ┌─────────────────────────────┐
-shipper resume ─────────────────► │ Reload state, validate      │
-                                  │ plan_id, skip published     │
-                                  │ packages, continue          │
-                                  └─────────────────────────────┘
+
+This direction is load-bearing:
+
+- `shipper` is the supported install target: `cargo install shipper --locked`.
+  Its binary forwards to `shipper_cli::run()`, and its library re-exports a
+  curated subset of `shipper-core` for callers that prefer the product name.
+- `shipper-cli` owns command parsing, help text, progress rendering, snapshots,
+  and human/JSON output. It maps user intent to `shipper-core`.
+- `shipper-core` owns release behavior: plan, preflight, publish, resume,
+  reconciliation, registry profiles, state, events, receipts, and remediation
+  primitives. It must not depend on `clap`, `indicatif`, `shipper-cli`, or the
+  `shipper` facade.
+
+If the crate graph violates this direction, the graph is wrong. Do not paper
+over it in docs.
+
+## Workspace Layout
+
+The workspace has **14 packages** in `cargo metadata`: 13 publishable crates and
+one private `xtask` package. There is no separate publishable
+"workspace-internal" tier. When a concern needs an owner that does not deserve a
+public crate, it lives as a module inside the relevant owner crate.
+
+### Product Surface
+
+| Crate | Purpose |
+|---|---|
+| `shipper` | Install facade and product-name library re-export. Carries the `shipper` binary. |
+| `shipper-cli` | Real CLI adapter: `clap`, subcommands, output, progress, and `pub fn run()`. |
+| `shipper-core` | Engine/library surface: plan, preflight, publish, resume, reconcile, state/events/receipts. |
+
+### Published Support Crates
+
+These crates have standalone value or a stable contract worth versioning:
+
+| Crate | Purpose |
+|---|---|
+| `shipper-config` | `.shipper.toml` parsing, validation, and CLI overlay. |
+| `shipper-types` | Shared domain types: plans, execution state, receipts, events, and schemas. |
+| `shipper-registry` | Registry HTTP client for version-existence and owner checks. |
+| `shipper-duration` | Human-friendly duration parsing and serde codecs. |
+| `shipper-retry` | Retry/backoff strategies with jitter. |
+| `shipper-encrypt` | AES-256-GCM encryption for state files. |
+| `shipper-webhook` | Webhook notifications for publish lifecycle events. |
+| `shipper-sparse-index` | Cargo sparse-index path derivation and version lookup. |
+| `shipper-cargo-failure` | Cargo publish stderr classification. |
+| `shipper-output-sanitizer` | Token and secret redaction from captured cargo output. |
+
+### Private Tooling Package
+
+| Package | Purpose |
+|---|---|
+| `xtask` | Repository policy, release-evidence, and maintenance tooling. It is private and must stay unpublished. |
+
+### Module Ownership
+
+Many subsystems that started as crates have been consolidated into modules under
+`shipper-core`, `shipper-config`, or `shipper-cli`. Each has a clear owner
+module root and a `pub(crate)` boundary; they are not separately published.
+
+Examples:
+
+- `shipper_core::ops::auth` - token resolution and OIDC detection
+- `shipper_core::ops::lock` - file-based distributed locking
+- `shipper_core::ops::process` - subprocess invocation and capture
+- `shipper_core::plan` - workspace analysis, topo-sort, plan ID, levels, chunking
+- `shipper_core::engine` - preflight, publish, resume, reconcile, readiness verification
+- `shipper_core::runtime::execution` - error classification and retry coordination
+- `shipper_core::runtime::policy` - publish/verify/readiness policy resolution
+- `shipper_core::runtime::environment` - environment fingerprinting
+- `shipper_core::state::execution_state` - atomic `state.json` writer
+- `shipper_core::state::events` - append-only `events.jsonl` writer
+- `shipper_core::state::store` - `StateStore` trait
+- `shipper-config::runtime` - config plus CLI overlay to `RuntimeOptions`
+- `shipper-cli::output::progress` - progress bars and TTY rendering
+
+## Package-Surface Contract
+
+`cargo xtask package-surface` is the cheap architecture drift check. On the
+current graph it should report:
+
+```text
+workspace packages: 14
+publishable packages: 13
+private packages: 1
+private package: xtask
+```
+
+The command writes `target/policy/package-surface-report.{json,md}`. For this
+architecture contract, the important fields are package counts, publishability,
+targets, workspace dependencies, and surface hashes.
+
+Any change that makes `shipper-core` depend on `shipper-cli` or `shipper`, turns
+`xtask` publishable, removes the `shipper` install facade, or adds a new
+publishable crate must update this document and `docs/status/SUPPORT_TIERS.md`
+in the same PR.
+
+## Release Pipeline
+
+The core flow is:
+
+```text
+shipper plan
+  -> shipper preflight
+    -> shipper publish
+      -> shipper resume, if interrupted
 ```
 
 ### Plan
-Reads workspace via `cargo_metadata`, filters publishable crates, topologically sorts by intra-workspace dependencies (Kahn's algorithm with `BTreeSet` for determinism), computes a SHA256-based `plan_id` over (workspace identity × dependency graph × versions). Same workspace state always produces the same `plan_id`.
+
+Reads the workspace via `cargo_metadata`, filters publishable crates,
+topologically sorts by intra-workspace dependencies, and computes a stable
+`plan_id` over workspace identity, dependency graph, and versions.
 
 ### Preflight
-Validates git cleanliness, registry reachability, performs a workspace dry-run, checks version-not-taken, optionally verifies ownership. Produces a `Finishability` (Proven / NotProven / Failed). For first-publish runs of brand-new crates, `NotProven` is the correct outcome — see [#100](https://github.com/EffortlessMetrics/shipper/issues/100).
+
+Validates git cleanliness, registry reachability, local packageability,
+version-not-taken checks, ownership checks where possible, and registry pacing
+estimates. It produces a `Finishability` assessment:
+
+- `Proven`
+- `NotProven`
+- `Failed`
+
+For first-publish runs of brand-new crates, `NotProven` can be the correct
+outcome because production registry visibility cannot be proven before publish.
 
 ### Publish
-Executes the plan one crate at a time with retry/backoff. After each `cargo publish`, verifies registry visibility (sparse index and/or API) before advancing to dependent crates. Persists `ExecutionState` to disk after every step.
+
+Executes the plan with registry-aware retry/backoff. It uses registry profiles,
+honors retry floors when available, verifies readiness before advancing to
+dependents, and persists state/events continuously.
+
+Ambiguous cargo outcomes are reconciled against registry truth before retry.
+The state machine is:
+
+- `Published` - mark complete and continue without retry
+- `NotPublished` - retry according to policy
+- `StillUnknown` - stop and require operator action
 
 ### Resume
-Reloads `.shipper/state.json`, validates the `plan_id` matches the current workspace plan, skips already-published packages, continues from the first pending crate. Plan-ID mismatch refuses resume unless `--force-resume`.
 
----
+Reloads `.shipper/state.json`, validates the `plan_id` against the current
+workspace plan, skips already-published packages, and reconciles ambiguous
+states before continuing.
 
-## Key abstractions
+## Key Abstractions
 
 | Trait / Type | Lives in | Purpose |
 |---|---|---|
-| `StateStore` | `shipper_core::state::store` | Persistence abstraction. Currently filesystem-backed; designed to host future cloud backends. |
+| `StateStore` | `shipper_core::state::store` | Persistence abstraction. Filesystem-backed today; designed for future backends. |
 | `Reporter` | `shipper_core::engine` | Pluggable output handler for publish/preflight progress. |
-| `RegistryClient` | `shipper-registry` | Trait-based registry API access (mock-friendly). |
-| `ErrorClass` | `shipper-types` | `Retryable` (HTTP 429, network) / `Permanent` (auth, version conflict) / `Ambiguous` (upload may have succeeded despite client error). Only `Retryable` triggers backoff today; `Ambiguous` reconciliation is the largest open gap ([#99](https://github.com/EffortlessMetrics/shipper/issues/99)). |
-| `PublishPolicy` / `VerifyMode` / `ReadinessMethod` | `shipper-types` | Configuration enums controlling safety vs speed tradeoffs. |
-| `Finishability` | `shipper-types` | Preflight assessment outcome. |
+| `RegistryClient` | `shipper-registry` | Trait-based registry API access for mock-friendly registry checks. |
+| `ErrorClass` | `shipper-types` | `Retryable`, `Permanent`, and `Ambiguous` cargo failure classification. |
+| `PublishReconciliation` | `shipper-types` | Registry-truth reconciliation evidence for ambiguous publish outcomes. |
+| `PublishPolicy` / `VerifyMode` / `ReadinessMethod` | `shipper-types` | Configuration enums controlling safety/speed tradeoffs. |
+| `Finishability` | `shipper-types` | Preflight proof outcome. |
 
----
-
-## State files
+## State Files
 
 See [INVARIANTS.md](INVARIANTS.md) for the truth/projection/summary contract.
 
 | File | Authority | Purpose |
 |---|---|---|
-| `events.jsonl` | **Truth** (append-only) | Every state transition |
-| `state.json` | Projection | Serialized `ExecutionState` for resume |
-| `receipt.json` | Summary | End-of-run audit summary |
-| `lock` | — | Concurrent-publish guard |
+| `events.jsonl` | Truth, append-only | Every state transition. |
+| `state.json` | Projection | Serialized `ExecutionState` for resume. |
+| `receipt.json` | Summary | End-of-run audit summary. |
+| `lock` | Guard | Concurrent-publish protection. |
 
----
-
-## Dependency graph
+## Dependency Graph
 
 Arrows read as "depends on"; only `shipper-*` edges are shown.
 
-```
-shipper-cli ──► shipper
-shipper-cli ──► shipper-duration
+```text
+shipper -> shipper-cli (optional, default feature)
+shipper -> shipper-core
 
-shipper ──► shipper-types
-shipper ──► shipper-config
-shipper ──► shipper-registry
-shipper ──► shipper-retry
-shipper ──► shipper-duration
-shipper ──► shipper-encrypt
-shipper ──► shipper-webhook
-shipper ──► shipper-cargo-failure
-shipper ──► shipper-output-sanitizer
-shipper ──► shipper-sparse-index
+shipper-cli -> shipper-core
+shipper-cli -> shipper-types
+shipper-cli -> shipper-config
+shipper-cli -> shipper-duration
+shipper-cli -> shipper-retry
 
-shipper-config ──► shipper-types
-shipper-config ──► shipper-encrypt
-shipper-config ──► shipper-webhook
-shipper-config ──► shipper-retry
+shipper-core -> shipper-types
+shipper-core -> shipper-config
+shipper-core -> shipper-registry
+shipper-core -> shipper-retry
+shipper-core -> shipper-duration
+shipper-core -> shipper-encrypt
+shipper-core -> shipper-webhook
+shipper-core -> shipper-cargo-failure
+shipper-core -> shipper-output-sanitizer
+shipper-core -> shipper-sparse-index
 
-shipper-registry ──► shipper-sparse-index
-shipper-registry ──► shipper-output-sanitizer
+shipper-config -> shipper-types
+shipper-config -> shipper-encrypt
+shipper-config -> shipper-webhook
+shipper-config -> shipper-retry
 
-shipper-types ──► shipper-encrypt
-shipper-types ──► shipper-webhook
-shipper-types ──► shipper-retry
-shipper-types ──► shipper-duration
+shipper-registry -> shipper-sparse-index
+shipper-registry -> shipper-output-sanitizer
 
-Leaf crates (no shipper-* dependencies):
+shipper-types -> shipper-encrypt
+shipper-types -> shipper-webhook
+shipper-types -> shipper-retry
+shipper-types -> shipper-duration
+
+Leaf support crates:
   shipper-cargo-failure, shipper-duration, shipper-encrypt,
   shipper-output-sanitizer, shipper-retry, shipper-sparse-index,
   shipper-webhook
 ```
 
----
-
 ## Conventions
 
-- `unsafe_code = "forbid"` workspace-wide. No `unsafe` blocks anywhere.
+- `unsafe_code = "forbid"` workspace-wide.
 - Edition 2024, MSRV 1.95, resolver v3.
-- Tests touching env vars or filesystem use `#[serial]` from `serial_test` for isolation.
-- Registry interactions in tests use `tiny_http` mock servers — never real registries.
+- Tests touching env vars or filesystem use `#[serial]` from `serial_test`.
+- Registry interactions in tests use `tiny_http` mock servers, never real
+  registries.
 - Snapshot tests use `insta`. Property-based tests use `proptest`.
-- Token resolution follows Cargo conventions: `CARGO_REGISTRY_TOKEN` → `CARGO_REGISTRIES_<NAME>_TOKEN` → `$CARGO_HOME/credentials.toml`. Tokens are opaque strings, never logged.
-- Atomic file writes everywhere (write-temp + fsync + rename + fsync-parent).
-- `BTreeSet`/`BTreeMap` over `HashSet`/`HashMap` where iteration order is observable.
+- Tokens are opaque strings and must never be logged.
+- Atomic file writes use write-temp, fsync, rename, and parent fsync.
+- Prefer `BTreeSet`/`BTreeMap` where iteration order is observable.
 
----
+## See Also
 
-## See also
-
-- [MISSION.md](../MISSION.md) — north star
-- [ROADMAP.md](../ROADMAP.md) — five existential pillars + nine competencies
-- [INVARIANTS.md](INVARIANTS.md) — events-as-truth contract
-- [structure.md](structure.md) — module map
-- [tech.md](tech.md) — tech stack
-- [configuration.md](configuration.md) — `.shipper.toml` reference
-- [preflight.md](preflight.md) — preflight checks
-- [readiness.md](readiness.md) — readiness verification
-- [failure-modes.md](failure-modes.md) — common failure scenarios
+- [MISSION.md](../MISSION.md) - north star
+- [ROADMAP.md](../ROADMAP.md) - five pillars and nine competencies
+- [INVARIANTS.md](INVARIANTS.md) - events-as-truth contract
+- [structure.md](structure.md) - module map
+- [tech.md](tech.md) - tech stack
+- [configuration.md](configuration.md) - `.shipper.toml` reference
+- [preflight.md](preflight.md) - preflight checks
+- [readiness.md](readiness.md) - readiness verification
+- [failure-modes.md](failure-modes.md) - common failure scenarios

@@ -39,8 +39,9 @@ cargo nextest run --workspace --all-features --profile ci
 ### Specific crate
 
 ```bash
-cargo test -p shipper           # core library
-cargo test -p shipper-cli       # CLI + integration tests
+cargo test -p shipper           # install facade + curated re-export tests
+cargo test -p shipper-cli       # CLI adapter + integration tests
+cargo test -p shipper-core      # engine/library tests
 cargo test -p shipper-cargo-failure  # failure classifier
 ```
 
