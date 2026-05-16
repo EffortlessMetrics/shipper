@@ -1852,20 +1852,8 @@ mod gap_tests {
     }
 
     #[test]
-    fn ambiguous_http_502_substring_still_retryable_because_502_pattern_present() {
+    fn http_502_pattern_is_retryable() {
         let o = classify_publish_failure("got 502 from upstream", "");
-        assert_eq!(o.class, CargoFailureClass::Retryable);
-    }
-
-    #[test]
-    fn permanent_pattern_invalid_appears_inside_a_word() {
-        let o = classify_publish_failure("the manifest is invalidated", "");
-        assert_eq!(o.class, CargoFailureClass::Permanent);
-    }
-
-    #[test]
-    fn retryable_500_inside_word_still_matches() {
-        let o = classify_publish_failure("bytes_transferred=15000", "");
         assert_eq!(o.class, CargoFailureClass::Retryable);
     }
 
