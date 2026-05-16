@@ -263,6 +263,7 @@ pub(super) fn publish_package(
             log.clear();
         }
         write_reconciliation_report_best_effort(state_dir, ws, events_path, reporter);
+        let reconciliation_report_path = state::reconciliation_path(state_dir);
 
         match outcome {
             ReconciliationOutcome::Published { .. } => {
@@ -272,8 +273,10 @@ pub(super) fn publish_package(
                     let _ = state::save_state(state_dir, &state);
                 }
                 reporter.info(&format!(
-                    "{}@{}: reconciled as published on resume (no republish)",
-                    p.name, p.version
+                    "{}@{}: reconciliation outcome: Published; action: mark published and continue without republish (evidence: {})",
+                    p.name,
+                    p.version,
+                    reconciliation_report_path.display()
                 ));
                 return PackagePublishResult {
                     result: Ok(PackageReceipt {
@@ -301,15 +304,20 @@ pub(super) fn publish_package(
                     let _ = state::save_state(state_dir, &state);
                 }
                 reporter.info(&format!(
-                    "{}@{}: reconciled as not published; proceeding with publish",
-                    p.name, p.version
+                    "{}@{}: reconciliation outcome: NotPublished; action: retry under publish policy (evidence: {})",
+                    p.name,
+                    p.version,
+                    reconciliation_report_path.display()
                 ));
                 // Fall through to the normal retry loop below.
             }
             ReconciliationOutcome::StillUnknown { reason, .. } => {
                 reporter.error(&format!(
-                    "{}@{}: resume reconciliation still inconclusive: {}",
-                    p.name, p.version, reason
+                    "{}@{}: reconciliation outcome: StillUnknown; action: stop before blind retry; operator action required (evidence: {}): {}",
+                    p.name,
+                    p.version,
+                    reconciliation_report_path.display(),
+                    reason
                 ));
                 maybe_send_event(
                     &opts.webhook,
@@ -503,12 +511,15 @@ pub(super) fn publish_package(
                         log.clear();
                     }
                     write_reconciliation_report_best_effort(state_dir, ws, events_path, reporter);
+                    let reconciliation_report_path = state::reconciliation_path(state_dir);
 
                     match outcome {
                         ReconciliationOutcome::Published { .. } => {
                             reporter.info(&format!(
-                                "{}@{}: reconciled as published; no retry",
-                                p.name, p.version
+                                "{}@{}: reconciliation outcome: Published; registry shows version present; action: mark published and continue without retry (evidence: {})",
+                                p.name,
+                                p.version,
+                                reconciliation_report_path.display()
                             ));
                             {
                                 let mut state = st.lock().unwrap();
@@ -536,6 +547,12 @@ pub(super) fn publish_package(
                             break;
                         }
                         ReconciliationOutcome::NotPublished { .. } => {
+                            reporter.info(&format!(
+                                "{}@{}: reconciliation outcome: NotPublished; registry still absent; action: retry under publish policy (evidence: {})",
+                                p.name,
+                                p.version,
+                                reconciliation_report_path.display()
+                            ));
                             // Safe to enter the normal Retryable path below;
                             // registry confirms no duplicate-upload risk.
                             // Preserve negative-polling evidence for the receipt.
@@ -555,6 +572,13 @@ pub(super) fn publish_package(
                                 let _ = log.write_to_file(events_path);
                                 log.clear();
                             }
+                            reporter.error(&format!(
+                                "{}@{}: reconciliation outcome: StillUnknown; action: stop before blind retry; operator action required (evidence: {}): {}",
+                                p.name,
+                                p.version,
+                                reconciliation_report_path.display(),
+                                reason
+                            ));
 
                             // Notify operators: reconciliation was inconclusive
                             // and human judgment is required.
