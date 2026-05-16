@@ -1,0 +1,117 @@
+# SHIPPER-SPEC-0001: Source-of-Truth Stack
+
+Status: proposed
+Owner: EffortlessMetrics
+Created: 2026-05-13
+Milestone: 0.4.0
+Linked proposal: docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md
+Linked specs:
+Linked ADRs:
+Linked plan:
+Linked issues: #109, #195
+Linked PRs:
+Support-tier impact: future support-tier claim map
+Policy impact: future doc-contract advisory report
+Proof commands: cargo xtask check-file-policy --mode blocking-allowlist; cargo xtask policy-report; cargo fmt --all -- --check
+
+## Problem
+
+Shipper's release-safety claims, operating policies, release artifacts, and
+agent work need a linked source-of-truth system. Without one, claims can outrun
+proof and agents can execute stale issue text instead of the current lane.
+
+This spec defines the behavior contract for the document stack. It does not
+define PR order, product rationale, or release evidence for a specific version.
+
+## Behavior Contract
+
+- Proposals explain why a lane exists, who benefits, alternatives considered,
+  risks, and success criteria.
+- Specs define behavior that must be true, non-goals, required evidence,
+  acceptance examples, test mapping, and promotion rules.
+- ADRs record durable architecture decisions and consequences.
+- Plans define PR sequencing, proof commands, rollback, and stop conditions.
+- Active goals define the current machine-readable execution target for agents.
+- Support tiers define claim maturity and the proof commands or artifacts behind
+  user-facing claims.
+- Policy ledgers define exceptions, receipts, and enforcement state.
+- Release artifacts record what happened for a specific version.
+- No artifact duplicates another layer's source of truth.
+- Repo-management goal state must live under `.shipper-meta/goals/`, not
+  `.shipper/`.
+
+## Non-Goals
+
+- Implementing registry reconciliation.
+- Executing #195 release proof.
+- Adding active goal manifests in this spec PR.
+- Replacing policy ledgers with prose.
+- Making doc-contract checks blocking before advisory reports exist.
+
+## Required Evidence
+
+For source-of-truth document changes:
+
+- `cargo xtask check-file-policy --mode blocking-allowlist`
+- `cargo xtask policy-report`
+- `cargo fmt --all -- --check`
+
+After the checker exists:
+
+- `cargo xtask check-doc-contracts --mode advisory`
+- `target/policy/doc-contracts-report.md`
+- `target/policy/doc-contracts-report.json`
+
+## Acceptance Examples
+
+- A spec that contains PR-by-PR order is incomplete; sequencing belongs in
+  `plans/`.
+- A README claim without a support-tier entry is incomplete once support tiers
+  exist.
+- A policy exception described only in prose is invalid; it belongs in
+  `policy/*.toml`.
+- An active goal pointing to a missing spec or plan is invalid once
+  doc-contract checking exists.
+- A release artifact describing future work as completed is invalid; release
+  artifacts record what happened.
+
+## Test Mapping
+
+Initial proof uses existing repository gates:
+
+- file-policy checks for non-Rust receipts
+- policy-report checks for unified policy evidence
+- format checks for repository hygiene
+
+Later proof comes from the advisory doc-contract checker.
+
+## Implementation Mapping
+
+The implementation sequence belongs in `plans/0.4.0/source-of-truth-stack.md`
+after that plan exists.
+
+The first checker should validate:
+
+- proposal/spec/ADR filename IDs against title IDs
+- required header fields
+- valid status values
+- linked files when non-empty
+- `.shipper-meta/goals/active.toml` TOML parsing
+- active work item references to existing specs and plans
+
+## CI Proof
+
+CI should first run doc-contract checks in advisory mode and upload reports.
+Blocking mode should come only after the reports have burned in.
+
+## Promotion Rule
+
+This spec does not promote user-facing claims by itself. Claim promotion belongs
+in `docs/status/SUPPORT_TIERS.md` after proof commands and artifacts exist.
+
+## Open Questions
+
+- Which stale-link or orphan-document checks should belong to
+  `blocking-strict` mode later?
+- Whether future release readiness artifacts should also emit machine-readable
+  JSON.

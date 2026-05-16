@@ -186,8 +186,13 @@ fn plan_command_snapshot() {
     workspace_root: <WORKSPACE_ROOT>
 
     Total packages to publish: 1
+    Plan summary:
+      Publishable packages: 1
+      Skipped packages: 0
+      Internal dependency edges: 0
+      Publish levels: 1
 
-      1. demo@0.1.0
+      1. demo@0.1.0 (no workspace dependencies)
     "
     );
 }
@@ -254,9 +259,20 @@ fn doctor_command_snapshot() {
     registry_reachable: true
     index_base: https://index.crates.io
 
-    git_commit: <GIT_COMMIT>
-    git_branch: <GIT_BRANCH>
-    git_dirty: <GIT_DIRTY>
+    git_context: not a git repository
+
+    Findings:
+    ---------
+      [blocked] crates.io auth is missing (registry-auth-missing)
+        status: blocked
+        severity: blocked
+        why: ownership checks and live publish require registry credentials before Shipper can prove or execute a release
+        evidence: auth_type: NONE FOUND (set CARGO_REGISTRY_TOKEN)
+        try next:
+          - run `cargo login <token>` for local token auth
+          - configure Trusted Publishing for GitHub Actions releases
+          - rerun `shipper doctor` and `shipper preflight`
+        docs: docs/how-to/run-in-github-actions.md
 
     Diagnostics complete.
     "
@@ -308,9 +324,11 @@ fn doctor_command_detects_trusted_publishing_auth() {
     registry_reachable: true
     index_base: https://index.crates.io
 
-    git_commit: <GIT_COMMIT>
-    git_branch: <GIT_BRANCH>
-    git_dirty: <GIT_DIRTY>
+    git_context: not a git repository
+
+    Findings:
+    ---------
+      none
 
     Diagnostics complete.
     "
@@ -415,10 +433,28 @@ Summary:
   New crates: 1
   Ownership verified: 0
   Dry-run passed: 1
+  Estimated registry pacing: at least 0s
+    profile=crates-io first_publish=1 updates=0
+
+Proof explanation:
+  Proven now:
+    - local package dry-run passed for 1 of 1 package.
+    - registry version/new-crate checks completed for 1 package.
+    - registry pacing estimate generated from the crates-io profile.
+  Proof gaps:
+    - ownership was not verified for 1 of 1 package: demo@0.1.0.
+    - no registry token or Trusted Publishing context was detected.
+  Failed checks:
+    - none.
+  Live-release evidence:
+    - registry acceptance and post-publish visibility are recorded during publish/resume.
 
 What to do next:
 -----------------
-⚠ Some checks could not be verified. You can still publish, but may encounter permission issues. Use `shipper publish --policy fast` to proceed.
+⚠ Preflight did not prove every release prerequisite.
+  - configure registry auth or Trusted Publishing if ownership is unverified
+  - rerun `shipper preflight`
+  - if you accept the uncertainty, run `shipper publish` with an explicit policy choice
 "#
     );
     registry.join();
@@ -504,10 +540,14 @@ fn preflight_command_with_json_flag() {
     let stdout = String::from_utf8(out).expect("utf8");
     // Verify it's valid JSON
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["schema_version"], "shipper.preflight.v1");
     assert!(json["plan_id"].is_string());
     assert_eq!(json["token_detected"], false);
     assert!(json["finishability"].is_string());
     assert!(json["packages"].is_array());
+    assert!(json["proofs"].is_array());
+    assert!(json["gaps"].is_array());
+    assert!(json["failed_checks"].is_array());
     registry.join();
 }
 
@@ -1146,6 +1186,59 @@ fn preflight_command_json_output_structure() {
     assert!(json.get("finishability").is_some());
     assert!(json.get("packages").is_some());
     assert!(json.get("timestamp").is_some());
+    assert_eq!(
+        json.pointer("/schema_version")
+            .and_then(serde_json::Value::as_str),
+        Some("shipper.preflight.v1")
+    );
+    assert_eq!(
+        json.pointer("/estimated_publish_duration/registry_profile"),
+        Some(&serde_json::Value::String("crates-io".to_string()))
+    );
+    assert_eq!(
+        json.pointer("/estimated_publish_duration/first_publish_count")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+    assert!(
+        json.pointer("/estimated_publish_duration/minimum_registry_pacing")
+            .is_some()
+    );
+    assert_eq!(
+        json.pointer("/registry_profile/name")
+            .and_then(serde_json::Value::as_str),
+        Some("crates-io")
+    );
+    assert_eq!(
+        json.pointer("/registry_profile/first_publish_count")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+
+    let proofs = json["proofs"].as_array().expect("proofs array");
+    assert!(proofs.iter().any(|item| {
+        item["id"].as_str() == Some("local_dry_run") && item["status"].as_str() == Some("passed")
+    }));
+    assert!(proofs.iter().any(|item| {
+        item["id"].as_str() == Some("registry_version_checks")
+            && item["status"].as_str() == Some("completed")
+    }));
+
+    let gaps = json["gaps"].as_array().expect("gaps array");
+    assert!(gaps.iter().any(|item| {
+        item["id"].as_str() == Some("ownership_unverified")
+            && item["status"].as_str() == Some("not_proven")
+    }));
+    assert!(gaps.iter().any(|item| {
+        item["id"].as_str() == Some("registry_auth_missing")
+            && item["status"].as_str() == Some("not_proven")
+    }));
+
+    assert_eq!(
+        json.pointer("/artifacts/0/kind")
+            .and_then(serde_json::Value::as_str),
+        Some("preflight_json_stdout")
+    );
 
     // Verify packages array structure
     let packages = json.get("packages").unwrap().as_array().unwrap();

@@ -25,3 +25,7 @@ is already uploaded => Permanent
 token is invalid => Permanent
 invalid credentials => Permanent
 checksum mismatch => Permanent
+failed to select a version for the requirement => Permanent
+no matching package named => Permanent
+candidate versions found which didn't match => Permanent
+required dependency is missing from the registry => Permanent

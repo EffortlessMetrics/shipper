@@ -27,19 +27,24 @@
 //! on [`shipper_core`](https://crates.io/crates/shipper-core) instead.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
+use serde::Serialize;
 
 use shipper_core::config::{CliOverrides, ShipperConfig};
 use shipper_core::engine::{self, Reporter};
 use shipper_core::plan;
-use shipper_core::types::{Finishability, PreflightReport, Registry, ReleaseSpec, RuntimeOptions};
+use shipper_core::types::{
+    Finishability, PlannedPackage, PreflightPackage, PreflightReport, Registry, ReleasePlan,
+    ReleaseSpec, RuntimeOptions,
+};
 
+mod doctor;
 mod output;
 
 use crate::output::progress::ProgressReporter;
@@ -360,7 +365,11 @@ EXAMPLES:
     /// Print environment and auth diagnostics.
     Doctor,
     /// View detailed event log.
-    InspectEvents,
+    InspectEvents {
+        /// Follow the authoritative events.jsonl and print appended events as they arrive.
+        #[arg(long)]
+        follow: bool,
+    },
     /// View detailed receipt with evidence.
     InspectReceipt,
     /// Print CI configuration snippets for various platforms.
@@ -665,7 +674,13 @@ pub fn run() -> Result<()> {
         },
     };
 
-    let mut planned = plan::build_plan(&spec)?;
+    let command_name = cli
+        .cmd
+        .as_ref()
+        .map(command_name_for_hint)
+        .unwrap_or("command");
+    let mut planned = plan::build_plan(&spec)
+        .with_context(|| plan_failure_hint(&spec.manifest_path, &cli.packages, command_name))?;
 
     // Load configuration file
     let config =
@@ -791,7 +806,7 @@ pub fn run() -> Result<()> {
 
     match cli.cmd.expect("subcommand checked above") {
         Commands::Plan => {
-            print_plan(&planned, cli.verbose);
+            print_plan(&planned, cli.verbose, &cli.format);
         }
         Commands::Preflight { preflight_only } => {
             let rep = engine::run_preflight_in_place_with_options(
@@ -982,11 +997,11 @@ pub fn run() -> Result<()> {
                 }
                 let mut current_planned = planned.clone();
                 current_planned.plan.registry = reg;
-                run_doctor(&current_planned, &opts, &mut reporter)?;
+                doctor::run(&current_planned, &opts, &mut reporter)?;
             }
         }
-        Commands::InspectEvents => {
-            run_inspect_events(&planned, &opts)?;
+        Commands::InspectEvents { follow } => {
+            run_inspect_events(&planned, &opts, &cli.format, follow)?;
         }
         Commands::InspectReceipt => {
             run_inspect_receipt(&planned, &opts, &cli.format)?;
@@ -1404,6 +1419,48 @@ fn resume_failure_hint(state_dir: &Path) -> String {
     )
 }
 
+fn plan_failure_hint(manifest_path: &Path, packages: &[String], command_name: &str) -> String {
+    let mut hint = format!(
+        "failed to load release plan for `{command_name}` - next steps:\n  \
+         * verify `--manifest-path` points at the workspace Cargo.toml: {}\n  \
+         * run `cargo metadata --manifest-path \"{}\"` to inspect the underlying Cargo error",
+        manifest_path.display(),
+        manifest_path.display()
+    );
+
+    if packages.is_empty() {
+        hint.push_str("\n  * run `shipper plan` first to inspect publishable and skipped crates");
+    } else {
+        hint.push_str(
+            "\n  * run `shipper plan` without `--package` to list publishable crates\n  \
+             * verify each selected `--package` is publishable and not marked `publish = false`",
+        );
+    }
+
+    hint
+}
+
+fn command_name_for_hint(command: &Commands) -> &'static str {
+    match command {
+        Commands::Plan => "plan",
+        Commands::Preflight { .. } => "preflight",
+        Commands::Publish => "publish",
+        Commands::Resume => "resume",
+        Commands::Rehearse => "rehearse",
+        Commands::Status => "status",
+        Commands::Doctor => "doctor",
+        Commands::InspectEvents { .. } => "inspect-events",
+        Commands::InspectReceipt => "inspect-receipt",
+        Commands::Ci(_) => "ci",
+        Commands::Clean { .. } => "clean",
+        Commands::Yank { .. } => "yank",
+        Commands::PlanYank { .. } => "plan-yank",
+        Commands::FixForward { .. } => "fix-forward",
+        Commands::Config(_) => "config",
+        Commands::Completion { .. } => "completion",
+    }
+}
+
 fn parse_duration(s: &str) -> Result<Duration> {
     shipper_duration::parse_duration(s).with_context(|| format!("invalid duration: {s}"))
 }
@@ -1454,7 +1511,91 @@ fn print_version(verbose: bool) {
     }
 }
 
-fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool) {
+#[derive(Debug, Serialize)]
+struct PlanReport {
+    plan_id: String,
+    registry: PlanRegistryReport,
+    workspace_root: String,
+    publishable_count: usize,
+    skipped_count: usize,
+    internal_dependency_edges: usize,
+    publish_levels: usize,
+    packages: Vec<PlanPackageReport>,
+    skipped: Vec<PlanSkippedPackageReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanRegistryReport {
+    name: String,
+    api_base: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index_base: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanPackageReport {
+    order: usize,
+    name: String,
+    version: String,
+    manifest_path: String,
+    level: Option<usize>,
+    dependencies: Vec<String>,
+    order_reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanSkippedPackageReport {
+    name: String,
+    version: String,
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PreflightJsonReport<'a> {
+    schema_version: &'static str,
+    #[serde(flatten)]
+    report: &'a PreflightReport,
+    proofs: Vec<PreflightEvidenceItem>,
+    gaps: Vec<PreflightEvidenceItem>,
+    failed_checks: Vec<PreflightEvidenceItem>,
+    live_release_evidence: Vec<PreflightEvidenceItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registry_profile: Option<PreflightRegistryProfileReport>,
+    artifacts: Vec<PreflightArtifactReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct PreflightEvidenceItem {
+    id: &'static str,
+    status: &'static str,
+    summary: String,
+    packages: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PreflightRegistryProfileReport {
+    name: String,
+    first_publish_count: usize,
+    update_count: usize,
+    minimum_registry_pacing: String,
+    notes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PreflightArtifactReport {
+    kind: &'static str,
+    path: Option<String>,
+    description: &'static str,
+}
+
+fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool, format: &str) {
+    if format == "json" {
+        let report = build_plan_report(ws);
+        let json = serde_json::to_string_pretty(&report).expect("serialize plan report");
+        println!("{}", json);
+        return;
+    }
+
     println!("plan_id: {}", ws.plan.plan_id);
     println!(
         "registry: {} ({})",
@@ -1465,6 +1606,14 @@ fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool) {
 
     let total_packages = ws.plan.packages.len();
     println!("Total packages to publish: {}", total_packages);
+    println!("Plan summary:");
+    println!("  Publishable packages: {}", total_packages);
+    println!("  Skipped packages: {}", ws.skipped.len());
+    println!(
+        "  Internal dependency edges: {}",
+        internal_dependency_edges(&ws.plan)
+    );
+    println!("  Publish levels: {}", ws.plan.group_by_levels().len());
     println!();
 
     if !ws.skipped.is_empty() {
@@ -1481,9 +1630,103 @@ fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool) {
     } else {
         // Simple output
         for (idx, p) in ws.plan.packages.iter().enumerate() {
-            println!("{:>3}. {}@{}", idx + 1, p.name, p.version);
+            println!(
+                "{:>3}. {}@{} ({})",
+                idx + 1,
+                p.name,
+                p.version,
+                dependency_summary(&ws.plan, p)
+            );
         }
     }
+}
+
+fn build_plan_report(ws: &plan::PlannedWorkspace) -> PlanReport {
+    let levels = ws.plan.group_by_levels();
+    let packages = ws
+        .plan
+        .packages
+        .iter()
+        .enumerate()
+        .map(|(idx, package)| {
+            let dependencies = dependency_names(&ws.plan, package);
+            let level = levels
+                .iter()
+                .find(|level| {
+                    level
+                        .packages
+                        .iter()
+                        .any(|level_pkg| level_pkg.name == package.name)
+                })
+                .map(|level| level.level);
+
+            PlanPackageReport {
+                order: idx + 1,
+                name: package.name.clone(),
+                version: package.version.clone(),
+                manifest_path: package.manifest_path.display().to_string(),
+                level,
+                dependencies,
+                order_reason: dependency_summary(&ws.plan, package),
+            }
+        })
+        .collect();
+
+    let skipped = ws
+        .skipped
+        .iter()
+        .map(|package| PlanSkippedPackageReport {
+            name: package.name.clone(),
+            version: package.version.clone(),
+            reason: package.reason.clone(),
+        })
+        .collect();
+
+    PlanReport {
+        plan_id: ws.plan.plan_id.clone(),
+        registry: PlanRegistryReport {
+            name: ws.plan.registry.name.clone(),
+            api_base: ws.plan.registry.api_base.clone(),
+            index_base: ws.plan.registry.index_base.clone(),
+        },
+        workspace_root: ws.workspace_root.display().to_string(),
+        publishable_count: ws.plan.packages.len(),
+        skipped_count: ws.skipped.len(),
+        internal_dependency_edges: internal_dependency_edges(&ws.plan),
+        publish_levels: levels.len(),
+        packages,
+        skipped,
+    }
+}
+
+fn internal_dependency_edges(plan: &ReleasePlan) -> usize {
+    plan.dependencies.values().map(Vec::len).sum()
+}
+
+fn dependency_summary(plan: &ReleasePlan, package: &PlannedPackage) -> String {
+    let dependencies = dependency_names(plan, package);
+    if dependencies.is_empty() {
+        "no workspace dependencies".to_string()
+    } else {
+        format!("depends on: {}", dependencies.join(", "))
+    }
+}
+
+fn dependency_names(plan: &ReleasePlan, package: &PlannedPackage) -> Vec<String> {
+    plan.dependencies
+        .get(&package.name)
+        .map(|dependencies| {
+            dependencies
+                .iter()
+                .filter_map(|dependency| {
+                    plan.packages
+                        .iter()
+                        .find(|candidate| candidate.name == *dependency)
+                        .map(|candidate| format!("{}@{}", candidate.name, candidate.version))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
@@ -1511,24 +1754,13 @@ fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
     println!("Dependency Graph:");
     println!();
     for (idx, p) in ws.plan.packages.iter().enumerate() {
-        let deps = ws.plan.dependencies.get(&p.name);
-        let deps_str = match deps {
-            Some(deps) if !deps.is_empty() => {
-                let dep_versions: Vec<String> = deps
-                    .iter()
-                    .filter_map(|dep_name| {
-                        ws.plan
-                            .packages
-                            .iter()
-                            .find(|pkg| &pkg.name == dep_name)
-                            .map(|pkg| format!("{}@{}", dep_name, pkg.version))
-                    })
-                    .collect();
-                format!("depends on: {}", dep_versions.join(", "))
-            }
-            _ => String::from("no workspace dependencies"),
-        };
-        println!("  {:>3}. {}@{} ({})", idx + 1, p.name, p.version, deps_str);
+        println!(
+            "  {:>3}. {}@{} ({})",
+            idx + 1,
+            p.name,
+            p.version,
+            dependency_summary(&ws.plan, p)
+        );
     }
     println!();
 
@@ -1634,7 +1866,8 @@ fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
 fn print_preflight(rep: &PreflightReport, format: &str) {
     match format {
         "json" => {
-            let json = serde_json::to_string_pretty(rep).expect("serialize preflight report");
+            let report = build_preflight_json_report(rep);
+            let json = serde_json::to_string_pretty(&report).expect("serialize preflight report");
             println!("{}", json);
         }
         _ => {
@@ -1731,7 +1964,19 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
             println!("  New crates: {}", new_crates);
             println!("  Ownership verified: {}", ownership_verified);
             println!("  Dry-run passed: {}", dry_run_passed);
+            if let Some(estimate) = &rep.estimated_publish_duration {
+                println!(
+                    "  Estimated registry pacing: at least {}",
+                    humantime::format_duration(estimate.minimum_registry_pacing)
+                );
+                println!(
+                    "    profile={} first_publish={} updates={}",
+                    estimate.registry_profile, estimate.first_publish_count, estimate.update_count
+                );
+            }
             println!();
+
+            print_preflight_proof_explanation(rep, total, dry_run_passed);
 
             // What to do next guidance
             println!("What to do next:");
@@ -1739,22 +1984,252 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
             match rep.finishability {
                 Finishability::Proven => {
                     println!(
-                        "\x1b[32m✓ All checks passed. Ready to publish with: shipper publish\x1b[0m"
+                        "\x1b[32m✓ All local preflight checks passed. Next: shipper publish\x1b[0m"
                     );
                 }
                 Finishability::NotProven => {
                     println!(
-                        "\x1b[33m⚠ Some checks could not be verified. You can still publish, but may encounter permission issues. Use `shipper publish --policy fast` to proceed.\x1b[0m"
+                        "\x1b[33m⚠ Preflight did not prove every release prerequisite.\x1b[0m"
+                    );
+                    println!(
+                        "  - configure registry auth or Trusted Publishing if ownership is unverified"
+                    );
+                    println!("  - rerun `shipper preflight`");
+                    println!(
+                        "  - if you accept the uncertainty, run `shipper publish` with an explicit policy choice"
                     );
                 }
                 Finishability::Failed => {
                     println!(
-                        "\x1b[31m✗ Preflight failed. Please fix the issues above before publishing.\x1b[0m"
+                        "\x1b[31m✗ Preflight failed. Fix the failed checks above, then rerun `shipper preflight`.\x1b[0m"
                     );
                 }
             }
         }
     }
+}
+
+fn build_preflight_json_report(rep: &PreflightReport) -> PreflightJsonReport<'_> {
+    let total = rep.packages.len();
+    let dry_run_passed = rep.packages.iter().filter(|p| p.dry_run_passed).count();
+    let dry_run_failed = rep
+        .packages
+        .iter()
+        .filter(|p| !p.dry_run_passed)
+        .collect::<Vec<_>>();
+    let ownership_unverified = rep
+        .packages
+        .iter()
+        .filter(|p| !p.ownership_verified)
+        .collect::<Vec<_>>();
+
+    let mut proofs = Vec::new();
+    if dry_run_failed.is_empty() {
+        proofs.push(PreflightEvidenceItem {
+            id: "local_dry_run",
+            status: "passed",
+            summary: format!(
+                "Local package dry-run passed for {} of {} {}.",
+                dry_run_passed,
+                total,
+                package_noun(total)
+            ),
+            packages: rep.packages.iter().map(package_ref).collect(),
+        });
+    } else if dry_run_passed > 0 {
+        proofs.push(PreflightEvidenceItem {
+            id: "local_dry_run_partial",
+            status: "partial",
+            summary: format!(
+                "Local package dry-run passed for {} of {} {}.",
+                dry_run_passed,
+                total,
+                package_noun(total)
+            ),
+            packages: rep
+                .packages
+                .iter()
+                .filter(|p| p.dry_run_passed)
+                .map(package_ref)
+                .collect(),
+        });
+    }
+
+    proofs.push(PreflightEvidenceItem {
+        id: "registry_version_checks",
+        status: "completed",
+        summary: format!(
+            "Registry version/new-crate checks completed for {} {}.",
+            total,
+            package_noun(total)
+        ),
+        packages: rep.packages.iter().map(package_ref).collect(),
+    });
+
+    if let Some(estimate) = &rep.estimated_publish_duration {
+        proofs.push(PreflightEvidenceItem {
+            id: "registry_pacing_estimate",
+            status: "completed",
+            summary: format!(
+                "Registry pacing estimate generated from the {} profile.",
+                estimate.registry_profile
+            ),
+            packages: Vec::new(),
+        });
+    }
+
+    let mut gaps = Vec::new();
+    if !ownership_unverified.is_empty() {
+        gaps.push(PreflightEvidenceItem {
+            id: "ownership_unverified",
+            status: "not_proven",
+            summary: format!(
+                "Ownership was not verified for {} of {} {}.",
+                ownership_unverified.len(),
+                total,
+                package_noun(total)
+            ),
+            packages: ownership_unverified
+                .iter()
+                .copied()
+                .map(package_ref)
+                .collect(),
+        });
+    }
+    if !rep.token_detected {
+        gaps.push(PreflightEvidenceItem {
+            id: "registry_auth_missing",
+            status: "not_proven",
+            summary: "No registry token or Trusted Publishing context was detected.".to_string(),
+            packages: Vec::new(),
+        });
+    }
+
+    let failed_checks = dry_run_failed
+        .iter()
+        .copied()
+        .map(|package| PreflightEvidenceItem {
+            id: "local_dry_run",
+            status: "failed",
+            summary: format!("Dry-run failed for {}.", package_ref(package)),
+            packages: vec![package_ref(package)],
+        })
+        .collect();
+
+    let live_release_evidence = vec![PreflightEvidenceItem {
+        id: "registry_acceptance_visibility",
+        status: "pending_publish",
+        summary:
+            "Registry acceptance and post-publish visibility are recorded during publish/resume."
+                .to_string(),
+        packages: rep.packages.iter().map(package_ref).collect(),
+    }];
+
+    PreflightJsonReport {
+        schema_version: "shipper.preflight.v1",
+        report: rep,
+        proofs,
+        gaps,
+        failed_checks,
+        live_release_evidence,
+        registry_profile: rep.estimated_publish_duration.as_ref().map(|estimate| {
+            PreflightRegistryProfileReport {
+                name: estimate.registry_profile.clone(),
+                first_publish_count: estimate.first_publish_count,
+                update_count: estimate.update_count,
+                minimum_registry_pacing: humantime::format_duration(
+                    estimate.minimum_registry_pacing,
+                )
+                .to_string(),
+                notes: estimate.notes.clone(),
+            }
+        }),
+        artifacts: vec![PreflightArtifactReport {
+            kind: "preflight_json_stdout",
+            path: None,
+            description: "This JSON document is the preflight evidence artifact when captured by CI.",
+        }],
+    }
+}
+
+fn print_preflight_proof_explanation(rep: &PreflightReport, total: usize, dry_run_passed: usize) {
+    let dry_run_failed = rep
+        .packages
+        .iter()
+        .filter(|package| !package.dry_run_passed)
+        .collect::<Vec<_>>();
+    let ownership_unverified = rep
+        .packages
+        .iter()
+        .filter(|package| !package.ownership_verified)
+        .collect::<Vec<_>>();
+
+    println!("Proof explanation:");
+    println!("  Proven now:");
+    println!(
+        "    - local package dry-run passed for {} of {} {}.",
+        dry_run_passed,
+        total,
+        package_noun(total)
+    );
+    println!(
+        "    - registry version/new-crate checks completed for {} {}.",
+        total,
+        package_noun(total)
+    );
+    if let Some(estimate) = &rep.estimated_publish_duration {
+        println!(
+            "    - registry pacing estimate generated from the {} profile.",
+            estimate.registry_profile
+        );
+    }
+
+    println!("  Proof gaps:");
+    if ownership_unverified.is_empty() {
+        println!("    - none from local preflight.");
+    } else {
+        println!(
+            "    - ownership was not verified for {} of {} {}: {}.",
+            ownership_unverified.len(),
+            total,
+            package_noun(total),
+            package_refs(ownership_unverified.iter().copied())
+        );
+    }
+    if !rep.token_detected {
+        println!("    - no registry token or Trusted Publishing context was detected.");
+    }
+
+    println!("  Failed checks:");
+    if dry_run_failed.is_empty() {
+        println!("    - none.");
+    } else {
+        println!(
+            "    - dry-run failed for {} of {} {}: {}.",
+            dry_run_failed.len(),
+            total,
+            package_noun(total),
+            package_refs(dry_run_failed.iter().copied())
+        );
+    }
+
+    println!("  Live-release evidence:");
+    println!(
+        "    - registry acceptance and post-publish visibility are recorded during publish/resume."
+    );
+    println!();
+}
+
+fn package_refs<'a>(packages: impl Iterator<Item = &'a PreflightPackage>) -> String {
+    packages.map(package_ref).collect::<Vec<_>>().join(", ")
+}
+
+fn package_ref(package: &PreflightPackage) -> String {
+    format!("{}@{}", package.name, package.version)
+}
+
+fn package_noun(count: usize) -> &'static str {
+    if count == 1 { "package" } else { "packages" }
 }
 
 fn print_receipt(
@@ -1852,12 +2327,21 @@ fn print_receipt(
     }
 }
 
-fn run_inspect_events(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Result<()> {
+fn run_inspect_events(
+    ws: &plan::PlannedWorkspace,
+    opts: &RuntimeOptions,
+    format: &str,
+    follow: bool,
+) -> Result<()> {
     let state_dir = if opts.state_dir.is_absolute() {
         opts.state_dir.clone()
     } else {
         ws.workspace_root.join(&opts.state_dir)
     };
+
+    if follow {
+        return follow_authoritative_event_log(&state_dir, format);
+    }
 
     let event_logs = discover_event_logs(&state_dir)?;
     if event_logs.is_empty() {
@@ -1869,20 +2353,82 @@ fn run_inspect_events(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Res
         let event_log = shipper_core::state::events::EventLog::read_from_file(events_path)
             .with_context(|| format!("failed to read event log from {}", events_path.display()))?;
 
-        println!("Event log: {}", events_path.display());
-        println!();
+        if format != "json" {
+            println!("Event log: {}", events_path.display());
+            println!();
+        }
 
         for event in event_log.all_events() {
             let json = serde_json::to_string(event).expect("serialize event");
             println!("{}", json);
         }
 
-        if idx + 1 != event_logs.len() {
+        if format != "json" && idx + 1 != event_logs.len() {
             println!();
         }
     }
 
     Ok(())
+}
+
+fn follow_authoritative_event_log(state_dir: &Path, format: &str) -> Result<()> {
+    let events_path = shipper_core::state::events::events_path(state_dir);
+    if format != "json" {
+        println!("Event log: {}", events_path.display());
+        if !events_path.exists() {
+            println!("Waiting for events...");
+        }
+        println!("Press Ctrl+C to stop.");
+        println!();
+    }
+
+    let mut offset = 0;
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    loop {
+        offset = write_event_lines_since(&events_path, offset, &mut out)?;
+        out.flush().context("failed to flush event output")?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn write_event_lines_since<W: Write>(events_path: &Path, offset: u64, out: &mut W) -> Result<u64> {
+    if !events_path.exists() {
+        return Ok(offset);
+    }
+
+    let len = std::fs::metadata(events_path)
+        .with_context(|| format!("failed to stat event log {}", events_path.display()))?
+        .len();
+    let mut next_offset = offset.min(len);
+    let mut file = std::fs::File::open(events_path)
+        .with_context(|| format!("failed to open event log {}", events_path.display()))?;
+    file.seek(SeekFrom::Start(next_offset))
+        .with_context(|| format!("failed to seek event log {}", events_path.display()))?;
+
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .with_context(|| format!("failed to read event log {}", events_path.display()))?;
+        if read == 0 {
+            break;
+        }
+        next_offset += read as u64;
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        let event: shipper_core::types::PublishEvent = serde_json::from_str(trimmed)
+            .with_context(|| format!("failed to parse event JSON from line: {}", trimmed))?;
+        serde_json::to_writer(&mut *out, &event).context("failed to serialize event")?;
+        out.write_all(b"\n")
+            .context("failed to write event output")?;
+    }
+
+    Ok(next_offset)
 }
 
 fn discover_event_logs(state_dir: &Path) -> Result<Vec<PathBuf>> {
@@ -2023,112 +2569,6 @@ fn run_status(ws: &plan::PlannedWorkspace, reporter: &mut dyn Reporter) -> Resul
     }
 
     Ok(())
-}
-
-fn run_doctor(
-    ws: &plan::PlannedWorkspace,
-    opts: &RuntimeOptions,
-    reporter: &mut dyn Reporter,
-) -> Result<()> {
-    println!("Shipper Doctor - Diagnostics Report");
-    println!("----------------------------------");
-    println!("workspace_root: {}", ws.workspace_root.display());
-    println!(
-        "registry: {} ({})",
-        ws.plan.registry.name, ws.plan.registry.api_base
-    );
-
-    // 1. Check Authentication
-    let auth_type = shipper_core::auth::detect_auth_type(&ws.plan.registry.name)?;
-    let auth_label = match auth_type {
-        Some(shipper_core::types::AuthType::Token) => "token (detected)",
-        Some(shipper_core::types::AuthType::TrustedPublishing) => "trusted (detected)",
-        Some(shipper_core::types::AuthType::Unknown) => "unknown",
-        None => "NONE FOUND (set CARGO_REGISTRY_TOKEN)",
-    };
-    println!("auth_type: {}", auth_label);
-
-    // 2. Check State Directory
-    let abs_state = if opts.state_dir.is_absolute() {
-        opts.state_dir.clone()
-    } else {
-        ws.workspace_root.join(&opts.state_dir)
-    };
-    println!("state_dir: {}", abs_state.display());
-
-    if abs_state.exists() {
-        if let Ok(meta) = std::fs::metadata(&abs_state) {
-            println!("state_dir_writable: {}", !meta.permissions().readonly());
-        }
-    } else {
-        println!("state_dir_exists: false (will be created)");
-    }
-
-    // 3. Check Tools
-    println!();
-    print_cmd_version("cargo", reporter);
-    print_cmd_version("git", reporter);
-
-    // 4. Network Connectivity (Best Effort)
-    println!();
-    reporter.info("checking registry connectivity...");
-    let reg_client = shipper_core::registry::RegistryClient::new(ws.plan.registry.clone())?;
-
-    match reg_client.crate_exists("serde") {
-        Ok(_) => println!("registry_reachable: true"),
-        Err(e) => reporter.warn(&format!("registry_reachable: false ({e:#})")),
-    }
-
-    let index_base = ws.plan.registry.get_index_base();
-    println!("index_base: {}", index_base);
-
-    // 5. Check Git State
-    println!();
-    match shipper_core::git::collect_git_context() {
-        Some(git) => {
-            println!("git_commit: {}", git.commit.unwrap_or_else(|| "-".into()));
-            println!("git_branch: {}", git.branch.unwrap_or_else(|| "-".into()));
-            println!("git_dirty: {}", git.dirty.unwrap_or(false));
-        }
-        None => println!("git_context: not a git repository"),
-    }
-
-    // 6. Encryption Check
-    if opts.encryption.enabled {
-        println!();
-        println!("encryption: enabled");
-        if opts.encryption.passphrase.is_some() {
-            println!("encryption_key_source: config");
-        } else if let Some(ref env_var) = opts.encryption.env_var {
-            let present = std::env::var(env_var).is_ok();
-            println!("encryption_key_source: env ({})", env_var);
-            println!("encryption_key_present: {}", present);
-        }
-    }
-
-    println!();
-    println!("Diagnostics complete.");
-
-    Ok(())
-}
-
-fn print_cmd_version(cmd: &str, reporter: &mut dyn Reporter) {
-    let out = Command::new(cmd).arg("--version").output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            println!("{cmd}: {s}");
-        }
-        Ok(o) => {
-            reporter.warn(&format!(
-                "{cmd} --version failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ));
-        }
-        Err(e) => {
-            reporter.warn(&format!("unable to run {cmd} --version: {e}"));
-        }
-    }
 }
 
 fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result<()> {
@@ -2330,6 +2770,7 @@ fn clean_single_dir(
 ) -> Result<()> {
     let state_path = dir.join(shipper_core::state::execution_state::STATE_FILE);
     let receipt_path = dir.join(shipper_core::state::execution_state::RECEIPT_FILE);
+    let reconciliation_path = dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE);
     let lock_path = shipper_core::lock::lock_path(dir, Some(workspace_root));
 
     // Check for active lock
@@ -2388,6 +2829,21 @@ fn clean_single_dir(
         println!(
             "Kept: {} (--keep-receipt specified)",
             receipt_path.display()
+        );
+    }
+
+    if !keep_receipt && reconciliation_path.exists() {
+        std::fs::remove_file(&reconciliation_path).with_context(|| {
+            format!(
+                "failed to remove reconciliation file {}",
+                reconciliation_path.display()
+            )
+        })?;
+        println!("Removed: {}", reconciliation_path.display());
+    } else if keep_receipt && reconciliation_path.exists() {
+        println!(
+            "Kept: {} (--keep-receipt specified)",
+            reconciliation_path.display()
         );
     }
 
@@ -2661,7 +3117,7 @@ mod tests {
     #[test]
     fn print_cmd_version_reports_missing_command() {
         let mut reporter = TestReporter::default();
-        print_cmd_version("definitely-not-a-real-command-shipper", &mut reporter);
+        doctor::print_cmd_version("definitely-not-a-real-command-shipper", &mut reporter);
         assert!(reporter.warns.iter().any(|w| w.contains("unable to run")));
     }
 
@@ -2700,7 +3156,7 @@ mod tests {
         };
 
         let mut reporter = TestReporter::default();
-        print_cmd_version(cmd_path.to_str().expect("utf8"), &mut reporter);
+        doctor::print_cmd_version(cmd_path.to_str().expect("utf8"), &mut reporter);
         assert!(
             reporter
                 .warns
@@ -2788,7 +3244,7 @@ mod tests {
             ],
             || {
                 let mut reporter = TestReporter::default();
-                run_doctor(&ws, &opts, &mut reporter).expect("doctor");
+                doctor::run(&ws, &opts, &mut reporter).expect("doctor");
             },
         );
     }
@@ -2860,7 +3316,7 @@ mod tests {
             ],
             || {
                 let mut reporter = TestReporter::default();
-                run_doctor(&ws, &opts, &mut reporter).expect("doctor");
+                doctor::run(&ws, &opts, &mut reporter).expect("doctor");
             },
         );
     }
@@ -3133,6 +3589,8 @@ mode = "fast"
 
         let state_path = abs_state.join(shipper_core::state::execution_state::STATE_FILE);
         let receipt_path = abs_state.join(shipper_core::state::execution_state::RECEIPT_FILE);
+        let reconciliation_path =
+            abs_state.join(shipper_core::state::execution_state::RECONCILIATION_FILE);
         let events_path = abs_state.join(shipper_core::state::events::EVENTS_FILE);
         let preflight_only_events_path =
             abs_state.join("preflight-only-20260421T010101000000000Z-pid123.events.jsonl");
@@ -3140,6 +3598,7 @@ mode = "fast"
 
         fs::write(&state_path, "{}").expect("write state");
         fs::write(&receipt_path, "{}").expect("write receipt");
+        fs::write(&reconciliation_path, "{}").expect("write reconciliation");
         fs::write(&events_path, "{}").expect("write events");
         fs::write(&preflight_only_events_path, "{}").expect("write preflight-only events");
 
@@ -3159,12 +3618,70 @@ mode = "fast"
 
         assert!(!state_path.exists(), "state file should be removed");
         assert!(!receipt_path.exists(), "receipt file should be removed");
+        assert!(
+            !reconciliation_path.exists(),
+            "reconciliation file should be removed"
+        );
         assert!(!events_path.exists(), "events file should be removed");
         assert!(
             !preflight_only_events_path.exists(),
             "preflight-only sidecar should be removed"
         );
         assert!(!lock_path.exists(), "lock file should be removed");
+    }
+
+    #[test]
+    fn write_event_lines_since_streams_only_new_events() {
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        fs::write(
+            &events_path,
+            concat!(
+                r#"{"timestamp":"2025-01-01T00:00:00Z","event_type":{"type":"plan_created","plan_id":"abc123","package_count":1},"package":"all"}"#,
+                "\n",
+            ),
+        )
+        .expect("write first event");
+
+        let mut out = Vec::new();
+        let offset = write_event_lines_since(&events_path, 0, &mut out).expect("read first");
+        let first = String::from_utf8(out).expect("utf8");
+        assert!(first.contains(r#""type":"plan_created""#));
+        assert_eq!(first.lines().count(), 1);
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&events_path)
+            .expect("open append")
+            .write_all(
+                concat!(
+                    r#"{"timestamp":"2025-01-01T00:00:01Z","event_type":{"type":"execution_started"},"package":"all"}"#,
+                    "\n",
+                )
+                .as_bytes(),
+            )
+            .expect("append event");
+
+        let mut out = Vec::new();
+        let next_offset =
+            write_event_lines_since(&events_path, offset, &mut out).expect("read second");
+        let second = String::from_utf8(out).expect("utf8");
+        assert!(second.contains(r#""type":"execution_started""#));
+        assert!(!second.contains(r#""type":"plan_created""#));
+        assert_eq!(second.lines().count(), 1);
+        assert!(next_offset > offset);
+    }
+
+    #[test]
+    fn write_event_lines_since_missing_file_keeps_offset() {
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("missing-events.jsonl");
+        let mut out = Vec::new();
+
+        let offset = write_event_lines_since(&events_path, 42, &mut out).expect("missing file");
+
+        assert_eq!(offset, 42);
+        assert!(out.is_empty());
     }
 
     #[test]

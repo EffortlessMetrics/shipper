@@ -39,7 +39,6 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 pub use shipper_encrypt::EncryptionConfig;
-use shipper_encrypt::EncryptionConfig as EncryptionSettings;
 pub use shipper_types::{
     ParallelConfig, PublishPolicy, ReadinessConfig, ReadinessMethod, Registry, RuntimeOptions,
     VerifyMode, deserialize_duration, serialize_duration,
@@ -51,6 +50,8 @@ use shipper_types::storage::{CloudStorageConfig, StorageType};
 
 /// Runtime-options conversion helpers (previously `shipper-config-runtime`).
 pub mod runtime;
+
+mod runtime_options;
 
 /// Nested policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -706,179 +707,7 @@ impl ShipperConfig {
     /// For `Option` fields: CLI value takes precedence; falls back to config.
     /// For `bool` flags: `true` if either CLI or config enables it (OR).
     pub fn build_runtime_options(&self, cli: CliOverrides) -> RuntimeOptions {
-        // Determine effective retry config based on policy
-        let effective_retry = self.retry.policy.to_config();
-
-        RuntimeOptions {
-            allow_dirty: cli.allow_dirty || self.flags.allow_dirty,
-            skip_ownership_check: cli.skip_ownership_check || self.flags.skip_ownership_check,
-            strict_ownership: cli.strict_ownership || self.flags.strict_ownership,
-            no_verify: cli.no_verify,
-            max_attempts: cli
-                .max_attempts
-                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                    self.retry.max_attempts
-                } else {
-                    effective_retry.max_attempts
-                }),
-            base_delay: cli
-                .base_delay
-                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                    self.retry.base_delay
-                } else {
-                    effective_retry.base_delay
-                }),
-            max_delay: cli
-                .max_delay
-                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                    self.retry.max_delay
-                } else {
-                    effective_retry.max_delay
-                }),
-            retry_strategy: cli.retry_strategy.unwrap_or(
-                if self.retry.policy == RetryPolicy::Custom {
-                    self.retry.strategy
-                } else {
-                    effective_retry.strategy
-                },
-            ),
-            retry_jitter: cli
-                .retry_jitter
-                .unwrap_or(if self.retry.policy == RetryPolicy::Custom {
-                    self.retry.jitter
-                } else {
-                    effective_retry.jitter
-                }),
-            retry_per_error: self.retry.per_error.clone(),
-            verify_timeout: cli.verify_timeout.unwrap_or(Duration::from_secs(120)),
-            verify_poll_interval: cli.verify_poll_interval.unwrap_or(Duration::from_secs(5)),
-            state_dir: cli.state_dir.unwrap_or_else(|| {
-                self.state_dir
-                    .clone()
-                    .unwrap_or_else(|| PathBuf::from(".shipper"))
-            }),
-            force_resume: cli.force_resume,
-            force: cli.force,
-            lock_timeout: cli.lock_timeout.unwrap_or(self.lock.timeout),
-            policy: cli.policy.unwrap_or(self.policy.mode),
-            verify_mode: cli.verify_mode.unwrap_or(self.verify.mode),
-            readiness: ReadinessConfig {
-                enabled: !cli.no_readiness && self.readiness.enabled,
-                method: cli.readiness_method.unwrap_or(self.readiness.method),
-                initial_delay: self.readiness.initial_delay,
-                max_delay: self.readiness.max_delay,
-                max_total_wait: cli
-                    .readiness_timeout
-                    .unwrap_or(self.readiness.max_total_wait),
-                poll_interval: cli.readiness_poll.unwrap_or(self.readiness.poll_interval),
-                jitter_factor: self.readiness.jitter_factor,
-                index_path: self.readiness.index_path.clone(),
-                prefer_index: self.readiness.prefer_index,
-            },
-            output_lines: cli.output_lines.unwrap_or(self.output.lines),
-            parallel: ParallelConfig {
-                enabled: cli.parallel_enabled || self.parallel.enabled,
-                max_concurrent: cli.max_concurrent.unwrap_or(self.parallel.max_concurrent),
-                per_package_timeout: cli
-                    .per_package_timeout
-                    .unwrap_or(self.parallel.per_package_timeout),
-            },
-            webhook: {
-                let mut cfg = self.webhook.clone();
-                // CLI can override webhook settings
-                if let Some(url) = cli.webhook_url {
-                    cfg.url = url;
-                }
-                if let Some(secret) = cli.webhook_secret {
-                    cfg.secret = Some(secret);
-                }
-                cfg
-            },
-            encryption: {
-                let mut cfg = EncryptionSettings::default();
-                // Enable encryption if CLI flag is set or config enables it
-                if cli.encrypt || self.encryption.enabled {
-                    cfg.enabled = true;
-                }
-                // CLI passphrase takes precedence over config
-                if let Some(passphrase) = cli.encrypt_passphrase {
-                    cfg.passphrase = Some(passphrase);
-                } else if let Some(passphrase) = &self.encryption.passphrase {
-                    cfg.passphrase = Some(passphrase.clone());
-                }
-                // Use env_key from config if set
-                if let Some(ref env_key) = self.encryption.env_key {
-                    cfg.env_var = Some(env_key.clone());
-                } else if cfg.enabled && cfg.passphrase.is_none() {
-                    // Default to SHIPPER_ENCRYPT_KEY if enabled but no passphrase
-                    cfg.env_var = Some("SHIPPER_ENCRYPT_KEY".to_string());
-                }
-                cfg
-            },
-            registries: {
-                // Determine target registries based on CLI overrides and config
-                if cli.all_registries {
-                    // Publish to all configured registries
-                    self.registries
-                        .get_registries()
-                        .into_iter()
-                        .map(|r| Registry {
-                            name: r.name,
-                            api_base: r.api_base,
-                            index_base: r.index_base,
-                        })
-                        .collect()
-                } else if let Some(ref reg_names) = cli.registries {
-                    // Publish to specifically requested registries
-                    reg_names
-                        .iter()
-                        .map(|name| {
-                            // Try to find in config, otherwise use defaults
-                            self.registries
-                                .find_by_name(name)
-                                .map(|r| Registry {
-                                    name: r.name,
-                                    api_base: r.api_base,
-                                    index_base: r.index_base,
-                                })
-                                .unwrap_or_else(|| {
-                                    // Default to crates-io if not found
-                                    if name == "crates-io" {
-                                        Registry::crates_io()
-                                    } else {
-                                        Registry {
-                                            name: name.clone(),
-                                            api_base: format!("https://{}.crates.io", name),
-                                            index_base: None,
-                                        }
-                                    }
-                                })
-                        })
-                        .collect()
-                } else {
-                    // Default: single registry from the plan
-                    vec![]
-                }
-            },
-            resume_from: cli.resume_from,
-            // #97 PR 2: rehearsal resolution order, highest priority first:
-            //   1. CLI --rehearsal-registry <name>  (implicit enable)
-            //   2. config [rehearsal] enabled = true + registry = "..."
-            //   3. None → rehearsal disabled
-            //
-            // A CLI override always takes precedence, matching every other
-            // flag in this builder. --skip-rehearsal is passed through raw;
-            // engine::run_rehearsal honors it with a loud warning.
-            rehearsal_registry: cli.rehearsal_registry.clone().or_else(|| {
-                if self.rehearsal.enabled {
-                    self.rehearsal.registry.clone()
-                } else {
-                    None
-                }
-            }),
-            rehearsal_skip: cli.skip_rehearsal,
-            rehearsal_smoke_install: cli.rehearsal_smoke_install.clone(),
-        }
+        runtime_options::build(self, cli)
     }
 
     /// Generate a default configuration file content as TOML string

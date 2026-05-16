@@ -15,6 +15,7 @@
 //! See `CLAUDE.md` in this folder for architectural rules.
 
 use std::env;
+use std::path::Path;
 
 pub(crate) mod bin_override;
 pub(crate) mod cleanliness;
@@ -35,17 +36,23 @@ use crate::types::GitContext;
 /// `git` binary. Without the override, queries go through `context`.
 pub fn collect_git_context() -> Option<GitContext> {
     let repo_root = std::env::current_dir().ok()?;
+    collect_git_context_at(&repo_root)
+}
 
+/// Collect a [`GitContext`] for a specific workspace or repository path.
+///
+/// Returns `None` when `repo_root` is not inside a git repository.
+pub fn collect_git_context_at(repo_root: &Path) -> Option<GitContext> {
     let git_program = bin_override::git_program();
-    if !bin_override::is_repo_root(&repo_root, &git_program) {
+    if !bin_override::is_repo_root(repo_root, &git_program) {
         return None;
     }
 
     if env::var("SHIPPER_GIT_BIN").is_ok() {
-        let commit = bin_override::get_git_commit(&repo_root, &git_program);
-        let branch = bin_override::get_git_branch(&repo_root, &git_program);
-        let tag = bin_override::get_git_tag(&repo_root, &git_program);
-        let dirty = bin_override::get_git_dirty_status(&repo_root, &git_program);
+        let commit = bin_override::get_git_commit(repo_root, &git_program);
+        let branch = bin_override::get_git_branch(repo_root, &git_program);
+        let tag = bin_override::get_git_tag(repo_root, &git_program);
+        let dirty = bin_override::get_git_dirty_status(repo_root, &git_program);
         return Some(GitContext {
             commit,
             branch,
@@ -54,9 +61,9 @@ pub fn collect_git_context() -> Option<GitContext> {
         });
     }
 
-    if !context::is_git_repo(&repo_root) {
+    if !context::is_git_repo(repo_root) {
         return None;
     }
 
-    Some(context::get_git_context(&repo_root))
+    Some(context::get_git_context(repo_root))
 }

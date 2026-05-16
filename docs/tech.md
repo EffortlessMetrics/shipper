@@ -5,7 +5,7 @@
 ## Language & toolchain
 
 - **Rust edition 2024**
-- **MSRV: 1.92**
+- **MSRV: 1.95**
 - **Resolver v3**
 - `unsafe_code = "forbid"` workspace-wide — no `unsafe` blocks anywhere
 
