@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::runtime::environment::collect_environment_fingerprint;
-use shipper_types::{ExecutionState, Receipt};
+use shipper_types::{ExecutionState, Receipt, ReconciliationReport};
 
 #[cfg(test)]
 mod tests;
@@ -40,6 +40,7 @@ pub const CURRENT_PLAN_VERSION: &str = "shipper.plan.v1";
 
 pub const STATE_FILE: &str = "state.json";
 pub const RECEIPT_FILE: &str = "receipt.json";
+pub const RECONCILIATION_FILE: &str = "reconciliation.json";
 
 pub fn state_path(state_dir: &Path) -> PathBuf {
     state_dir.join(STATE_FILE)
@@ -47,6 +48,10 @@ pub fn state_path(state_dir: &Path) -> PathBuf {
 
 pub fn receipt_path(state_dir: &Path) -> PathBuf {
     state_dir.join(RECEIPT_FILE)
+}
+
+pub fn reconciliation_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(RECONCILIATION_FILE)
 }
 
 pub fn load_state(state_dir: &Path) -> Result<Option<ExecutionState>> {
@@ -75,6 +80,14 @@ pub fn write_receipt(state_dir: &Path, receipt: &Receipt) -> Result<()> {
 
     let path = receipt_path(state_dir);
     atomic_write_json(&path, receipt)
+}
+
+pub fn write_reconciliation_report(state_dir: &Path, report: &ReconciliationReport) -> Result<()> {
+    fs::create_dir_all(state_dir)
+        .with_context(|| format!("failed to create state dir {}", state_dir.display()))?;
+
+    let path = reconciliation_path(state_dir);
+    atomic_write_json(&path, report)
 }
 
 /// Clear state file (state.json) from state directory

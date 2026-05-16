@@ -785,6 +785,14 @@ pub fn run_publish(
                 });
                 event_log.write_to_file(&events_path)?;
                 event_log.clear();
+                if let Err(err) = crate::state::reconciliation::write_report_from_events(
+                    &state_dir,
+                    &ws.plan.plan_id,
+                    &ws.plan.registry,
+                    &events_path,
+                ) {
+                    reporter.warn(&format!("failed to write reconciliation report: {err}"));
+                }
 
                 match outcome {
                     ReconciliationOutcome::Published { .. } => {

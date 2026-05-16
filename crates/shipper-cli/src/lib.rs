@@ -3006,6 +3006,7 @@ fn clean_single_dir(
 ) -> Result<()> {
     let state_path = dir.join(shipper_core::state::execution_state::STATE_FILE);
     let receipt_path = dir.join(shipper_core::state::execution_state::RECEIPT_FILE);
+    let reconciliation_path = dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE);
     let lock_path = shipper_core::lock::lock_path(dir, Some(workspace_root));
 
     // Check for active lock
@@ -3064,6 +3065,21 @@ fn clean_single_dir(
         println!(
             "Kept: {} (--keep-receipt specified)",
             receipt_path.display()
+        );
+    }
+
+    if !keep_receipt && reconciliation_path.exists() {
+        std::fs::remove_file(&reconciliation_path).with_context(|| {
+            format!(
+                "failed to remove reconciliation file {}",
+                reconciliation_path.display()
+            )
+        })?;
+        println!("Removed: {}", reconciliation_path.display());
+    } else if keep_receipt && reconciliation_path.exists() {
+        println!(
+            "Kept: {} (--keep-receipt specified)",
+            reconciliation_path.display()
         );
     }
 
@@ -3809,6 +3825,8 @@ mode = "fast"
 
         let state_path = abs_state.join(shipper_core::state::execution_state::STATE_FILE);
         let receipt_path = abs_state.join(shipper_core::state::execution_state::RECEIPT_FILE);
+        let reconciliation_path =
+            abs_state.join(shipper_core::state::execution_state::RECONCILIATION_FILE);
         let events_path = abs_state.join(shipper_core::state::events::EVENTS_FILE);
         let preflight_only_events_path =
             abs_state.join("preflight-only-20260421T010101000000000Z-pid123.events.jsonl");
@@ -3816,6 +3834,7 @@ mode = "fast"
 
         fs::write(&state_path, "{}").expect("write state");
         fs::write(&receipt_path, "{}").expect("write receipt");
+        fs::write(&reconciliation_path, "{}").expect("write reconciliation");
         fs::write(&events_path, "{}").expect("write events");
         fs::write(&preflight_only_events_path, "{}").expect("write preflight-only events");
 
@@ -3835,6 +3854,10 @@ mode = "fast"
 
         assert!(!state_path.exists(), "state file should be removed");
         assert!(!receipt_path.exists(), "receipt file should be removed");
+        assert!(
+            !reconciliation_path.exists(),
+            "reconciliation file should be removed"
+        );
         assert!(!events_path.exists(), "events file should be removed");
         assert!(
             !preflight_only_events_path.exists(),

@@ -92,6 +92,22 @@ pub(super) fn emit_retry_backoff(
     );
 }
 
+fn write_reconciliation_report_best_effort(
+    state_dir: &Path,
+    ws: &PlannedWorkspace,
+    events_path: &Path,
+    reporter: &Arc<SendReporter>,
+) {
+    if let Err(err) = crate::state::reconciliation::write_report_from_events(
+        state_dir,
+        &ws.plan.plan_id,
+        &ws.plan.registry,
+        events_path,
+    ) {
+        reporter.warn(&format!("failed to write reconciliation report: {err}"));
+    }
+}
+
 /// Publish a single package with retries (parallel-safe version)
 #[allow(clippy::too_many_arguments)]
 pub(super) fn publish_package(
@@ -246,6 +262,7 @@ pub(super) fn publish_package(
             let _ = log.write_to_file(events_path);
             log.clear();
         }
+        write_reconciliation_report_best_effort(state_dir, ws, events_path, reporter);
 
         match outcome {
             ReconciliationOutcome::Published { .. } => {
@@ -482,7 +499,10 @@ pub(super) fn publish_package(
                             },
                             package: pkg_label.clone(),
                         });
+                        let _ = log.write_to_file(events_path);
+                        log.clear();
                     }
+                    write_reconciliation_report_best_effort(state_dir, ws, events_path, reporter);
 
                     match outcome {
                         ReconciliationOutcome::Published { .. } => {

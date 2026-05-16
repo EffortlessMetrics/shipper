@@ -706,6 +706,7 @@ fn clean_removes_state_and_events_files() {
     fs::write(state_dir.join("state.json"), "{}").expect("write state");
     fs::write(state_dir.join("events.jsonl"), "").expect("write events");
     fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
+    fs::write(state_dir.join("reconciliation.json"), "{}").expect("write reconciliation");
 
     shipper_cmd()
         .arg("--manifest-path")
@@ -721,6 +722,7 @@ fn clean_removes_state_and_events_files() {
     assert!(!state_dir.join("state.json").exists());
     assert!(!state_dir.join("events.jsonl").exists());
     assert!(!state_dir.join("receipt.json").exists());
+    assert!(!state_dir.join("reconciliation.json").exists());
 }
 
 #[test]
@@ -733,6 +735,7 @@ fn clean_keep_receipt_preserves_receipt_file() {
     fs::write(state_dir.join("state.json"), "{}").expect("write state");
     fs::write(state_dir.join("events.jsonl"), "").expect("write events");
     fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
+    fs::write(state_dir.join("reconciliation.json"), "{}").expect("write reconciliation");
 
     shipper_cmd()
         .arg("--manifest-path")
@@ -756,6 +759,10 @@ fn clean_keep_receipt_preserves_receipt_file() {
     assert!(
         state_dir.join("receipt.json").exists(),
         "receipt.json should be preserved with --keep-receipt"
+    );
+    assert!(
+        state_dir.join("reconciliation.json").exists(),
+        "reconciliation.json should be preserved with --keep-receipt"
     );
 }
 
