@@ -52,6 +52,7 @@ struct MetadataDependency {
     name: String,
     #[serde(default)]
     path: Option<String>,
+    kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +60,7 @@ struct Report {
     tool: &'static str,
     generated_at: String,
     summary: Summary,
+    architecture_contract: ArchitectureContract,
     packages: Vec<PackageSurface>,
 }
 
@@ -70,6 +72,20 @@ struct Summary {
     public_targets: usize,
     dependency_edges: usize,
     feature_names: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ArchitectureContract {
+    status: ContractStatus,
+    checked_rules: Vec<&'static str>,
+    violations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ContractStatus {
+    Pass,
+    Fail,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,6 +133,7 @@ pub fn package_surface() -> Result<()> {
     let workspace_root = workspace_root()?;
     let metadata = load_metadata(&workspace_root)?;
     let report = build_report(&workspace_root, metadata)?;
+    let violations = report.architecture_contract.violations.len();
     write_report(&workspace_root, &report)?;
 
     println!(
@@ -126,6 +143,9 @@ pub fn package_surface() -> Result<()> {
         report.summary.workspace_packages,
         report.summary.publishable_packages,
     );
+    if violations > 0 {
+        bail!("package-surface architecture contract failed with {violations} violation(s)");
+    }
     Ok(())
 }
 
@@ -141,6 +161,7 @@ fn build_report(workspace_root: &Path, metadata: Metadata) -> Result<Report> {
         .filter(|pkg| workspace_members.contains(&pkg.id))
         .map(|pkg| pkg.name.clone())
         .collect::<BTreeSet<_>>();
+    let architecture_contract = check_architecture_contract(&metadata.packages, &workspace_members);
 
     let mut packages = metadata
         .packages
@@ -172,8 +193,117 @@ fn build_report(workspace_root: &Path, metadata: Metadata) -> Result<Report> {
         tool: "cargo xtask package-surface",
         generated_at: today_iso(),
         summary,
+        architecture_contract,
         packages,
     })
+}
+
+fn check_architecture_contract(
+    packages: &[MetadataPackage],
+    workspace_members: &BTreeSet<String>,
+) -> ArchitectureContract {
+    let checked_rules = vec![
+        "`shipper` exists and depends on `shipper-cli` plus `shipper-core`",
+        "`shipper-cli` exists and depends on `shipper-core`",
+        "`shipper-core` exists and has no normal, dev, or build dependency on `shipper`, `shipper-cli`, `clap`, or `indicatif`",
+        "`xtask` is the only private workspace package",
+    ];
+    let mut violations = Vec::new();
+
+    let shipper = workspace_package(packages, workspace_members, "shipper");
+    let shipper_cli = workspace_package(packages, workspace_members, "shipper-cli");
+    let shipper_core = workspace_package(packages, workspace_members, "shipper-core");
+
+    require_package(shipper, "shipper", &mut violations);
+    require_package(shipper_cli, "shipper-cli", &mut violations);
+    require_package(shipper_core, "shipper-core", &mut violations);
+
+    if let Some(package) = shipper {
+        require_normal_dependency(package, "shipper-cli", &mut violations);
+        require_normal_dependency(package, "shipper-core", &mut violations);
+    }
+    if let Some(package) = shipper_cli {
+        require_normal_dependency(package, "shipper-core", &mut violations);
+    }
+    if let Some(package) = shipper_core {
+        forbid_dependency(package, "shipper", &mut violations);
+        forbid_dependency(package, "shipper-cli", &mut violations);
+        forbid_dependency(package, "clap", &mut violations);
+        forbid_dependency(package, "indicatif", &mut violations);
+    }
+
+    let private_packages = packages
+        .iter()
+        .filter(|pkg| workspace_members.contains(&pkg.id))
+        .filter(|pkg| publish_surface(&pkg.publish) == PublishSurface::Private)
+        .map(|pkg| pkg.name.as_str())
+        .collect::<Vec<_>>();
+    if private_packages != ["xtask"] {
+        violations.push(format!(
+            "private workspace packages must be exactly `xtask`; found: {}",
+            if private_packages.is_empty() {
+                "<none>".to_string()
+            } else {
+                private_packages.join(", ")
+            }
+        ));
+    }
+
+    ArchitectureContract {
+        status: if violations.is_empty() {
+            ContractStatus::Pass
+        } else {
+            ContractStatus::Fail
+        },
+        checked_rules,
+        violations,
+    }
+}
+
+fn workspace_package<'a>(
+    packages: &'a [MetadataPackage],
+    workspace_members: &BTreeSet<String>,
+    name: &str,
+) -> Option<&'a MetadataPackage> {
+    packages
+        .iter()
+        .find(|pkg| workspace_members.contains(&pkg.id) && pkg.name == name)
+}
+
+fn require_package(package: Option<&MetadataPackage>, name: &str, violations: &mut Vec<String>) {
+    if package.is_none() {
+        violations.push(format!("required workspace package `{name}` is missing"));
+    }
+}
+
+fn require_normal_dependency(
+    package: &MetadataPackage,
+    dependency: &str,
+    violations: &mut Vec<String>,
+) {
+    if !package
+        .dependencies
+        .iter()
+        .any(|dep| dep.name == dependency && dep.kind.as_deref().unwrap_or("normal") == "normal")
+    {
+        violations.push(format!(
+            "`{}` must have a normal dependency on `{dependency}`",
+            package.name
+        ));
+    }
+}
+
+fn forbid_dependency(package: &MetadataPackage, dependency: &str, violations: &mut Vec<String>) {
+    if package
+        .dependencies
+        .iter()
+        .any(|dep| dep.name == dependency)
+    {
+        violations.push(format!(
+            "`{}` must not depend on `{dependency}`",
+            package.name
+        ));
+    }
 }
 
 fn package_surface_for(
@@ -338,6 +468,25 @@ fn render_md(report: &Report) -> String {
         report.summary.feature_names
     ));
 
+    out.push_str("## Architecture Contract\n\n");
+    out.push_str(&format!(
+        "- Status: `{}`\n",
+        render_contract_status(report.architecture_contract.status)
+    ));
+    out.push_str("- Checked rules:\n");
+    for rule in &report.architecture_contract.checked_rules {
+        out.push_str(&format!("  - {rule}\n"));
+    }
+    if report.architecture_contract.violations.is_empty() {
+        out.push_str("- Violations: none\n\n");
+    } else {
+        out.push_str("- Violations:\n");
+        for violation in &report.architecture_contract.violations {
+            out.push_str(&format!("  - {violation}\n"));
+        }
+        out.push('\n');
+    }
+
     out.push_str("## Packages\n\n");
     out.push_str("| Package | Version | Publish | Targets | Workspace deps | External deps | Features | Surface hash |\n");
     out.push_str("|---|---|---|---:|---:|---:|---:|---|\n");
@@ -355,6 +504,13 @@ fn render_md(report: &Report) -> String {
         ));
     }
     out
+}
+
+fn render_contract_status(status: ContractStatus) -> &'static str {
+    match status {
+        ContractStatus::Pass => "pass",
+        ContractStatus::Fail => "fail",
+    }
 }
 
 fn render_publish(publish: &PublishSurface) -> String {
@@ -394,7 +550,12 @@ fn today_iso() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{PublishSurface, fnv1a64_hex, publish_surface, sorted};
+    use std::collections::BTreeSet;
+
+    use super::{
+        ContractStatus, MetadataDependency, MetadataPackage, PublishSurface,
+        check_architecture_contract, fnv1a64_hex, publish_surface, sorted,
+    };
 
     #[test]
     fn publish_surface_treats_missing_publish_as_publishable() {
@@ -432,5 +593,91 @@ mod tests {
     #[test]
     fn fnv1a_hash_is_stable_for_known_input() {
         assert_eq!(fnv1a64_hex(b"shipper"), "51a3b918b49d87ee");
+    }
+
+    #[test]
+    fn architecture_contract_passes_for_facade_cli_core_shape() {
+        let packages = product_graph_packages(vec![]);
+        let workspace_members = workspace_members(&packages);
+
+        let contract = check_architecture_contract(&packages, &workspace_members);
+
+        assert_eq!(contract.status, ContractStatus::Pass);
+        assert!(contract.violations.is_empty());
+    }
+
+    #[test]
+    fn architecture_contract_rejects_core_cli_dependencies() {
+        let packages = product_graph_packages(vec![normal_dep("shipper-cli"), normal_dep("clap")]);
+        let workspace_members = workspace_members(&packages);
+
+        let contract = check_architecture_contract(&packages, &workspace_members);
+
+        assert_eq!(contract.status, ContractStatus::Fail);
+        assert!(contract.violations.iter().any(|violation| {
+            violation.contains("`shipper-core` must not depend on `shipper-cli`")
+        }));
+        assert!(
+            contract
+                .violations
+                .iter()
+                .any(|violation| violation.contains("`shipper-core` must not depend on `clap`"))
+        );
+    }
+
+    #[test]
+    fn architecture_contract_requires_xtask_as_only_private_package() {
+        let mut packages = product_graph_packages(vec![]);
+        packages.push(package("helper-task", Some(Vec::new()), vec![]));
+        let workspace_members = workspace_members(&packages);
+
+        let contract = check_architecture_contract(&packages, &workspace_members);
+
+        assert_eq!(contract.status, ContractStatus::Fail);
+        assert!(contract.violations.iter().any(|violation| {
+            violation.contains("private workspace packages must be exactly `xtask`")
+        }));
+    }
+
+    fn product_graph_packages(core_dependencies: Vec<MetadataDependency>) -> Vec<MetadataPackage> {
+        vec![
+            package(
+                "shipper",
+                None,
+                vec![normal_dep("shipper-cli"), normal_dep("shipper-core")],
+            ),
+            package("shipper-cli", None, vec![normal_dep("shipper-core")]),
+            package("shipper-core", None, core_dependencies),
+            package("xtask", Some(Vec::new()), vec![]),
+        ]
+    }
+
+    fn package(
+        name: &str,
+        publish: Option<Vec<String>>,
+        dependencies: Vec<MetadataDependency>,
+    ) -> MetadataPackage {
+        MetadataPackage {
+            id: format!("path+file:///workspace/{name}#0.0.0"),
+            name: name.to_string(),
+            version: "0.0.0".to_string(),
+            manifest_path: format!("/workspace/{name}/Cargo.toml"),
+            publish,
+            targets: Vec::new(),
+            dependencies,
+            features: Default::default(),
+        }
+    }
+
+    fn normal_dep(name: &str) -> MetadataDependency {
+        MetadataDependency {
+            name: name.to_string(),
+            path: Some(format!("/workspace/{name}")),
+            kind: None,
+        }
+    }
+
+    fn workspace_members(packages: &[MetadataPackage]) -> BTreeSet<String> {
+        packages.iter().map(|package| package.id.clone()).collect()
     }
 }

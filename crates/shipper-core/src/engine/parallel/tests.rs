@@ -4132,6 +4132,14 @@ fn reconcile_bdd_ambiguous_resolves_to_published() {
         has_reconciled_published,
         "expected PublishReconciled with Published outcome"
     );
+    let infos = reporter.drain_infos();
+    assert!(
+        infos
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: Published")
+                && msg.contains("without retry")),
+        "expected operator-facing Published reconciliation action, infos: {infos:?}"
+    );
 
     server.join();
 }
@@ -4239,6 +4247,14 @@ fn reconcile_bdd_ambiguous_resolves_to_not_published_then_retries() {
     assert!(
         has_reconciled_not_published,
         "expected at least one PublishReconciled with NotPublished outcome"
+    );
+    let infos = reporter.drain_infos();
+    assert!(
+        infos
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: NotPublished")
+                && msg.contains("retry under publish policy")),
+        "expected operator-facing NotPublished retry action, infos: {infos:?}"
     );
 
     server.join();
@@ -4358,6 +4374,14 @@ fn reconcile_bdd_resume_from_ambiguous_state_skips_republish() {
         has_reconciled_published,
         "expected PublishReconciled with Published outcome"
     );
+    let infos = reporter.drain_infos();
+    assert!(
+        infos
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: Published")
+                && msg.contains("without republish")),
+        "expected operator-facing resume Published action, infos: {infos:?}"
+    );
 
     server.join();
 }
@@ -4458,6 +4482,14 @@ fn reconcile_bdd_resume_from_ambiguous_state_still_unknown_writes_report() {
     assert_eq!(
         report.records[0].operator_action,
         shipper_types::ReconciliationOperatorAction::OperatorActionRequired
+    );
+    let errors = reporter.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: StillUnknown")
+                && msg.contains("stop before blind retry")),
+        "expected operator-facing StillUnknown stop action, errors: {errors:?}"
     );
 
     server.join();
@@ -4596,6 +4628,14 @@ fn reconcile_bdd_ambiguous_resolves_to_still_unknown() {
     assert!(
         has_reconciled_still_unknown,
         "expected PublishReconciled with StillUnknown outcome"
+    );
+    let errors = reporter.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: StillUnknown")
+                && msg.contains("stop before blind retry")),
+        "expected operator-facing StillUnknown stop action, errors: {errors:?}"
     );
     let report_path = crate::state::execution_state::reconciliation_path(&state_dir);
     let report_json = std::fs::read_to_string(&report_path).expect("read reconciliation report");
