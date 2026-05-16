@@ -205,7 +205,7 @@ fn check_architecture_contract(
     let checked_rules = vec![
         "`shipper` exists and depends on `shipper-cli` plus `shipper-core`",
         "`shipper-cli` exists and depends on `shipper-core`",
-        "`shipper-core` exists and does not depend on `shipper`, `shipper-cli`, `clap`, or `indicatif`",
+        "`shipper-core` exists and has no normal, dev, or build dependency on `shipper`, `shipper-cli`, `clap`, or `indicatif`",
         "`xtask` is the only private workspace package",
     ];
     let mut violations = Vec::new();

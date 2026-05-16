@@ -134,8 +134,8 @@ publishability, targets, workspace dependencies, surface hashes, and the
 
 - `shipper` depends on `shipper-cli` and `shipper-core`;
 - `shipper-cli` depends on `shipper-core`;
-- `shipper-core` does not depend on `shipper`, `shipper-cli`, `clap`, or
-  `indicatif`;
+- `shipper-core` has no normal, dev, or build dependency on `shipper`,
+  `shipper-cli`, `clap`, or `indicatif`;
 - `xtask` is the only private workspace package.
 
 Any change that makes `shipper-core` depend on `shipper-cli` or `shipper`, turns
