@@ -6,4 +6,6 @@
 //!
 //! See `crates/shipper-core/src/ops/git/CLAUDE.md` for architectural notes.
 
-pub use crate::ops::git::{collect_git_context, ensure_git_clean, is_git_clean};
+pub use crate::ops::git::{
+    collect_git_context, collect_git_context_at, ensure_git_clean, is_git_clean,
+};

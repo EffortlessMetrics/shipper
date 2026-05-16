@@ -1100,6 +1100,68 @@ pub enum ReconciliationOutcome {
     },
 }
 
+/// Persisted report of registry-truth reconciliation outcomes for a release run.
+///
+/// This artifact is written to `.shipper/reconciliation.json` when a publish or
+/// resume run emits at least one [`EventType::PublishReconciled`] event. It is
+/// derived from the authoritative event log so humans, CI, and agents can
+/// inspect the ambiguity-resolution record without replaying every event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconciliationReport {
+    pub schema_version: String,
+    pub plan_id: String,
+    pub registry: Registry,
+    pub generated_at: DateTime<Utc>,
+    pub evidence_sources: Vec<ReconciliationEvidenceSource>,
+    pub records: Vec<ReconciliationRecord>,
+}
+
+/// File or artifact referenced by a reconciliation report.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReconciliationEvidenceSource {
+    pub kind: ReconciliationEvidenceKind,
+    pub path: String,
+}
+
+/// Kind of artifact referenced by [`ReconciliationEvidenceSource`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationEvidenceKind {
+    EventLog,
+    State,
+    Receipt,
+}
+
+/// One package-level reconciliation outcome.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReconciliationRecord {
+    pub package: String,
+    pub name: String,
+    pub version: String,
+    pub trigger: ReconciliationTrigger,
+    pub method: Option<ReadinessMethod>,
+    pub cargo_exit_class: Option<ErrorClass>,
+    pub outcome: ReconciliationOutcome,
+    pub operator_action: ReconciliationOperatorAction,
+}
+
+/// Why reconciliation was attempted.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationTrigger {
+    CargoAmbiguousExit,
+    ResumeAmbiguousState,
+}
+
+/// Machine-readable operator action implied by a reconciliation outcome.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationOperatorAction {
+    MarkPublishedContinue,
+    RetryAllowed,
+    OperatorActionRequired,
+}
+
 /// Progress tracking for a single package in an execution.
 ///
 /// This struct is persisted to disk during publishing to enable

@@ -43,7 +43,7 @@ pub(crate) fn run(
     all.extend(checks::connectivity::check(ws, reporter)?);
 
     println!();
-    checks::git::check();
+    all.extend(checks::git::check(ws));
 
     all.extend(checks::encryption::check(opts));
 
