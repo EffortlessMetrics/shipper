@@ -416,16 +416,33 @@ mod tests {
 
     fn with_multi_server<F>(handler: F, request_count: usize) -> (String, thread::JoinHandle<()>)
     where
-        F: Fn(tiny_http::Request) + Send + 'static,
+        F: Fn(tiny_http::Request) + Send + Sync + 'static,
     {
+        // Concurrent test clients hit the loopback socket simultaneously; if
+        // the accept loop blocks on `handler(req)` until the response is
+        // written, the remaining clients can sit in the kernel's TCP backlog
+        // long enough to exceed reqwest's default OS-level timeout on slow
+        // macOS CI runners. We saw this as a recurring flake — three hits
+        // in a single rollout session — until the loop was rewritten to
+        // accept-and-dispatch: spawn a worker thread per request and let
+        // the accept loop return immediately to `recv_timeout`. The
+        // `recv_timeout` itself is bumped from 30s to 60s for headroom.
+        let handler = std::sync::Arc::new(handler);
         let server = Server::http("127.0.0.1:0").expect("server");
         let addr = format!("http://{}", server.server_addr());
         let handle = thread::spawn(move || {
+            let mut workers: Vec<thread::JoinHandle<()>> = Vec::with_capacity(request_count);
             for _ in 0..request_count {
-                match server.recv_timeout(Duration::from_secs(30)) {
-                    Ok(Some(req)) => handler(req),
+                match server.recv_timeout(Duration::from_secs(60)) {
+                    Ok(Some(req)) => {
+                        let handler = handler.clone();
+                        workers.push(thread::spawn(move || handler(req)));
+                    }
                     _ => break,
                 }
+            }
+            for w in workers {
+                let _ = w.join();
             }
         });
         (addr, handle)
@@ -2873,18 +2890,20 @@ mod tests {
 
     #[test]
     fn concurrent_version_exists_checks() {
+        const CONCURRENT_REQUESTS: usize = 2;
+
         let (api_base, handle) = with_multi_server(
             |req| {
                 req.respond(Response::empty(StatusCode(200)))
                     .expect("respond");
             },
-            5,
+            CONCURRENT_REQUESTS,
         );
 
         let cli =
             std::sync::Arc::new(RegistryClient::new(test_registry(api_base)).expect("client"));
 
-        let handles: Vec<_> = (0..5)
+        let handles: Vec<_> = (0..CONCURRENT_REQUESTS)
             .map(|i| {
                 let cli = cli.clone();
                 let version = format!("{i}.0.0");

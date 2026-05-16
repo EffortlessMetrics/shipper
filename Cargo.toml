@@ -13,35 +13,67 @@ members = [
   "crates/shipper-cargo-failure",
   "crates/shipper-webhook",
   "crates/shipper-output-sanitizer",
+  "xtask",
 ]
 default-members = ["crates/shipper", "crates/shipper-cli"]
 exclude = ["fuzz"]
 resolver = "3"
 
 [workspace.package]
-version = "0.3.0-rc.2"
+version = "0.4.0-rc.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.92"
+rust-version = "1.95"
 
 [workspace.lints.rust]
+# Rust 1.95 compiler-side lint floor. Zero current fallout per the audit in
+# #198. Sources of truth: docs/CLIPPY_POLICY.md and policy/clippy-lints.toml.
+#
+# Issue #198 listed two lint names that turned out not to be real rustc lints
+# in 1.95 (`function_casts_as_integer` and `unused_visibilities`). They are
+# omitted here. `const_item_interior_mutations` from the issue maps to the
+# real `const_item_mutation`.
 unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+unexpected_cfgs = "warn"
+const_item_mutation = "deny"
+# Surface clippy's `unknown_lints` warnings as errors — same posture #198 took
+# for rustc lints. Catches fabricated names before they go live.
+unknown_lints = "deny"
+
+[workspace.lints.clippy]
+# Clippy 1.94/1.95 ratchet activation (#191). Names were verified via clippy
+# round-trip with `unknown_lints = "deny"` in [workspace.lints.rust], which
+# rejected one fabricated name from the original #191 plan
+# (`clippy::manual_pop_if`). Fallout per real lint was measured against the
+# workspace at activation time; the eight here had zero fallout. The
+# remaining planned lint (`duration_suboptimal_units`) has 204 sites and
+# stays in [[planned]] until a focused cleanup PR lands.
+same_length_and_capacity = "deny"
+manual_ilog2 = "warn"
+decimal_bitwise_operands = "warn"
+needless_type_cast = "warn"
+manual_checked_ops = "warn"
+manual_take = "warn"
+unnecessary_trailing_comma = "warn"
+disallowed_fields = "deny"
 
 [workspace.dependencies]
 # Intra-workspace crates (path + version for publish-readiness).
-shipper = { path = "crates/shipper", version = "0.3.0-rc.2" }
-shipper-core = { path = "crates/shipper-core", version = "0.3.0-rc.2" }
-shipper-cli = { path = "crates/shipper-cli", version = "0.3.0-rc.2" }
-shipper-config = { path = "crates/shipper-config", version = "0.3.0-rc.2" }
-shipper-types = { path = "crates/shipper-types", version = "0.3.0-rc.2" }
-shipper-duration = { path = "crates/shipper-duration", version = "0.3.0-rc.2" }
-shipper-retry = { path = "crates/shipper-retry", version = "0.3.0-rc.2" }
-shipper-encrypt = { path = "crates/shipper-encrypt", version = "0.3.0-rc.2" }
-shipper-webhook = { path = "crates/shipper-webhook", version = "0.3.0-rc.2" }
-shipper-registry = { path = "crates/shipper-registry", version = "0.3.0-rc.2" }
-shipper-sparse-index = { path = "crates/shipper-sparse-index", version = "0.3.0-rc.2" }
-shipper-cargo-failure = { path = "crates/shipper-cargo-failure", version = "0.3.0-rc.2" }
-shipper-output-sanitizer = { path = "crates/shipper-output-sanitizer", version = "0.3.0-rc.2" }
+shipper = { path = "crates/shipper", version = "0.4.0-rc.1" }
+shipper-core = { path = "crates/shipper-core", version = "0.4.0-rc.1" }
+shipper-cli = { path = "crates/shipper-cli", version = "0.4.0-rc.1" }
+shipper-config = { path = "crates/shipper-config", version = "0.4.0-rc.1" }
+shipper-types = { path = "crates/shipper-types", version = "0.4.0-rc.1" }
+shipper-duration = { path = "crates/shipper-duration", version = "0.4.0-rc.1" }
+shipper-retry = { path = "crates/shipper-retry", version = "0.4.0-rc.1" }
+shipper-encrypt = { path = "crates/shipper-encrypt", version = "0.4.0-rc.1" }
+shipper-webhook = { path = "crates/shipper-webhook", version = "0.4.0-rc.1" }
+shipper-registry = { path = "crates/shipper-registry", version = "0.4.0-rc.1" }
+shipper-sparse-index = { path = "crates/shipper-sparse-index", version = "0.4.0-rc.1" }
+shipper-cargo-failure = { path = "crates/shipper-cargo-failure", version = "0.4.0-rc.1" }
+shipper-output-sanitizer = { path = "crates/shipper-output-sanitizer", version = "0.4.0-rc.1" }
 
 # External crates.
 serde = { version = "1.0.228", features = ["derive"] }

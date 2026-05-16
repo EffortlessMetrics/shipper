@@ -38,7 +38,7 @@ Formatting & linting:
 - Clippy (recommended flags): `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 
 Toolchain:
-- The workspace declares `rust-version = "1.92"` in `Cargo.toml`.
+- The workspace declares `rust-version = "1.95"` in `Cargo.toml`.
 
 ---
 

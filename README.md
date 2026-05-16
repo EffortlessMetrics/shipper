@@ -2,7 +2,9 @@
 
 [![CI](https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml/badge.svg)](https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml)
 [![Codecov](https://codecov.io/gh/EffortlessMetrics/shipper/branch/main/graph/badge.svg)](https://codecov.io/gh/EffortlessMetrics/shipper)
-[![MSRV](https://img.shields.io/badge/MSRV-1.92-blue.svg)](https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field)
+[![ripr](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/EffortlessMetrics/shipper/main/badges/ripr.json)](docs/ci/ripr.md)
+[![ripr+](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/EffortlessMetrics/shipper/main/badges/ripr-plus.json)](docs/ci/ripr.md)
+[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue.svg)](https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 Publishing a multi-crate Rust workspace is easy to start and hard to trust. Shipper gives you a deterministic plan, resumable execution, and an audit trail you can actually use when something goes sideways.
@@ -16,10 +18,25 @@ Publishing a multi-crate Rust workspace is easy to start and hard to trust. Ship
 - Reconciles ambiguous `cargo publish` outcomes against registry truth instead of blind-retrying.
 - Records events, state, and receipts for post-run auditing and remediation.
 
-## Try it
+## Install
+
+Shipper's supported install handle is the product facade crate:
 
 ```bash
 cargo install shipper --locked
+shipper --version
+```
+
+For local checkout validation before a release, use the same facade crate:
+
+```bash
+cargo install --path crates/shipper --locked
+shipper --help
+```
+
+## Try it
+
+```bash
 shipper plan        # preview the publish order
 shipper preflight   # check readiness
 shipper publish     # execute the plan
@@ -32,7 +49,7 @@ Shipper does not decide version numbers, generate changelogs, tag releases, or c
 
 ## Where to go next
 
-- **Learn** → [docs/tutorials](docs/tutorials) (first publish, recovery walkthrough)
+- **Learn** → [docs/tutorials](docs/tutorials) (five-minute confidence path, first publish, recovery walkthrough)
 - **Do** → [docs/how-to](docs/how-to) (CI integration, stalled-run triage, remediation)
 - **Look up** → [docs/reference](docs/reference) (CLI, state files, `.shipper.toml`)
 - **Understand** → [docs/explanation](docs/explanation) (why Shipper, `not_proven`, invariants)

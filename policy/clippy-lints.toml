@@ -1,0 +1,133 @@
+# Clippy lint ledger.
+#
+# Authoritative record of active and planned Clippy lints for the shipper
+# workspace. Mirrors the tables in docs/CLIPPY_POLICY.md.
+#
+# `msrv` here must equal the MSRV set in clippy.toml and
+# `[workspace.package] rust-version` in Cargo.toml. The `cargo xtask
+# check-lint-policy` command verifies all three agree.
+#
+# `[[active]]` entries are the lints that are (or will be, at lint-activation
+# time) live in `[workspace.lints.clippy]`. The check-lint-policy command
+# verifies every member of `[workspace.lints.clippy]` has a ledger entry
+# here. Reverse direction is NOT enforced — entries here may be
+# aspirational until the activation PR lands (see PR 7 / #191).
+#
+# `[[planned]]` entries activate once MSRV reaches `min_msrv`. Activation
+# itself is a separate PR after measurement; see docs/CLIPPY_POLICY.md.
+
+schema_version = "1.0"
+policy = "clippy-lints"
+owner = "rust/lints"
+status = "active"
+msrv = "1.95"
+
+# ─── Active lints ───────────────────────────────────────────────────────────
+
+[[active]]
+name = "rust::unsafe_code"
+level = "forbid"
+class = "unsafe-memory"
+reason = "shipper has no unsafe code"
+since = "1.92"
+
+[[active]]
+name = "clippy::dbg_macro"
+level = "deny"
+class = "hygiene"
+reason = "Debug macros are not a reviewable diagnostics path"
+since = "0.0.0"
+
+[[active]]
+name = "clippy::todo"
+level = "deny"
+class = "panic"
+reason = "TODO execution paths are not allowed"
+since = "0.0.0"
+
+[[active]]
+name = "clippy::unimplemented"
+level = "deny"
+class = "panic"
+reason = "Unimplemented execution paths are not allowed"
+since = "0.0.0"
+
+# ─── 1.94/1.95 ratchet activations (#191) ───────────────────────────────────
+#
+# Moved from [[planned]] to [[active]] after the activation PR (#191)
+# verified each name via clippy round-trip and measured zero fallout
+# across the workspace. `since = "1.95"` records the MSRV at activation
+# time (the lints themselves stabilised at their `min_msrv` from the
+# previous planned entries).
+
+[[active]]
+name = "clippy::same_length_and_capacity"
+level = "deny"
+class = "correctness"
+reason = "Catch raw-parts reconstruction mistakes"
+since = "1.95"
+
+[[active]]
+name = "clippy::manual_ilog2"
+level = "warn"
+class = "style"
+reason = "Prefer standard integer log helper"
+since = "1.95"
+
+[[active]]
+name = "clippy::decimal_bitwise_operands"
+level = "warn"
+class = "correctness"
+reason = "Make bit masks visually inspectable"
+since = "1.95"
+
+[[active]]
+name = "clippy::needless_type_cast"
+level = "warn"
+class = "style"
+reason = "Avoid stale numeric type drift"
+since = "1.95"
+
+[[active]]
+name = "clippy::manual_checked_ops"
+level = "warn"
+class = "correctness"
+reason = "Prefer checked arithmetic over manual guards"
+since = "1.95"
+
+[[active]]
+name = "clippy::manual_take"
+level = "warn"
+class = "style"
+reason = "Use standard ownership helper"
+since = "1.95"
+
+[[active]]
+name = "clippy::unnecessary_trailing_comma"
+level = "warn"
+class = "style"
+reason = "Keep format macro calls clean"
+since = "1.95"
+
+[[active]]
+name = "clippy::disallowed_fields"
+level = "deny"
+class = "boundary"
+reason = "Ban direct field access across protected seams (pending seam configuration; see docs/CLIPPY_POLICY.md)"
+since = "1.95"
+
+# ─── Planned lints (MSRV-gated) ─────────────────────────────────────────────
+
+[[planned]]
+name = "clippy::duration_suboptimal_units"
+level = "warn"
+min_msrv = "1.95"
+reason = "Make durations legible. Activation deferred from #191: 204 fallout sites across 20 files (config/runtime/retry/types/lock APIs that accept user-supplied millisecond values); needs a focused cleanup PR rather than a debt entry."
+
+# ─── Fabricated names rejected by the activation audit ──────────────────────
+#
+# `clippy::manual_pop_if` was listed in #191's original plan but is not a
+# real clippy lint in 1.95 — clippy emits E0602 (unknown lint) when it is
+# referenced. Recorded here so future readers can see that the omission
+# was intentional, not an oversight. Same pattern as the rustc fabrications
+# recorded in [workspace.lints.rust] in Cargo.toml (#198).

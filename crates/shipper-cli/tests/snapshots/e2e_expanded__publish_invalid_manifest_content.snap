@@ -2,11 +2,15 @@
 source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: "normalize_stderr(&stderr.replace(td.path().to_str().unwrap(),\n\"<TMPDIR>\").replace(&td.path().to_str().unwrap().replace('\\\\', \"/\"),\n\"<TMPDIR>\",),)"
 ---
-Error: failed to execute cargo metadata
+Error: failed to load release plan for `publish` - next steps:
+  * verify `--manifest-path` points at the workspace Cargo.toml: <TMPDIR>/Cargo.toml
+  * run `cargo metadata --manifest-path "<TMPDIR>/Cargo.toml"` to inspect the underlying Cargo error
+  * run `shipper plan` first to inspect publishable and skipped crates
 
 Caused by:
-    `cargo metadata` exited with an error: error: key with no value, expected `=`
-     --> <TMPDIR>/Cargo.toml:1:6
-      |
-    1 | this is not valid toml {{{{
-      |      ^
+    0: failed to execute cargo metadata
+    1: `cargo metadata` exited with an error: error: key with no value, expected `=`
+        --> <TMPDIR>/Cargo.toml:1:6
+         |
+       1 | this is not valid toml {{{{
+         |      ^

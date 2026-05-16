@@ -1,13 +1,50 @@
 ---
 source: crates/shipper-cli/tests/e2e_expanded.rs
-expression: normalize_output(&stdout)
+expression: "normalize_tempdir_json_output(&stdout, td.path())"
 ---
-plan_id: <PLAN_ID>
-registry: crates-io (https://crates.io)
-workspace_root: <WORKSPACE_ROOT>
-
-Total packages to publish: 3
-
-  1. core-lib@0.2.0
-  2. mid-lib@0.3.0
-  3. top-app@0.4.0
+{
+  "plan_id": "f50f53d98fbd6f2bb7b4a3bbb9e0abf353d277d4c3e6766ec6cd331a78b9c268",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io"
+  },
+  "workspace_root": "<WORKSPACE_ROOT>",
+  "publishable_count": 3,
+  "skipped_count": 0,
+  "internal_dependency_edges": 2,
+  "publish_levels": 3,
+  "packages": [
+    {
+      "order": 1,
+      "name": "core-lib",
+      "version": "0.2.0",
+      "manifest_path": "<WORKSPACE_ROOT>/core-lib/Cargo.toml",
+      "level": 0,
+      "dependencies": [],
+      "order_reason": "no workspace dependencies"
+    },
+    {
+      "order": 2,
+      "name": "mid-lib",
+      "version": "0.3.0",
+      "manifest_path": "<WORKSPACE_ROOT>/mid-lib/Cargo.toml",
+      "level": 1,
+      "dependencies": [
+        "core-lib@0.2.0"
+      ],
+      "order_reason": "depends on: core-lib@0.2.0"
+    },
+    {
+      "order": 3,
+      "name": "top-app",
+      "version": "0.4.0",
+      "manifest_path": "<WORKSPACE_ROOT>/top-app/Cargo.toml",
+      "level": 2,
+      "dependencies": [
+        "mid-lib@0.3.0"
+      ],
+      "order_reason": "depends on: mid-lib@0.3.0"
+    }
+  ],
+  "skipped": []
+}

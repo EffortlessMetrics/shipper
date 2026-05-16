@@ -1,0 +1,27 @@
+# Clippy debt ledger.
+#
+# Temporary accepted violations of an active Clippy lint. Every entry has
+# an owner and an expires date. When `expires` passes, the entry must be
+# renewed or the underlying suppression removed.
+#
+# This file ships empty in PR for #179. The workspace is currently
+# Clippy-clean, so no debt exists. Real entries arrive only when PR 7
+# (#191) activates new lints with measured fallout, or when a future PR
+# accepts a specific time-bound exception.
+#
+# See docs/CLIPPY_POLICY.md and policy/clippy-lints.toml.
+
+schema_version = "1.0"
+policy = "clippy-debt"
+owner = "rust/lints"
+status = "active"
+
+# Entries take this shape:
+#
+# [[debt]]
+# lint = "clippy::needless_pass_by_value"
+# path = "crates/shipper-core/src/plan/mod.rs"
+# count = 3
+# owner = "rust/lints"
+# reason = "Refactor planned in API cleanup PR (#184)."
+# expires = "2026-08-11"
