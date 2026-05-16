@@ -27,6 +27,7 @@
 //! on [`shipper_core`](https://crates.io/crates/shipper-core) instead.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -364,7 +365,11 @@ EXAMPLES:
     /// Print environment and auth diagnostics.
     Doctor,
     /// View detailed event log.
-    InspectEvents,
+    InspectEvents {
+        /// Follow the authoritative events.jsonl and print appended events as they arrive.
+        #[arg(long)]
+        follow: bool,
+    },
     /// View detailed receipt with evidence.
     InspectReceipt,
     /// Print CI configuration snippets for various platforms.
@@ -995,8 +1000,8 @@ pub fn run() -> Result<()> {
                 run_doctor(&current_planned, &opts, &mut reporter)?;
             }
         }
-        Commands::InspectEvents => {
-            run_inspect_events(&planned, &opts)?;
+        Commands::InspectEvents { follow } => {
+            run_inspect_events(&planned, &opts, &cli.format, follow)?;
         }
         Commands::InspectReceipt => {
             run_inspect_receipt(&planned, &opts, &cli.format)?;
@@ -1444,7 +1449,7 @@ fn command_name_for_hint(command: &Commands) -> &'static str {
         Commands::Rehearse => "rehearse",
         Commands::Status => "status",
         Commands::Doctor => "doctor",
-        Commands::InspectEvents => "inspect-events",
+        Commands::InspectEvents { .. } => "inspect-events",
         Commands::InspectReceipt => "inspect-receipt",
         Commands::Ci(_) => "ci",
         Commands::Clean { .. } => "clean",
@@ -2322,12 +2327,21 @@ fn print_receipt(
     }
 }
 
-fn run_inspect_events(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Result<()> {
+fn run_inspect_events(
+    ws: &plan::PlannedWorkspace,
+    opts: &RuntimeOptions,
+    format: &str,
+    follow: bool,
+) -> Result<()> {
     let state_dir = if opts.state_dir.is_absolute() {
         opts.state_dir.clone()
     } else {
         ws.workspace_root.join(&opts.state_dir)
     };
+
+    if follow {
+        return follow_authoritative_event_log(&state_dir, format);
+    }
 
     let event_logs = discover_event_logs(&state_dir)?;
     if event_logs.is_empty() {
@@ -2339,20 +2353,82 @@ fn run_inspect_events(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Res
         let event_log = shipper_core::state::events::EventLog::read_from_file(events_path)
             .with_context(|| format!("failed to read event log from {}", events_path.display()))?;
 
-        println!("Event log: {}", events_path.display());
-        println!();
+        if format != "json" {
+            println!("Event log: {}", events_path.display());
+            println!();
+        }
 
         for event in event_log.all_events() {
             let json = serde_json::to_string(event).expect("serialize event");
             println!("{}", json);
         }
 
-        if idx + 1 != event_logs.len() {
+        if format != "json" && idx + 1 != event_logs.len() {
             println!();
         }
     }
 
     Ok(())
+}
+
+fn follow_authoritative_event_log(state_dir: &Path, format: &str) -> Result<()> {
+    let events_path = shipper_core::state::events::events_path(state_dir);
+    if format != "json" {
+        println!("Event log: {}", events_path.display());
+        if !events_path.exists() {
+            println!("Waiting for events...");
+        }
+        println!("Press Ctrl+C to stop.");
+        println!();
+    }
+
+    let mut offset = 0;
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    loop {
+        offset = write_event_lines_since(&events_path, offset, &mut out)?;
+        out.flush().context("failed to flush event output")?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn write_event_lines_since<W: Write>(events_path: &Path, offset: u64, out: &mut W) -> Result<u64> {
+    if !events_path.exists() {
+        return Ok(offset);
+    }
+
+    let len = std::fs::metadata(events_path)
+        .with_context(|| format!("failed to stat event log {}", events_path.display()))?
+        .len();
+    let mut next_offset = offset.min(len);
+    let mut file = std::fs::File::open(events_path)
+        .with_context(|| format!("failed to open event log {}", events_path.display()))?;
+    file.seek(SeekFrom::Start(next_offset))
+        .with_context(|| format!("failed to seek event log {}", events_path.display()))?;
+
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .with_context(|| format!("failed to read event log {}", events_path.display()))?;
+        if read == 0 {
+            break;
+        }
+        next_offset += read as u64;
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        let event: shipper_core::types::PublishEvent = serde_json::from_str(trimmed)
+            .with_context(|| format!("failed to parse event JSON from line: {}", trimmed))?;
+        serde_json::to_writer(&mut *out, &event).context("failed to serialize event")?;
+        out.write_all(b"\n")
+            .context("failed to write event output")?;
+    }
+
+    Ok(next_offset)
 }
 
 fn discover_event_logs(state_dir: &Path) -> Result<Vec<PathBuf>> {
@@ -3765,6 +3841,60 @@ mode = "fast"
             "preflight-only sidecar should be removed"
         );
         assert!(!lock_path.exists(), "lock file should be removed");
+    }
+
+    #[test]
+    fn write_event_lines_since_streams_only_new_events() {
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        fs::write(
+            &events_path,
+            concat!(
+                r#"{"timestamp":"2025-01-01T00:00:00Z","event_type":{"type":"plan_created","plan_id":"abc123","package_count":1},"package":"all"}"#,
+                "\n",
+            ),
+        )
+        .expect("write first event");
+
+        let mut out = Vec::new();
+        let offset = write_event_lines_since(&events_path, 0, &mut out).expect("read first");
+        let first = String::from_utf8(out).expect("utf8");
+        assert!(first.contains(r#""type":"plan_created""#));
+        assert_eq!(first.lines().count(), 1);
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&events_path)
+            .expect("open append")
+            .write_all(
+                concat!(
+                    r#"{"timestamp":"2025-01-01T00:00:01Z","event_type":{"type":"execution_started"},"package":"all"}"#,
+                    "\n",
+                )
+                .as_bytes(),
+            )
+            .expect("append event");
+
+        let mut out = Vec::new();
+        let next_offset =
+            write_event_lines_since(&events_path, offset, &mut out).expect("read second");
+        let second = String::from_utf8(out).expect("utf8");
+        assert!(second.contains(r#""type":"execution_started""#));
+        assert!(!second.contains(r#""type":"plan_created""#));
+        assert_eq!(second.lines().count(), 1);
+        assert!(next_offset > offset);
+    }
+
+    #[test]
+    fn write_event_lines_since_missing_file_keeps_offset() {
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("missing-events.jsonl");
+        let mut out = Vec::new();
+
+        let offset = write_event_lines_since(&events_path, 42, &mut out).expect("missing file");
+
+        assert_eq!(offset, 42);
+        assert!(out.is_empty());
     }
 
     #[test]

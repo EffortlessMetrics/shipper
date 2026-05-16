@@ -2628,6 +2628,40 @@ fn inspect_events_with_data_snapshot() {
     assert_snapshot!("inspect_events_with_data", normalize_output(&stdout));
 }
 
+/// Snapshot: inspect-events --format json omits human headers.
+#[test]
+fn inspect_events_json_format_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+    fs::write(
+        state_dir.join("events.jsonl"),
+        concat!(
+            r#"{"timestamp":"2025-01-01T00:00:00Z","event_type":{"type":"plan_created","plan_id":"abc123","package_count":1},"package":"all"}"#,
+            "\n",
+            r#"{"timestamp":"2025-01-01T00:00:01Z","event_type":{"type":"execution_started"},"package":"all"}"#,
+            "\n",
+        ),
+    )
+    .expect("write");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--format")
+        .arg("json")
+        .arg("inspect-events")
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("inspect_events_json_format", normalize_output(&stdout));
+}
+
 // ===========================================================================
 // 42. Publish with invalid manifest content
 // ===========================================================================
