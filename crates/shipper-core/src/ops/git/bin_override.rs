@@ -252,7 +252,10 @@ mod tests {
     fn get_git_commit_returns_ascii_sha_in_repo() {
         let dir = init_repo();
         let commit = get_git_commit(dir.path(), "git").expect("commit available after init");
-        assert_eq!(commit.len(), 40, "expected 40-char SHA, got {commit:?}");
+        assert!(
+            matches!(commit.len(), 40 | 64),
+            "expected SHA-1 or SHA-256 hex object ID, got {commit:?}"
+        );
         assert!(
             commit.chars().all(|c| c.is_ascii_hexdigit()),
             "non-hex chars in commit: {commit:?}"
@@ -309,7 +312,7 @@ mod tests {
     #[test]
     fn get_git_tag_some_when_head_is_tagged() {
         let dir = init_repo();
-        run_git(&["tag", "v0.1.0"], dir.path());
+        run_git(&["-c", "tag.gpgSign=false", "tag", "v0.1.0"], dir.path());
         let tag = get_git_tag(dir.path(), "git").expect("tag at HEAD");
         assert_eq!(tag, "v0.1.0");
     }
