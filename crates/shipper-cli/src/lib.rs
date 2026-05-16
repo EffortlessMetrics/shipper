@@ -2685,12 +2685,29 @@ fn run_doctor(
 
     // 5. Check Git State
     println!();
-    match shipper_core::git::collect_git_context() {
+    match shipper_core::git::collect_git_context_at(&ws.workspace_root) {
         Some(git) => {
             let dirty = git.dirty.unwrap_or(false);
             println!("git_commit: {}", git.commit.unwrap_or_else(|| "-".into()));
             println!("git_branch: {}", git.branch.unwrap_or_else(|| "-".into()));
             println!("git_dirty: {}", dirty);
+            if dirty {
+                findings.push(DoctorFinding {
+                    id: "git-working-tree-dirty",
+                    severity: DoctorFindingLevel::Blocked,
+                    status: DoctorFindingLevel::Blocked,
+                    title: "git working tree is dirty",
+                    why_it_matters:
+                        "release evidence must describe the exact source tree being planned, proven, published, and resumed",
+                    evidence: "git_dirty: true".to_string(),
+                    try_next: vec![
+                        "commit, stash, or revert unrelated changes before release",
+                        "rerun `shipper doctor` and `shipper preflight`",
+                        "use `--allow-dirty` only for intentional local rehearsal",
+                    ],
+                    docs: Some("docs/failure-modes.md"),
+                });
+            }
         }
         None => println!("git_context: not a git repository"),
     }

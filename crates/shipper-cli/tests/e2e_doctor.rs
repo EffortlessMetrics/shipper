@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command as StdCommand;
 use std::thread;
 
 use assert_cmd::Command;
@@ -43,6 +44,19 @@ edition = "2021"
 
 fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
+}
+
+fn init_git_repo(root: &Path) {
+    let output = StdCommand::new("git")
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .expect("git init");
+    assert!(
+        output.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 struct TestRegistry {
@@ -290,6 +304,45 @@ fn doctor_reports_state_file_if_present() {
         .success()
         .stdout(contains("state_dir:"))
         .stdout(contains("state_dir_writable: true"));
+
+    registry.join();
+}
+
+/// 8. Doctor turns dirty git state into an actionable finding.
+#[test]
+fn doctor_reports_dirty_git_remediation() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    init_git_repo(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    let registry = spawn_registry(1);
+
+    shipper_cmd()
+        .current_dir(td.path())
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .stdout(contains("git_dirty: true"))
+        .stdout(contains(
+            "[blocked] git working tree is dirty (git-working-tree-dirty)",
+        ))
+        .stdout(contains(
+            "why: release evidence must describe the exact source tree being planned, proven, published, and resumed",
+        ))
+        .stdout(contains(
+            "- commit, stash, or revert unrelated changes before release",
+        ))
+        .stdout(contains(
+            "- use `--allow-dirty` only for intentional local rehearsal",
+        ));
 
     registry.join();
 }
