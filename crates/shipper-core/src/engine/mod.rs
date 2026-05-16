@@ -7,8 +7,6 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
 use crate::cargo;
-use crate::git;
-use crate::ops::auth;
 use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
 #[cfg(test)]
@@ -16,22 +14,26 @@ use crate::runtime::environment;
 #[cfg(test)]
 use crate::runtime::execution::short_state;
 use crate::runtime::execution::{
-    RegistryProfile, backoff_delay, classify_cargo_failure, pkg_key, registry_aware_backoff,
-    resolve_state_dir, update_state,
+    backoff_delay, classify_cargo_failure, pkg_key, registry_aware_backoff, resolve_state_dir,
+    update_state,
 };
 use crate::state::events;
 use crate::state::execution_state as state;
 #[cfg(test)]
 use crate::types::ExecutionResult;
 use crate::types::{
-    AttemptEvidence, ErrorClass, EventType, ExecutionState, Finishability, PackageProgress,
-    PackageReceipt, PackageState, PreflightDurationEstimate, PreflightPackage, PreflightReport,
-    PublishEvent, PublishRegime, ReadinessEvidence, Receipt, ReconciliationOutcome, Registry,
-    RuntimeOptions,
+    AttemptEvidence, ErrorClass, EventType, ExecutionState, PackageProgress, PackageReceipt,
+    PackageState, PreflightReport, PublishEvent, PublishRegime, ReadinessEvidence, Receipt,
+    ReconciliationOutcome, Registry, RuntimeOptions,
 };
+#[cfg(test)]
+use crate::types::{Finishability, PreflightPackage};
 use crate::webhook::{self, WebhookEvent};
 
+mod preflight;
 mod publish;
+
+pub use preflight::PreflightRunOptions;
 
 pub trait Reporter {
     fn info(&mut self, msg: &str);
@@ -132,32 +134,6 @@ fn init_registry_client(registry: Registry, state_dir: &Path) -> Result<Registry
 /// let report = engine::run_preflight(&ws, &opts, &mut reporter)?;
 /// println!("Finishability: {:?}", report.finishability);
 /// ```
-/// Run-time options that only affect preflight behavior (#100).
-///
-/// Kept separate from [`RuntimeOptions`] so that CLI-level "just this
-/// invocation" toggles (e.g. `--preflight-only`) don't need to thread
-/// through every other engine entry point. A `Default` instance
-/// preserves historical behavior: reads and appends the authoritative
-/// `events.jsonl` log.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PreflightRunOptions {
-    /// If `true`, the preflight run is session-isolated (#100 /
-    /// `shipper preflight --preflight-only`):
-    ///
-    /// - Does not touch the authoritative `events.jsonl` log; writes
-    ///   its events to a sidecar at
-    ///   `<state_dir>/preflight-only-<session>.events.jsonl`.
-    /// - Does not load or inspect any prior `events.jsonl`; the
-    ///   resulting `Finishability` is a fresh read of the current
-    ///   workspace + registry, independent of any accumulated publish
-    ///   or resume state.
-    /// - Never writes `state.json`.
-    ///
-    /// `false` (the default) preserves the original behavior: the
-    /// authoritative append-only `events.jsonl` is extended.
-    pub fresh_audit: bool,
-}
-
 /// Back-compat entry point preserving the historical preflight shape
 /// (appends to `events.jsonl`). Equivalent to
 /// `run_preflight_with_options(ws, opts, reporter, Default::default())`.
@@ -209,345 +185,7 @@ pub fn run_preflight_in_place_with_options(
     reporter: &mut dyn Reporter,
     run_opts: PreflightRunOptions,
 ) -> Result<PreflightReport> {
-    let workspace_root = &ws.workspace_root;
-    let effects = policy_effects(opts);
-    let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
-
-    // Resolve the event sink. In `fresh_audit` mode we never touch the
-    // authoritative `events.jsonl`; events land in a session-scoped
-    // sidecar instead. See `PreflightRunOptions::fresh_audit`.
-    let events_path = if run_opts.fresh_audit {
-        let session_id = format!(
-            "{}-pid{}",
-            Utc::now().format("%Y%m%dT%H%M%S%fZ"),
-            std::process::id()
-        );
-        events::preflight_only_events_path(&state_dir, &session_id)
-    } else {
-        events::events_path(&state_dir)
-    };
-
-    let flush_events =
-        |log: &events::EventLog, path: &Path| -> Result<()> { log.write_to_file(path) };
-
-    let mut event_log = events::EventLog::new();
-
-    event_log.record(PublishEvent {
-        timestamp: Utc::now(),
-        event_type: EventType::PreflightStarted,
-        package: "all".to_string(),
-    });
-    flush_events(&event_log, &events_path)?;
-    event_log.clear();
-
-    if !opts.allow_dirty {
-        reporter.info("checking git cleanliness...");
-        git::ensure_git_clean(workspace_root)?;
-    }
-
-    reporter.info("initializing registry client...");
-    let reg = init_registry_client(ws.plan.registry.clone(), &state_dir)?;
-
-    let token = auth::resolve_token(&ws.plan.registry.name)?;
-    let token_detected = token.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
-    let auth_type = auth::detect_auth_type_from_token(token.as_deref());
-
-    if effects.strict_ownership && !token_detected {
-        event_log.record(PublishEvent {
-            timestamp: Utc::now(),
-            event_type: EventType::PreflightComplete {
-                finishability: Finishability::Failed,
-            },
-            package: "all".to_string(),
-        });
-        flush_events(&event_log, &events_path)?;
-        bail!(
-            "strict ownership requested but no token found (set CARGO_REGISTRY_TOKEN or run cargo login)"
-        );
-    }
-
-    // Run dry-run verification based on VerifyMode and policy
-    use crate::types::VerifyMode;
-
-    // Workspace-level dry-run result (used for Workspace mode)
-    //
-    // Event-payload handling (#92): the raw dry-run stderr is cargo's
-    // human-facing log with embedded ANSI escapes — historically ~2KB per
-    // event and not useful in a structured log. We now:
-    //   1. Strip ANSI from the full captured output,
-    //   2. Write the full stripped output to a sidecar at
-    //      <state_dir>/preflight_workspace_verify.txt,
-    //   3. Put only a short summary (exit_code + last ~200 chars tail) into
-    //      the event's `output` field, preserving the field shape for
-    //      backward compatibility.
-    let (workspace_dry_run_passed, workspace_dry_run_output) = if effects.run_dry_run
-        && opts.verify_mode == VerifyMode::Workspace
-    {
-        reporter.info("running workspace dry-run verification...");
-        let dry_run_result = cargo::cargo_publish_dry_run_workspace(
-            workspace_root,
-            &ws.plan.registry.name,
-            opts.allow_dirty,
-            opts.output_lines,
-        );
-        match &dry_run_result {
-            Ok(output) => {
-                let passed = output.exit_code == 0;
-                let full_stripped = format!(
-                    "workspace dry-run: exit_code={}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
-                    output.exit_code,
-                    shipper_output_sanitizer::strip_ansi(&output.stdout_tail),
-                    shipper_output_sanitizer::strip_ansi(&output.stderr_tail),
-                );
-                let sidecar_path = state_dir.join("preflight_workspace_verify.txt");
-                if let Some(parent) = sidecar_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Err(e) = std::fs::write(&sidecar_path, &full_stripped) {
-                    reporter.warn(&format!(
-                        "failed to write preflight workspace-verify sidecar at {}: {e}",
-                        sidecar_path.display()
-                    ));
-                }
-                // The sidecar path is deterministic (<state_dir>/preflight_
-                // workspace_verify.txt); documented in the runbook. Keeping
-                // the success path quiet avoids churn in operator output
-                // snapshots and byte-count variability across platforms.
-                // Slim summary for the event log: exit code + tail of
-                // ANSI-stripped stderr (the interesting signal).
-                let tail_summary = shipper_output_sanitizer::tail_lines(
-                    &shipper_output_sanitizer::strip_ansi(&output.stderr_tail),
-                    6,
-                );
-                let summary = format!(
-                    "workspace dry-run: exit_code={}; sidecar={}; stderr_tail_summary={:?}",
-                    output.exit_code,
-                    sidecar_path.display(),
-                    tail_summary
-                );
-                (passed, summary)
-            }
-            Err(err) => (false, format!("workspace dry-run failed: {err:#}")),
-        }
-    } else if !effects.run_dry_run || opts.verify_mode == VerifyMode::None {
-        reporter.info("skipping dry-run (policy, --no-verify, or verify_mode=none)");
-        (
-            true,
-            "workspace dry-run skipped (policy, --no-verify, or verify_mode=none)".to_string(),
-        )
-    } else {
-        // Package mode — handled per-package below
-        (
-            true,
-            "workspace dry-run skipped (verify_mode=package)".to_string(),
-        )
-    };
-
-    event_log.record(PublishEvent {
-        timestamp: Utc::now(),
-        event_type: EventType::PreflightWorkspaceVerify {
-            passed: workspace_dry_run_passed,
-            output: workspace_dry_run_output.clone(),
-        },
-        package: "all".to_string(),
-    });
-
-    // Per-package dry-run results (used for Package mode)
-    let per_package_dry_run: std::collections::BTreeMap<String, (bool, Option<String>)> =
-        if effects.run_dry_run && opts.verify_mode == VerifyMode::Package {
-            reporter.info("running per-package dry-run verification...");
-            let mut results = std::collections::BTreeMap::new();
-            for p in &ws.plan.packages {
-                let result = cargo::cargo_publish_dry_run_package(
-                    workspace_root,
-                    &p.name,
-                    &ws.plan.registry.name,
-                    opts.allow_dirty,
-                    opts.output_lines,
-                );
-                let (passed, output) = match &result {
-                    Ok(out) => (
-                        out.exit_code == 0,
-                        Some(format!(
-                            "exit_code={}; stdout_tail={:?}; stderr_tail={:?}",
-                            out.exit_code, out.stdout_tail, out.stderr_tail
-                        )),
-                    ),
-                    Err(e) => (false, Some(format!("dry-run failed: {e:#}"))),
-                };
-                if !passed {
-                    reporter.warn(&format!("{}@{}: dry-run failed", p.name, p.version));
-                }
-                results.insert(p.name.clone(), (passed, output));
-            }
-            results
-        } else {
-            std::collections::BTreeMap::new()
-        };
-
-    // Check each package
-    reporter.info("checking packages against registry...");
-    let mut packages: Vec<PreflightPackage> = Vec::new();
-    let mut any_ownership_unverified = false;
-
-    for p in ws.plan.packages.iter_mut() {
-        let already_published = reg.version_exists(&p.name, &p.version)?;
-        let is_new_crate = reg.check_new_crate(&p.name)?;
-
-        // #106 PR 1: stamp the detected regime onto the plan so the
-        // publish retry loop can consume it without re-querying the
-        // registry. Classification is based purely on registry
-        // presence here; finer-grained variants (e.g. Patch) can be
-        // layered on in later PRs without breaking this contract.
-        p.regime = Some(if is_new_crate {
-            PublishRegime::FirstPublish
-        } else {
-            PublishRegime::Update
-        });
-
-        if is_new_crate {
-            event_log.record(PublishEvent {
-                timestamp: Utc::now(),
-                event_type: EventType::PreflightNewCrateDetected {
-                    crate_name: p.name.clone(),
-                },
-                package: format!("{}@{}", p.name, p.version),
-            });
-        }
-
-        // Determine dry-run result for this package
-        let (dry_run_passed, dry_run_output) = if opts.verify_mode == VerifyMode::Package {
-            per_package_dry_run
-                .get(&p.name)
-                .cloned()
-                .unwrap_or((true, None))
-        } else {
-            (
-                workspace_dry_run_passed,
-                Some(workspace_dry_run_output.clone()),
-            )
-        };
-
-        // Ownership verification (best-effort), gated by policy
-        let ownership_verified = if token_detected && effects.check_ownership {
-            if effects.strict_ownership {
-                if is_new_crate {
-                    // New crates have no owners endpoint; skip ownership check
-                    reporter.info(&format!("{}: new crate, skipping ownership check", p.name));
-                    false
-                } else {
-                    // In strict mode, ownership errors are fatal
-                    reg.list_owners(&p.name, token.as_deref().unwrap())?;
-                    true
-                }
-            } else {
-                let result = reg
-                    .verify_ownership(&p.name, token.as_deref().unwrap())
-                    .unwrap_or_default();
-                if !result {
-                    reporter.warn(&format!(
-                        "owners preflight failed for {}; continuing (non-strict mode)",
-                        p.name
-                    ));
-                }
-                result
-            }
-        } else {
-            // No token, ownership check skipped, or policy disabled it
-            false
-        };
-
-        event_log.record(PublishEvent {
-            timestamp: Utc::now(),
-            event_type: EventType::PreflightOwnershipCheck {
-                crate_name: p.name.clone(),
-                verified: ownership_verified,
-            },
-            package: format!("{}@{}", p.name, p.version),
-        });
-
-        if !ownership_verified {
-            any_ownership_unverified = true;
-        }
-
-        packages.push(PreflightPackage {
-            name: p.name.clone(),
-            version: p.version.clone(),
-            already_published,
-            is_new_crate,
-            auth_type: auth_type.clone(),
-            ownership_verified,
-            dry_run_passed,
-            dry_run_output,
-        });
-    }
-
-    // For finishability: all packages must pass dry-run
-    let all_dry_run_passed = packages.iter().all(|p| p.dry_run_passed);
-
-    // Determine finishability
-    let finishability = if !all_dry_run_passed {
-        Finishability::Failed
-    } else if any_ownership_unverified {
-        Finishability::NotProven
-    } else {
-        Finishability::Proven
-    };
-
-    event_log.record(PublishEvent {
-        timestamp: Utc::now(),
-        event_type: EventType::PreflightComplete {
-            finishability: finishability.clone(),
-        },
-        package: "all".to_string(),
-    });
-    flush_events(&event_log, &events_path)?;
-
-    let estimated_publish_duration = estimate_preflight_duration(&ws.plan.registry.name, &packages);
-
-    Ok(PreflightReport {
-        plan_id: ws.plan.plan_id.clone(),
-        token_detected,
-        finishability,
-        packages,
-        timestamp: Utc::now(),
-        estimated_publish_duration,
-        dry_run_output: if opts.verify_mode == VerifyMode::Workspace {
-            Some(workspace_dry_run_output)
-        } else {
-            None
-        },
-    })
-}
-
-fn estimate_preflight_duration(
-    registry_name: &str,
-    packages: &[PreflightPackage],
-) -> Option<PreflightDurationEstimate> {
-    let profile = RegistryProfile::for_registry_name(registry_name);
-    let first_publish_refill = profile.first_publish_refill?;
-    let first_publish_burst = profile.first_publish_burst.unwrap_or(0) as usize;
-    let first_publish_count = packages.iter().filter(|p| p.is_new_crate).count();
-    let update_count = packages.len().saturating_sub(first_publish_count);
-    let paced_publishes = first_publish_count.saturating_sub(first_publish_burst);
-    let minimum_registry_pacing = multiply_duration(first_publish_refill, paced_publishes);
-
-    Some(PreflightDurationEstimate {
-        registry_profile: profile.name.to_string(),
-        first_publish_count,
-        update_count,
-        minimum_registry_pacing,
-        notes: vec![
-            "Estimate includes documented registry pacing only.".to_string(),
-            "It excludes build time, upload time, readiness polling, retries, and human pauses."
-                .to_string(),
-        ],
-    })
-}
-
-fn multiply_duration(duration: Duration, count: usize) -> Duration {
-    let count = u32::try_from(count).unwrap_or(u32::MAX);
-    duration.checked_mul(count).unwrap_or(Duration::MAX)
+    preflight::run(ws, opts, reporter, run_opts)
 }
 
 /// Enforce the rehearsal hard gate (#97 PR 3).
@@ -4061,7 +3699,7 @@ mod tests {
             .map(|i| preflight_pkg(&format!("crate-{i}"), true))
             .collect();
 
-        let estimate = estimate_preflight_duration("crates-io", &packages)
+        let estimate = preflight::duration::estimate_preflight_duration("crates-io", &packages)
             .expect("crates.io profile should estimate");
 
         assert_eq!(estimate.registry_profile, "crates-io");
@@ -4080,7 +3718,7 @@ mod tests {
     fn estimate_preflight_duration_is_none_for_unknown_registry() {
         let packages = vec![preflight_pkg("demo", true)];
 
-        assert!(estimate_preflight_duration("private", &packages).is_none());
+        assert!(preflight::duration::estimate_preflight_duration("private", &packages).is_none());
     }
 
     #[test]
