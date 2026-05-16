@@ -3802,7 +3802,7 @@ mod tests {
                         .expect("respond");
                 }
             },
-            3,
+            2,
         );
 
         let cli = RegistryClient::new(test_registry_with_index(api_base))
@@ -4861,7 +4861,7 @@ mod tests {
                     .with_status_code(StatusCode(200));
                 req.respond(resp).expect("respond");
             },
-            3,
+            2,
         );
 
         let cli = RegistryClient::new(test_registry_with_index(api_base))
@@ -4980,7 +4980,7 @@ mod tests {
                     .expect("respond");
                 }
             },
-            3,
+            1,
         );
 
         let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
@@ -5067,7 +5067,7 @@ mod tests {
                     req.respond(resp).expect("respond");
                 }
             },
-            5,
+            2,
         );
 
         let cli = RegistryClient::new(test_registry_with_index(api_base))
@@ -5165,7 +5165,7 @@ mod tests {
                         .expect("respond");
                 }
             },
-            3,
+            2,
         );
 
         let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
@@ -5213,7 +5213,7 @@ mod tests {
                     .expect("respond");
                 }
             },
-            3,
+            2,
         );
 
         let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
