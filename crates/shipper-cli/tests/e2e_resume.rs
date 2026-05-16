@@ -92,7 +92,7 @@ fn create_fake_cargo_proxy(bin_dir: &Path) {
     {
         fs::write(
             bin_dir.join("cargo.cmd"),
-            "@echo off\r\nif \"%1\"==\"publish\" (\r\n  if \"%SHIPPER_FAKE_PUBLISH_EXIT%\"==\"\" (exit /b 0) else (exit /b %SHIPPER_FAKE_PUBLISH_EXIT%)\r\n)\r\n\"%REAL_CARGO%\" %*\r\nexit /b %ERRORLEVEL%\r\n",
+            "@echo off\r\nif \"%1\"==\"publish\" (\r\n  if not \"%SHIPPER_FAKE_PUBLISH_STDOUT%\"==\"\" echo %SHIPPER_FAKE_PUBLISH_STDOUT%\r\n  if not \"%SHIPPER_FAKE_PUBLISH_STDERR%\"==\"\" echo %SHIPPER_FAKE_PUBLISH_STDERR% 1>&2\r\n  if \"%SHIPPER_FAKE_PUBLISH_EXIT%\"==\"\" (exit /b 0) else (exit /b %SHIPPER_FAKE_PUBLISH_EXIT%)\r\n)\r\n\"%REAL_CARGO%\" %*\r\nexit /b %ERRORLEVEL%\r\n",
         )
         .expect("write fake cargo");
     }
@@ -104,7 +104,7 @@ fn create_fake_cargo_proxy(bin_dir: &Path) {
         let path = bin_dir.join("cargo");
         fs::write(
             &path,
-            "#!/usr/bin/env sh\nif [ \"$1\" = \"publish\" ]; then\n  exit \"${SHIPPER_FAKE_PUBLISH_EXIT:-0}\"\nfi\n\"$REAL_CARGO\" \"$@\"\n",
+            "#!/usr/bin/env sh\nif [ \"$1\" = \"publish\" ]; then\n  if [ -n \"$SHIPPER_FAKE_PUBLISH_STDOUT\" ]; then\n    echo \"$SHIPPER_FAKE_PUBLISH_STDOUT\"\n  fi\n  if [ -n \"$SHIPPER_FAKE_PUBLISH_STDERR\" ]; then\n    echo \"$SHIPPER_FAKE_PUBLISH_STDERR\" >&2\n  fi\n  exit \"${SHIPPER_FAKE_PUBLISH_EXIT:-0}\"\nfi\n\"$REAL_CARGO\" \"$@\"\n",
         )
         .expect("write fake cargo");
         let mut perms = fs::metadata(&path).expect("meta").permissions();
@@ -220,10 +220,10 @@ fn resume_continues_from_failed_state() {
     let state_dir = td.path().join(".shipper");
 
     // Single registry for both publish and resume so plan_id stays consistent.
-    // Publish (fail): version-check 404, post-failure check 404, final-chance 404 → 3 requests
-    // Resume (success): version-check 404, readiness 200 → 2 requests
-    // Total: 5 requests
-    let registry = spawn_registry(vec![404, 404, 404, 404, 200], 5);
+    // Publish (permanent failure): version-check 404, post-failure check 404 -> 2 requests
+    // Resume (success): version-check 404, readiness 200 -> 2 requests
+    // Total: 4 requests
+    let registry = spawn_registry(vec![404, 404, 404, 200], 4);
 
     shipper_cmd()
         .arg("--manifest-path")
@@ -246,6 +246,7 @@ fn resume_continues_from_failed_state() {
         .env("REAL_CARGO", &real_cargo)
         .env("SHIPPER_CARGO_BIN", &fake_cargo)
         .env("SHIPPER_FAKE_PUBLISH_EXIT", "1")
+        .env("SHIPPER_FAKE_PUBLISH_STDERR", "permission denied")
         .assert()
         .failure();
 
@@ -473,17 +474,15 @@ fn resume_after_partial_publish() {
     let state_dir = td.path().join(".shipper");
 
     // Single registry for both publish and resume.
-    // Publish (cargo exit=1 so all cargo publish calls fail):
-    //   core version-check 200 (already on registry → skip): 1 request
+    // Publish (cargo emits a permanent failure):
+    //   core version-check 200 (already on registry -> skip): 1 request
     //   app version-check 404 (not published), cargo fails: 1 request
     //   app post-failure check 404: 1 request
-    //   app final-chance check 404: 1 request
     // Resume (cargo exit=0):
-    //   core already skipped in state → 0 requests
+    //   core already skipped in state -> 0 requests
     //   app version-check 404, cargo succeeds, readiness 200: 2 requests
-    // Total: 6 requests
-    // Add an extra buffer slot so the server stays alive between publish and resume.
-    let registry = spawn_registry(vec![200, 404, 404, 404, 404, 200], 7);
+    // Total: 5 requests
+    let registry = spawn_registry(vec![200, 404, 404, 404, 200], 5);
 
     // First: publish all crates with cargo failing.
     // core gets skipped (registry says 200 → already published), app fails.
@@ -508,6 +507,7 @@ fn resume_after_partial_publish() {
         .env("REAL_CARGO", &real_cargo)
         .env("SHIPPER_CARGO_BIN", &fake_cargo)
         .env("SHIPPER_FAKE_PUBLISH_EXIT", "1")
+        .env("SHIPPER_FAKE_PUBLISH_STDERR", "permission denied")
         .assert()
         .failure();
 
