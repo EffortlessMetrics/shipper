@@ -267,4 +267,68 @@ mod tests {
         assert!(s.contains("a@1.0.0"));
         assert!(s.contains("b@2.0.0"));
     }
+
+    // --- additional format_drift_summary edge cases ---
+
+    #[test]
+    fn format_summary_in_events_only_omits_state_section() {
+        // When only events_only has entries, only that line should appear.
+        let drift = StateEventDrift {
+            in_events_only: vec!["a@1.0.0".to_string(), "b@2.0.0".to_string()],
+            in_state_only: vec![],
+        };
+        let s = format_drift_summary(&drift);
+        assert!(s.contains("drift detected"));
+        assert!(s.contains("published in events.jsonl but NOT in state.json (2)"));
+        assert!(s.contains("a@1.0.0, b@2.0.0"));
+        // The state-only section MUST be suppressed when empty.
+        assert!(
+            !s.contains("marked published in state.json"),
+            "state-only section must be omitted; got: {s}"
+        );
+    }
+
+    #[test]
+    fn format_summary_in_state_only_omits_events_section() {
+        let drift = StateEventDrift {
+            in_events_only: vec![],
+            in_state_only: vec!["c@3.0.0".to_string()],
+        };
+        let s = format_drift_summary(&drift);
+        assert!(s.contains("drift detected"));
+        assert!(s.contains("marked published in state.json but NO event (1)"));
+        assert!(s.contains("c@3.0.0"));
+        // The events-only section MUST be suppressed when empty.
+        assert!(
+            !s.contains("published in events.jsonl but NOT in state.json"),
+            "events-only section must be omitted; got: {s}"
+        );
+    }
+
+    #[test]
+    fn format_summary_lists_counts_and_joined_names() {
+        // Three names on each side — count and join formatting should match.
+        let drift = StateEventDrift {
+            in_events_only: vec!["a@1".to_string(), "b@2".to_string(), "c@3".to_string()],
+            in_state_only: vec!["x@1".to_string(), "y@2".to_string()],
+        };
+        let s = format_drift_summary(&drift);
+        // Counts.
+        assert!(s.contains("events.jsonl but NOT in state.json (3)"));
+        assert!(s.contains("marked published in state.json but NO event (2)"));
+        // Comma-space joining.
+        assert!(s.contains("a@1, b@2, c@3"));
+        assert!(s.contains("x@1, y@2"));
+        // Authoritative-source breadcrumb is always present in the header.
+        assert!(s.contains("events.jsonl is authoritative"));
+    }
+
+    #[test]
+    fn format_summary_consistent_is_single_line() {
+        // The "all good" branch should be a single, predictable line — no
+        // header, no bullets — so callers can match exactly if they want.
+        let s = format_drift_summary(&StateEventDrift::default());
+        assert_eq!(s, "events.jsonl and state.json are consistent");
+        assert!(!s.contains('\n'));
+    }
 }
