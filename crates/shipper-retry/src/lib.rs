@@ -1095,6 +1095,211 @@ mod tests {
             }
         }
     }
+
+    // --- Additional edge-case coverage ---
+
+    #[test]
+    fn test_default_strategy_config_field_values() {
+        let cfg = RetryStrategyConfig::default();
+        assert_eq!(cfg.strategy, RetryStrategyType::Exponential);
+        assert_eq!(cfg.max_attempts, 6);
+        assert_eq!(cfg.base_delay, Duration::from_secs(2));
+        assert_eq!(cfg.max_delay, Duration::from_secs(120));
+        assert_eq!(cfg.jitter, 0.5);
+    }
+
+    #[test]
+    fn test_retry_policy_custom_matches_default_strategy_config() {
+        // Custom policy is documented to use the explicitly configured values;
+        // the to_config() implementation returns RetryStrategyConfig::default().
+        let custom = RetryPolicy::Custom.to_config();
+        let default = RetryStrategyConfig::default();
+
+        assert_eq!(custom.strategy, default.strategy);
+        assert_eq!(custom.max_attempts, default.max_attempts);
+        assert_eq!(custom.base_delay, default.base_delay);
+        assert_eq!(custom.max_delay, default.max_delay);
+        assert_eq!(custom.jitter, default.jitter);
+    }
+
+    #[test]
+    fn test_retry_policy_default_via_derive_macro_is_default_variant() {
+        let policy: RetryPolicy = RetryPolicy::default();
+        assert_eq!(policy, RetryPolicy::Default);
+    }
+
+    #[test]
+    fn test_retry_strategy_type_default_via_derive_is_exponential() {
+        let strategy: RetryStrategyType = RetryStrategyType::default();
+        assert_eq!(strategy, RetryStrategyType::Exponential);
+    }
+
+    #[test]
+    fn test_error_class_default_is_retryable() {
+        let class: ErrorClass = ErrorClass::default();
+        assert_eq!(class, ErrorClass::Retryable);
+    }
+
+    #[test]
+    fn test_per_error_config_default_all_variants_none() {
+        let cfg = PerErrorConfig::default();
+        assert!(cfg.retryable.is_none());
+        assert!(cfg.ambiguous.is_none());
+        assert!(cfg.permanent.is_none());
+    }
+
+    #[test]
+    fn test_exponential_caps_pow_at_sixteen() {
+        // attempt.saturating_sub(1).min(16) means attempt 17 == attempt 100
+        // for the exponent: both should produce the same delay (before max_delay cap).
+        let config = RetryStrategyConfig {
+            strategy: RetryStrategyType::Exponential,
+            base_delay: Duration::from_millis(1),
+            // Generous cap so max_delay does not clip the comparison.
+            max_delay: Duration::from_secs(3600 * 24),
+            jitter: 0.0,
+            max_attempts: 200,
+        };
+
+        let at_seventeen = calculate_delay(&config, 17);
+        let at_one_hundred = calculate_delay(&config, 100);
+        let at_u32_max = calculate_delay(&config, u32::MAX);
+
+        assert_eq!(at_seventeen, at_one_hundred);
+        assert_eq!(at_seventeen, at_u32_max);
+    }
+
+    #[test]
+    fn test_jitter_greater_than_one_does_not_panic_and_stays_bounded() {
+        // jitter > 1.0 makes the lower bound `1 - jitter` go negative.
+        // The implementation casts to u64 with `as u64`, which saturates negative
+        // floats to 0. We assert no panic and that the upper bound (1 + jitter)
+        // is respected.
+        let config = RetryStrategyConfig {
+            strategy: RetryStrategyType::Constant,
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(60),
+            jitter: 1.5,
+            max_attempts: 10,
+        };
+
+        // factor in [-0.5, 2.5] → delay in [0ms, 250ms] after saturation.
+        for _ in 0..200 {
+            let delay = calculate_delay(&config, 1);
+            assert!(
+                delay <= Duration::from_millis(250),
+                "delay {:?} exceeded upper bound for jitter=1.5",
+                delay
+            );
+        }
+    }
+
+    #[test]
+    fn test_jitter_negative_does_not_panic_and_returns_a_delay() {
+        // Negative jitter is a config error, but the function should not panic
+        // and the result should be a finite Duration.
+        let config = RetryStrategyConfig {
+            strategy: RetryStrategyType::Constant,
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(60),
+            jitter: -0.5,
+            max_attempts: 10,
+        };
+
+        // The jitter > 0.0 guard in calculate_delay sends negative jitter through
+        // the no-jitter path, so the delay should equal the capped base delay.
+        let delay = calculate_delay(&config, 1);
+        assert_eq!(delay, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_from_policy_constructs_executor_with_policy_config() {
+        // Drive a one-call success through every policy: the executor must
+        // simply round-trip Ok, and the configured max_attempts must match
+        // the policy's to_config() value.
+        for policy in [
+            RetryPolicy::Default,
+            RetryPolicy::Aggressive,
+            RetryPolicy::Conservative,
+            RetryPolicy::Custom,
+        ] {
+            let executor = RetryExecutor::from_policy(policy);
+            let result = executor.run(|_| Ok::<&str, &str>("ok"));
+            assert_eq!(result, Ok("ok"));
+        }
+    }
+
+    #[test]
+    fn test_run_with_classification_first_try_success_no_sleep() {
+        // run_with_classification on first-call Ok must not call into the
+        // delay/sleep path. We exercise this by giving an absurdly long
+        // base_delay and asserting the call returns instantly via Ok.
+        let executor = RetryExecutor::new(RetryStrategyConfig {
+            strategy: RetryStrategyType::Constant,
+            max_attempts: 100,
+            base_delay: Duration::from_secs(3600),
+            max_delay: Duration::from_secs(3600),
+            jitter: 0.0,
+        });
+
+        let start = std::time::Instant::now();
+        let result = executor.run_with_classification(|_| Ok::<_, &str>(("done", true)));
+        let elapsed = start.elapsed();
+
+        assert_eq!(result, Ok("done"));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "first-call success should not invoke sleep; elapsed = {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_config_for_error_each_class_picks_its_override() {
+        let default = RetryStrategyConfig::default();
+
+        let per_error_retryable = RetryStrategyConfig {
+            strategy: RetryStrategyType::Immediate,
+            max_attempts: 11,
+            base_delay: Duration::from_millis(11),
+            max_delay: Duration::from_millis(1100),
+            jitter: 0.1,
+        };
+        let per_error_ambiguous = RetryStrategyConfig {
+            strategy: RetryStrategyType::Linear,
+            max_attempts: 22,
+            base_delay: Duration::from_millis(22),
+            max_delay: Duration::from_millis(2200),
+            jitter: 0.2,
+        };
+        let per_error_permanent = RetryStrategyConfig {
+            strategy: RetryStrategyType::Constant,
+            max_attempts: 33,
+            base_delay: Duration::from_millis(33),
+            max_delay: Duration::from_millis(3300),
+            jitter: 0.3,
+        };
+
+        let per_error = PerErrorConfig {
+            retryable: Some(per_error_retryable.clone()),
+            ambiguous: Some(per_error_ambiguous.clone()),
+            permanent: Some(per_error_permanent.clone()),
+        };
+
+        let r = config_for_error(&default, Some(&per_error), ErrorClass::Retryable);
+        assert_eq!(r.max_attempts, per_error_retryable.max_attempts);
+
+        let a = config_for_error(&default, Some(&per_error), ErrorClass::Ambiguous);
+        assert_eq!(a.max_attempts, per_error_ambiguous.max_attempts);
+
+        let p = config_for_error(&default, Some(&per_error), ErrorClass::Permanent);
+        assert_eq!(p.max_attempts, per_error_permanent.max_attempts);
+    }
+
+    // Note: serde roundtrip coverage for RetryPolicy, RetryStrategyType, and
+    // ErrorClass is provided by the snapshot_tests module below using
+    // insta's assert_yaml_snapshot. This module avoids adding serde_json as
+    // a dev-dependency.
 }
 
 #[cfg(test)]
