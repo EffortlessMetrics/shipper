@@ -406,6 +406,7 @@ impl StateEncryption {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::tempdir;
 
     // ── Core encrypt/decrypt roundtrip ──────────────────────────────────
@@ -1408,6 +1409,7 @@ mod tests {
     // ── Env-var passphrase resolution (temp_env) ────────────────────────
 
     #[test]
+    #[serial]
     fn env_var_passphrase_resolution() {
         let cfg = EncryptionConfig::from_env("SHIPPER_TEST_PASS_1".to_string());
         temp_env::with_var("SHIPPER_TEST_PASS_1", Some("env-secret"), || {
@@ -1417,6 +1419,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn env_var_passphrase_missing_returns_none() {
         let cfg = EncryptionConfig::from_env("SHIPPER_TEST_MISSING_VAR".to_string());
         temp_env::with_var("SHIPPER_TEST_MISSING_VAR", None::<&str>, || {
@@ -1426,6 +1429,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn state_encryption_from_env_var_roundtrip() {
         let config = EncryptionConfig::from_env("SHIPPER_TEST_ENC_PASS".to_string());
         let encryption = StateEncryption::new(config).expect("create");
@@ -1441,6 +1445,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn state_encryption_env_var_takes_precedence() {
         let config = EncryptionConfig {
             enabled: true,
@@ -1464,6 +1469,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn state_encryption_file_roundtrip_with_env_var() {
         let td = tempdir().expect("tempdir");
         let path = td.path().join("env_enc.json");
@@ -1636,6 +1642,7 @@ mod tests {
     // ── StateEncryption disabled ignores env var ────────────────────────
 
     #[test]
+    #[serial]
     fn state_encryption_disabled_ignores_env_var() {
         let config = EncryptionConfig {
             enabled: false,
@@ -1844,6 +1851,7 @@ mod tests {
     /// `Err`) when an env_var is configured but unset. This lets callers
     /// distinguish "missing passphrase" from "lookup failure".
     #[test]
+    #[serial]
     fn encryption_config_env_var_unset_returns_none_not_err() {
         let cfg = EncryptionConfig::from_env("SHIPPER_TEST_UNSET_PASS_X1".to_string());
         temp_env::with_var("SHIPPER_TEST_UNSET_PASS_X1", None::<&str>, || {
@@ -1860,6 +1868,7 @@ mod tests {
     /// passphrase. This is required for roll-out scenarios where the env-var
     /// is the preferred source but not yet provisioned everywhere.
     #[test]
+    #[serial]
     fn state_encryption_falls_back_to_inline_when_env_unset() {
         let config = EncryptionConfig {
             enabled: true,
@@ -1902,6 +1911,7 @@ mod tests {
     /// Invariant: with `enabled: true` and an env_var that is currently unset,
     /// `is_enabled` must return false (no usable passphrase available).
     #[test]
+    #[serial]
     fn state_encryption_is_enabled_false_when_env_var_unset_and_no_inline() {
         let config = EncryptionConfig {
             enabled: true,
@@ -2076,6 +2086,7 @@ mod tests {
     /// produced by the same wrapper via env-var, including when the env-var
     /// is used to source the key.
     #[test]
+    #[serial]
     fn state_encryption_env_var_decrypt_handles_encrypted_bytes() {
         let config = EncryptionConfig::from_env("SHIPPER_TEST_DEC_VAR".to_string());
         let encryption = StateEncryption::new(config).expect("create");
@@ -2121,24 +2132,18 @@ mod tests {
     fn mask_passphrase_does_not_leak_middle_characters() {
         let secret = "DO-NOT-LEAK-MIDDLE";
         let masked = mask_passphrase(secret);
-        // Middle slice (everything except first and last char) must not appear
-        // in the masked output.
-        let mid: String = secret
-            .chars()
-            .skip(1)
-            .take(secret.chars().count() - 2)
-            .collect();
-        assert!(!mid.is_empty());
-        for sub_len in 2..=mid.len() {
-            // Any contiguous middle substring of length >=2 must not appear.
-            for start in 0..=mid.len() - sub_len {
-                let probe = &mid[start..start + sub_len];
-                assert!(
-                    !masked.contains(probe),
-                    "masked output {masked:?} leaked middle substring {probe:?}"
-                );
-            }
-        }
+        let secret_chars: Vec<char> = secret.chars().collect();
+        let masked_chars: Vec<char> = masked.chars().collect();
+
+        assert_eq!(masked_chars.len(), secret_chars.len());
+        assert_eq!(masked_chars.first(), secret_chars.first());
+        assert_eq!(masked_chars.last(), secret_chars.last());
+        assert!(
+            masked_chars[1..masked_chars.len() - 1]
+                .iter()
+                .all(|ch| *ch == '*'),
+            "masked output {masked:?} leaked middle characters"
+        );
     }
 }
 
