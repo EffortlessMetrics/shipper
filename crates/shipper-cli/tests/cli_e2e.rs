@@ -544,10 +544,14 @@ fn preflight_command_with_json_flag() {
     let stdout = String::from_utf8(out).expect("utf8");
     // Verify it's valid JSON
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["schema_version"], "shipper.preflight.v1");
     assert!(json["plan_id"].is_string());
     assert_eq!(json["token_detected"], false);
     assert!(json["finishability"].is_string());
     assert!(json["packages"].is_array());
+    assert!(json["proofs"].is_array());
+    assert!(json["gaps"].is_array());
+    assert!(json["failed_checks"].is_array());
     registry.join();
 }
 
@@ -1187,6 +1191,11 @@ fn preflight_command_json_output_structure() {
     assert!(json.get("packages").is_some());
     assert!(json.get("timestamp").is_some());
     assert_eq!(
+        json.pointer("/schema_version")
+            .and_then(serde_json::Value::as_str),
+        Some("shipper.preflight.v1")
+    );
+    assert_eq!(
         json.pointer("/estimated_publish_duration/registry_profile"),
         Some(&serde_json::Value::String("crates-io".to_string()))
     );
@@ -1198,6 +1207,41 @@ fn preflight_command_json_output_structure() {
     assert!(
         json.pointer("/estimated_publish_duration/minimum_registry_pacing")
             .is_some()
+    );
+    assert_eq!(
+        json.pointer("/registry_profile/name")
+            .and_then(serde_json::Value::as_str),
+        Some("crates-io")
+    );
+    assert_eq!(
+        json.pointer("/registry_profile/first_publish_count")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+
+    let proofs = json["proofs"].as_array().expect("proofs array");
+    assert!(proofs.iter().any(|item| {
+        item["id"].as_str() == Some("local_dry_run") && item["status"].as_str() == Some("passed")
+    }));
+    assert!(proofs.iter().any(|item| {
+        item["id"].as_str() == Some("registry_version_checks")
+            && item["status"].as_str() == Some("completed")
+    }));
+
+    let gaps = json["gaps"].as_array().expect("gaps array");
+    assert!(gaps.iter().any(|item| {
+        item["id"].as_str() == Some("ownership_unverified")
+            && item["status"].as_str() == Some("not_proven")
+    }));
+    assert!(gaps.iter().any(|item| {
+        item["id"].as_str() == Some("registry_auth_missing")
+            && item["status"].as_str() == Some("not_proven")
+    }));
+
+    assert_eq!(
+        json.pointer("/artifacts/0/kind")
+            .and_then(serde_json::Value::as_str),
+        Some("preflight_json_stdout")
     );
 
     // Verify packages array structure
