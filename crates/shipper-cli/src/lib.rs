@@ -1545,6 +1545,44 @@ struct PlanSkippedPackageReport {
     reason: String,
 }
 
+#[derive(Debug, Serialize)]
+struct PreflightJsonReport<'a> {
+    schema_version: &'static str,
+    #[serde(flatten)]
+    report: &'a PreflightReport,
+    proofs: Vec<PreflightEvidenceItem>,
+    gaps: Vec<PreflightEvidenceItem>,
+    failed_checks: Vec<PreflightEvidenceItem>,
+    live_release_evidence: Vec<PreflightEvidenceItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registry_profile: Option<PreflightRegistryProfileReport>,
+    artifacts: Vec<PreflightArtifactReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct PreflightEvidenceItem {
+    id: &'static str,
+    status: &'static str,
+    summary: String,
+    packages: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PreflightRegistryProfileReport {
+    name: String,
+    first_publish_count: usize,
+    update_count: usize,
+    minimum_registry_pacing: String,
+    notes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PreflightArtifactReport {
+    kind: &'static str,
+    path: Option<String>,
+    description: &'static str,
+}
+
 fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool, format: &str) {
     if format == "json" {
         let report = build_plan_report(ws);
@@ -1823,7 +1861,8 @@ fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
 fn print_preflight(rep: &PreflightReport, format: &str) {
     match format {
         "json" => {
-            let json = serde_json::to_string_pretty(rep).expect("serialize preflight report");
+            let report = build_preflight_json_report(rep);
+            let json = serde_json::to_string_pretty(&report).expect("serialize preflight report");
             println!("{}", json);
         }
         _ => {
@@ -1965,6 +2004,149 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
     }
 }
 
+fn build_preflight_json_report(rep: &PreflightReport) -> PreflightJsonReport<'_> {
+    let total = rep.packages.len();
+    let dry_run_passed = rep.packages.iter().filter(|p| p.dry_run_passed).count();
+    let dry_run_failed = rep
+        .packages
+        .iter()
+        .filter(|p| !p.dry_run_passed)
+        .collect::<Vec<_>>();
+    let ownership_unverified = rep
+        .packages
+        .iter()
+        .filter(|p| !p.ownership_verified)
+        .collect::<Vec<_>>();
+
+    let mut proofs = Vec::new();
+    if dry_run_failed.is_empty() {
+        proofs.push(PreflightEvidenceItem {
+            id: "local_dry_run",
+            status: "passed",
+            summary: format!(
+                "Local package dry-run passed for {} of {} {}.",
+                dry_run_passed,
+                total,
+                package_noun(total)
+            ),
+            packages: rep.packages.iter().map(package_ref).collect(),
+        });
+    } else if dry_run_passed > 0 {
+        proofs.push(PreflightEvidenceItem {
+            id: "local_dry_run_partial",
+            status: "partial",
+            summary: format!(
+                "Local package dry-run passed for {} of {} {}.",
+                dry_run_passed,
+                total,
+                package_noun(total)
+            ),
+            packages: rep
+                .packages
+                .iter()
+                .filter(|p| p.dry_run_passed)
+                .map(package_ref)
+                .collect(),
+        });
+    }
+
+    proofs.push(PreflightEvidenceItem {
+        id: "registry_version_checks",
+        status: "completed",
+        summary: format!(
+            "Registry version/new-crate checks completed for {} {}.",
+            total,
+            package_noun(total)
+        ),
+        packages: rep.packages.iter().map(package_ref).collect(),
+    });
+
+    if let Some(estimate) = &rep.estimated_publish_duration {
+        proofs.push(PreflightEvidenceItem {
+            id: "registry_pacing_estimate",
+            status: "completed",
+            summary: format!(
+                "Registry pacing estimate generated from the {} profile.",
+                estimate.registry_profile
+            ),
+            packages: Vec::new(),
+        });
+    }
+
+    let mut gaps = Vec::new();
+    if !ownership_unverified.is_empty() {
+        gaps.push(PreflightEvidenceItem {
+            id: "ownership_unverified",
+            status: "not_proven",
+            summary: format!(
+                "Ownership was not verified for {} of {} {}.",
+                ownership_unverified.len(),
+                total,
+                package_noun(total)
+            ),
+            packages: ownership_unverified
+                .iter()
+                .copied()
+                .map(package_ref)
+                .collect(),
+        });
+    }
+    if !rep.token_detected {
+        gaps.push(PreflightEvidenceItem {
+            id: "registry_auth_missing",
+            status: "not_proven",
+            summary: "No registry token or Trusted Publishing context was detected.".to_string(),
+            packages: Vec::new(),
+        });
+    }
+
+    let failed_checks = dry_run_failed
+        .iter()
+        .copied()
+        .map(|package| PreflightEvidenceItem {
+            id: "local_dry_run",
+            status: "failed",
+            summary: format!("Dry-run failed for {}.", package_ref(package)),
+            packages: vec![package_ref(package)],
+        })
+        .collect();
+
+    let live_release_evidence = vec![PreflightEvidenceItem {
+        id: "registry_acceptance_visibility",
+        status: "pending_publish",
+        summary:
+            "Registry acceptance and post-publish visibility are recorded during publish/resume."
+                .to_string(),
+        packages: rep.packages.iter().map(package_ref).collect(),
+    }];
+
+    PreflightJsonReport {
+        schema_version: "shipper.preflight.v1",
+        report: rep,
+        proofs,
+        gaps,
+        failed_checks,
+        live_release_evidence,
+        registry_profile: rep.estimated_publish_duration.as_ref().map(|estimate| {
+            PreflightRegistryProfileReport {
+                name: estimate.registry_profile.clone(),
+                first_publish_count: estimate.first_publish_count,
+                update_count: estimate.update_count,
+                minimum_registry_pacing: humantime::format_duration(
+                    estimate.minimum_registry_pacing,
+                )
+                .to_string(),
+                notes: estimate.notes.clone(),
+            }
+        }),
+        artifacts: vec![PreflightArtifactReport {
+            kind: "preflight_json_stdout",
+            path: None,
+            description: "This JSON document is the preflight evidence artifact when captured by CI.",
+        }],
+    }
+}
+
 fn print_preflight_proof_explanation(rep: &PreflightReport, total: usize, dry_run_passed: usize) {
     let dry_run_failed = rep
         .packages
@@ -2034,10 +2216,11 @@ fn print_preflight_proof_explanation(rep: &PreflightReport, total: usize, dry_ru
 }
 
 fn package_refs<'a>(packages: impl Iterator<Item = &'a PreflightPackage>) -> String {
-    packages
-        .map(|package| format!("{}@{}", package.name, package.version))
-        .collect::<Vec<_>>()
-        .join(", ")
+    packages.map(package_ref).collect::<Vec<_>>().join(", ")
+}
+
+fn package_ref(package: &PreflightPackage) -> String {
+    format!("{}@{}", package.name, package.version)
 }
 
 fn package_noun(count: usize) -> &'static str {
