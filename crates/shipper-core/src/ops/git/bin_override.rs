@@ -132,3 +132,228 @@ pub(super) fn get_git_dirty_status(repo_root: &Path, git_program: &str) -> Optio
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::process::Command as StdCommand;
+
+    use tempfile::TempDir;
+
+    /// Path that is guaranteed not to exist as an executable on either Unix or
+    /// Windows. Used to exercise every "command failed to spawn" branch.
+    const NONEXISTENT_GIT: &str = "/definitely/not/a/real/git/binary/at/all";
+
+    fn init_repo() -> TempDir {
+        let dir = TempDir::new().expect("create tempdir for git repo");
+        // `git init` configures HEAD; commit metadata setup below.
+        run_git(&["init", "-q", "-b", "main"], dir.path());
+        run_git(&["config", "user.name", "Test User"], dir.path());
+        run_git(&["config", "user.email", "test@example.com"], dir.path());
+        // First commit so HEAD has a SHA and rev-parse works.
+        std::fs::write(dir.path().join("README"), b"hello").expect("write README");
+        run_git(&["add", "README"], dir.path());
+        run_git(
+            &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"],
+            dir.path(),
+        );
+        dir
+    }
+
+    fn run_git(args: &[&str], cwd: &Path) {
+        let out = StdCommand::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git binary available in test environment");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // NOTE: `git_program()` reads `SHIPPER_GIT_BIN` directly. Mutating the
+    // process environment from a test would require `unsafe { env::set_var }`,
+    // which the workspace forbids (`#![forbid(unsafe_code)]`). The downstream
+    // helpers all accept `git_program: &str` as a parameter, which is the
+    // logic we actually exercise below — covering both the override-success
+    // path (passing `"git"`) and the spawn-failure path (passing a
+    // nonexistent binary).
+
+    // ---- is_repo_root() ----
+
+    #[test]
+    fn is_repo_root_true_for_initialized_repo() {
+        let dir = init_repo();
+        assert!(is_repo_root(dir.path(), "git"));
+    }
+
+    #[test]
+    fn is_repo_root_false_for_non_repo_dir() {
+        let dir = TempDir::new().expect("tempdir");
+        assert!(!is_repo_root(dir.path(), "git"));
+    }
+
+    #[test]
+    fn is_repo_root_false_when_binary_does_not_exist() {
+        // spawn fails → mapped to false. Must not panic.
+        let dir = TempDir::new().expect("tempdir");
+        assert!(!is_repo_root(dir.path(), NONEXISTENT_GIT));
+    }
+
+    // ---- local_is_git_clean() ----
+
+    #[test]
+    fn local_is_git_clean_true_on_fresh_repo() {
+        let dir = init_repo();
+        assert!(local_is_git_clean(dir.path(), "git").expect("status succeeds"));
+    }
+
+    #[test]
+    fn local_is_git_clean_false_with_untracked_file() {
+        let dir = init_repo();
+        std::fs::write(dir.path().join("dirty"), b"x").expect("write untracked file");
+        assert!(!local_is_git_clean(dir.path(), "git").expect("status succeeds"));
+    }
+
+    #[test]
+    fn local_is_git_clean_errors_when_binary_missing() {
+        let dir = TempDir::new().expect("tempdir");
+        let err = local_is_git_clean(dir.path(), NONEXISTENT_GIT)
+            .expect_err("missing binary should surface an error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("failed to execute git status"),
+            "unexpected error chain: {msg}"
+        );
+    }
+
+    #[test]
+    fn local_is_git_clean_errors_when_git_status_nonzero() {
+        // Run inside a non-repo directory: git status exits non-zero. The
+        // module's contract is to bail with the historical "git status
+        // failed:" prefix.
+        let dir = TempDir::new().expect("tempdir");
+        let err = local_is_git_clean(dir.path(), "git")
+            .expect_err("non-repo dir should produce an error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("git status failed:"),
+            "unexpected error chain (missing legacy prefix): {msg}"
+        );
+    }
+
+    // ---- get_git_commit() ----
+
+    #[test]
+    fn get_git_commit_returns_ascii_sha_in_repo() {
+        let dir = init_repo();
+        let commit = get_git_commit(dir.path(), "git").expect("commit available after init");
+        assert!(
+            matches!(commit.len(), 40 | 64),
+            "expected SHA-1 or SHA-256 hex object ID, got {commit:?}"
+        );
+        assert!(
+            commit.chars().all(|c| c.is_ascii_hexdigit()),
+            "non-hex chars in commit: {commit:?}"
+        );
+    }
+
+    #[test]
+    fn get_git_commit_none_in_non_repo_dir() {
+        let dir = TempDir::new().expect("tempdir");
+        assert!(get_git_commit(dir.path(), "git").is_none());
+    }
+
+    #[test]
+    fn get_git_commit_none_when_binary_missing() {
+        let dir = TempDir::new().expect("tempdir");
+        assert!(get_git_commit(dir.path(), NONEXISTENT_GIT).is_none());
+    }
+
+    // ---- get_git_branch() ----
+
+    #[test]
+    fn get_git_branch_returns_branch_name_in_repo() {
+        let dir = init_repo();
+        let branch = get_git_branch(dir.path(), "git").expect("branch on initialized repo");
+        assert_eq!(branch, "main");
+    }
+
+    #[test]
+    fn get_git_branch_none_on_detached_head() {
+        let dir = init_repo();
+        // Detach by checking out the commit SHA directly.
+        let sha = get_git_commit(dir.path(), "git").expect("commit");
+        run_git(&["checkout", "-q", "--detach", &sha], dir.path());
+        assert!(
+            get_git_branch(dir.path(), "git").is_none(),
+            "detached HEAD must surface as None (literal 'HEAD' rev-parse output)"
+        );
+    }
+
+    #[test]
+    fn get_git_branch_none_in_non_repo_dir() {
+        let dir = TempDir::new().expect("tempdir");
+        assert!(get_git_branch(dir.path(), "git").is_none());
+    }
+
+    #[test]
+    fn get_git_branch_none_when_binary_missing() {
+        let dir = TempDir::new().expect("tempdir");
+        assert!(get_git_branch(dir.path(), NONEXISTENT_GIT).is_none());
+    }
+
+    // ---- get_git_tag() ----
+
+    #[test]
+    fn get_git_tag_some_when_head_is_tagged() {
+        let dir = init_repo();
+        run_git(&["-c", "tag.gpgSign=false", "tag", "v0.1.0"], dir.path());
+        let tag = get_git_tag(dir.path(), "git").expect("tag at HEAD");
+        assert_eq!(tag, "v0.1.0");
+    }
+
+    #[test]
+    fn get_git_tag_none_when_no_tag_at_head() {
+        let dir = init_repo();
+        assert!(get_git_tag(dir.path(), "git").is_none());
+    }
+
+    #[test]
+    fn get_git_tag_none_when_binary_missing() {
+        let dir = TempDir::new().expect("tempdir");
+        assert!(get_git_tag(dir.path(), NONEXISTENT_GIT).is_none());
+    }
+
+    // ---- get_git_dirty_status() ----
+
+    #[test]
+    fn get_git_dirty_status_false_on_clean_repo() {
+        let dir = init_repo();
+        assert_eq!(get_git_dirty_status(dir.path(), "git"), Some(false));
+    }
+
+    #[test]
+    fn get_git_dirty_status_true_with_untracked_file() {
+        let dir = init_repo();
+        std::fs::write(dir.path().join("dirty"), b"x").expect("write file");
+        assert_eq!(get_git_dirty_status(dir.path(), "git"), Some(true));
+    }
+
+    #[test]
+    fn get_git_dirty_status_none_in_non_repo_dir() {
+        let dir = TempDir::new().expect("tempdir");
+        // status exits non-zero outside a repo ⇒ None.
+        assert!(get_git_dirty_status(dir.path(), "git").is_none());
+    }
+
+    #[test]
+    fn get_git_dirty_status_none_when_binary_missing() {
+        let dir = TempDir::new().expect("tempdir");
+        assert!(get_git_dirty_status(dir.path(), NONEXISTENT_GIT).is_none());
+    }
+}
