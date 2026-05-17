@@ -1,13 +1,16 @@
 //! Diagnostic finding records and rendering for `shipper doctor`.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(super) enum FindingLevel {
     Blocked,
     Warning,
 }
 
 impl FindingLevel {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             FindingLevel::Blocked => "blocked",
             FindingLevel::Warning => "warning",
@@ -15,7 +18,7 @@ impl FindingLevel {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct Finding {
     pub id: &'static str,
     pub severity: FindingLevel,

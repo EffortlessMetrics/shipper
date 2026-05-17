@@ -6,7 +6,8 @@
 //! tools, connectivity, git, encryption) so that adding a new diagnostic
 //! is an additive change rather than an edit of a long function.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use serde::Serialize;
 
 use shipper_core::engine::Reporter;
 use shipper_core::plan;
@@ -17,6 +18,78 @@ mod findings;
 
 #[cfg(test)]
 pub(crate) use checks::tools::print_cmd_version;
+
+#[derive(Debug, Serialize)]
+pub(crate) struct DoctorOutput {
+    schema_version: &'static str,
+    reports: Vec<DoctorReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct DoctorReport {
+    workspace_root: String,
+    registry: DoctorRegistryReport,
+    auth: checks::auth::AuthCheck,
+    state_dir: checks::state_dir::StateDirCheck,
+    tools: Vec<checks::tools::ToolCheck>,
+    connectivity: checks::connectivity::ConnectivityCheck,
+    git: checks::git::GitCheck,
+    encryption: checks::encryption::EncryptionCheck,
+    findings: Vec<findings::Finding>,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorRegistryReport {
+    name: String,
+    api_base: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index_base: Option<String>,
+}
+
+pub(crate) fn collect_report(
+    ws: &plan::PlannedWorkspace,
+    opts: &RuntimeOptions,
+) -> Result<DoctorReport> {
+    let auth = checks::auth::inspect(ws)?;
+    let state_dir = checks::state_dir::inspect(ws, opts);
+    let tools = checks::tools::inspect();
+    let connectivity = checks::connectivity::inspect(ws)?;
+    let git = checks::git::inspect(ws);
+    let encryption = checks::encryption::inspect(opts);
+
+    let mut findings = Vec::new();
+    findings.extend(auth.findings.clone());
+    findings.extend(state_dir.findings.clone());
+    findings.extend(connectivity.findings.clone());
+    findings.extend(git.findings.clone());
+    findings.extend(encryption.findings.clone());
+
+    Ok(DoctorReport {
+        workspace_root: ws.workspace_root.display().to_string(),
+        registry: DoctorRegistryReport {
+            name: ws.plan.registry.name.clone(),
+            api_base: ws.plan.registry.api_base.clone(),
+            index_base: ws.plan.registry.index_base.clone(),
+        },
+        auth,
+        state_dir,
+        tools,
+        connectivity,
+        git,
+        encryption,
+        findings,
+    })
+}
+
+pub(crate) fn print_json(reports: Vec<DoctorReport>) -> Result<()> {
+    let output = DoctorOutput {
+        schema_version: "shipper.doctor.v1",
+        reports,
+    };
+    let json = serde_json::to_string_pretty(&output).context("serialize doctor report")?;
+    println!("{json}");
+    Ok(())
+}
 
 pub(crate) fn run(
     ws: &plan::PlannedWorkspace,

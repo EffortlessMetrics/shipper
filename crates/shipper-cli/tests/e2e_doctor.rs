@@ -186,6 +186,66 @@ fn doctor_detects_token_when_set() {
     registry.join();
 }
 
+#[test]
+fn doctor_json_format_reports_diagnostics_without_token_value() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    let registry = spawn_registry(1);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--format")
+        .arg("json")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env("CARGO_REGISTRY_TOKEN", "secret-test-token")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert!(
+        !stdout.contains("secret-test-token"),
+        "doctor JSON must not expose token values: {stdout}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        json.pointer("/schema_version")
+            .and_then(serde_json::Value::as_str),
+        Some("shipper.doctor.v1")
+    );
+    assert_eq!(
+        json.pointer("/reports/0/registry/name")
+            .and_then(serde_json::Value::as_str),
+        Some("crates-io")
+    );
+    assert_eq!(
+        json.pointer("/reports/0/auth/auth_type")
+            .and_then(serde_json::Value::as_str),
+        Some("token (detected)")
+    );
+    assert_eq!(
+        json.pointer("/reports/0/connectivity/registry_reachable")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        json.pointer("/reports/0/tools/0/version")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+    );
+
+    registry.join();
+}
+
 /// 4. Doctor reports missing token when not set
 #[test]
 fn doctor_reports_missing_token() {

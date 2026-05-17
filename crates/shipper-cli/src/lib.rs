@@ -1091,16 +1091,26 @@ pub fn run() -> Result<()> {
                 opts.registries.clone()
             };
 
-            for reg in target_registries {
-                if opts.registries.len() > 1 {
-                    println!(
-                        "\n🩺 Diagnostics for registry: {} ({})",
-                        reg.name, reg.api_base
-                    );
+            if cli.format == "json" {
+                let mut reports = Vec::new();
+                for reg in target_registries {
+                    let mut current_planned = planned.clone();
+                    current_planned.plan.registry = reg;
+                    reports.push(doctor::collect_report(&current_planned, &opts)?);
                 }
-                let mut current_planned = planned.clone();
-                current_planned.plan.registry = reg;
-                doctor::run(&current_planned, &opts, &mut reporter)?;
+                doctor::print_json(reports)?;
+            } else {
+                for reg in target_registries {
+                    if opts.registries.len() > 1 {
+                        println!(
+                            "\n🩺 Diagnostics for registry: {} ({})",
+                            reg.name, reg.api_base
+                        );
+                    }
+                    let mut current_planned = planned.clone();
+                    current_planned.plan.registry = reg;
+                    doctor::run(&current_planned, &opts, &mut reporter)?;
+                }
             }
         }
         Commands::InspectEvents { follow } => {
