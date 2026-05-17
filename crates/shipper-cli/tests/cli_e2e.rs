@@ -271,7 +271,7 @@ fn doctor_command_snapshot() {
         evidence: auth_type: NONE FOUND (set CARGO_REGISTRY_TOKEN)
         try next:
           - run `cargo login <token>` for local token auth
-          - configure Trusted Publishing for GitHub Actions releases
+          - configure Trusted Publishing with `permissions: id-token: write` and `rust-lang/crates-io-auth-action@v1`
           - rerun `shipper doctor` and `shipper preflight`
         docs: docs/how-to/run-in-github-actions.md
 
@@ -329,11 +329,130 @@ fn doctor_command_detects_trusted_publishing_auth() {
 
     Findings:
     ---------
-      none
+      [blocked] Trusted Publishing token exchange is incomplete (trusted-publishing-token-not-minted)
+        status: blocked
+        severity: blocked
+        why: GitHub OIDC request variables are present, but Cargo still needs a short-lived registry token before Shipper can prove ownership or publish
+        evidence: auth_type: trusted (detected); registry_token: missing; oidc_request_url: set; oidc_request_token: set
+        try next:
+          - run `rust-lang/crates-io-auth-action@v1` before invoking Shipper
+          - pass `steps.auth.outputs.token` to Shipper as `CARGO_REGISTRY_TOKEN`
+          - rerun `shipper doctor` and `shipper preflight`
+        docs: docs/how-to/run-in-github-actions.md
 
     Diagnostics complete.
     "
     );
+}
+
+#[test]
+fn doctor_command_reports_partial_trusted_publishing_env() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    let mut cmd = shipper_cmd();
+    let out = cmd
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(".shipper")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .env(
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "https://example.invalid/oidc",
+        )
+        .env_remove("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(out).expect("utf8");
+    assert_snapshot!(
+        normalize_output(&stdout),
+        @"
+    Shipper Doctor - Diagnostics Report
+    ----------------------------------
+    workspace_root: <WORKSPACE_ROOT>
+    registry: crates-io (https://crates.io)
+    auth_type: unknown
+    state_dir: <STATE_DIR>
+    state_dir_exists: false (will be created)
+
+    cargo: <CARGO_VERSION>
+    git: <GIT_VERSION>
+
+    registry_reachable: true
+    index_base: https://index.crates.io
+
+    git_context: not a git repository
+
+    Findings:
+    ---------
+      [blocked] Trusted Publishing OIDC environment is incomplete (trusted-publishing-oidc-incomplete)
+        status: blocked
+        severity: blocked
+        why: Trusted Publishing requires both GitHub OIDC request variables; a partial environment cannot mint a crates.io token
+        evidence: auth_type: unknown; registry_token: missing; oidc_request_url: set; oidc_request_token: missing
+        try next:
+          - set `permissions: id-token: write` on the release job
+          - run Shipper after the GitHub OIDC request URL and token are both available
+          - or configure an explicit Cargo token fallback before rerunning preflight
+        docs: docs/how-to/run-in-github-actions.md
+
+    Diagnostics complete.
+    "
+    );
+}
+
+#[test]
+fn doctor_command_warns_on_incomplete_trusted_publishing_workflow() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+    write_file(
+        &td.path().join(".github/workflows/release.yml"),
+        r#"
+name: Release
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: rust-lang/crates-io-auth-action@v1
+      - run: shipper publish
+"#,
+    );
+
+    let mut cmd = shipper_cmd();
+    let out = cmd
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(".shipper")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env("CARGO_REGISTRY_TOKEN", "secret-token")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(out).expect("utf8");
+    assert!(stdout.contains("auth_type: token (detected)"));
+    assert!(stdout.contains(
+        "Trusted Publishing workflow prerequisites need review (trusted-publishing-workflow-prerequisites)"
+    ));
+    assert!(stdout.contains("id_token_write: missing"));
+    assert!(stdout.contains("release_environment: missing"));
+    assert!(stdout.contains("token_fallback: missing"));
+    assert!(!stdout.contains("secret-token"));
 }
 
 #[test]
@@ -1252,6 +1371,56 @@ fn preflight_command_json_output_structure() {
     assert!(pkg.get("auth_type").is_some());
     assert!(pkg.get("ownership_verified").is_some());
     assert!(pkg.get("dry_run_passed").is_some());
+
+    registry.join();
+}
+
+#[test]
+fn preflight_json_reports_trusted_publishing_without_minted_token() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+    let registry = spawn_registry(vec![404], 2);
+
+    let mut cmd = shipper_cmd();
+    let out = cmd
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("--skip-ownership-check")
+        .arg("preflight")
+        .arg("--format")
+        .arg("json")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .env(
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "https://example.invalid/oidc",
+        )
+        .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-token")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(out).expect("utf8");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["token_detected"], false);
+    assert_eq!(
+        json.pointer("/packages/0/auth_type")
+            .and_then(serde_json::Value::as_str),
+        Some("trusted_publishing")
+    );
+
+    let gaps = json["gaps"].as_array().expect("gaps array");
+    assert!(gaps.iter().any(|item| {
+        item["id"].as_str() == Some("trusted_publishing_token_not_minted")
+            && item["status"].as_str() == Some("not_proven")
+    }));
 
     registry.join();
 }

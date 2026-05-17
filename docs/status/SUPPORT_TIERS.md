@@ -47,6 +47,7 @@ make stronger claims than this file supports.
 | Preflight registry pacing estimate | stable | `cargo test -p shipper-core estimate_preflight_duration --lib`; `cargo test -p shipper-cli preflight`; `estimated_publish_duration` JSON field | engine/cli |
 | Resume after synthetic publish interruption | stable/internal | `cargo test -p shipper-cli --test e2e_rehearse -- --nocapture`; CI `BDD Tests` job; proves persisted `state.json`/`events.jsonl` let `shipper resume` complete without duplicate publishes against fake Cargo and a mock registry | engine |
 | Resume under live runner interruption | planned | Manual release-candidate procedure in `docs/how-to/run-recover-rehearsal.md`; promote only after a completed crates.io rehearsal artifact proves cancelled-run artifact recovery and resume on a real runner | engine |
+| Trusted Publishing prerequisite diagnostics | advisory | `shipper doctor`; `cargo test -p shipper-cli --test cli_e2e doctor_command_detects_trusted_publishing_auth`; validates visible GitHub OIDC env and release workflow prerequisites without claiming crates.io-side registration proof | release/ci |
 | Trusted Publishing default | planned/advisory | Future Trusted Publishing spec and #96 | release/ci |
 
 ## Rules

@@ -3,12 +3,14 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FindingLevel {
     Blocked,
+    Warning,
 }
 
 impl FindingLevel {
     fn as_str(self) -> &'static str {
         match self {
             FindingLevel::Blocked => "blocked",
+            FindingLevel::Warning => "warning",
         }
     }
 }

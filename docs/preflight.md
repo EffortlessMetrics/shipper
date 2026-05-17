@@ -72,7 +72,7 @@ Also detects authentication type:
 | Auth Type | Meaning |
 |-----------|---------|
 | `Token` | A Cargo registry token was found |
-| `Trusted` | GitHub Actions OIDC trusted publishing environment detected |
+| `Trusted` | GitHub Actions OIDC trusted publishing environment detected; the workflow still must run `rust-lang/crates-io-auth-action@v1` and pass its output as `CARGO_REGISTRY_TOKEN` before ownership checks or live publish can use it |
 | `Unknown` | Partial OIDC environment (only one of `ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN` set) |
 | `-` | No authentication found |
 
@@ -398,7 +398,7 @@ Parse the JSON output to make decisions in your pipeline:
 | Production release | `--strict-ownership` |
 | Pre-release validation (no publish) | `shipper preflight --format json` |
 | Fast CI (skip verification) | `--policy fast` |
-| Trusted publishing (GitHub OIDC) | No extra flags needed — auth is auto-detected |
+| Trusted publishing (GitHub OIDC) | No Shipper flags needed after the workflow mints a short-lived token and exports it as `CARGO_REGISTRY_TOKEN`; run `shipper doctor` to validate the visible workflow prerequisites |
 | Dirty working tree in CI | `--allow-dirty` (e.g., when CI modifies files) |
 
 ### Event Log

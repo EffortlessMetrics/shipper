@@ -2258,13 +2258,8 @@ fn build_preflight_json_report(rep: &PreflightReport) -> PreflightJsonReport<'_>
                 .collect(),
         });
     }
-    if !rep.token_detected {
-        gaps.push(PreflightEvidenceItem {
-            id: "registry_auth_missing",
-            status: "not_proven",
-            summary: "No registry token or Trusted Publishing context was detected.".to_string(),
-            packages: Vec::new(),
-        });
+    if let Some(gap) = preflight_auth_gap(rep) {
+        gaps.push(gap);
     }
 
     let failed_checks = dry_run_failed
@@ -2358,8 +2353,8 @@ fn print_preflight_proof_explanation(rep: &PreflightReport, total: usize, dry_ru
             package_refs(ownership_unverified.iter().copied())
         );
     }
-    if !rep.token_detected {
-        println!("    - no registry token or Trusted Publishing context was detected.");
+    if let Some(gap) = preflight_auth_gap(rep) {
+        println!("    - {}", evidence_bullet(&gap.summary));
     }
 
     println!("  Failed checks:");
@@ -2388,6 +2383,59 @@ fn package_refs<'a>(packages: impl Iterator<Item = &'a PreflightPackage>) -> Str
 
 fn package_ref(package: &PreflightPackage) -> String {
     format!("{}@{}", package.name, package.version)
+}
+
+fn evidence_bullet(summary: &str) -> String {
+    let mut chars = summary.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut bullet = String::new();
+    bullet.push(first.to_ascii_lowercase());
+    bullet.extend(chars);
+    bullet
+}
+
+fn preflight_auth_gap(rep: &PreflightReport) -> Option<PreflightEvidenceItem> {
+    if rep.token_detected {
+        return None;
+    }
+
+    let has_trusted_context = rep.packages.iter().any(|package| {
+        matches!(
+            package.auth_type,
+            Some(shipper_core::types::AuthType::TrustedPublishing)
+        )
+    });
+    let has_partial_trusted_context = rep.packages.iter().any(|package| {
+        matches!(
+            package.auth_type,
+            Some(shipper_core::types::AuthType::Unknown)
+        )
+    });
+
+    if has_trusted_context {
+        Some(PreflightEvidenceItem {
+            id: "trusted_publishing_token_not_minted",
+            status: "not_proven",
+            summary: "Trusted Publishing OIDC context was detected, but no short-lived registry token was minted into Cargo auth before preflight.".to_string(),
+            packages: Vec::new(),
+        })
+    } else if has_partial_trusted_context {
+        Some(PreflightEvidenceItem {
+            id: "trusted_publishing_oidc_incomplete",
+            status: "not_proven",
+            summary: "Trusted Publishing OIDC environment is incomplete; both GitHub OIDC request variables are required before a registry token can be minted.".to_string(),
+            packages: Vec::new(),
+        })
+    } else {
+        Some(PreflightEvidenceItem {
+            id: "registry_auth_missing",
+            status: "not_proven",
+            summary: "No registry token or Trusted Publishing context was detected.".to_string(),
+            packages: Vec::new(),
+        })
+    }
 }
 
 fn package_noun(count: usize) -> &'static str {
