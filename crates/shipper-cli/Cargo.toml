@@ -45,6 +45,7 @@ shipper-types.workspace = true
 shipper-config.workspace = true
 shipper-duration.workspace = true
 shipper-retry.workspace = true
+shipper-output-sanitizer.workspace = true
 
 [lints]
 workspace = true

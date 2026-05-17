@@ -1,13 +1,26 @@
 //! Registry authentication check.
 
 use anyhow::Result;
+use serde::Serialize;
 
 use shipper_core::plan;
 use shipper_core::types::AuthType;
 
 use crate::doctor::findings::{Finding, FindingLevel};
 
+#[derive(Debug, Serialize)]
+pub(in crate::doctor) struct AuthCheck {
+    pub auth_type: &'static str,
+    pub findings: Vec<Finding>,
+}
+
 pub(in crate::doctor) fn check(ws: &plan::PlannedWorkspace) -> Result<Vec<Finding>> {
+    let check = inspect(ws)?;
+    println!("auth_type: {}", check.auth_type);
+    Ok(check.findings)
+}
+
+pub(in crate::doctor) fn inspect(ws: &plan::PlannedWorkspace) -> Result<AuthCheck> {
     let auth_type = shipper_core::auth::detect_auth_type(&ws.plan.registry.name)?;
     let auth_label = match auth_type {
         Some(AuthType::Token) => "token (detected)",
@@ -15,7 +28,6 @@ pub(in crate::doctor) fn check(ws: &plan::PlannedWorkspace) -> Result<Vec<Findin
         Some(AuthType::Unknown) => "unknown",
         None => "NONE FOUND (set CARGO_REGISTRY_TOKEN)",
     };
-    println!("auth_type: {}", auth_label);
 
     let mut findings = Vec::new();
     if auth_type.is_none() {
@@ -68,7 +80,10 @@ pub(in crate::doctor) fn check(ws: &plan::PlannedWorkspace) -> Result<Vec<Findin
         });
     }
     findings.extend(trusted_publishing_workflow_findings(ws, auth_type));
-    Ok(findings)
+    Ok(AuthCheck {
+        auth_type: auth_label,
+        findings,
+    })
 }
 
 fn trusted_publishing_evidence(auth_label: &str) -> String {
