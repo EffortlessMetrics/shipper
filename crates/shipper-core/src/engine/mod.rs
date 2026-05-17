@@ -15,7 +15,7 @@ use crate::runtime::environment;
 use crate::runtime::execution::short_state;
 use crate::runtime::execution::{
     backoff_delay, classify_cargo_failure, pkg_key, record_attempt_detail, registry_aware_backoff,
-    resolve_state_dir, retry_next_attempt_at, update_state,
+    resolve_state_dir, retry_after_delay, retry_next_attempt_at, update_state,
 };
 use crate::state::events;
 use crate::state::execution_state as state;
@@ -848,6 +848,17 @@ pub fn run_publish(
                                 false
                             };
                             if attempt < opts.max_attempts {
+                                if crate::runtime::execution::looks_like_rate_limit(&failure_output)
+                                {
+                                    record_rate_limit_observed_event(
+                                        &mut event_log,
+                                        &events_path,
+                                        &pkg_label,
+                                        is_new_crate,
+                                        retry_after_delay(&failure_output),
+                                        &msg,
+                                    )?;
+                                }
                                 let delay = registry_aware_backoff(
                                     opts.base_delay,
                                     opts.max_delay,
@@ -899,8 +910,16 @@ pub fn run_publish(
                 enabled: effects.readiness_enabled,
                 ..opts.readiness.clone()
             };
-            let (visible, checks) =
-                verify_published(&reg, &p.name, &p.version, &readiness_config, reporter)?;
+            let (visible, checks) = verify_published(
+                &reg,
+                &p.name,
+                &p.version,
+                &readiness_config,
+                reporter,
+                &mut event_log,
+                &events_path,
+                &pkg_label,
+            )?;
             readiness_evidence = checks;
             if visible {
                 update_state(&mut st, &state_dir, &key, PackageState::Published)?;
@@ -1614,6 +1633,26 @@ fn record_retry_backoff_event(
 ) -> Result<()> {
     event_log.record(PublishEvent {
         timestamp: Utc::now(),
+        event_type: EventType::RetryScheduled {
+            attempt,
+            max_attempts,
+            delay_ms: delay.as_millis() as u64,
+            next_attempt_at,
+            reason: reason.clone(),
+            message: message.to_string(),
+        },
+        package: pkg_label.to_string(),
+    });
+    record_publish_wait_event(
+        event_log,
+        events_path,
+        pkg_label,
+        delay,
+        "retry backoff",
+        Some(next_attempt_at),
+    )?;
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
         event_type: EventType::RetryBackoffStarted {
             attempt,
             max_attempts,
@@ -1621,6 +1660,50 @@ fn record_retry_backoff_event(
             next_attempt_at,
             reason: reason.clone(),
             message: message.to_string(),
+        },
+        package: pkg_label.to_string(),
+    });
+    event_log.write_to_file(events_path)?;
+    event_log.clear();
+    Ok(())
+}
+
+fn record_rate_limit_observed_event(
+    event_log: &mut events::EventLog,
+    events_path: &Path,
+    pkg_label: &str,
+    is_new_crate: bool,
+    retry_after: Option<std::time::Duration>,
+    message: &str,
+) -> Result<()> {
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RateLimitObserved {
+            is_new_crate,
+            retry_after_ms: retry_after.map(|delay| delay.as_millis() as u64),
+            message: message.to_string(),
+        },
+        package: pkg_label.to_string(),
+    });
+    event_log.write_to_file(events_path)?;
+    event_log.clear();
+    Ok(())
+}
+
+fn record_publish_wait_event(
+    event_log: &mut events::EventLog,
+    events_path: &Path,
+    pkg_label: &str,
+    delay: std::time::Duration,
+    reason: &str,
+    until: Option<chrono::DateTime<Utc>>,
+) -> Result<()> {
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PublishWaiting {
+            reason: reason.to_string(),
+            delay_ms: delay.as_millis() as u64,
+            until: until.unwrap_or_else(|| retry_next_attempt_at(delay)),
         },
         package: pkg_label.to_string(),
     });
@@ -1662,12 +1745,33 @@ fn verify_published(
     version: &str,
     config: &crate::types::ReadinessConfig,
     reporter: &mut dyn Reporter,
+    event_log: &mut events::EventLog,
+    events_path: &Path,
+    pkg_label: &str,
 ) -> Result<(bool, Vec<ReadinessEvidence>)> {
     reporter.info(&format!(
         "{}@{}: readiness check ({:?})...",
         crate_name, version, config.method
     ));
-    let (visible, evidence) = reg.is_version_visible_with_backoff(crate_name, version, config)?;
+    let started_at = Instant::now();
+    record_readiness_event(
+        event_log,
+        events_path,
+        PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::ReadinessStarted {
+                method: config.method,
+            },
+            package: pkg_label.to_string(),
+        },
+    )?;
+    let mut emit_event = |event| record_readiness_event(event_log, events_path, event);
+    let (visible, evidence) = reg.is_version_visible_with_backoff_and_events(
+        crate_name,
+        version,
+        config,
+        &mut emit_event,
+    )?;
     if visible {
         reporter.info(&format!(
             "{}@{}: visible after {} checks",
@@ -1675,6 +1779,18 @@ fn verify_published(
             version,
             evidence.len()
         ));
+        record_readiness_event(
+            event_log,
+            events_path,
+            PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::ReadinessComplete {
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    attempts: evidence.len() as u32,
+                },
+                package: pkg_label.to_string(),
+            },
+        )?;
     } else {
         reporter.warn(&format!(
             "{}@{}: not visible after {} checks",
@@ -1682,8 +1798,30 @@ fn verify_published(
             version,
             evidence.len()
         ));
+        record_readiness_event(
+            event_log,
+            events_path,
+            PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::ReadinessTimeout {
+                    max_wait_ms: config.max_total_wait.as_millis() as u64,
+                },
+                package: pkg_label.to_string(),
+            },
+        )?;
     }
     Ok((visible, evidence))
+}
+
+fn record_readiness_event(
+    event_log: &mut events::EventLog,
+    events_path: &Path,
+    event: PublishEvent,
+) -> Result<()> {
+    event_log.record(event);
+    event_log.write_to_file(events_path)?;
+    event_log.clear();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2100,8 +2238,20 @@ mod tests {
         };
 
         let mut reporter = CollectingReporter::default();
-        let (ok, evidence) =
-            verify_published(&reg, "demo", "0.1.0", &config, &mut reporter).expect("verify");
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        let mut event_log = events::EventLog::new();
+        let (ok, evidence) = verify_published(
+            &reg,
+            "demo",
+            "0.1.0",
+            &config,
+            &mut reporter,
+            &mut event_log,
+            &events_path,
+            "demo@0.1.0",
+        )
+        .expect("verify");
         assert!(ok);
         assert!(!reporter.infos.is_empty());
         assert!(!evidence.is_empty());
@@ -2130,8 +2280,20 @@ mod tests {
         };
 
         let mut reporter = CollectingReporter::default();
-        let (ok, _evidence) =
-            verify_published(&reg, "demo", "0.1.0", &config, &mut reporter).expect("verify");
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        let mut event_log = events::EventLog::new();
+        let (ok, _evidence) = verify_published(
+            &reg,
+            "demo",
+            "0.1.0",
+            &config,
+            &mut reporter,
+            &mut event_log,
+            &events_path,
+            "demo@0.1.0",
+        )
+        .expect("verify");
         assert!(!ok);
     }
 
@@ -4792,6 +4954,26 @@ mod tests {
             assert_eq!(state.attempt_history[0].max_attempts, opts.max_attempts);
             assert!(state.attempt_history[0].error_class.is_none());
             assert!(state.attempt_history[0].next_attempt_at.is_none());
+            let events = events::EventLog::read_from_file(&td.path().join(".shipper/events.jsonl"))
+                .expect("read events");
+            assert!(
+                events
+                    .all_events()
+                    .iter()
+                    .any(|event| matches!(event.event_type, EventType::ReadinessStarted { .. }))
+            );
+            assert!(
+                events
+                    .all_events()
+                    .iter()
+                    .any(|event| matches!(event.event_type, EventType::ReadinessPoll { .. }))
+            );
+            assert!(
+                events
+                    .all_events()
+                    .iter()
+                    .any(|event| matches!(event.event_type, EventType::ReadinessComplete { .. }))
+            );
             server.join();
         });
     }
@@ -4864,22 +5046,28 @@ mod tests {
                 ("SHIPPER_CARGO_EXIT", Some("1".to_string())),
                 (
                     "SHIPPER_CARGO_STDERR",
-                    Some("HTTP 503 service unavailable".to_string()),
+                    Some("rate limit exceeded".to_string()),
                 ),
             ],
             || {
                 // All registry checks return 404 so the package is never found
                 let server = spawn_registry_server(
-                    std::collections::BTreeMap::from([(
-                        "/api/v1/crates/demo/0.1.0".to_string(),
-                        vec![
-                            (404, "{}".to_string()),
-                            (404, "{}".to_string()),
-                            (404, "{}".to_string()),
-                            (404, "{}".to_string()),
-                        ],
-                    )]),
-                    4,
+                    std::collections::BTreeMap::from([
+                        (
+                            "/api/v1/crates/demo/0.1.0".to_string(),
+                            vec![
+                                (404, "{}".to_string()),
+                                (404, "{}".to_string()),
+                                (404, "{}".to_string()),
+                                (404, "{}".to_string()),
+                            ],
+                        ),
+                        (
+                            "/api/v1/crates/demo".to_string(),
+                            vec![(200, "{}".to_string())],
+                        ),
+                    ]),
+                    5,
                 );
                 let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
@@ -4899,15 +5087,36 @@ mod tests {
                 assert_eq!(st.attempt_history[0].attempt, 1);
                 assert_eq!(
                     st.attempt_history[0].error_class,
-                    Some(ErrorClass::Retryable)
+                    Some(ErrorClass::Ambiguous)
                 );
                 assert!(st.attempt_history[0].next_attempt_at.is_some());
                 assert_eq!(st.attempt_history[1].attempt, 2);
                 assert_eq!(
                     st.attempt_history[1].error_class,
-                    Some(ErrorClass::Retryable)
+                    Some(ErrorClass::Ambiguous)
                 );
                 assert!(st.attempt_history[1].next_attempt_at.is_none());
+                let events =
+                    events::EventLog::read_from_file(&td.path().join(".shipper/events.jsonl"))
+                        .expect("read events");
+                assert!(
+                    events.all_events().iter().any(|event| matches!(
+                        event.event_type,
+                        EventType::RateLimitObserved { .. }
+                    ))
+                );
+                assert!(
+                    events
+                        .all_events()
+                        .iter()
+                        .any(|event| matches!(event.event_type, EventType::RetryScheduled { .. }))
+                );
+                assert!(
+                    events
+                        .all_events()
+                        .iter()
+                        .any(|event| matches!(event.event_type, EventType::PublishWaiting { .. }))
+                );
                 server.join();
             },
         );
@@ -5678,8 +5887,20 @@ mod tests {
         };
 
         let mut reporter = CollectingReporter::default();
-        let (ok, evidence) =
-            verify_published(&reg, "demo", "0.1.0", &config, &mut reporter).expect("verify");
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        let mut event_log = events::EventLog::new();
+        let (ok, evidence) = verify_published(
+            &reg,
+            "demo",
+            "0.1.0",
+            &config,
+            &mut reporter,
+            &mut event_log,
+            &events_path,
+            "demo@0.1.0",
+        )
+        .expect("verify");
         assert!(
             ok,
             "disabled readiness with 200 response should return true"

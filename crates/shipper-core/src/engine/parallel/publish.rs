@@ -17,7 +17,7 @@ use crate::ops::cargo;
 use crate::plan::PlannedWorkspace;
 use crate::runtime::execution::{
     append_attempt_detail, backoff_delay, classify_cargo_failure, pkg_key, registry_aware_backoff,
-    retry_next_attempt_at, update_state_locked,
+    retry_after_delay, retry_next_attempt_at, update_state_locked,
 };
 use crate::state::events;
 use crate::state::execution_state as state;
@@ -29,7 +29,7 @@ use shipper_types::{
 };
 
 use super::policy::policy_effects;
-use super::readiness::is_version_visible_with_backoff;
+use super::readiness::is_version_visible_with_backoff_and_events;
 use super::reconcile::reconcile_ambiguous_upload;
 use super::webhook::{WebhookEvent, maybe_send_event};
 use super::{Reporter, SendReporter, drain_retry_waits};
@@ -108,7 +108,30 @@ fn record_retry_backoff(
     reason: &ErrorClass,
     message: &str,
 ) {
-    let mut log = event_log.lock().unwrap();
+    let Ok(mut log) = event_log.lock() else {
+        return;
+    };
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RetryScheduled {
+            attempt,
+            max_attempts,
+            delay_ms: delay.as_millis() as u64,
+            next_attempt_at,
+            reason: reason.clone(),
+            message: message.to_string(),
+        },
+        package: pkg_label.to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PublishWaiting {
+            reason: "retry backoff".to_string(),
+            delay_ms: delay.as_millis() as u64,
+            until: next_attempt_at,
+        },
+        package: pkg_label.to_string(),
+    });
     log.record(PublishEvent {
         timestamp: Utc::now(),
         event_type: EventType::RetryBackoffStarted {
@@ -123,6 +146,44 @@ fn record_retry_backoff(
     });
     let _ = log.write_to_file(events_path);
     log.clear();
+}
+
+fn record_rate_limit_observed(
+    event_log: &Arc<Mutex<events::EventLog>>,
+    events_path: &Path,
+    pkg_label: &str,
+    is_new_crate: bool,
+    retry_after: Option<std::time::Duration>,
+    message: &str,
+) {
+    let Ok(mut log) = event_log.lock() else {
+        return;
+    };
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RateLimitObserved {
+            is_new_crate,
+            retry_after_ms: retry_after.map(|delay| delay.as_millis() as u64),
+            message: message.to_string(),
+        },
+        package: pkg_label.to_string(),
+    });
+    let _ = log.write_to_file(events_path);
+    log.clear();
+}
+
+fn record_readiness_event(
+    event_log: &Arc<Mutex<events::EventLog>>,
+    events_path: &Path,
+    event: PublishEvent,
+) -> Result<()> {
+    let mut log = event_log
+        .lock()
+        .map_err(|_| anyhow::anyhow!("event log lock poisoned while recording readiness event"))?;
+    log.record(event);
+    log.write_to_file(events_path)?;
+    log.clear();
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -762,6 +823,16 @@ pub(super) fn publish_package(
                                 false
                             };
                         if attempt < opts.max_attempts {
+                            if crate::runtime::execution::looks_like_rate_limit(&failure_output) {
+                                record_rate_limit_observed(
+                                    event_log,
+                                    events_path,
+                                    &pkg_label,
+                                    is_new_crate,
+                                    retry_after_delay(&failure_output),
+                                    &msg,
+                                );
+                            }
                             let delay = registry_aware_backoff(
                                 opts.base_delay,
                                 opts.max_delay,
@@ -813,13 +884,48 @@ pub(super) fn publish_package(
             p.name, p.version
         ));
 
-        let verify_result =
-            is_version_visible_with_backoff(reg, &p.name, &p.version, &readiness_config);
+        let readiness_started_at = Instant::now();
+        if let Err(e) = record_readiness_event(
+            event_log,
+            events_path,
+            PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::ReadinessStarted {
+                    method: readiness_config.method,
+                },
+                package: pkg_label.clone(),
+            },
+        ) {
+            return PackagePublishResult { result: Err(e) };
+        }
+        let mut emit_readiness_event =
+            |event| record_readiness_event(event_log, events_path, event);
+        let verify_result = is_version_visible_with_backoff_and_events(
+            reg,
+            &p.name,
+            &p.version,
+            &readiness_config,
+            &mut emit_readiness_event,
+        );
 
         match verify_result {
             Ok((visible, checks)) => {
                 readiness_evidence = checks;
                 if visible {
+                    if let Err(e) = record_readiness_event(
+                        event_log,
+                        events_path,
+                        PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::ReadinessComplete {
+                                duration_ms: readiness_started_at.elapsed().as_millis() as u64,
+                                attempts: readiness_evidence.len() as u32,
+                            },
+                            package: pkg_label.clone(),
+                        },
+                    ) {
+                        return PackagePublishResult { result: Err(e) };
+                    }
                     {
                         let mut state = st.lock().unwrap();
                         update_state_locked(&mut state, &key, PackageState::Published);
@@ -854,6 +960,19 @@ pub(super) fn publish_package(
 
                     break;
                 } else {
+                    if let Err(e) = record_readiness_event(
+                        event_log,
+                        events_path,
+                        PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::ReadinessTimeout {
+                                max_wait_ms: readiness_config.max_total_wait.as_millis() as u64,
+                            },
+                            package: pkg_label.clone(),
+                        },
+                    ) {
+                        return PackagePublishResult { result: Err(e) };
+                    }
                     let message =
                         "published locally, but version not observed on registry within timeout";
                     last_err = Some((ErrorClass::Ambiguous, message.to_string()));

@@ -1,0 +1,15 @@
+---
+source: crates/shipper-core/src/state/events/tests.rs
+expression: event
+---
+PublishEvent {
+    timestamp: 2025-01-15T12:00:00Z,
+    event_type: RateLimitObserved {
+        is_new_crate: true,
+        retry_after_ms: Some(
+            90000,
+        ),
+        message: "HTTP 429",
+    },
+    package: "my-crate@1.0.0",
+}
