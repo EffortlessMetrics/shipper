@@ -10,7 +10,7 @@ use anyhow::Result;
 use chrono::Utc;
 
 use shipper_registry::HttpRegistryClient as RegistryClient;
-use shipper_types::{ReadinessConfig, ReadinessEvidence, ReadinessMethod};
+use shipper_types::{EventType, PublishEvent, ReadinessConfig, ReadinessEvidence, ReadinessMethod};
 
 /// Check readiness visibility with exponential backoff and optional sparse-index fallback.
 pub(super) fn is_version_visible_with_backoff(
@@ -19,10 +19,22 @@ pub(super) fn is_version_visible_with_backoff(
     version: &str,
     config: &ReadinessConfig,
 ) -> Result<(bool, Vec<ReadinessEvidence>)> {
+    is_version_visible_with_backoff_and_events(reg, crate_name, version, config, &mut |_| Ok(()))
+}
+
+pub(super) fn is_version_visible_with_backoff_and_events(
+    reg: &RegistryClient,
+    crate_name: &str,
+    version: &str,
+    config: &ReadinessConfig,
+    emit_event: &mut dyn FnMut(PublishEvent) -> Result<()>,
+) -> Result<(bool, Vec<ReadinessEvidence>)> {
     let mut evidence = Vec::new();
+    let package = format!("{crate_name}@{version}");
 
     if !config.enabled {
         let visible = reg.version_exists(crate_name, version)?;
+        emit_event(readiness_poll_event(&package, 1, visible))?;
         evidence.push(ReadinessEvidence {
             attempt: 1,
             visible,
@@ -36,6 +48,11 @@ pub(super) fn is_version_visible_with_backoff(
     let mut attempt = 0u32;
 
     if config.initial_delay > Duration::ZERO {
+        emit_event(readiness_poll_scheduled_event(
+            &package,
+            1,
+            config.initial_delay,
+        ))?;
         thread::sleep(config.initial_delay);
     }
 
@@ -82,6 +99,7 @@ pub(super) fn is_version_visible_with_backoff(
             timestamp: Utc::now(),
             delay_before: jittered_delay,
         });
+        emit_event(readiness_poll_event(&package, attempt, visible))?;
 
         if visible {
             return Ok((true, evidence));
@@ -99,6 +117,11 @@ pub(super) fn is_version_visible_with_backoff(
         let jitter = 1.0 + (rand::random::<f64>() * 2.0 * jitter_range - jitter_range);
         let next_delay =
             Duration::from_millis((capped_delay.as_millis() as f64 * jitter).round() as u64);
+        emit_event(readiness_poll_scheduled_event(
+            &package,
+            attempt.saturating_add(1),
+            next_delay,
+        ))?;
         thread::sleep(next_delay);
     }
 }
@@ -122,6 +145,27 @@ fn is_version_visible_via_index(
     };
 
     Ok(shipper_sparse_index::contains_version(&content, version))
+}
+
+fn readiness_poll_event(package: &str, attempt: u32, visible: bool) -> PublishEvent {
+    PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ReadinessPoll { attempt, visible },
+        package: package.to_string(),
+    }
+}
+
+fn readiness_poll_scheduled_event(package: &str, attempt: u32, delay: Duration) -> PublishEvent {
+    PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ReadinessPollScheduled {
+            attempt,
+            delay_ms: delay.as_millis() as u64,
+            next_poll_at: Utc::now()
+                + chrono::Duration::from_std(delay).unwrap_or_else(|_| chrono::Duration::zero()),
+        },
+        package: package.to_string(),
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,16 @@
+---
+source: crates/shipper-core/src/state/events/tests.rs
+expression: event
+---
+PublishEvent {
+    timestamp: 2025-01-15T12:00:00Z,
+    event_type: RetryScheduled {
+        attempt: 2,
+        max_attempts: 5,
+        delay_ms: 10000,
+        next_attempt_at: 2025-01-15T12:00:00Z,
+        reason: Retryable,
+        message: "HTTP 503",
+    },
+    package: "my-crate@1.0.0",
+}

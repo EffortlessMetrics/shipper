@@ -1,11 +1,13 @@
 use anyhow::{Context, Result, bail};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 
-use shipper_types::{ReadinessConfig, ReadinessEvidence, ReadinessMethod, Registry};
+use shipper_types::{
+    EventType, PublishEvent, ReadinessConfig, ReadinessEvidence, ReadinessMethod, Registry,
+};
 
 #[derive(Debug, Clone)]
 pub struct RegistryClient {
@@ -248,11 +250,30 @@ impl RegistryClient {
         version: &str,
         config: &ReadinessConfig,
     ) -> Result<(bool, Vec<ReadinessEvidence>)> {
+        self.is_version_visible_with_backoff_and_events(
+            crate_name,
+            version,
+            config,
+            &mut |_| Ok(()),
+        )
+    }
+
+    /// Check if a version is visible with exponential backoff and jitter,
+    /// emitting scheduling events for callers that persist release timelines.
+    pub fn is_version_visible_with_backoff_and_events(
+        &self,
+        crate_name: &str,
+        version: &str,
+        config: &ReadinessConfig,
+        emit_event: &mut dyn FnMut(PublishEvent) -> Result<()>,
+    ) -> Result<(bool, Vec<ReadinessEvidence>)> {
         let mut evidence = Vec::new();
+        let package = format!("{crate_name}@{version}");
 
         if !config.enabled {
             // If readiness checks are disabled, just check once
             let visible = self.version_exists(crate_name, version)?;
+            emit_event(readiness_poll_event(&package, 1, visible))?;
             evidence.push(ReadinessEvidence {
                 attempt: 1,
                 visible,
@@ -267,6 +288,11 @@ impl RegistryClient {
 
         // Initial delay before first poll
         if config.initial_delay > Duration::ZERO {
+            emit_event(readiness_poll_scheduled_event(
+                &package,
+                1,
+                config.initial_delay,
+            ))?;
             std::thread::sleep(config.initial_delay);
         }
 
@@ -316,6 +342,7 @@ impl RegistryClient {
                 timestamp: Utc::now(),
                 delay_before: jittered_delay,
             });
+            emit_event(readiness_poll_event(&package, attempt, visible))?;
 
             if visible {
                 return Ok((true, evidence));
@@ -337,6 +364,11 @@ impl RegistryClient {
             let next_delay =
                 Duration::from_millis((capped_delay.as_millis() as f64 * jitter).round() as u64);
 
+            emit_event(readiness_poll_scheduled_event(
+                &package,
+                attempt.saturating_add(1),
+                next_delay,
+            ))?;
             std::thread::sleep(next_delay);
         }
     }
@@ -363,6 +395,30 @@ impl RegistryClient {
         let millis = (delay.as_millis() as f64 * jitter).round() as u128;
         Duration::from_millis(millis as u64)
     }
+}
+
+fn readiness_poll_event(package: &str, attempt: u32, visible: bool) -> PublishEvent {
+    PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ReadinessPoll { attempt, visible },
+        package: package.to_string(),
+    }
+}
+
+fn readiness_poll_scheduled_event(package: &str, attempt: u32, delay: Duration) -> PublishEvent {
+    PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ReadinessPollScheduled {
+            attempt,
+            delay_ms: delay.as_millis() as u64,
+            next_poll_at: next_instant(delay),
+        },
+        package: package.to_string(),
+    }
+}
+
+fn next_instant(delay: Duration) -> DateTime<Utc> {
+    Utc::now() + chrono::Duration::from_std(delay).unwrap_or_else(|_| chrono::Duration::zero())
 }
 
 #[derive(Debug, Deserialize)]
