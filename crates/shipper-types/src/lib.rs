@@ -1191,6 +1191,27 @@ pub struct PackageProgress {
     pub last_updated_at: DateTime<Utc>,
 }
 
+/// Durable state record for one `cargo publish` attempt.
+///
+/// `PackageProgress::attempts` is the fast counter used by resume. This
+/// detail log preserves operator-facing facts needed by `status`, resume
+/// explainers, and release evidence before the final receipt exists.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttemptDetail {
+    pub package: String,
+    pub version: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<ErrorClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacted_message: Option<String>,
+}
+
 /// The complete state of an in-progress publish operation.
 ///
 /// This is the root structure persisted to disk during publishing.
@@ -1208,6 +1229,7 @@ pub struct PackageProgress {
 ///     registry: Registry::crates_io(),
 ///     created_at: Utc::now(),
 ///     updated_at: Utc::now(),
+///     attempt_history: Vec::new(),
 ///     packages: std::collections::BTreeMap::new(),
 /// };
 ///
@@ -1227,6 +1249,10 @@ pub struct ExecutionState {
     pub registry: Registry,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Per-attempt timeline written during publish, before final receipt
+    /// construction. Defaults empty so older state files remain readable.
+    #[serde(default)]
+    pub attempt_history: Vec<AttemptDetail>,
     pub packages: BTreeMap<String, PackageProgress>,
 }
 
@@ -2009,6 +2035,7 @@ mod tests {
             registry: Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages,
         };
 
@@ -3285,6 +3312,7 @@ mod tests {
                 registry: Registry::crates_io(),
                 created_at: t,
                 updated_at: t,
+                attempt_history: Vec::new(),
                 packages,
             };
             insta::assert_yaml_snapshot!(state);
@@ -3685,6 +3713,7 @@ mod tests {
                 registry: Registry::crates_io(),
                 created_at: t,
                 updated_at: t,
+                attempt_history: Vec::new(),
                 packages,
             };
             insta::assert_yaml_snapshot!(state);
@@ -3712,6 +3741,7 @@ mod tests {
                 registry: Registry::crates_io(),
                 created_at: t,
                 updated_at: t,
+                attempt_history: Vec::new(),
                 packages,
             };
             insta::assert_yaml_snapshot!(state);
@@ -3774,6 +3804,7 @@ mod tests {
                 registry: Registry::crates_io(),
                 created_at: t,
                 updated_at: t,
+                attempt_history: Vec::new(),
                 packages,
             };
             insta::assert_yaml_snapshot!(state);
@@ -4547,6 +4578,7 @@ mod tests {
                     registry: Registry::crates_io(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages,
                 };
                 let json = serde_json::to_string(&state).unwrap();
@@ -5025,6 +5057,7 @@ mod tests {
                     registry: Registry::crates_io(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages,
                 };
 
@@ -5066,6 +5099,7 @@ mod tests {
                     registry: Registry::crates_io(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages,
                 };
 
@@ -5405,6 +5439,7 @@ mod tests {
                     registry: Registry::crates_io(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages: packages.clone(),
                 };
                 let json = serde_json::to_string(&exec_state).unwrap();

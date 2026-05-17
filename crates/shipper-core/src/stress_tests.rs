@@ -46,6 +46,7 @@ mod tests {
             registry: Registry::crates_io(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            attempt_history: Vec::new(),
             packages: pkg_map,
         }
     }

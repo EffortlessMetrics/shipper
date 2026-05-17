@@ -28,6 +28,7 @@ fn sample_state() -> ExecutionState {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }
 }
@@ -379,6 +380,7 @@ fn file_store_state_with_all_package_states() {
         registry: Registry::crates_io(),
         created_at: now,
         updated_at: now,
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -746,6 +748,7 @@ fn file_store_state_with_empty_packages() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
 
@@ -1115,6 +1118,7 @@ fn file_store_state_very_long_package_name() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -1137,6 +1141,7 @@ fn file_store_state_empty_plan_id() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
 
@@ -1461,6 +1466,7 @@ fn file_store_concurrent_writers_last_write_readable() {
                     registry: Registry::crates_io(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages: BTreeMap::new(),
                 };
                 state.packages.insert(
@@ -1523,6 +1529,7 @@ fn file_store_state_with_many_packages() {
         registry: Registry::crates_io(),
         created_at: now,
         updated_at: now,
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -1731,6 +1738,7 @@ mod proptests_hardened {
                 registry: Registry::crates_io(),
                 created_at: now,
                 updated_at: now,
+                attempt_history: Vec::new(),
                 packages,
             };
 

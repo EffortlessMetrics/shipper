@@ -32,6 +32,7 @@ fn sample_state() -> ExecutionState {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }
 }
@@ -544,6 +545,43 @@ fn state_double_save_produces_identical_json() {
 }
 
 #[test]
+fn load_state_defaults_missing_attempt_history_for_old_state_json() {
+    let td = tempdir().expect("tempdir");
+    let dir = td.path().join("old-state");
+    fs::create_dir_all(&dir).expect("mkdir");
+    fs::write(
+        state_path(&dir),
+        r#"{
+  "state_version": "shipper.state.v1",
+  "plan_id": "old-plan",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io",
+    "index_base": null
+  },
+  "created_at": "2025-01-15T12:00:00Z",
+  "updated_at": "2025-01-15T12:00:00Z",
+  "packages": {
+    "demo@0.1.0": {
+      "name": "demo",
+      "version": "0.1.0",
+      "attempts": 1,
+      "state": { "state": "pending" },
+      "last_updated_at": "2025-01-15T12:00:00Z"
+    }
+  }
+}"#,
+    )
+    .expect("write old state");
+
+    let loaded = load_state(&dir).expect("load").expect("exists");
+
+    assert_eq!(loaded.plan_id, "old-plan");
+    assert!(loaded.attempt_history.is_empty());
+    assert_eq!(loaded.packages["demo@0.1.0"].attempts, 1);
+}
+
+#[test]
 fn receipt_double_save_produces_identical_json() {
     let td = tempdir().expect("tempdir");
     let dir1 = td.path().join("first");
@@ -584,6 +622,7 @@ fn state_lifecycle_pending_uploaded_published() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -649,6 +688,7 @@ fn state_all_error_classes_persist() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -689,6 +729,7 @@ fn state_empty_packages_roundtrip() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
 
@@ -740,6 +781,7 @@ fn state_overwrite_replaces_all_data() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
     save_state(&dir, &st1).expect("save v1");
@@ -761,6 +803,7 @@ fn state_overwrite_replaces_all_data() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     save_state(&dir, &st2).expect("save v2");
@@ -808,6 +851,7 @@ fn state_with_special_chars_in_plan_id() {
             registry: Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages: BTreeMap::new(),
         };
 
@@ -828,6 +872,7 @@ fn state_plan_id_mismatch_detection() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
     save_state(&dir, &state).expect("save");
@@ -904,6 +949,7 @@ fn deterministic_state() -> ExecutionState {
         registry: Registry::crates_io(),
         created_at: fixed,
         updated_at: fixed,
+        attempt_history: Vec::new(),
         packages,
     }
 }
@@ -1124,6 +1170,7 @@ fn snapshot_state_all_lifecycle_variants() {
         registry: Registry::crates_io(),
         created_at: fixed,
         updated_at: fixed,
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -1279,6 +1326,7 @@ mod proptests {
                     registry,
                     created_at: created,
                     updated_at: updated,
+                    attempt_history: Vec::new(),
                     packages,
                 },
             )
@@ -1384,6 +1432,7 @@ mod proptests {
                 registry: Registry::crates_io(),
                 created_at: fixed,
                 updated_at: fixed,
+                attempt_history: Vec::new(),
                 packages: BTreeMap::new(),
             };
             let json = serde_json::to_string(&state).expect("serialize");
@@ -1419,6 +1468,7 @@ mod proptests {
                 registry: Registry::crates_io(),
                 created_at: fixed,
                 updated_at: fixed,
+                attempt_history: Vec::new(),
                 packages,
             };
 
@@ -1571,6 +1621,7 @@ fn atomic_write_no_partial_state_on_serialization_error_path() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
     save_state(&dir, &st1).expect("save original");
@@ -1906,6 +1957,7 @@ fn concurrent_readers_all_see_consistent_state() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: pkgs,
     };
     save_state(&dir, &state).expect("save");
@@ -1955,6 +2007,7 @@ fn sequential_writer_reader_pattern() {
             registry: Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages: pkgs,
         };
         save_state(&dir, &state).expect("save");
@@ -1981,6 +2034,7 @@ fn concurrent_writer_then_readers() {
                 registry: Registry::crates_io(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                attempt_history: Vec::new(),
                 packages: BTreeMap::new(),
             };
             save_state(&wd, &state).expect("save");
@@ -2068,6 +2122,7 @@ fn each_package_state_variant_disk_roundtrip() {
             registry: Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages: pkgs,
         };
         save_state(&dir, &state).expect("save");
@@ -2204,6 +2259,7 @@ fn snapshot_state_empty_packages() {
         registry: Registry::crates_io(),
         created_at: fixed,
         updated_at: fixed,
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
     let json = serde_json::to_string_pretty(&state).expect("serialize");
@@ -2343,6 +2399,7 @@ mod proptests_extended {
                     .unwrap_or_default(),
                 updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
                     .unwrap_or_default(),
+                attempt_history: Vec::new(),
                 packages: pkgs,
             };
 

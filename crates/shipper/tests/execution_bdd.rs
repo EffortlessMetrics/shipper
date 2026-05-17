@@ -16,6 +16,7 @@ fn bdd_given_existing_pending_package_when_state_is_updated_and_persisted_then_s
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::from([(
             key.clone(),
             PackageProgress {
@@ -51,6 +52,7 @@ fn bdd_given_in_memory_update_then_state_uses_key_lookup_contract() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::from([(
             key.clone(),
             PackageProgress {

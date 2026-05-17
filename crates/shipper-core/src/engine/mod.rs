@@ -14,17 +14,17 @@ use crate::runtime::environment;
 #[cfg(test)]
 use crate::runtime::execution::short_state;
 use crate::runtime::execution::{
-    backoff_delay, classify_cargo_failure, pkg_key, registry_aware_backoff, resolve_state_dir,
-    update_state,
+    backoff_delay, classify_cargo_failure, pkg_key, record_attempt_detail, registry_aware_backoff,
+    resolve_state_dir, retry_next_attempt_at, update_state,
 };
 use crate::state::events;
 use crate::state::execution_state as state;
 #[cfg(test)]
 use crate::types::ExecutionResult;
 use crate::types::{
-    AttemptEvidence, ErrorClass, EventType, ExecutionState, PackageProgress, PackageReceipt,
-    PackageState, PreflightReport, PublishEvent, PublishRegime, ReadinessEvidence, Receipt,
-    ReconciliationOutcome, Registry, RuntimeOptions,
+    AttemptDetail, AttemptEvidence, ErrorClass, EventType, ExecutionState, PackageProgress,
+    PackageReceipt, PackageState, PreflightReport, PublishEvent, PublishRegime, ReadinessEvidence,
+    Receipt, ReconciliationOutcome, Registry, RuntimeOptions,
 };
 #[cfg(test)]
 use crate::types::{Finishability, PreflightPackage};
@@ -601,8 +601,9 @@ pub fn run_publish(
 
             if !cargo_succeeded {
                 // Event: PackageAttempted
+                let attempt_started_at = Utc::now();
                 event_log.record(PublishEvent {
-                    timestamp: Utc::now(),
+                    timestamp: attempt_started_at,
                     event_type: EventType::PackageAttempted {
                         attempt,
                         command: command.clone(),
@@ -619,6 +620,7 @@ pub fn run_publish(
                     opts.output_lines,
                     None, // sequential mode: no per-package timeout
                 )?;
+                let attempt_ended_at = Utc::now();
 
                 // Collect attempt evidence
                 attempt_evidence.push(AttemptEvidence {
@@ -627,7 +629,7 @@ pub fn run_publish(
                     exit_code: out.exit_code,
                     stdout_tail: out.stdout_tail.clone(),
                     stderr_tail: out.stderr_tail.clone(),
-                    timestamp: Utc::now(),
+                    timestamp: attempt_ended_at,
                     duration: out.duration,
                 });
 
@@ -640,8 +642,25 @@ pub fn run_publish(
                     },
                     package: pkg_label.clone(),
                 });
+                event_log.write_to_file(&events_path)?;
+                event_log.clear();
 
                 if out.exit_code == 0 {
+                    record_attempt_detail(
+                        &mut st,
+                        &state_dir,
+                        AttemptDetail {
+                            package: p.name.clone(),
+                            version: p.version.clone(),
+                            attempt,
+                            max_attempts: opts.max_attempts,
+                            started_at: attempt_started_at,
+                            ended_at: attempt_ended_at,
+                            error_class: None,
+                            next_attempt_at: None,
+                            redacted_message: None,
+                        },
+                    )?;
                     cargo_succeeded = true;
                     // Persist Uploaded state so resume skips cargo publish
                     update_state(&mut st, &state_dir, &key, PackageState::Uploaded)?;
@@ -649,6 +668,17 @@ pub fn run_publish(
                     let failure_output = format!("{}\n{}", out.stderr_tail, out.stdout_tail);
                     let (class, msg) = classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
                     last_err = Some((class.clone(), msg.clone()));
+                    let mut attempt_detail = AttemptDetail {
+                        package: p.name.clone(),
+                        version: p.version.clone(),
+                        attempt,
+                        max_attempts: opts.max_attempts,
+                        started_at: attempt_started_at,
+                        ended_at: attempt_ended_at,
+                        error_class: Some(class.clone()),
+                        next_attempt_at: None,
+                        redacted_message: Some(msg.clone()),
+                    };
 
                     if class == ErrorClass::Ambiguous {
                         event_log.record(PublishEvent {
@@ -697,6 +727,7 @@ pub fn run_publish(
 
                         match outcome {
                             ReconciliationOutcome::Published { .. } => {
+                                record_attempt_detail(&mut st, &state_dir, attempt_detail)?;
                                 reporter.info(&format!(
                                     "{}@{}: reconciliation outcome: Published; registry shows version present; action: mark published and continue without retry (evidence: {})",
                                     p.name,
@@ -727,6 +758,7 @@ pub fn run_publish(
                                 readiness_evidence = reconcile_evidence;
                             }
                             ReconciliationOutcome::StillUnknown { reason, .. } => {
+                                record_attempt_detail(&mut st, &state_dir, attempt_detail)?;
                                 let ambiguous_state = PackageState::Ambiguous {
                                     message: reason.clone(),
                                 };
@@ -770,6 +802,7 @@ pub fn run_publish(
                                 "{}@{}: version is present on registry; treating as published",
                                 p.name, p.version
                             ));
+                            record_attempt_detail(&mut st, &state_dir, attempt_detail)?;
                             update_state(&mut st, &state_dir, &key, PackageState::Published)?;
                             last_err = None;
                             break;
@@ -778,6 +811,7 @@ pub fn run_publish(
 
                     match class {
                         ErrorClass::Permanent => {
+                            record_attempt_detail(&mut st, &state_dir, attempt_detail)?;
                             let failed = PackageState::Failed {
                                 class: class.clone(),
                                 message: msg.clone(),
@@ -813,28 +847,43 @@ pub fn run_publish(
                             } else {
                                 false
                             };
-                            let delay = registry_aware_backoff(
-                                opts.base_delay,
-                                opts.max_delay,
-                                attempt,
-                                opts.retry_strategy,
-                                opts.retry_jitter,
-                                is_new_crate,
-                                &failure_output,
-                            );
-                            emit_retry_backoff_event(
-                                &mut event_log,
-                                &events_path,
-                                reporter,
-                                &pkg_label,
-                                &p.name,
-                                &p.version,
-                                attempt,
-                                opts.max_attempts,
-                                delay,
-                                class.clone(),
-                                &msg,
-                            )?;
+                            if attempt < opts.max_attempts {
+                                let delay = registry_aware_backoff(
+                                    opts.base_delay,
+                                    opts.max_delay,
+                                    attempt,
+                                    opts.retry_strategy,
+                                    opts.retry_jitter,
+                                    is_new_crate,
+                                    &failure_output,
+                                );
+                                let next_attempt_at = retry_next_attempt_at(delay);
+                                attempt_detail.next_attempt_at = Some(next_attempt_at);
+                                record_retry_backoff_event(
+                                    &mut event_log,
+                                    &events_path,
+                                    &pkg_label,
+                                    attempt,
+                                    opts.max_attempts,
+                                    delay,
+                                    next_attempt_at,
+                                    &class,
+                                    &msg,
+                                )?;
+                                record_attempt_detail(&mut st, &state_dir, attempt_detail)?;
+                                wait_after_retry(
+                                    reporter,
+                                    &p.name,
+                                    &p.version,
+                                    attempt,
+                                    opts.max_attempts,
+                                    delay,
+                                    class.clone(),
+                                    &msg,
+                                );
+                            } else {
+                                record_attempt_detail(&mut st, &state_dir, attempt_detail)?;
+                            }
                         }
                     }
                     continue;
@@ -891,6 +940,7 @@ pub fn run_publish(
                     opts.retry_strategy,
                     opts.retry_jitter,
                 );
+                let next_attempt_at = retry_next_attempt_at(delay);
                 emit_retry_backoff_event(
                     &mut event_log,
                     &events_path,
@@ -901,6 +951,7 @@ pub fn run_publish(
                     attempt,
                     opts.max_attempts,
                     delay,
+                    next_attempt_at,
                     ErrorClass::Ambiguous,
                     message,
                 )?;
@@ -1452,6 +1503,7 @@ pub(crate) fn init_state(ws: &PlannedWorkspace, state_dir: &Path) -> Result<Exec
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -1520,12 +1572,46 @@ fn emit_retry_backoff_event(
     attempt: u32,
     max_attempts: u32,
     delay: std::time::Duration,
+    next_attempt_at: chrono::DateTime<Utc>,
     reason: ErrorClass,
     message: &str,
 ) -> Result<()> {
-    let next_attempt_at =
-        Utc::now() + chrono::Duration::from_std(delay).unwrap_or_else(|_| chrono::Duration::zero());
+    record_retry_backoff_event(
+        event_log,
+        events_path,
+        pkg_label,
+        attempt,
+        max_attempts,
+        delay,
+        next_attempt_at,
+        &reason,
+        message,
+    )?;
+    wait_after_retry(
+        reporter,
+        pkg_name,
+        pkg_version,
+        attempt,
+        max_attempts,
+        delay,
+        reason,
+        message,
+    );
+    Ok(())
+}
 
+#[allow(clippy::too_many_arguments)]
+fn record_retry_backoff_event(
+    event_log: &mut events::EventLog,
+    events_path: &Path,
+    pkg_label: &str,
+    attempt: u32,
+    max_attempts: u32,
+    delay: std::time::Duration,
+    next_attempt_at: chrono::DateTime<Utc>,
+    reason: &ErrorClass,
+    message: &str,
+) -> Result<()> {
     event_log.record(PublishEvent {
         timestamp: Utc::now(),
         event_type: EventType::RetryBackoffStarted {
@@ -1540,7 +1626,20 @@ fn emit_retry_backoff_event(
     });
     event_log.write_to_file(events_path)?;
     event_log.clear();
+    Ok(())
+}
 
+#[allow(clippy::too_many_arguments)]
+fn wait_after_retry(
+    reporter: &mut dyn Reporter,
+    pkg_name: &str,
+    pkg_version: &str,
+    attempt: u32,
+    max_attempts: u32,
+    delay: std::time::Duration,
+    reason: ErrorClass,
+    message: &str,
+) {
     // Delegate the human-facing narration AND the backoff sleep to the
     // Reporter so TTY-capable UIs can render a live countdown during the
     // wait. The default `Reporter::retry_wait` impl preserves the pre-#103
@@ -1555,7 +1654,6 @@ fn emit_retry_backoff_event(
         reason,
         message,
     );
-    Ok(())
 }
 
 fn verify_published(
@@ -2881,6 +2979,7 @@ mod tests {
                 registry: ws.plan.registry.clone(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                attempt_history: Vec::new(),
                 packages,
             };
             state::save_state(&state_dir, &seeded).expect("seed state");
@@ -2950,6 +3049,7 @@ mod tests {
                 registry: ws.plan.registry.clone(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                attempt_history: Vec::new(),
                 packages,
             };
             state::save_state(&state_dir, &seeded).expect("seed state");
@@ -3250,6 +3350,7 @@ mod tests {
                 registry: ws.plan.registry.clone(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                attempt_history: Vec::new(),
                 packages: BTreeMap::new(),
             };
             state::save_state(&state_dir, &existing).expect("save");
@@ -3583,6 +3684,7 @@ mod tests {
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages,
         };
         state::save_state(&state_dir, &st).expect("save");
@@ -3616,6 +3718,7 @@ mod tests {
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages,
         };
         state::save_state(&state_dir, &st).expect("save");
@@ -3668,6 +3771,7 @@ mod tests {
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages,
         };
         state::save_state(&state_dir, &st).expect("save");
@@ -4394,6 +4498,7 @@ mod tests {
                 registry: ws.plan.registry.clone(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                attempt_history: Vec::new(),
                 packages,
             };
             state::save_state(&state_dir, &st).expect("save");
@@ -4677,6 +4782,16 @@ mod tests {
             assert!(!receipt.packages[0].evidence.attempts.is_empty());
             assert_eq!(receipt.packages[0].evidence.attempts[0].attempt_number, 1);
             assert_eq!(receipt.packages[0].evidence.attempts[0].exit_code, 0);
+            let state = state::load_state(&td.path().join(".shipper"))
+                .expect("load state")
+                .expect("state exists");
+            assert_eq!(state.attempt_history.len(), 1);
+            assert_eq!(state.attempt_history[0].package, "demo");
+            assert_eq!(state.attempt_history[0].version, "0.1.0");
+            assert_eq!(state.attempt_history[0].attempt, 1);
+            assert_eq!(state.attempt_history[0].max_attempts, opts.max_attempts);
+            assert!(state.attempt_history[0].error_class.is_none());
+            assert!(state.attempt_history[0].next_attempt_at.is_none());
             server.join();
         });
     }
@@ -4780,6 +4895,19 @@ mod tests {
                     .expect("exists");
                 let pkg = st.packages.get("demo@0.1.0").expect("pkg");
                 assert_eq!(pkg.attempts, 2, "expected 2 attempts");
+                assert_eq!(st.attempt_history.len(), 2);
+                assert_eq!(st.attempt_history[0].attempt, 1);
+                assert_eq!(
+                    st.attempt_history[0].error_class,
+                    Some(ErrorClass::Retryable)
+                );
+                assert!(st.attempt_history[0].next_attempt_at.is_some());
+                assert_eq!(st.attempt_history[1].attempt, 2);
+                assert_eq!(
+                    st.attempt_history[1].error_class,
+                    Some(ErrorClass::Retryable)
+                );
+                assert!(st.attempt_history[1].next_attempt_at.is_none());
                 server.join();
             },
         );
@@ -5143,6 +5271,7 @@ mod tests {
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages,
         };
         state::save_state(&state_dir, &st).expect("save");
@@ -5268,6 +5397,7 @@ mod tests {
                 registry: ws.plan.registry.clone(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                attempt_history: Vec::new(),
                 packages,
             };
             state::save_state(&state_dir, &st).expect("save");
@@ -5481,6 +5611,7 @@ mod tests {
             },
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages,
         };
 
@@ -6211,6 +6342,7 @@ mod tests {
                     registry: ws.plan.registry.clone(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages,
                 };
                 state::save_state(&state_dir, &st).expect("save");
@@ -6273,6 +6405,7 @@ mod tests {
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages,
         };
         state::save_state(&state_dir, &st).expect("save");
@@ -6573,6 +6706,7 @@ mod tests {
                     registry: ws.plan.registry.clone(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages,
                 };
                 state::save_state(&state_dir, &st).expect("save");
@@ -6834,6 +6968,7 @@ mod tests {
             registry: ws.plan.registry.clone(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages,
         };
         state::save_state(&state_dir, &st).expect("save");
@@ -7129,6 +7264,7 @@ mod tests {
                     },
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages,
                 };
 

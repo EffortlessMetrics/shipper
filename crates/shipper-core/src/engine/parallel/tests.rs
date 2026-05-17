@@ -74,6 +74,7 @@ fn emit_retry_backoff_does_not_block_other_reporter_calls_during_sleep() {
             1,
             3,
             delay,
+            chrono::Utc::now() + chrono::Duration::milliseconds(250),
             ErrorClass::Retryable,
             "rate limited",
         );
@@ -347,6 +348,7 @@ fn init_state_for_package(
         registry: registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }
 }
@@ -680,6 +682,7 @@ fn test_run_publish_level_processes_packages() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -727,6 +730,7 @@ fn test_update_state_locked_sets_state() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::from([(
             "demo@0.1.0".to_string(),
             PackageProgress {
@@ -871,6 +875,7 @@ fn test_run_publish_parallel_multiple_levels() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -949,6 +954,7 @@ fn test_publish_package_handles_uploaded_resume() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -1151,6 +1157,7 @@ fn test_run_publish_level_respects_max_concurrent() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -1300,6 +1307,7 @@ fn test_levels_execute_in_dependency_order() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -1408,6 +1416,7 @@ fn test_failed_level_stops_subsequent_levels() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -1528,6 +1537,7 @@ fn test_partial_success_within_level() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -1752,6 +1762,7 @@ fn test_resume_from_skips_earlier_levels() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -1888,6 +1899,7 @@ fn test_all_packages_already_published() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -2011,6 +2023,7 @@ fn test_max_concurrency_one_serializes_execution() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -2903,6 +2916,7 @@ fn test_error_in_first_level_prevents_all_subsequent() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -2977,6 +2991,7 @@ fn test_empty_plan_produces_no_receipts() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
     let mut reporter = CollectingReporter::default();
@@ -3180,6 +3195,7 @@ fn test_max_concurrent_exceeds_package_count() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -3293,6 +3309,7 @@ fn test_independent_failures_both_reported() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -3408,6 +3425,7 @@ fn test_concurrent_state_updates_consistent() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -3715,6 +3733,7 @@ fn test_level_message_includes_max_concurrent() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     };
     let mut reporter = CollectingReporter::default();

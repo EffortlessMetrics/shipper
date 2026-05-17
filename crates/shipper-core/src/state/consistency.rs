@@ -133,6 +133,7 @@ mod tests {
                 api_base: "https://crates.io".to_string(),
                 index_base: None,
             },
+            attempt_history: Vec::new(),
             packages: packages.into_iter().collect::<BTreeMap<_, _>>(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
