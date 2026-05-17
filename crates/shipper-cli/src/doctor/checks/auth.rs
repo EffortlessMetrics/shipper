@@ -67,7 +67,7 @@ pub(in crate::doctor) fn check(ws: &plan::PlannedWorkspace) -> Result<Vec<Findin
             docs: Some("docs/how-to/run-in-github-actions.md"),
         });
     }
-    findings.extend(trusted_publishing_workflow_findings(ws));
+    findings.extend(trusted_publishing_workflow_findings(ws, auth_type));
     Ok(findings)
 }
 
@@ -90,7 +90,10 @@ fn presence(is_set: bool) -> &'static str {
     if is_set { "set" } else { "missing" }
 }
 
-fn trusted_publishing_workflow_findings(ws: &plan::PlannedWorkspace) -> Vec<Finding> {
+fn trusted_publishing_workflow_findings(
+    ws: &plan::PlannedWorkspace,
+    auth_type: Option<AuthType>,
+) -> Vec<Finding> {
     let release_workflow = ws
         .workspace_root
         .join(".github")
@@ -122,31 +125,52 @@ fn trusted_publishing_workflow_findings(ws: &plan::PlannedWorkspace) -> Vec<Find
     .flatten()
     .collect::<Vec<_>>();
 
-    if missing.is_empty() {
-        return Vec::new();
+    let mut findings = Vec::new();
+    if !missing.is_empty() {
+        findings.push(Finding {
+            id: "trusted-publishing-workflow-prerequisites",
+            severity: FindingLevel::Warning,
+            status: FindingLevel::Warning,
+            title: "Trusted Publishing workflow prerequisites need review",
+            why_it_matters: "Trusted Publishing depends on GitHub OIDC permission, the crates.io auth action, release-environment scope, and an explicit token fallback for incident recovery",
+            evidence: format!(
+                "release_workflow: {}; id_token_write: {}; crates_io_auth_action: {}; release_environment: {}; token_fallback: {}; missing: {}",
+                release_workflow.display(),
+                presence(id_token_write),
+                presence(auth_action),
+                presence(release_environment),
+                presence(token_fallback),
+                missing.join(", ")
+            ),
+            try_next: vec![
+                "add `permissions: id-token: write` to the release workflow",
+                "run `rust-lang/crates-io-auth-action@v1` before publish/preflight",
+                "bind publish/rehearsal jobs to the crates.io Trusted Publishing environment",
+                "keep `secrets.CARGO_REGISTRY_TOKEN` as an explicit fallback while rollout is advisory",
+            ],
+            docs: Some("docs/how-to/run-in-github-actions.md"),
+        });
     }
 
-    vec![Finding {
-        id: "trusted-publishing-workflow-prerequisites",
-        severity: FindingLevel::Warning,
-        status: FindingLevel::Warning,
-        title: "Trusted Publishing workflow prerequisites need review",
-        why_it_matters: "Trusted Publishing depends on GitHub OIDC permission, the crates.io auth action, release-environment scope, and an explicit token fallback for incident recovery",
-        evidence: format!(
-            "release_workflow: {}; id_token_write: {}; crates_io_auth_action: {}; release_environment: {}; token_fallback: {}; missing: {}",
-            release_workflow.display(),
-            presence(id_token_write),
-            presence(auth_action),
-            presence(release_environment),
-            presence(token_fallback),
-            missing.join(", ")
-        ),
-        try_next: vec![
-            "add `permissions: id-token: write` to the release workflow",
-            "run `rust-lang/crates-io-auth-action@v1` before publish/preflight",
-            "bind publish/rehearsal jobs to the crates.io Trusted Publishing environment",
-            "keep `secrets.CARGO_REGISTRY_TOKEN` as an explicit fallback while rollout is advisory",
-        ],
-        docs: Some("docs/how-to/run-in-github-actions.md"),
-    }]
+    if token_fallback && auth_type == Some(AuthType::Token) {
+        findings.push(Finding {
+            id: "trusted-publishing-token-fallback-configured",
+            severity: FindingLevel::Warning,
+            status: FindingLevel::Warning,
+            title: "Long-lived Cargo token fallback is configured",
+            why_it_matters: "Cargo receives both a minted Trusted Publishing token and a fallback secret through the same token interface, so operators need an explicit reminder that a long-lived token path still exists",
+            evidence: format!(
+                "release_workflow: {}; auth_type: token (detected); token_fallback: set; token_value: redacted",
+                release_workflow.display()
+            ),
+            try_next: vec![
+                "prefer the token minted by `rust-lang/crates-io-auth-action@v1`",
+                "treat `secrets.CARGO_REGISTRY_TOKEN` as incident fallback only",
+                "remove the fallback after Trusted Publishing registration and release rehearsal are proven",
+            ],
+            docs: Some("docs/how-to/run-in-github-actions.md"),
+        });
+    }
+
+    findings
 }

@@ -456,6 +456,57 @@ jobs:
 }
 
 #[test]
+fn doctor_command_warns_when_token_fallback_is_configured() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+    write_file(
+        &td.path().join(".github/workflows/release.yml"),
+        r#"
+name: Release
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: shipper publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+"#,
+    );
+
+    let mut cmd = shipper_cmd();
+    let out = cmd
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(".shipper")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env("CARGO_REGISTRY_TOKEN", "secret-token")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(out).expect("utf8");
+    assert!(stdout.contains("auth_type: token (detected)"));
+    assert!(stdout.contains(
+        "Long-lived Cargo token fallback is configured (trusted-publishing-token-fallback-configured)"
+    ));
+    assert!(stdout.contains("token_value: redacted"));
+    assert!(!stdout.contains("secret-token"));
+}
+
+#[test]
 fn status_command_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());

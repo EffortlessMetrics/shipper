@@ -15,7 +15,9 @@ use crate::ops::auth;
 use crate::plan::PlannedWorkspace;
 use crate::runtime::execution::resolve_state_dir;
 use crate::state::events;
-use crate::types::{EventType, Finishability, PreflightReport, PublishEvent, RuntimeOptions};
+use crate::types::{
+    AuthType, EventType, Finishability, PreflightReport, PublishEvent, RuntimeOptions,
+};
 
 pub(in crate::engine) mod dry_run;
 pub(in crate::engine) mod duration;
@@ -80,6 +82,7 @@ pub(in crate::engine) fn run(
     let token = auth::resolve_token(&ws.plan.registry.name)?;
     let token_detected = token.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
     let auth_type = auth::detect_auth_type_from_token(token.as_deref());
+    warn_if_token_auth_overrides_oidc(&ws.plan.registry.name, &auth_type, reporter);
 
     if effects.strict_ownership && !token_detected {
         event_log.record(PublishEvent {
@@ -153,6 +156,29 @@ pub(in crate::engine) fn run(
             None
         },
     })
+}
+
+fn warn_if_token_auth_overrides_oidc(
+    registry_name: &str,
+    auth_type: &Option<AuthType>,
+    reporter: &mut dyn Reporter,
+) {
+    let default_registry = matches!(
+        registry_name,
+        "" | auth::CRATES_IO_REGISTRY | "crates.io" | "crates_io"
+    );
+    if !default_registry || auth_type != &Some(AuthType::Token) {
+        return;
+    }
+
+    let oidc_url_present = std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_URL").is_some();
+    let oidc_token_present = std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_TOKEN").is_some();
+    if oidc_url_present || oidc_token_present {
+        reporter.warn(
+            "Trusted Publishing OIDC environment is present, but Shipper is using Cargo token auth. \
+             This is allowed as fallback; prefer the short-lived token minted by rust-lang/crates-io-auth-action@v1 for release runs.",
+        );
+    }
 }
 
 /// Resolve the event sink. In `fresh_audit` mode we never touch the
