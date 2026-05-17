@@ -1067,14 +1067,22 @@ pub fn run() -> Result<()> {
                 return Ok(());
             }
 
+            let mut registry_reports = Vec::new();
             for reg in target_registries {
-                if opts.registries.len() > 1 {
-                    println!("\n📊 Status for registry: {} ({})", reg.name, reg.api_base);
-                }
                 let mut current_planned = planned.clone();
                 current_planned.plan.registry = reg;
-                run_status(&current_planned, &mut reporter)?;
+                registry_reports.push(build_status_registry_report(
+                    &current_planned,
+                    &mut reporter,
+                )?);
             }
+            let report = StatusReport {
+                schema_version: "shipper.status.v1",
+                plan_id: planned.plan.plan_id.clone(),
+                workspace_root: planned.workspace_root.display().to_string(),
+                registries: registry_reports,
+            };
+            write_status_report(&report, &cli.format)?;
         }
         Commands::Doctor => {
             let target_registries = if opts.registries.is_empty() {
@@ -2790,17 +2798,81 @@ fn run_inspect_receipt(
     Ok(())
 }
 
-fn run_status(ws: &plan::PlannedWorkspace, reporter: &mut dyn Reporter) -> Result<()> {
+#[derive(Debug, Serialize)]
+struct StatusReport {
+    schema_version: &'static str,
+    plan_id: String,
+    workspace_root: String,
+    registries: Vec<StatusRegistryReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusRegistryReport {
+    name: String,
+    api_base: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index_base: Option<String>,
+    packages: Vec<StatusPackageReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusPackageReport {
+    name: String,
+    version: String,
+    status: &'static str,
+    exists: bool,
+}
+
+fn build_status_registry_report(
+    ws: &plan::PlannedWorkspace,
+    reporter: &mut dyn Reporter,
+) -> Result<StatusRegistryReport> {
     reporter.info("initializing registry client...");
     let reg = shipper_core::registry::RegistryClient::new(ws.plan.registry.clone())?;
 
-    println!("plan_id: {}", ws.plan.plan_id);
-    println!();
-
+    let mut packages = Vec::new();
     for p in &ws.plan.packages {
         let exists = reg.version_exists(&p.name, &p.version)?;
-        let status = if exists { "published" } else { "missing" };
-        println!("{}@{}: {status}", p.name, p.version);
+        packages.push(StatusPackageReport {
+            name: p.name.clone(),
+            version: p.version.clone(),
+            status: if exists { "published" } else { "missing" },
+            exists,
+        });
+    }
+
+    Ok(StatusRegistryReport {
+        name: ws.plan.registry.name.clone(),
+        api_base: ws.plan.registry.api_base.clone(),
+        index_base: ws.plan.registry.index_base.clone(),
+        packages,
+    })
+}
+
+fn write_status_report(report: &StatusReport, format: &str) -> Result<()> {
+    if format == "json" {
+        let json = serde_json::to_string_pretty(report).context("serialize status report")?;
+        println!("{json}");
+        return Ok(());
+    }
+
+    println!("plan_id: {}", report.plan_id);
+    println!();
+
+    let multiple_registries = report.registries.len() > 1;
+    for (idx, registry) in report.registries.iter().enumerate() {
+        if multiple_registries {
+            if idx > 0 {
+                println!();
+            }
+            println!(
+                "📊 Status for registry: {} ({})",
+                registry.name, registry.api_base
+            );
+        }
+        for package in &registry.packages {
+            println!("{}@{}: {}", package.name, package.version, package.status);
+        }
     }
 
     Ok(())

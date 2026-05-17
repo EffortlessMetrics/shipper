@@ -98,4 +98,5 @@ After this five-minute path, keep the terminal output from:
 - `shipper preflight`
 
 When JSON output is required for CI or an internal developer portal, prefer the
-command's `--format json` option where available.
+command's `--format json` option where available. The first-run decision path
+now supports JSON for `plan`, `status`, and `preflight`.

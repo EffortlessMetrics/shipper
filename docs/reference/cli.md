@@ -19,6 +19,9 @@ shipper preflight
 `status` compares local versions to the registry, and `preflight` gives the
 release-readiness verdict.
 
+For CI, internal developer portals, or agent consumers, `shipper plan`,
+`shipper status`, and `shipper preflight` support `--format json`.
+
 ## Commands at a glance
 
 | Command | What it does | Writes state? |

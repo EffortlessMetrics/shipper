@@ -325,6 +325,58 @@ fn status_output_contains_plan_id() {
 }
 
 #[test]
+fn status_json_format_produces_registry_report() {
+    let td = tempdir().expect("tempdir");
+    create_simple_workspace(td.path());
+    let registry = spawn_registry(vec![200], 1);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--format")
+        .arg("json")
+        .arg("status")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        json.pointer("/schema_version")
+            .and_then(serde_json::Value::as_str),
+        Some("shipper.status.v1")
+    );
+    assert!(json.get("plan_id").is_some());
+    assert_eq!(
+        json.pointer("/registries/0/name")
+            .and_then(serde_json::Value::as_str),
+        Some("crates-io")
+    );
+    assert_eq!(
+        json.pointer("/registries/0/packages/0/name")
+            .and_then(serde_json::Value::as_str),
+        Some("alpha")
+    );
+    assert_eq!(
+        json.pointer("/registries/0/packages/0/status")
+            .and_then(serde_json::Value::as_str),
+        Some("published")
+    );
+    assert_eq!(
+        json.pointer("/registries/0/packages/0/exists")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    registry.join();
+}
+
+#[test]
 fn status_output_format_name_at_version_colon_status() {
     let td = tempdir().expect("tempdir");
     create_simple_workspace(td.path());
