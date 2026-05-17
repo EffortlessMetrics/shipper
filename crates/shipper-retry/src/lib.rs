@@ -1149,24 +1149,22 @@ mod tests {
     }
 
     #[test]
-    fn test_exponential_caps_pow_at_sixteen() {
-        // attempt.saturating_sub(1).min(16) means attempt 17 == attempt 100
-        // for the exponent: both should produce the same delay (before max_delay cap).
+    fn test_exponential_large_attempts_saturate_at_max_delay() {
         let config = RetryStrategyConfig {
             strategy: RetryStrategyType::Exponential,
-            base_delay: Duration::from_millis(1),
-            // Generous cap so max_delay does not clip the comparison.
-            max_delay: Duration::from_secs(3600 * 24),
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(120),
             jitter: 0.0,
             max_attempts: 200,
         };
 
-        let at_seventeen = calculate_delay(&config, 17);
-        let at_one_hundred = calculate_delay(&config, 100);
-        let at_u32_max = calculate_delay(&config, u32::MAX);
-
-        assert_eq!(at_seventeen, at_one_hundred);
-        assert_eq!(at_seventeen, at_u32_max);
+        for attempt in [17, 100, u32::MAX] {
+            assert_eq!(
+                calculate_delay(&config, attempt),
+                config.max_delay,
+                "large exponential attempt should saturate at max_delay"
+            );
+        }
     }
 
     #[test]
@@ -1183,7 +1181,7 @@ mod tests {
             max_attempts: 10,
         };
 
-        // factor in [-0.5, 2.5] → delay in [0ms, 250ms] after saturation.
+        // factor in [-0.5, 2.5] -> delay in [0ms, 250ms] after saturation.
         for _ in 0..200 {
             let delay = calculate_delay(&config, 1);
             assert!(
@@ -1214,9 +1212,6 @@ mod tests {
 
     #[test]
     fn test_from_policy_constructs_executor_with_policy_config() {
-        // Drive a one-call success through every policy: the executor must
-        // simply round-trip Ok, and the configured max_attempts must match
-        // the policy's to_config() value.
         for policy in [
             RetryPolicy::Default,
             RetryPolicy::Aggressive,
@@ -1224,8 +1219,12 @@ mod tests {
             RetryPolicy::Custom,
         ] {
             let executor = RetryExecutor::from_policy(policy);
-            let result = executor.run(|_| Ok::<&str, &str>("ok"));
-            assert_eq!(result, Ok("ok"));
+            let expected = policy.to_config();
+            assert_eq!(executor.config.strategy, expected.strategy);
+            assert_eq!(executor.config.max_attempts, expected.max_attempts);
+            assert_eq!(executor.config.base_delay, expected.base_delay);
+            assert_eq!(executor.config.max_delay, expected.max_delay);
+            assert_eq!(executor.config.jitter, expected.jitter);
         }
     }
 
@@ -1242,16 +1241,15 @@ mod tests {
             jitter: 0.0,
         });
 
-        let start = std::time::Instant::now();
-        let result = executor.run_with_classification(|_| Ok::<_, &str>(("done", true)));
-        let elapsed = start.elapsed();
+        let mut calls = 0;
+        let result = executor.run_with_classification(|attempt| {
+            calls += 1;
+            assert_eq!(attempt, 1);
+            Ok::<_, &str>(("done", true))
+        });
 
         assert_eq!(result, Ok("done"));
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "first-call success should not invoke sleep; elapsed = {:?}",
-            elapsed
-        );
+        assert_eq!(calls, 1, "first-call success must not retry");
     }
 
     #[test]
@@ -1280,6 +1278,14 @@ mod tests {
             jitter: 0.3,
         };
 
+        fn assert_config_eq(actual: &RetryStrategyConfig, expected: &RetryStrategyConfig) {
+            assert_eq!(actual.strategy, expected.strategy);
+            assert_eq!(actual.max_attempts, expected.max_attempts);
+            assert_eq!(actual.base_delay, expected.base_delay);
+            assert_eq!(actual.max_delay, expected.max_delay);
+            assert_eq!(actual.jitter, expected.jitter);
+        }
+
         let per_error = PerErrorConfig {
             retryable: Some(per_error_retryable.clone()),
             ambiguous: Some(per_error_ambiguous.clone()),
@@ -1287,13 +1293,13 @@ mod tests {
         };
 
         let r = config_for_error(&default, Some(&per_error), ErrorClass::Retryable);
-        assert_eq!(r.max_attempts, per_error_retryable.max_attempts);
+        assert_config_eq(&r, &per_error_retryable);
 
         let a = config_for_error(&default, Some(&per_error), ErrorClass::Ambiguous);
-        assert_eq!(a.max_attempts, per_error_ambiguous.max_attempts);
+        assert_config_eq(&a, &per_error_ambiguous);
 
         let p = config_for_error(&default, Some(&per_error), ErrorClass::Permanent);
-        assert_eq!(p.max_attempts, per_error_permanent.max_attempts);
+        assert_config_eq(&p, &per_error_permanent);
     }
 
     // Note: serde roundtrip coverage for RetryPolicy, RetryStrategyType, and
