@@ -3033,6 +3033,123 @@ mod tests {
 
     #[test]
     #[serial]
+    fn run_preflight_warns_when_token_auth_overrides_oidc() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+            (
+                "CARGO_HOME",
+                Some(td.path().to_str().expect("utf8").to_string()),
+            ),
+            ("CARGO_REGISTRY_TOKEN", Some("token-abc".to_string())),
+            ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<String>),
+            (
+                "ACTIONS_ID_TOKEN_REQUEST_URL",
+                Some("https://example.invalid/oidc".to_string()),
+            ),
+            (
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+                Some("oidc-token".to_string()),
+            ),
+        ]);
+        temp_env::with_vars(env_vars, || {
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.allow_dirty = true;
+            opts.skip_ownership_check = true;
+
+            let mut reporter = CollectingReporter::default();
+            let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+            assert!(report.token_detected);
+            assert_eq!(report.packages[0].auth_type, Some(AuthType::Token));
+            let warnings = reporter.warns.join("\n");
+            assert!(
+                warnings.contains("Trusted Publishing OIDC environment is present"),
+                "warnings: {warnings}"
+            );
+            assert!(
+                !warnings.contains("token-abc"),
+                "warnings must not expose token values: {warnings}"
+            );
+            server.join();
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_preflight_does_not_warn_for_plain_token_auth() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+            (
+                "CARGO_HOME",
+                Some(td.path().to_str().expect("utf8").to_string()),
+            ),
+            ("CARGO_REGISTRY_TOKEN", Some("token-abc".to_string())),
+            ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<String>),
+            ("ACTIONS_ID_TOKEN_REQUEST_URL", None::<String>),
+            ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None::<String>),
+        ]);
+        temp_env::with_vars(env_vars, || {
+            let server = spawn_registry_server(
+                std::collections::BTreeMap::from([
+                    (
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                    (
+                        "/api/v1/crates/demo".to_string(),
+                        vec![(404, "{}".to_string())],
+                    ),
+                ]),
+                2,
+            );
+
+            let ws = planned_workspace(td.path(), server.base_url.clone());
+            let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.allow_dirty = true;
+            opts.skip_ownership_check = true;
+
+            let mut reporter = CollectingReporter::default();
+            let report = run_preflight(&ws, &opts, &mut reporter).expect("preflight");
+
+            assert!(report.token_detected);
+            assert_eq!(report.packages[0].auth_type, Some(AuthType::Token));
+            assert!(
+                reporter
+                    .warns
+                    .iter()
+                    .all(|warning| !warning.contains("Trusted Publishing OIDC environment")),
+                "warnings: {:?}",
+                reporter.warns
+            );
+            server.join();
+        });
+    }
+
+    #[test]
+    #[serial]
     fn run_preflight_checks_git_when_allow_dirty_is_false() {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
