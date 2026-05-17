@@ -1448,12 +1448,22 @@ pub fn run() -> Result<()> {
 /// and the answer is almost always `shipper doctor`. Point operators
 /// there so they don't have to guess.
 fn preflight_failure_hint(state_dir: &Path) -> String {
-    format!(
+    let hint = format!(
         "preflight failed — next steps:\n  \
          * run `shipper doctor` to diagnose auth / git / registry\n  \
          * inspect {}/events.jsonl for the authoritative event log\n  \
          * `shipper preflight --format json` for machine-readable detail",
         state_dir.display()
+    );
+    with_common_blockers(
+        hint,
+        &[
+            "missing token/auth: run `cargo login <token>` or configure Trusted Publishing",
+            "dirty git: commit or stash changes, or pass `--allow-dirty` only for intentional rehearsal",
+            "version already exists: run `shipper status`, then bump or skip the crate version",
+            "ownership failure: confirm the token can publish with `cargo owner --list <crate>`",
+            "registry unreachable: verify `--registry`, `--api-base`, and network access",
+        ],
     )
 }
 
@@ -1464,13 +1474,23 @@ fn preflight_failure_hint(state_dir: &Path) -> String {
 /// `events.jsonl`; resuming (once the root cause is fixed) is how you
 /// continue without re-uploading successfully-published crates.
 fn publish_failure_hint(state_dir: &Path) -> String {
-    format!(
+    let hint = format!(
         "publish failed — next steps:\n  \
          * inspect {dir}/events.jsonl (authoritative) and {dir}/state.json (projection)\n  \
          * run `shipper status` to compare local versions to the registry\n  \
          * run `shipper resume` after fixing the root cause to continue from the failed crate\n  \
          * run `shipper doctor` if auth / network is suspect",
         dir = state_dir.display()
+    );
+    with_common_blockers(
+        hint,
+        &[
+            "ambiguous publish: inspect reconciliation evidence; do not blind-retry outside Shipper",
+            "rate limit or Retry-After: wait for Shipper's scheduled retry instead of restarting",
+            "version already exists: run `shipper status` before deciding to bump or resume",
+            "stale lock: verify no release is active before using `--force` or `shipper clean`",
+            "auth/network failure: run `shipper doctor` before resuming",
+        ],
     )
 }
 
@@ -1481,7 +1501,7 @@ fn publish_failure_hint(state_dir: &Path) -> String {
 /// matches the one recorded in `state.json`. Point operators at the
 /// two real paths out — delete state, or `--force-resume`.
 fn resume_failure_hint(state_dir: &Path) -> String {
-    format!(
+    let hint = format!(
         "resume failed — next steps:\n  \
          * if plan-ID mismatch: either `shipper clean` and start a fresh plan, \
          or pass `--force-resume` if you understand the divergence\n  \
@@ -1489,6 +1509,15 @@ fn resume_failure_hint(state_dir: &Path) -> String {
          * inspect {dir}/state.json to see what was already published\n  \
          * run `shipper status` to compare local versions to the registry",
         dir = state_dir.display()
+    );
+    with_common_blockers(
+        hint,
+        &[
+            "state mismatch: compare the current plan with the saved `plan_id` before forcing",
+            "corrupt state: preserve `events.jsonl`, then rebuild or clean state intentionally",
+            "stale lock: verify no other release process owns the lock before forcing",
+            "ambiguous state: inspect `reconciliation.json` and let resume reconcile registry truth",
+        ],
     )
 }
 
@@ -1510,6 +1539,26 @@ fn plan_failure_hint(manifest_path: &Path, packages: &[String], command_name: &s
         );
     }
 
+    with_common_blockers(
+        hint,
+        &[
+            "missing manifest: pass `--manifest-path <workspace>/Cargo.toml`",
+            "selected package not publishable: check `publish = false` and package spelling",
+            "Cargo metadata failure: run the printed `cargo metadata` command directly",
+        ],
+    )
+}
+
+fn with_common_blockers(mut hint: String, blockers: &[&str]) -> String {
+    if blockers.is_empty() {
+        return hint;
+    }
+
+    hint.push_str("\n  Common blockers to check:");
+    for blocker in blockers {
+        hint.push_str("\n  * ");
+        hint.push_str(blocker);
+    }
     hint
 }
 
@@ -3185,6 +3234,67 @@ mod tests {
         assert!(w.contains("transient failure"));
         assert!(w.contains("Retryable"));
         assert!(w.contains("attempt 2/5"));
+    }
+
+    #[test]
+    fn preflight_failure_hint_names_common_release_blockers() {
+        let hint = preflight_failure_hint(Path::new(".shipper"));
+
+        for expected in [
+            "missing token/auth",
+            "dirty git",
+            "version already exists",
+            "ownership failure",
+            "registry unreachable",
+        ] {
+            assert!(hint.contains(expected), "missing `{expected}` in:\n{hint}");
+        }
+    }
+
+    #[test]
+    fn publish_failure_hint_names_ambiguity_rate_limit_and_lock_blockers() {
+        let hint = publish_failure_hint(Path::new(".shipper"));
+
+        for expected in [
+            "ambiguous publish",
+            "rate limit or Retry-After",
+            "version already exists",
+            "stale lock",
+            "auth/network failure",
+        ] {
+            assert!(hint.contains(expected), "missing `{expected}` in:\n{hint}");
+        }
+    }
+
+    #[test]
+    fn resume_failure_hint_names_state_and_reconciliation_blockers() {
+        let hint = resume_failure_hint(Path::new(".shipper"));
+
+        for expected in [
+            "state mismatch",
+            "corrupt state",
+            "stale lock",
+            "ambiguous state",
+        ] {
+            assert!(hint.contains(expected), "missing `{expected}` in:\n{hint}");
+        }
+    }
+
+    #[test]
+    fn plan_failure_hint_names_manifest_and_package_blockers() {
+        let hint = plan_failure_hint(
+            Path::new("missing/Cargo.toml"),
+            &[String::from("demo")],
+            "preflight",
+        );
+
+        for expected in [
+            "missing manifest",
+            "selected package not publishable",
+            "Cargo metadata failure",
+        ] {
+            assert!(hint.contains(expected), "missing `{expected}` in:\n{hint}");
+        }
     }
 
     #[test]

@@ -6,6 +6,10 @@ Error: failed to load release plan for `publish` - next steps:
   * verify `--manifest-path` points at the workspace Cargo.toml: <TMPDIR>/Cargo.toml
   * run `cargo metadata --manifest-path "<TMPDIR>/Cargo.toml"` to inspect the underlying Cargo error
   * run `shipper plan` first to inspect publishable and skipped crates
+  Common blockers to check:
+  * missing manifest: pass `--manifest-path <workspace>/Cargo.toml`
+  * selected package not publishable: check `publish = false` and package spelling
+  * Cargo metadata failure: run the printed `cargo metadata` command directly
 
 Caused by:
     0: failed to execute cargo metadata

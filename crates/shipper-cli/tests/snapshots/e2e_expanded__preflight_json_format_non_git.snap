@@ -7,6 +7,12 @@ Error: preflight failed — next steps:
   * run `shipper doctor` to diagnose auth / git / registry
   * inspect .shipper/events.jsonl for the authoritative event log
   * `shipper preflight --format json` for machine-readable detail
+  Common blockers to check:
+  * missing token/auth: run `cargo login <token>` or configure Trusted Publishing
+  * dirty git: commit or stash changes, or pass `--allow-dirty` only for intentional rehearsal
+  * version already exists: run `shipper status`, then bump or skip the crate version
+  * ownership failure: confirm the token can publish with `cargo owner --list <crate>`
+  * registry unreachable: verify `--registry`, `--api-base`, and network access
 
 Caused by:
     git status failed: git status failed: fatal: not a git repository (or any of the parent directories): .git
