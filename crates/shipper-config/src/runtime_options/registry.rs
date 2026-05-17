@@ -247,6 +247,24 @@ mod tests {
     }
 
     #[test]
+    fn resolve_named_registry_preserves_config_index_base() {
+        let config = config_with(vec![registry_config("staging")]);
+        let cli = CliOverrides {
+            registries: Some(vec!["staging".to_string()]),
+            ..CliOverrides::default()
+        };
+
+        let result = resolve(&config, &cli);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "staging");
+        assert_eq!(
+            result[0].index_base.as_deref(),
+            Some("https://staging.example/index")
+        );
+    }
+
+    #[test]
     fn resolve_named_registry_falls_back_to_synthetic_default_when_unknown_safe() {
         let config = MultiRegistryConfig::default();
         let cli = CliOverrides {

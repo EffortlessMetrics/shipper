@@ -245,6 +245,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_encryption_config_env_key_is_preserved_with_passphrase() {
+        let config = EncryptionConfigInner {
+            enabled: true,
+            passphrase: Some("config-pass".to_string()),
+            env_key: Some("MY_CUSTOM_KEY".to_string()),
+        };
+        let cli = empty_cli();
+
+        let resolved = resolve_encryption(&config, &cli);
+
+        assert!(resolved.enabled);
+        assert_eq!(resolved.passphrase.as_deref(), Some("config-pass"));
+        assert_eq!(resolved.env_var.as_deref(), Some("MY_CUSTOM_KEY"));
+    }
+
+    #[test]
     fn resolve_encryption_cli_flag_is_or_with_config_enable() {
         let config = EncryptionConfigInner {
             enabled: true,

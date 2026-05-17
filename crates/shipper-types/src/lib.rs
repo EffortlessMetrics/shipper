@@ -5874,4 +5874,257 @@ mod tests {
             }
         }
     }
+
+    // ===== StateEventDrift::is_consistent =====
+
+    #[test]
+    fn state_event_drift_default_is_consistent() {
+        let drift = StateEventDrift::default();
+        assert!(drift.is_consistent());
+    }
+
+    #[test]
+    fn state_event_drift_in_events_only_is_inconsistent() {
+        let drift = StateEventDrift {
+            in_events_only: vec!["pkg-a@1.0.0".to_string()],
+            in_state_only: vec![],
+        };
+        assert!(!drift.is_consistent());
+    }
+
+    #[test]
+    fn state_event_drift_in_state_only_is_inconsistent() {
+        let drift = StateEventDrift {
+            in_events_only: vec![],
+            in_state_only: vec!["pkg-b@2.0.0".to_string()],
+        };
+        assert!(!drift.is_consistent());
+    }
+
+    #[test]
+    fn state_event_drift_both_sides_drift_is_inconsistent() {
+        let drift = StateEventDrift {
+            in_events_only: vec!["pkg-a@1.0.0".to_string()],
+            in_state_only: vec!["pkg-b@2.0.0".to_string()],
+        };
+        assert!(!drift.is_consistent());
+    }
+
+    #[test]
+    fn state_event_drift_serde_roundtrip_preserves_consistency_check() {
+        let drift = StateEventDrift {
+            in_events_only: vec!["x@0.1.0".to_string(), "y@0.2.0".to_string()],
+            in_state_only: vec![],
+        };
+
+        let json = serde_json::to_string(&drift).expect("serialize");
+        let parsed: StateEventDrift = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(parsed, drift);
+        assert_eq!(parsed.is_consistent(), drift.is_consistent());
+    }
+
+    // ===== GitContext methods =====
+
+    #[test]
+    fn git_context_new_returns_empty_default() {
+        let ctx = GitContext::new();
+        assert!(ctx.commit.is_none());
+        assert!(ctx.branch.is_none());
+        assert!(ctx.tag.is_none());
+        assert!(ctx.dirty.is_none());
+    }
+
+    #[test]
+    fn git_context_has_commit_returns_true_when_commit_set() {
+        let ctx = GitContext {
+            commit: Some("deadbeefdeadbeef".to_string()),
+            ..GitContext::default()
+        };
+        assert!(ctx.has_commit());
+    }
+
+    #[test]
+    fn git_context_has_commit_returns_false_when_commit_absent() {
+        let ctx = GitContext::new();
+        assert!(!ctx.has_commit());
+    }
+
+    #[test]
+    fn git_context_is_dirty_defaults_to_true_when_unknown() {
+        // Safe-by-default semantics: unknown dirtiness is treated as dirty
+        // so we never claim a clean tree we cannot confirm.
+        let ctx = GitContext::new();
+        assert!(ctx.is_dirty());
+    }
+
+    #[test]
+    fn git_context_is_dirty_true_when_explicitly_dirty() {
+        let ctx = GitContext {
+            dirty: Some(true),
+            ..GitContext::default()
+        };
+        assert!(ctx.is_dirty());
+    }
+
+    #[test]
+    fn git_context_is_dirty_false_when_explicitly_clean() {
+        let ctx = GitContext {
+            dirty: Some(false),
+            ..GitContext::default()
+        };
+        assert!(!ctx.is_dirty());
+    }
+
+    #[test]
+    fn git_context_short_commit_truncates_to_seven_chars() {
+        let ctx = GitContext {
+            commit: Some("0123456789abcdef".to_string()),
+            ..GitContext::default()
+        };
+        assert_eq!(ctx.short_commit(), Some("0123456"));
+    }
+
+    #[test]
+    fn git_context_short_commit_returns_full_when_seven_or_shorter() {
+        let ctx_seven = GitContext {
+            commit: Some("abcdef0".to_string()),
+            ..GitContext::default()
+        };
+        assert_eq!(ctx_seven.short_commit(), Some("abcdef0"));
+
+        let ctx_three = GitContext {
+            commit: Some("abc".to_string()),
+            ..GitContext::default()
+        };
+        assert_eq!(ctx_three.short_commit(), Some("abc"));
+    }
+
+    #[test]
+    fn git_context_short_commit_empty_string_returns_empty() {
+        let ctx = GitContext {
+            commit: Some(String::new()),
+            ..GitContext::default()
+        };
+        assert_eq!(ctx.short_commit(), Some(""));
+    }
+
+    #[test]
+    fn git_context_short_commit_returns_none_when_no_commit() {
+        let ctx = GitContext::new();
+        assert_eq!(ctx.short_commit(), None);
+    }
+
+    // ===== group_packages_by_levels generic edge cases =====
+
+    fn pkg(name: &str) -> String {
+        name.to_string()
+    }
+
+    #[test]
+    fn group_packages_by_levels_empty_input_returns_empty() {
+        let levels: Vec<GenericPublishLevel<String>> =
+            group_packages_by_levels(&[], |s: &String| s.as_str(), &BTreeMap::new());
+        assert!(levels.is_empty());
+    }
+
+    #[test]
+    fn group_packages_by_levels_dedupes_duplicate_package_names() {
+        let pkgs = vec![pkg("a"), pkg("a"), pkg("b")];
+        let levels = group_packages_by_levels(&pkgs, |s: &String| s.as_str(), &BTreeMap::new());
+
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0].packages.len(), 2);
+        assert_eq!(levels[0].packages, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn group_packages_by_levels_ignores_dependencies_outside_ordered_set() {
+        // "a" depends on "external", which is not in the plan - should be ignored
+        // and "a" should sit at level 0.
+        let pkgs = vec![pkg("a")];
+        let deps = BTreeMap::from([(
+            "a".to_string(),
+            vec!["external".to_string(), "another-external".to_string()],
+        )]);
+
+        let levels = group_packages_by_levels(&pkgs, |s: &String| s.as_str(), &deps);
+
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0].level, 0);
+        assert_eq!(levels[0].packages, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn group_packages_by_levels_cycle_falls_back_to_singletons() {
+        // Cycle: a -> b, b -> a. Standard Kahn would stall; the function falls
+        // back to deterministic singleton progress so every package still appears.
+        let pkgs = vec![pkg("a"), pkg("b")];
+        let deps = BTreeMap::from([
+            ("a".to_string(), vec!["b".to_string()]),
+            ("b".to_string(), vec!["a".to_string()]),
+        ]);
+
+        let levels = group_packages_by_levels(&pkgs, |s: &String| s.as_str(), &deps);
+
+        let all: Vec<String> = levels.iter().flat_map(|l| l.packages.clone()).collect();
+
+        assert!(all.contains(&"a".to_string()));
+        assert!(all.contains(&"b".to_string()));
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn group_packages_by_levels_diamond_dependency() {
+        // Diamond: top -> mid_l, top -> mid_r, mid_l -> bottom, mid_r -> bottom.
+        // Expected order: top at level 0, mid_l + mid_r at level 1, bottom at level 2.
+        let pkgs = vec![pkg("top"), pkg("mid_l"), pkg("mid_r"), pkg("bottom")];
+        let deps = BTreeMap::from([
+            ("mid_l".to_string(), vec!["top".to_string()]),
+            ("mid_r".to_string(), vec!["top".to_string()]),
+            (
+                "bottom".to_string(),
+                vec!["mid_l".to_string(), "mid_r".to_string()],
+            ),
+        ]);
+
+        let levels = group_packages_by_levels(&pkgs, |s: &String| s.as_str(), &deps);
+
+        assert_eq!(levels.len(), 3);
+        assert_eq!(levels[0].packages, vec!["top".to_string()]);
+        assert_eq!(levels[1].packages.len(), 2);
+        assert!(levels[1].packages.contains(&"mid_l".to_string()));
+        assert!(levels[1].packages.contains(&"mid_r".to_string()));
+        assert_eq!(levels[2].packages, vec!["bottom".to_string()]);
+    }
+
+    #[test]
+    fn group_packages_by_levels_preserves_input_order_within_level() {
+        // No deps: all 3 at level 0, order should match input order.
+        let pkgs = vec![pkg("zebra"), pkg("apple"), pkg("mango")];
+
+        let levels = group_packages_by_levels(&pkgs, |s: &String| s.as_str(), &BTreeMap::new());
+
+        assert_eq!(levels.len(), 1);
+        assert_eq!(
+            levels[0].packages,
+            vec![
+                "zebra".to_string(),
+                "apple".to_string(),
+                "mango".to_string()
+            ]
+        );
+    }
+
+    // ===== PublishRegime::is_new_crate =====
+
+    #[test]
+    fn publish_regime_is_new_crate_true_for_first_publish() {
+        assert!(PublishRegime::FirstPublish.is_new_crate());
+    }
+
+    #[test]
+    fn publish_regime_is_new_crate_false_for_update() {
+        assert!(!PublishRegime::Update.is_new_crate());
+    }
 }
