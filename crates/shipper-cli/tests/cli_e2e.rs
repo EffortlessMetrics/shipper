@@ -259,9 +259,7 @@ fn doctor_command_snapshot() {
     registry_reachable: true
     index_base: https://index.crates.io
 
-    git_commit: <GIT_COMMIT>
-    git_branch: <GIT_BRANCH>
-    git_dirty: <GIT_DIRTY>
+    git_context: not a git repository
 
     Findings:
     ---------
@@ -326,9 +324,7 @@ fn doctor_command_detects_trusted_publishing_auth() {
     registry_reachable: true
     index_base: https://index.crates.io
 
-    git_commit: <GIT_COMMIT>
-    git_branch: <GIT_BRANCH>
-    git_dirty: <GIT_DIRTY>
+    git_context: not a git repository
 
     Findings:
     ---------

@@ -59,202 +59,181 @@ fn select_policy_value<T>(custom_policy: bool, custom_value: T, policy_value: T)
 mod tests {
     use super::*;
 
-    fn empty_cli() -> CliOverrides {
-        CliOverrides::default()
-    }
+    const TEST_DEFAULT_MAX_ATTEMPTS: u32 = 6;
 
-    fn config_with_policy(policy: RetryPolicy) -> RetryConfig {
-        RetryConfig {
+    fn make_config(policy: RetryPolicy) -> RetryConfig {
+        let mut config = RetryConfig {
             policy,
-            ..RetryConfig::default()
-        }
-    }
-
-    #[test]
-    fn select_policy_value_returns_policy_value_when_not_custom() {
-        let selected = select_policy_value(false, 10u32, 5u32);
-        assert_eq!(selected, 5);
-    }
-
-    #[test]
-    fn select_policy_value_returns_custom_value_when_custom_policy() {
-        let selected = select_policy_value(true, 10u32, 5u32);
-        assert_eq!(selected, 10);
-    }
-
-    #[test]
-    fn select_policy_value_works_with_duration() {
-        let custom = Duration::from_secs(7);
-        let policy = Duration::from_secs(3);
-
-        assert_eq!(select_policy_value(true, custom, policy), custom);
-        assert_eq!(select_policy_value(false, custom, policy), policy);
-    }
-
-    #[test]
-    fn resolve_default_policy_uses_policy_defaults_not_custom_fields() {
-        // Set custom fields that should be IGNORED because policy != Custom.
-        let config = RetryConfig {
-            policy: RetryPolicy::Default,
             max_attempts: 999,
-            base_delay: Duration::from_secs(99),
-            ..RetryConfig::default()
+            base_delay: Duration::from_secs(999),
+            max_delay: Duration::from_secs(999),
+            strategy: RetryStrategyType::Constant,
+            jitter: 0.9,
+            per_error: PerErrorConfig::default(),
         };
-
-        let policy_defaults = RetryPolicy::Default.to_config();
-
-        let resolved = resolve(&config, &empty_cli());
-
-        assert_eq!(resolved.max_attempts, policy_defaults.max_attempts);
-        assert_eq!(resolved.base_delay, policy_defaults.base_delay);
-        assert_ne!(resolved.max_attempts, 999);
+        if policy == RetryPolicy::Custom {
+            config.max_attempts = TEST_DEFAULT_MAX_ATTEMPTS;
+        }
+        config
     }
 
     #[test]
-    fn resolve_aggressive_policy_uses_aggressive_defaults() {
-        let config = config_with_policy(RetryPolicy::Aggressive);
-        let policy_defaults = RetryPolicy::Aggressive.to_config();
+    fn resolve_uses_policy_defaults_when_policy_is_preset() {
+        let config = make_config(RetryPolicy::Default);
+        let cli = CliOverrides::default();
+        let policy_defaults = config.policy.to_config();
 
-        let resolved = resolve(&config, &empty_cli());
+        let resolved = resolve(&config, &cli);
 
         assert_eq!(resolved.max_attempts, policy_defaults.max_attempts);
         assert_eq!(resolved.base_delay, policy_defaults.base_delay);
         assert_eq!(resolved.max_delay, policy_defaults.max_delay);
         assert_eq!(resolved.strategy, policy_defaults.strategy);
-        assert_eq!(resolved.jitter, policy_defaults.jitter);
+        assert!((resolved.jitter - policy_defaults.jitter).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn resolve_conservative_policy_uses_conservative_defaults() {
-        let config = config_with_policy(RetryPolicy::Conservative);
-        let policy_defaults = RetryPolicy::Conservative.to_config();
+    fn resolve_aggressive_policy_overrides_field_values() {
+        let config = make_config(RetryPolicy::Aggressive);
+        let cli = CliOverrides::default();
+        let policy_defaults = config.policy.to_config();
 
-        let resolved = resolve(&config, &empty_cli());
+        let resolved = resolve(&config, &cli);
 
-        assert_eq!(resolved.max_attempts, policy_defaults.max_attempts);
+        assert_eq!(
+            resolved.max_attempts, policy_defaults.max_attempts,
+            "preset policy should ignore the explicit max_attempts field"
+        );
         assert_eq!(resolved.base_delay, policy_defaults.base_delay);
+        assert_eq!(resolved.strategy, policy_defaults.strategy);
     }
 
     #[test]
-    fn resolve_custom_policy_uses_config_fields_directly() {
+    fn resolve_custom_policy_uses_explicit_field_values() {
         let config = RetryConfig {
             policy: RetryPolicy::Custom,
-            max_attempts: 17,
+            max_attempts: 11,
             base_delay: Duration::from_millis(250),
-            max_delay: Duration::from_secs(45),
+            max_delay: Duration::from_secs(7),
+            strategy: RetryStrategyType::Linear,
             jitter: 0.25,
-            ..RetryConfig::default()
+            per_error: PerErrorConfig::default(),
         };
+        let cli = CliOverrides::default();
 
-        let resolved = resolve(&config, &empty_cli());
+        let resolved = resolve(&config, &cli);
 
-        assert_eq!(resolved.max_attempts, 17);
+        assert_eq!(resolved.max_attempts, 11);
         assert_eq!(resolved.base_delay, Duration::from_millis(250));
-        assert_eq!(resolved.max_delay, Duration::from_secs(45));
-        assert_eq!(resolved.jitter, 0.25);
+        assert_eq!(resolved.max_delay, Duration::from_secs(7));
+        assert_eq!(resolved.strategy, RetryStrategyType::Linear);
+        assert!((resolved.jitter - 0.25).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn resolve_cli_max_attempts_overrides_policy_default() {
-        let config = config_with_policy(RetryPolicy::Default);
-        let mut cli = empty_cli();
-        cli.max_attempts = Some(42);
+    fn resolve_cli_overrides_take_priority_over_preset_policy() {
+        let config = make_config(RetryPolicy::Default);
+        let cli = CliOverrides {
+            max_attempts: Some(42),
+            base_delay: Some(Duration::from_secs(3)),
+            max_delay: Some(Duration::from_secs(33)),
+            retry_strategy: Some(RetryStrategyType::Immediate),
+            retry_jitter: Some(0.1),
+            ..Default::default()
+        };
 
         let resolved = resolve(&config, &cli);
 
         assert_eq!(resolved.max_attempts, 42);
+        assert_eq!(resolved.base_delay, Duration::from_secs(3));
+        assert_eq!(resolved.max_delay, Duration::from_secs(33));
+        assert_eq!(resolved.strategy, RetryStrategyType::Immediate);
+        assert!((resolved.jitter - 0.1).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn resolve_cli_max_attempts_overrides_custom_policy() {
-        let config = RetryConfig {
-            policy: RetryPolicy::Custom,
-            max_attempts: 17,
-            ..RetryConfig::default()
+    fn resolve_partial_cli_overrides_keep_preset_policy_defaults_for_unset_fields() {
+        let config = make_config(RetryPolicy::Conservative);
+        let cli = CliOverrides {
+            max_attempts: Some(7),
+            ..Default::default()
         };
+        let policy_defaults = config.policy.to_config();
 
-        let mut cli = empty_cli();
-        cli.max_attempts = Some(99);
-
-        let resolved = resolve(&config, &cli);
-
-        assert_eq!(resolved.max_attempts, 99);
-    }
-
-    #[test]
-    fn resolve_cli_base_delay_overrides_policy() {
-        let config = config_with_policy(RetryPolicy::Default);
-        let mut cli = empty_cli();
-        cli.base_delay = Some(Duration::from_millis(123));
-
-        let resolved = resolve(&config, &cli);
-
-        assert_eq!(resolved.base_delay, Duration::from_millis(123));
-    }
-
-    #[test]
-    fn resolve_cli_max_delay_overrides_policy() {
-        let config = config_with_policy(RetryPolicy::Default);
-        let mut cli = empty_cli();
-        cli.max_delay = Some(Duration::from_secs(300));
-
-        let resolved = resolve(&config, &cli);
-
-        assert_eq!(resolved.max_delay, Duration::from_secs(300));
-    }
-
-    #[test]
-    fn resolve_cli_strategy_overrides_policy() {
-        let config = config_with_policy(RetryPolicy::Default);
-        let mut cli = empty_cli();
-        cli.retry_strategy = Some(RetryStrategyType::Linear);
-
-        let resolved = resolve(&config, &cli);
-
-        assert_eq!(resolved.strategy, RetryStrategyType::Linear);
-    }
-
-    #[test]
-    fn resolve_cli_jitter_overrides_policy() {
-        let config = config_with_policy(RetryPolicy::Default);
-        let mut cli = empty_cli();
-        cli.retry_jitter = Some(0.75);
-
-        let resolved = resolve(&config, &cli);
-
-        assert_eq!(resolved.jitter, 0.75);
-    }
-
-    #[test]
-    fn resolve_per_error_is_cloned_through_unchanged() {
-        let config = RetryConfig {
-            per_error: PerErrorConfig::default(),
-            ..RetryConfig::default()
-        };
-
-        let resolved = resolve(&config, &empty_cli());
-
-        assert_eq!(
-            format!("{:?}", resolved.per_error),
-            format!("{:?}", config.per_error)
-        );
-    }
-
-    #[test]
-    fn resolve_cli_overrides_take_precedence_independently() {
-        // Mixed: some CLI overrides set, others unset; non-set should follow policy.
-        let config = config_with_policy(RetryPolicy::Conservative);
-        let mut cli = empty_cli();
-        cli.max_attempts = Some(7);
-        // base_delay, max_delay, strategy, jitter all None — should follow Conservative.
-
-        let policy_defaults = RetryPolicy::Conservative.to_config();
         let resolved = resolve(&config, &cli);
 
         assert_eq!(resolved.max_attempts, 7);
         assert_eq!(resolved.base_delay, policy_defaults.base_delay);
         assert_eq!(resolved.max_delay, policy_defaults.max_delay);
         assert_eq!(resolved.strategy, policy_defaults.strategy);
-        assert_eq!(resolved.jitter, policy_defaults.jitter);
+        assert!((resolved.jitter - policy_defaults.jitter).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn resolve_cli_overrides_take_priority_over_custom_policy() {
+        let config = RetryConfig {
+            policy: RetryPolicy::Custom,
+            max_attempts: 11,
+            base_delay: Duration::from_millis(250),
+            max_delay: Duration::from_secs(7),
+            strategy: RetryStrategyType::Linear,
+            jitter: 0.25,
+            per_error: PerErrorConfig::default(),
+        };
+        let cli = CliOverrides {
+            max_attempts: Some(5),
+            retry_strategy: Some(RetryStrategyType::Exponential),
+            ..Default::default()
+        };
+
+        let resolved = resolve(&config, &cli);
+
+        assert_eq!(resolved.max_attempts, 5);
+        assert_eq!(resolved.strategy, RetryStrategyType::Exponential);
+        assert_eq!(
+            resolved.base_delay,
+            Duration::from_millis(250),
+            "non-overridden fields keep the custom-policy value"
+        );
+    }
+
+    #[test]
+    fn resolve_preserves_per_error_config_verbatim() {
+        let retryable = shipper_retry::RetryStrategyConfig {
+            strategy: RetryStrategyType::Immediate,
+            max_attempts: 7,
+            base_delay: Duration::from_millis(50),
+            max_delay: Duration::from_secs(1),
+            jitter: 0.0,
+        };
+        let per_error = PerErrorConfig {
+            retryable: Some(retryable),
+            ambiguous: None,
+            permanent: None,
+        };
+
+        let config = RetryConfig {
+            policy: RetryPolicy::Default,
+            max_attempts: TEST_DEFAULT_MAX_ATTEMPTS,
+            base_delay: Duration::from_secs(2),
+            max_delay: Duration::from_secs(120),
+            strategy: RetryStrategyType::Exponential,
+            jitter: 0.5,
+            per_error: per_error.clone(),
+        };
+        let cli = CliOverrides::default();
+
+        let resolved = resolve(&config, &cli);
+
+        let resolved_retryable = resolved
+            .per_error
+            .retryable
+            .as_ref()
+            .expect("retryable settings should round-trip");
+        assert_eq!(resolved_retryable.strategy, RetryStrategyType::Immediate);
+        assert_eq!(resolved_retryable.max_attempts, 7);
+        assert_eq!(resolved_retryable.base_delay, Duration::from_millis(50));
+        assert!(resolved.per_error.ambiguous.is_none());
+        assert!(resolved.per_error.permanent.is_none());
     }
 }

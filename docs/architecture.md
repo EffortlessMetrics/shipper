@@ -116,8 +116,10 @@ Examples:
 
 ## Package-Surface Contract
 
-`cargo xtask package-surface` is the cheap architecture drift check. On the
-current graph it should report:
+`cargo xtask package-surface` is the cheap architecture drift check. It writes
+`target/policy/package-surface-report.{json,md}` and fails if the
+facade/adapter/core dependency direction or private-tooling boundary drifts.
+On the current graph it should report:
 
 ```text
 workspace packages: 14
@@ -126,9 +128,15 @@ private packages: 1
 private package: xtask
 ```
 
-The command writes `target/policy/package-surface-report.{json,md}`. For this
-architecture contract, the important fields are package counts, publishability,
-targets, workspace dependencies, and surface hashes.
+For this architecture contract, the important fields are package counts,
+publishability, targets, workspace dependencies, surface hashes, and the
+`architecture_contract` section. That section proves:
+
+- `shipper` depends on `shipper-cli` and `shipper-core`;
+- `shipper-cli` depends on `shipper-core`;
+- `shipper-core` has no normal, dev, or build dependency on `shipper`,
+  `shipper-cli`, `clap`, or `indicatif`;
+- `xtask` is the only private workspace package.
 
 Any change that makes `shipper-core` depend on `shipper-cli` or `shipper`, turns
 `xtask` publishable, removes the `shipper` install facade, or adds a new

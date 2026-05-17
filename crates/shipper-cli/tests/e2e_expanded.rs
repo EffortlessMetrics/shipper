@@ -706,6 +706,7 @@ fn clean_removes_state_and_events_files() {
     fs::write(state_dir.join("state.json"), "{}").expect("write state");
     fs::write(state_dir.join("events.jsonl"), "").expect("write events");
     fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
+    fs::write(state_dir.join("reconciliation.json"), "{}").expect("write reconciliation");
 
     shipper_cmd()
         .arg("--manifest-path")
@@ -721,6 +722,7 @@ fn clean_removes_state_and_events_files() {
     assert!(!state_dir.join("state.json").exists());
     assert!(!state_dir.join("events.jsonl").exists());
     assert!(!state_dir.join("receipt.json").exists());
+    assert!(!state_dir.join("reconciliation.json").exists());
 }
 
 #[test]
@@ -733,6 +735,7 @@ fn clean_keep_receipt_preserves_receipt_file() {
     fs::write(state_dir.join("state.json"), "{}").expect("write state");
     fs::write(state_dir.join("events.jsonl"), "").expect("write events");
     fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
+    fs::write(state_dir.join("reconciliation.json"), "{}").expect("write reconciliation");
 
     shipper_cmd()
         .arg("--manifest-path")
@@ -756,6 +759,10 @@ fn clean_keep_receipt_preserves_receipt_file() {
     assert!(
         state_dir.join("receipt.json").exists(),
         "receipt.json should be preserved with --keep-receipt"
+    );
+    assert!(
+        state_dir.join("reconciliation.json").exists(),
+        "reconciliation.json should be preserved with --keep-receipt"
     );
 }
 
@@ -2626,6 +2633,40 @@ fn inspect_events_with_data_snapshot() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_snapshot!("inspect_events_with_data", normalize_output(&stdout));
+}
+
+/// Snapshot: inspect-events --format json omits human headers.
+#[test]
+fn inspect_events_json_format_snapshot() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+    fs::write(
+        state_dir.join("events.jsonl"),
+        concat!(
+            r#"{"timestamp":"2025-01-01T00:00:00Z","event_type":{"type":"plan_created","plan_id":"abc123","package_count":1},"package":"all"}"#,
+            "\n",
+            r#"{"timestamp":"2025-01-01T00:00:01Z","event_type":{"type":"execution_started"},"package":"all"}"#,
+            "\n",
+        ),
+    )
+    .expect("write");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--format")
+        .arg("json")
+        .arg("inspect-events")
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!("inspect_events_json_format", normalize_output(&stdout));
 }
 
 // ===========================================================================

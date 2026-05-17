@@ -67,7 +67,27 @@ fn is_safe_synthetic_registry_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::default_registry_for_name;
+    use super::{default_registry_for_name, is_safe_synthetic_registry_name, resolve};
+    use crate::{CliOverrides, MultiRegistryConfig, RegistryConfig};
+
+    fn config_with(registries: Vec<RegistryConfig>) -> MultiRegistryConfig {
+        MultiRegistryConfig {
+            registries,
+            default_registries: vec![],
+        }
+    }
+
+    fn registry_config(name: &str) -> RegistryConfig {
+        RegistryConfig {
+            name: name.to_string(),
+            api_base: format!("https://{name}.example/api"),
+            index_base: Some(format!("https://{name}.example/index")),
+            token: None,
+            default: false,
+        }
+    }
+
+    // ── default_registry_for_name ───────────────────────────────────────────
 
     #[test]
     fn safe_unknown_registry_name_uses_synthetic_crates_io_subdomain() {
@@ -98,180 +118,209 @@ mod tests {
         assert_eq!(registry.api_base, "https://crates.io");
     }
 
-    use super::{is_safe_synthetic_registry_name, resolve, resolve_named_registry};
-    use crate::{CliOverrides, MultiRegistryConfig, RegistryConfig};
-
-    fn empty_cli() -> CliOverrides {
-        CliOverrides::default()
-    }
-
-    fn config_with_registries(registries: Vec<RegistryConfig>) -> MultiRegistryConfig {
-        MultiRegistryConfig {
-            registries,
-            ..MultiRegistryConfig::default()
-        }
-    }
-
-    fn registry_config(name: &str, api_base: &str) -> RegistryConfig {
-        RegistryConfig {
-            name: name.to_string(),
-            api_base: api_base.to_string(),
-            index_base: None,
-            token: None,
-            default: false,
-        }
-    }
-
     #[test]
-    fn resolve_no_cli_flags_returns_empty_vec() {
-        let config = config_with_registries(vec![registry_config(
-            "internal",
-            "https://internal.example.com",
-        )]);
+    fn crates_io_name_returns_canonical_crates_io_registry() {
+        let registry = default_registry_for_name("crates-io");
 
-        let resolved = resolve(&config, &empty_cli());
-
-        assert!(resolved.is_empty());
-    }
-
-    #[test]
-    fn resolve_all_registries_returns_every_configured_registry() {
-        let config = config_with_registries(vec![
-            registry_config("first", "https://first.example.com"),
-            registry_config("second", "https://second.example.com"),
-        ]);
-
-        let mut cli = empty_cli();
-        cli.all_registries = true;
-
-        let resolved = resolve(&config, &cli);
-
-        assert_eq!(resolved.len(), 2);
-        assert_eq!(resolved[0].name, "first");
-        assert_eq!(resolved[0].api_base, "https://first.example.com");
-        assert_eq!(resolved[1].name, "second");
-        assert_eq!(resolved[1].api_base, "https://second.example.com");
-    }
-
-    #[test]
-    fn resolve_all_registries_falls_back_to_crates_io_when_none_configured() {
-        let config = MultiRegistryConfig::default();
-
-        let mut cli = empty_cli();
-        cli.all_registries = true;
-
-        let resolved = resolve(&config, &cli);
-
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].name, "crates-io");
-        assert_eq!(resolved[0].api_base, "https://crates.io");
-    }
-
-    #[test]
-    fn resolve_named_registries_resolves_each_by_name() {
-        let config = config_with_registries(vec![
-            registry_config("alpha", "https://alpha.example.com"),
-            registry_config("beta", "https://beta.example.com"),
-        ]);
-
-        let mut cli = empty_cli();
-        cli.registries = Some(vec!["alpha".to_string(), "beta".to_string()]);
-
-        let resolved = resolve(&config, &cli);
-
-        assert_eq!(resolved.len(), 2);
-        assert_eq!(resolved[0].name, "alpha");
-        assert_eq!(resolved[1].name, "beta");
-    }
-
-    #[test]
-    fn resolve_named_registries_falls_back_to_default_for_unknown_name() {
-        let config = MultiRegistryConfig::default();
-
-        let mut cli = empty_cli();
-        cli.registries = Some(vec!["crates-io".to_string()]);
-
-        let resolved = resolve(&config, &cli);
-
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].name, "crates-io");
-        assert_eq!(resolved[0].api_base, "https://crates.io");
-    }
-
-    #[test]
-    fn resolve_named_registries_uses_synthetic_subdomain_for_safe_unknown_name() {
-        let config = MultiRegistryConfig::default();
-
-        let mut cli = empty_cli();
-        cli.registries = Some(vec!["company-mirror".to_string()]);
-
-        let resolved = resolve(&config, &cli);
-
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].name, "company-mirror");
-        assert_eq!(resolved[0].api_base, "https://company-mirror.crates.io");
-    }
-
-    #[test]
-    fn resolve_all_registries_takes_precedence_over_named_registries() {
-        let config = config_with_registries(vec![
-            registry_config("a", "https://a.example.com"),
-            registry_config("b", "https://b.example.com"),
-        ]);
-
-        let mut cli = empty_cli();
-        cli.all_registries = true;
-        cli.registries = Some(vec!["a".to_string()]);
-
-        let resolved = resolve(&config, &cli);
-
-        // all_registries wins → both registries returned, ignoring `--registries a`.
-        assert_eq!(resolved.len(), 2);
-    }
-
-    #[test]
-    fn resolve_named_registry_uses_config_index_base_when_present() {
-        let mut entry = registry_config("staging", "https://staging.example.com");
-        entry.index_base = Some("https://index.staging.example.com".to_string());
-        let config = config_with_registries(vec![entry]);
-
-        let resolved = resolve_named_registry(&config, "staging");
-
-        assert_eq!(resolved.name, "staging");
+        assert_eq!(registry.name, "crates-io");
+        assert_eq!(registry.api_base, "https://crates.io");
         assert_eq!(
-            resolved.index_base.as_deref(),
-            Some("https://index.staging.example.com")
+            registry.index_base.as_deref(),
+            Some("https://index.crates.io")
+        );
+    }
+
+    // ── is_safe_synthetic_registry_name ─────────────────────────────────────
+
+    #[test]
+    fn is_safe_synthetic_registry_name_rejects_empty() {
+        assert!(!is_safe_synthetic_registry_name(""));
+    }
+
+    #[test]
+    fn is_safe_synthetic_registry_name_accepts_simple_lowercase() {
+        assert!(is_safe_synthetic_registry_name("mirror"));
+        assert!(is_safe_synthetic_registry_name("kellnr"));
+    }
+
+    #[test]
+    fn is_safe_synthetic_registry_name_accepts_digits_and_internal_hyphens() {
+        assert!(is_safe_synthetic_registry_name("my-mirror-7"));
+        assert!(is_safe_synthetic_registry_name("mirror42"));
+    }
+
+    #[test]
+    fn is_safe_synthetic_registry_name_rejects_uppercase() {
+        assert!(!is_safe_synthetic_registry_name("Custom"));
+    }
+
+    #[test]
+    fn is_safe_synthetic_registry_name_rejects_special_chars() {
+        assert!(!is_safe_synthetic_registry_name("custom_mirror"));
+        assert!(!is_safe_synthetic_registry_name("custom.mirror"));
+        assert!(!is_safe_synthetic_registry_name("custom/mirror"));
+    }
+
+    #[test]
+    fn is_safe_synthetic_registry_name_rejects_leading_hyphen() {
+        assert!(!is_safe_synthetic_registry_name("-mirror"));
+    }
+
+    #[test]
+    fn is_safe_synthetic_registry_name_rejects_trailing_hyphen() {
+        assert!(!is_safe_synthetic_registry_name("mirror-"));
+    }
+
+    #[test]
+    fn is_safe_synthetic_registry_name_accepts_max_length_sixty_three() {
+        let max = "a".repeat(63);
+        assert!(is_safe_synthetic_registry_name(&max));
+    }
+
+    #[test]
+    fn is_safe_synthetic_registry_name_rejects_over_sixty_three() {
+        let oversize = "a".repeat(64);
+        assert!(!is_safe_synthetic_registry_name(&oversize));
+    }
+
+    // ── resolve ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_default_returns_empty_vec_so_plan_default_is_used() {
+        let config = MultiRegistryConfig::default();
+        let cli = CliOverrides::default();
+
+        let result = resolve(&config, &cli);
+
+        assert!(
+            result.is_empty(),
+            "no flag means use the plan's single default registry"
         );
     }
 
     #[test]
-    fn resolve_named_registry_unknown_falls_back_to_default_branch() {
+    fn resolve_all_registries_returns_every_configured_entry() {
+        let config = config_with(vec![registry_config("alpha"), registry_config("beta")]);
+        let cli = CliOverrides {
+            all_registries: true,
+            ..CliOverrides::default()
+        };
+
+        let result = resolve(&config, &cli);
+
+        let names: Vec<_> = result.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        assert_eq!(result[0].api_base, "https://alpha.example/api");
+        assert_eq!(
+            result[0].index_base.as_deref(),
+            Some("https://alpha.example/index")
+        );
+    }
+
+    #[test]
+    fn resolve_all_registries_falls_back_to_crates_io_when_unconfigured() {
         let config = MultiRegistryConfig::default();
+        let cli = CliOverrides {
+            all_registries: true,
+            ..CliOverrides::default()
+        };
 
-        let resolved = resolve_named_registry(&config, "crates-io");
+        let result = resolve(&config, &cli);
 
-        assert_eq!(resolved.name, "crates-io");
-        assert_eq!(resolved.api_base, "https://crates.io");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "crates-io");
     }
 
     #[test]
-    fn is_safe_synthetic_registry_name_accepts_valid_names() {
-        assert!(is_safe_synthetic_registry_name("foo"));
-        assert!(is_safe_synthetic_registry_name("foo-bar"));
-        assert!(is_safe_synthetic_registry_name("a1b2c3"));
-        assert!(is_safe_synthetic_registry_name("a"));
-        assert!(is_safe_synthetic_registry_name(&"a".repeat(63)));
+    fn resolve_named_registry_uses_configured_when_found() {
+        let config = config_with(vec![registry_config("alpha"), registry_config("beta")]);
+        let cli = CliOverrides {
+            registries: Some(vec!["beta".to_string()]),
+            ..CliOverrides::default()
+        };
+
+        let result = resolve(&config, &cli);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "beta");
+        assert_eq!(result[0].api_base, "https://beta.example/api");
     }
 
     #[test]
-    fn is_safe_synthetic_registry_name_rejects_invalid_names() {
-        assert!(!is_safe_synthetic_registry_name(""));
-        assert!(!is_safe_synthetic_registry_name("-leading-hyphen"));
-        assert!(!is_safe_synthetic_registry_name("trailing-hyphen-"));
-        assert!(!is_safe_synthetic_registry_name("UPPER"));
-        assert!(!is_safe_synthetic_registry_name("has.dot"));
-        assert!(!is_safe_synthetic_registry_name("has/slash"));
-        assert!(!is_safe_synthetic_registry_name("has space"));
-        assert!(!is_safe_synthetic_registry_name(&"a".repeat(64)));
+    fn resolve_named_registry_preserves_config_index_base() {
+        let config = config_with(vec![registry_config("staging")]);
+        let cli = CliOverrides {
+            registries: Some(vec!["staging".to_string()]),
+            ..CliOverrides::default()
+        };
+
+        let result = resolve(&config, &cli);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "staging");
+        assert_eq!(
+            result[0].index_base.as_deref(),
+            Some("https://staging.example/index")
+        );
+    }
+
+    #[test]
+    fn resolve_named_registry_falls_back_to_synthetic_default_when_unknown_safe() {
+        let config = MultiRegistryConfig::default();
+        let cli = CliOverrides {
+            registries: Some(vec!["my-mirror".to_string()]),
+            ..CliOverrides::default()
+        };
+
+        let result = resolve(&config, &cli);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "my-mirror");
+        assert_eq!(result[0].api_base, "https://my-mirror.crates.io");
+        assert!(result[0].index_base.is_none());
+    }
+
+    #[test]
+    fn resolve_named_registry_falls_back_to_crates_io_when_unknown_unsafe() {
+        let config = MultiRegistryConfig::default();
+        let cli = CliOverrides {
+            registries: Some(vec!["DANGER/registry".to_string()]),
+            ..CliOverrides::default()
+        };
+
+        let result = resolve(&config, &cli);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "DANGER/registry");
+        assert_eq!(result[0].api_base, "https://crates.io");
+    }
+
+    #[test]
+    fn resolve_named_registry_preserves_request_order() {
+        let config = config_with(vec![registry_config("alpha"), registry_config("beta")]);
+        let cli = CliOverrides {
+            registries: Some(vec!["beta".to_string(), "alpha".to_string()]),
+            ..CliOverrides::default()
+        };
+
+        let result = resolve(&config, &cli);
+
+        let names: Vec<_> = result.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["beta", "alpha"]);
+    }
+
+    #[test]
+    fn resolve_all_registries_takes_precedence_over_named() {
+        let config = config_with(vec![registry_config("alpha"), registry_config("beta")]);
+        let cli = CliOverrides {
+            all_registries: true,
+            registries: Some(vec!["beta".to_string()]),
+            ..CliOverrides::default()
+        };
+
+        let result = resolve(&config, &cli);
+
+        let names: Vec<_> = result.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
     }
 }
