@@ -48,7 +48,7 @@ fn workspace_dry_run(
     reporter: &mut dyn Reporter,
 ) -> (bool, String) {
     // Event-payload handling (#92): the raw dry-run stderr is cargo's
-    // human-facing log with embedded ANSI escapes — historically ~2KB per
+    // human-facing log with embedded ANSI escapes - historically ~2KB per
     // event and not useful in a structured log. We now:
     //   1. Strip ANSI from the full captured output,
     //   2. Write the full stripped output to a sidecar at
@@ -111,7 +111,7 @@ fn workspace_dry_run(
             "workspace dry-run skipped (policy, --no-verify, or verify_mode=none)".to_string(),
         )
     } else {
-        // Package mode — handled per-package below
+        // Package mode - handled per-package below
         (
             true,
             "workspace dry-run skipped (verify_mode=package)".to_string(),

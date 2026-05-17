@@ -128,7 +128,9 @@ fn verify_ownership(
     if !(token_detected && effects.check_ownership) {
         return Ok(false);
     }
-    let token = token.expect("token_detected implies token is Some");
+    let Some(token) = token else {
+        return Ok(false);
+    };
 
     if effects.strict_ownership {
         if is_new_crate {
