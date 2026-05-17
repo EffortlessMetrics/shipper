@@ -12,6 +12,7 @@ Plan summary:
   Skipped packages: 0
   Internal dependency edges: 2
   Publish levels: 3
+  Plan artifact: .shipper/plan.txt (`shipper plan --format json` capture)
 
 === Dependency Analysis ===
 

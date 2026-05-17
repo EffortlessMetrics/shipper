@@ -1642,6 +1642,7 @@ struct PlanReport {
     skipped_count: usize,
     internal_dependency_edges: usize,
     publish_levels: usize,
+    artifacts: Vec<PlanArtifactReport>,
     packages: Vec<PlanPackageReport>,
     skipped: Vec<PlanSkippedPackageReport>,
 }
@@ -1670,6 +1671,13 @@ struct PlanSkippedPackageReport {
     name: String,
     version: String,
     reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanArtifactReport {
+    kind: &'static str,
+    path: String,
+    description: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -1736,6 +1744,7 @@ fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool, format: &str) {
         internal_dependency_edges(&ws.plan)
     );
     println!("  Publish levels: {}", ws.plan.group_by_levels().len());
+    println!("  Plan artifact: .shipper/plan.txt (`shipper plan --format json` capture)");
     println!();
 
     if !ws.skipped.is_empty() {
@@ -1816,8 +1825,17 @@ fn build_plan_report(ws: &plan::PlannedWorkspace) -> PlanReport {
         skipped_count: ws.skipped.len(),
         internal_dependency_edges: internal_dependency_edges(&ws.plan),
         publish_levels: levels.len(),
+        artifacts: vec![plan_artifact_report()],
         packages,
         skipped,
+    }
+}
+
+fn plan_artifact_report() -> PlanArtifactReport {
+    PlanArtifactReport {
+        kind: "plan_json_stdout",
+        path: ".shipper/plan.txt".to_string(),
+        description: "Recommended CI capture path for `shipper plan --format json`.",
     }
 }
 
