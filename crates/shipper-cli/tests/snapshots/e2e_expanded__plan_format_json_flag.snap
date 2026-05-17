@@ -13,6 +13,13 @@ expression: "normalize_tempdir_json_output(&stdout, td.path())"
   "skipped_count": 0,
   "internal_dependency_edges": 0,
   "publish_levels": 1,
+  "artifacts": [
+    {
+      "kind": "plan_json_stdout",
+      "path": ".shipper/plan.txt",
+      "description": "Recommended CI capture path for `shipper plan --format json`."
+    }
+  ],
   "packages": [
     {
       "order": 1,
