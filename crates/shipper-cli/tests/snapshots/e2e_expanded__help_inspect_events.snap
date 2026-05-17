@@ -1,5 +1,6 @@
 ---
 source: crates/shipper-cli/tests/e2e_expanded.rs
+assertion_line: 1022
 expression: normalize_stderr(&stdout)
 ---
 View detailed event log
@@ -7,6 +8,9 @@ View detailed event log
 Usage: shipper-cli inspect-events [OPTIONS]
 
 Options:
+      --follow
+          Follow the authoritative events.jsonl and print appended events as they arrive
+
   -V, --version
           Print version information. Combine with `--verbose` for commit, build-profile, and rustc metadata
 

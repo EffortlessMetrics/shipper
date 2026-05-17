@@ -16,6 +16,7 @@ Organized by reader purpose ([Diátaxis](https://diataxis.fr/)). Pick the column
 Step-by-step learning paths. Start here if you've never used Shipper before.
 
 - [First publish — from a toy workspace](tutorials/first-publish.md)
+- [Getting to release confidence in five minutes](tutorials/getting-started-5-minutes.md)
 - [Recover from an interrupted release](tutorials/recover-from-interruption.md)
 
 ## How-to guides

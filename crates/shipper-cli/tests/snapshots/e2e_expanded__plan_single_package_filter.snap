@@ -7,5 +7,10 @@ registry: crates-io (https://crates.io)
 workspace_root: <WORKSPACE_ROOT>
 
 Total packages to publish: 1
+Plan summary:
+  Publishable packages: 1
+  Skipped packages: 0
+  Internal dependency edges: 0
+  Publish levels: 1
 
-  1. core-lib@0.2.0
+  1. core-lib@0.2.0 (no workspace dependencies)

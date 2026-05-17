@@ -39,8 +39,9 @@ cargo nextest run --workspace --all-features --profile ci
 ### Specific crate
 
 ```bash
-cargo test -p shipper           # core library
-cargo test -p shipper-cli       # CLI + integration tests
+cargo test -p shipper           # install facade + curated re-export tests
+cargo test -p shipper-cli       # CLI adapter + integration tests
+cargo test -p shipper-core      # engine/library tests
 cargo test -p shipper-cargo-failure  # failure classifier
 ```
 
@@ -412,7 +413,7 @@ and every pull request. The pipeline includes:
 | **Tests** | ubuntu, windows, macos | `cargo nextest run` with `INSTA_UPDATE=no`, `PROPTEST_CASES=256` |
 | **Doc tests** | ubuntu, windows, macos | `cargo test --workspace --doc` |
 | **BDD** | ubuntu | BDD suites on the canonical build |
-| **MSRV** | ubuntu | `cargo check` with Rust 1.92 |
+| **MSRV** | ubuntu | `cargo check` with Rust 1.95 |
 | **Security** | ubuntu | `cargo audit` |
 | **Docs** | ubuntu | `cargo doc` with `-Dwarnings` |
 | **Coverage** | ubuntu | `cargo llvm-cov` → Codecov |

@@ -17,15 +17,13 @@
 //! The resulting [`PlannedWorkspace`](shipper_types::PlannedWorkspace) is the
 //! input to preflight and publish operations in the engine crate.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Context, Result, bail};
-use cargo_metadata::{DependencyKind, Metadata, PackageId};
+use anyhow::Result;
+use cargo_metadata::PackageId;
 use chrono::Utc;
-use sha2::{Digest, Sha256};
-use shipper_types::{PlannedPackage, ReleasePlan, ReleaseSpec};
 pub use shipper_types::{PlannedWorkspace, SkippedPackage};
+use shipper_types::{ReleasePlan, ReleaseSpec};
 
 /// Build a deterministic publish plan from a [`ReleaseSpec`].
 ///
@@ -49,186 +47,22 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
         .iter()
         .map(|p| (p.id.clone(), p))
         .collect::<BTreeMap<PackageId, &cargo_metadata::Package>>();
-
     let workspace_ids: BTreeSet<PackageId> = metadata.workspace_members.iter().cloned().collect();
 
-    // Track skipped packages (publish=false or not in registry list)
-    let mut skipped: Vec<SkippedPackage> = Vec::new();
+    let publishability = analyze_publishability(&workspace_ids, &pkg_map, &spec.registry.name);
+    let graph = build_dependency_graph(&workspace_ids, &publishability.publishable, &pkg_map)?;
+    let included = resolve_included_packages(
+        spec.selected_packages.as_deref(),
+        &publishability.publishable,
+        &graph.deps_of,
+        &pkg_map,
+    )?;
 
-    // Workspace publishable set (restricted by `[package] publish` where possible).
-    let publishable: BTreeSet<PackageId> = workspace_ids
-        .iter()
-        .filter_map(|id| {
-            let pkg = pkg_map.get(id)?;
-            if publish_allowed(pkg, &spec.registry.name) {
-                Some(id.clone())
-            } else {
-                // Track why this package was skipped
-                let reason = match &pkg.publish {
-                    None => "publish not specified (default allowed)".to_string(),
-                    Some(list) if list.is_empty() => "publish = false".to_string(),
-                    Some(list) => format!("publish = {} (registry not in list)", list.join(", ")),
-                };
-                skipped.push(SkippedPackage {
-                    name: pkg.name.to_string(),
-                    version: pkg.version.to_string(),
-                    reason,
-                });
-                None
-            }
-        })
-        .collect();
+    validate_publishable_dependencies(&included, &graph, &pkg_map)?;
 
-    // Build dependency edges A->deps (restricted to publishable workspace members).
-    let resolve = metadata
-        .resolve
-        .as_ref()
-        .context("cargo metadata did not include a resolve graph")?;
-
-    let mut deps_of: BTreeMap<PackageId, BTreeSet<PackageId>> = BTreeMap::new();
-    let mut dependents_of: BTreeMap<PackageId, BTreeSet<PackageId>> = BTreeMap::new();
-
-    for node in &resolve.nodes {
-        if !publishable.contains(&node.id) {
-            continue;
-        }
-        for dep in &node.deps {
-            if !publishable.contains(&dep.pkg) {
-                continue;
-            }
-
-            let is_relevant = dep
-                .dep_kinds
-                .iter()
-                .any(|k| matches!(k.kind, DependencyKind::Normal | DependencyKind::Build));
-            if !is_relevant {
-                continue;
-            }
-
-            deps_of
-                .entry(node.id.clone())
-                .or_default()
-                .insert(dep.pkg.clone());
-            dependents_of
-                .entry(dep.pkg.clone())
-                .or_default()
-                .insert(node.id.clone());
-        }
-    }
-
-    // Determine which nodes to include.
-    let included: BTreeSet<PackageId> = if let Some(sel) = &spec.selected_packages {
-        // Map package name -> id (workspace publishable only).
-        let mut name_to_id: BTreeMap<String, PackageId> = BTreeMap::new();
-        for id in &publishable {
-            let pkg = pkg_map
-                .get(id)
-                .context("workspace package missing from metadata")?;
-            name_to_id.insert(pkg.name.to_string(), id.clone());
-        }
-
-        let mut queue: VecDeque<PackageId> = VecDeque::new();
-        let mut set: BTreeSet<PackageId> = BTreeSet::new();
-
-        for name in sel {
-            let id = name_to_id
-                .get(name)
-                .with_context(|| format!("selected package not found or not publishable: {name}"))?
-                .clone();
-            if set.insert(id.clone()) {
-                queue.push_back(id);
-            }
-        }
-
-        // Include internal dependencies transitively.
-        while let Some(id) = queue.pop_front() {
-            if let Some(deps) = deps_of.get(&id) {
-                for dep in deps {
-                    if set.insert(dep.clone()) {
-                        queue.push_back(dep.clone());
-                    }
-                }
-            }
-        }
-
-        set
-    } else {
-        publishable.clone()
-    };
-
-    // Validate: included crates must not have normal/build deps on non-publishable workspace members.
-    for node in &resolve.nodes {
-        if !included.contains(&node.id) {
-            continue;
-        }
-        for dep in &node.deps {
-            // Skip deps that are publishable or not workspace members
-            if publishable.contains(&dep.pkg) || !workspace_ids.contains(&dep.pkg) {
-                continue;
-            }
-            let is_normal_or_build = dep
-                .dep_kinds
-                .iter()
-                .any(|k| matches!(k.kind, DependencyKind::Normal | DependencyKind::Build));
-            if is_normal_or_build {
-                let pkg_name = pkg_map
-                    .get(&node.id)
-                    .map(|p| p.name.as_str())
-                    .unwrap_or("unknown");
-                let dep_name = pkg_map
-                    .get(&dep.pkg)
-                    .map(|p| p.name.as_str())
-                    .unwrap_or("unknown");
-                bail!(
-                    "publishable package '{}' depends on non-publishable workspace member '{}'",
-                    pkg_name,
-                    dep_name
-                );
-            }
-        }
-    }
-
-    // Topological sort on included nodes.
-    let order = topo_sort(&included, &deps_of, &dependents_of, &pkg_map)?;
-
-    let packages: Vec<PlannedPackage> = order
-        .iter()
-        .map(|id| {
-            let pkg = pkg_map.get(id).expect("pkg exists");
-            PlannedPackage {
-                name: pkg.name.to_string(),
-                version: pkg.version.to_string(),
-                manifest_path: pkg.manifest_path.clone().into_std_path_buf(),
-                regime: None,
-            }
-        })
-        .collect();
-
-    // Build dependency map for level-based parallel publishing
-    let mut dependencies: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for id in &order {
-        let pkg = pkg_map.get(id).expect("pkg exists");
-        let pkg_name = pkg.name.to_string();
-
-        // Get all dependencies of this package that are in the plan
-        let dep_names: Vec<String> = deps_of
-            .get(id)
-            .map(|deps| {
-                deps.iter()
-                    .filter_map(|dep_id| {
-                        if included.contains(dep_id) {
-                            pkg_map.get(dep_id).map(|p| p.name.to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        dependencies.insert(pkg_name, dep_names);
-    }
-
+    let order = topo_sort(&included, &graph.deps_of, &graph.dependents_of, &pkg_map)?;
+    let packages = planned_packages(&order, &pkg_map);
+    let dependencies = dependency_map(&order, &included, &graph.deps_of, &pkg_map);
     let plan_id = compute_plan_id(&spec.registry.api_base, &packages);
 
     Ok(PlannedWorkspace {
@@ -241,96 +75,25 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
             packages,
             dependencies,
         },
-        skipped,
+        skipped: publishability.skipped,
     })
 }
 
-fn load_metadata(manifest_path: &Path) -> Result<Metadata> {
-    crate::ops::cargo::load_metadata(manifest_path)
-}
-
-fn publish_allowed(pkg: &cargo_metadata::Package, registry_name: &str) -> bool {
-    match &pkg.publish {
-        None => true,
-        Some(list) if list.is_empty() => false,
-        Some(list) => {
-            // Cargo uses `crates-io` as the default registry name.
-            list.iter().any(|r| r == registry_name)
-        }
-    }
-}
-
-fn topo_sort(
-    included: &BTreeSet<PackageId>,
-    deps_of: &BTreeMap<PackageId, BTreeSet<PackageId>>,
-    dependents_of: &BTreeMap<PackageId, BTreeSet<PackageId>>,
-    pkg_map: &BTreeMap<PackageId, &cargo_metadata::Package>,
-) -> Result<Vec<PackageId>> {
-    let mut indegree: BTreeMap<PackageId, usize> = BTreeMap::new();
-    for id in included {
-        let deps = deps_of.get(id).cloned().unwrap_or_default();
-        let count = deps.into_iter().filter(|d| included.contains(d)).count();
-        indegree.insert(id.clone(), count);
-    }
-
-    // Deterministic queue: sort by package name.
-    let mut ready: BTreeSet<(String, PackageId)> = BTreeSet::new();
-    for (id, deg) in &indegree {
-        if *deg == 0 {
-            let name = pkg_map
-                .get(id)
-                .map(|p| p.name.to_string())
-                .unwrap_or_else(|| String::from("unknown"));
-            ready.insert((name, id.clone()));
-        }
-    }
-
-    let mut out: Vec<PackageId> = Vec::with_capacity(included.len());
-
-    while let Some((_, id)) = ready.iter().next().cloned() {
-        ready.remove(&(pkg_map.get(&id).unwrap().name.to_string(), id.clone()));
-        out.push(id.clone());
-
-        if let Some(deps) = dependents_of.get(&id) {
-            for dep in deps {
-                if !included.contains(dep) {
-                    continue;
-                }
-                let d = indegree
-                    .get_mut(dep)
-                    .expect("included package must have indegree");
-                *d = d.saturating_sub(1);
-                if *d == 0 {
-                    let name = pkg_map.get(dep).unwrap().name.to_string();
-                    ready.insert((name, dep.clone()));
-                }
-            }
-        }
-    }
-
-    if out.len() != included.len() {
-        bail!("dependency cycle detected within workspace publish set");
-    }
-
-    Ok(out)
-}
-
-fn compute_plan_id(registry_api_base: &str, packages: &[PlannedPackage]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(registry_api_base.as_bytes());
-    hasher.update(b"\n");
-    for p in packages {
-        hasher.update(p.name.as_bytes());
-        hasher.update(b"@");
-        hasher.update(p.version.as_bytes());
-        hasher.update(b"\n");
-    }
-    let digest = hasher.finalize();
-    hex::encode(digest)
-}
-
+mod assembly;
 pub(crate) mod chunking;
+mod graph;
 pub(crate) mod levels;
+mod metadata;
+mod publishability;
+mod selection;
+
+use assembly::{compute_plan_id, dependency_map, planned_packages};
+use graph::{build_dependency_graph, topo_sort, validate_publishable_dependencies};
+use metadata::load_metadata;
+use publishability::analyze_publishability;
+#[cfg(test)]
+use publishability::publish_allowed;
+use selection::resolve_included_packages;
 
 #[cfg(test)]
 mod tests {
@@ -339,7 +102,7 @@ mod tests {
 
     use cargo_metadata::{MetadataCommand, PackageId};
     use proptest::prelude::*;
-    use shipper_types::Registry;
+    use shipper_types::{PlannedPackage, Registry};
     use tempfile::tempdir;
 
     use super::*;
@@ -516,6 +279,120 @@ c = { path = "../c", version = "0.1.0" }
                 "publishable package 'npdep' depends on non-publishable workspace member 'c'"
             ),
             "unexpected error: {msg2}"
+        );
+    }
+
+    #[test]
+    fn build_plan_orders_optional_workspace_dependencies() {
+        // Regression for #173. aaa-adapter has an optional path+version dep
+        // on zzz-core. cargo_metadata's feature-resolved resolve.nodes omits
+        // optional deps that aren't activated by the default feature set, so
+        // before the fix Shipper saw aaa-adapter as having indegree zero and
+        // ordered it alphabetically before zzz-core. cargo publish, however,
+        // still needs zzz-core to exist on the registry first.
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["aaa-adapter", "zzz-core"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("aaa-adapter/Cargo.toml"),
+            r#"
+[package]
+name = "aaa-adapter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zzz-core = { path = "../zzz-core", version = "0.1.0", optional = true }
+
+[features]
+default = []
+core = ["dep:zzz-core"]
+"#,
+        );
+        write_file(&td.path().join("aaa-adapter/src/lib.rs"), "");
+        write_file(
+            &td.path().join("zzz-core/Cargo.toml"),
+            r#"
+[package]
+name = "zzz-core"
+version = "0.1.0"
+edition = "2021"
+"#,
+        );
+        write_file(&td.path().join("zzz-core/src/lib.rs"), "");
+
+        let ws = build_plan(&spec_for(td.path())).expect("plan");
+        let names: Vec<String> = ws.plan.packages.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(
+            names,
+            vec!["zzz-core".to_string(), "aaa-adapter".to_string()],
+            "optional path dep should still establish publish order"
+        );
+
+        let adapter_deps = ws
+            .plan
+            .dependencies
+            .get("aaa-adapter")
+            .expect("aaa-adapter in dependencies map");
+        assert_eq!(adapter_deps, &vec!["zzz-core".to_string()]);
+    }
+
+    #[test]
+    fn build_plan_rejects_optional_normal_dep_on_non_publishable_workspace_member() {
+        // Regression for #173 validation path. The same graph-source bug
+        // also let optional normal deps on non-publishable workspace members
+        // slip past the "publishable depends on non-publishable" guard.
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["adapter", "internal"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("adapter/Cargo.toml"),
+            r#"
+[package]
+name = "adapter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+internal = { path = "../internal", version = "0.1.0", optional = true }
+
+[features]
+default = []
+internal-fn = ["dep:internal"]
+"#,
+        );
+        write_file(&td.path().join("adapter/src/lib.rs"), "");
+        write_file(
+            &td.path().join("internal/Cargo.toml"),
+            r#"
+[package]
+name = "internal"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+        );
+        write_file(&td.path().join("internal/src/lib.rs"), "");
+
+        let err = build_plan(&spec_for(td.path())).expect_err("must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(
+                "publishable package 'adapter' depends on non-publishable workspace member 'internal'"
+            ),
+            "unexpected error: {msg}"
         );
     }
 

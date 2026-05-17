@@ -312,6 +312,99 @@ not json
         assert!(!contains_version(content, "1.0.0"));
         assert!(!contains_version(content, "1.100.0"));
     }
+
+    // ── JSONL whitespace tolerance ──
+
+    #[test]
+    fn contains_version_tolerates_trailing_whitespace_on_line() {
+        let content = "{\"vers\":\"1.0.0\"}   \n";
+        assert!(contains_version(content, "1.0.0"));
+    }
+
+    #[test]
+    fn contains_version_tolerates_leading_whitespace_on_line() {
+        let content = "  {\"vers\":\"1.0.0\"}\n";
+        assert!(contains_version(content, "1.0.0"));
+    }
+
+    #[test]
+    fn contains_version_tolerates_leading_and_trailing_whitespace() {
+        let content = "  {\"vers\":\"1.0.0\"}   \n";
+        assert!(contains_version(content, "1.0.0"));
+    }
+
+    #[test]
+    fn contains_version_tolerates_tabs_around_record() {
+        let content = "\t{\"vers\":\"1.0.0\"}\t\n";
+        assert!(contains_version(content, "1.0.0"));
+    }
+
+    #[test]
+    fn contains_version_inner_space_in_vers_does_not_match_trimmed_query() {
+        let content = r#"{"vers":"1.0.0 "}"#;
+        assert!(!contains_version(content, "1.0.0"));
+        assert!(contains_version(content, "1.0.0 "));
+    }
+
+    #[test]
+    fn contains_version_null_byte_in_vers_does_not_panic() {
+        let content = "{\"vers\":\"1.0.0\\u0000\"}";
+        assert!(!contains_version(content, "1.0.0"));
+        assert!(contains_version(content, "1.0.0\0"));
+    }
+
+    #[test]
+    fn contains_version_mixed_lf_and_crlf_line_endings() {
+        let content = "{\"vers\":\"0.1.0\"}\r\n{\"vers\":\"0.2.0\"}\n{\"vers\":\"0.3.0\"}\r\n";
+        assert!(contains_version(content, "0.1.0"));
+        assert!(contains_version(content, "0.2.0"));
+        assert!(contains_version(content, "0.3.0"));
+    }
+
+    #[test]
+    fn contains_version_extra_fields_per_record_are_tolerated() {
+        let content = r#"{"name":"foo","vers":"1.0.0","yanked":true,"deps":[{"name":"bar","req":"^1"}],"cksum":"deadbeef","features":{"default":[]},"v":2}"#;
+        assert!(contains_version(content, "1.0.0"));
+    }
+
+    #[test]
+    fn contains_version_yanked_versions_still_match() {
+        let content = r#"{"vers":"0.1.0","yanked":true}
+{"vers":"0.2.0","yanked":false}"#;
+        assert!(contains_version(content, "0.1.0"));
+        assert!(contains_version(content, "0.2.0"));
+    }
+
+    // ── sparse_index_path: more crate-name edges ──
+
+    #[test]
+    fn sparse_index_path_empty_name_returns_zero_slash() {
+        assert_eq!(sparse_index_path(""), "0/");
+    }
+
+    #[test]
+    fn sparse_index_path_three_digit_only_name() {
+        assert_eq!(sparse_index_path("123"), "3/1/123");
+    }
+
+    #[test]
+    fn sparse_index_path_long_hyphen_underscore_mixed() {
+        assert_eq!(
+            sparse_index_path("foo-bar-baz_qux"),
+            "fo/o-/foo-bar-baz_qux"
+        );
+    }
+
+    #[test]
+    fn sparse_index_path_symbol_only_two_char_name() {
+        assert_eq!(sparse_index_path("--"), "2/--");
+        assert_eq!(sparse_index_path("__"), "2/__");
+    }
+
+    #[test]
+    fn sparse_index_path_symbol_only_four_char_name() {
+        assert_eq!(sparse_index_path("-_-_"), "-_/-_/-_-_");
+    }
 }
 
 #[cfg(test)]
