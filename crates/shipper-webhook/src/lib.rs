@@ -2423,7 +2423,10 @@ mod tests {
         let payload = publish_success_payload("async-slack-pkg", "0.3.0", "crates-io");
 
         let handle = std::thread::spawn(move || {
-            let mut req = server.recv().unwrap();
+            let mut req = match server.recv_timeout(Duration::from_secs(5)) {
+                Ok(Some(req)) => req,
+                other => panic!("expected async Slack webhook request, got {other:?}"),
+            };
             let mut body = String::new();
             req.as_reader().read_to_string(&mut body).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -2451,7 +2454,10 @@ mod tests {
         let payload = publish_failure_payload("async-discord-pkg", "0.4.0", "registry timed out");
 
         let handle = std::thread::spawn(move || {
-            let mut req = server.recv().unwrap();
+            let mut req = match server.recv_timeout(Duration::from_secs(5)) {
+                Ok(Some(req)) => req,
+                other => panic!("expected async Discord webhook request, got {other:?}"),
+            };
             let mut body = String::new();
             req.as_reader().read_to_string(&mut body).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -2481,8 +2487,10 @@ mod tests {
         let payload = publish_failure_payload("signed-pkg", "1.2.3", "boom");
 
         let handle = std::thread::spawn(move || {
-            let mut req = server.recv().unwrap();
-            // Signature header is present and well-formed
+            let mut req = match server.recv_timeout(Duration::from_secs(5)) {
+                Ok(Some(req)) => req,
+                other => panic!("expected signed async Slack webhook request, got {other:?}"),
+            };
             let sig_header = req
                 .headers()
                 .iter()
@@ -2493,10 +2501,12 @@ mod tests {
                         .eq_ignore_ascii_case("x-hub-signature-256")
                 })
                 .expect("signature header missing on async slack path");
-            assert!(sig_header.value.as_str().starts_with("sha256="));
+            let sig_header = sig_header.value.as_str().to_string();
 
             let mut body = String::new();
             req.as_reader().read_to_string(&mut body).unwrap();
+            let expected = webhook_signature("async-slack-secret", &body).unwrap();
+            assert_eq!(sig_header, expected);
             let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
             assert!(parsed["attachments"].is_array());
             req.respond(tiny_http::Response::from_string("ok")).unwrap();
