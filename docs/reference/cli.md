@@ -4,6 +4,21 @@
 
 This page is a topical map, not an exhaustive flag listing. For exhaustive flags, use `--help`.
 
+## First-run command chain
+
+Use the `shipper` facade binary for the user-facing workflow:
+
+```bash
+shipper doctor
+shipper plan
+shipper status
+shipper preflight
+```
+
+`doctor` catches local setup blockers, `plan` shows what would publish,
+`status` compares local versions to the registry, and `preflight` gives the
+release-readiness verdict.
+
 ## Commands at a glance
 
 | Command | What it does | Writes state? |

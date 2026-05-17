@@ -343,6 +343,24 @@ EXAMPLES:
 ")]
     Publish,
     /// Resume a previous publish run.
+    #[command(long_about = "\
+Resume a previous publish run.
+
+Loads `.shipper/state.json`, validates it against the current plan, skips
+already-published packages, and continues from the first pending or failed
+package. Use this after a killed runner, network interruption, or manual
+stop.
+
+EXAMPLES:
+    # Continue the current workspace release from persisted state:
+    shipper resume
+
+    # Resume from a specific crate after reviewing the saved state:
+    shipper resume --resume-from shipper-core
+
+    # Force resume when the computed plan differs from saved state:
+    shipper resume --force-resume
+")]
     Resume,
     /// Rehearse a release against an alternate registry (#97 PR 2).
     ///
@@ -361,16 +379,71 @@ EXAMPLES:
     /// lands in #97 PR 3.
     Rehearse,
     /// Compare local workspace versions to the registry.
+    #[command(long_about = "\
+Compare local workspace versions to the registry.
+
+Use status before publish or after an interruption to see which local crate
+versions already exist on the target registry. This is a read-only registry
+comparison and does not mutate `.shipper/` state.
+
+EXAMPLES:
+    # Check every publishable workspace member:
+    shipper status
+
+    # Check one package against the configured registry:
+    shipper status --package shipper-core
+")]
     Status,
     /// Print environment and auth diagnostics.
+    #[command(long_about = "\
+Print environment and auth diagnostics.
+
+Checks local tools, registry reachability, authentication signals, workspace
+health, and state-directory basics. Run this first when preflight or publish
+reports an environment blocker.
+
+EXAMPLES:
+    # Inspect local release prerequisites:
+    shipper doctor
+
+    # Check a named Cargo registry:
+    shipper doctor --registry crates-io
+")]
     Doctor,
     /// View detailed event log.
+    #[command(long_about = "\
+View the authoritative event log.
+
+Reads `<state-dir>/events.jsonl`, which is the truth source for publish and
+resume state transitions. Use `--follow` while another terminal is running
+publish or resume.
+
+EXAMPLES:
+    # Print the current event log:
+    shipper inspect-events
+
+    # Follow appended events during a release:
+    shipper inspect-events --follow
+")]
     InspectEvents {
         /// Follow the authoritative events.jsonl and print appended events as they arrive.
         #[arg(long)]
         follow: bool,
     },
     /// View detailed receipt with evidence.
+    #[command(long_about = "\
+View the end-of-run receipt with evidence.
+
+Reads `<state-dir>/receipt.json` and prints the completed release summary,
+package outcomes, git context, environment fingerprint, and captured evidence.
+
+EXAMPLES:
+    # Print the human-readable release receipt:
+    shipper inspect-receipt
+
+    # Emit the receipt in JSON for CI or an internal developer portal:
+    shipper inspect-receipt --format json
+")]
     InspectReceipt,
     /// Print CI configuration snippets for various platforms.
     #[command(subcommand)]

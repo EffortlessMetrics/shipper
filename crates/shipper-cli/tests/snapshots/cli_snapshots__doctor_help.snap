@@ -2,7 +2,19 @@
 source: crates/shipper-cli/tests/cli_snapshots.rs
 expression: normalize_help_output(&stdout)
 ---
-Print environment and auth diagnostics
+Print environment and auth diagnostics.
+
+Checks local tools, registry reachability, authentication signals, workspace
+health, and state-directory basics. Run this first when preflight or publish
+reports an environment blocker.
+
+EXAMPLES:
+    # Inspect local release prerequisites:
+    shipper doctor
+
+    # Check a named Cargo registry:
+    shipper doctor --registry crates-io
+
 
 Usage: shipper-cli doctor [OPTIONS]
 

@@ -2,7 +2,19 @@
 source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: normalize_stderr(&stdout)
 ---
-Compare local workspace versions to the registry
+Compare local workspace versions to the registry.
+
+Use status before publish or after an interruption to see which local crate
+versions already exist on the target registry. This is a read-only registry
+comparison and does not mutate `.shipper/` state.
+
+EXAMPLES:
+    # Check every publishable workspace member:
+    shipper status
+
+    # Check one package against the configured registry:
+    shipper status --package shipper-core
+
 
 Usage: shipper-cli status [OPTIONS]
 

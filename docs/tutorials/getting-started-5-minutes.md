@@ -13,8 +13,11 @@ will do and which proof gaps remain before the first irreversible command.
 
 ## 1. Install Shipper
 
+The user-facing package is `shipper`. While Shipper is prerelease-only on
+crates.io, install the published prerelease with an explicit version:
+
 ```bash
-cargo install shipper --locked
+cargo install shipper --version 0.3.0-rc.2 --locked
 shipper --version
 ```
 
@@ -47,6 +50,15 @@ sequence match your intent. The `plan_id` is the release fingerprint Shipper
 uses to prevent resuming against a different workspace state.
 
 ## 4. Run preflight
+
+Before preflight, you can compare local package versions to the registry:
+
+```bash
+shipper status
+```
+
+Use this read-only check when you want an early signal that a version already
+exists on the target registry.
 
 ```bash
 shipper preflight
@@ -82,6 +94,7 @@ After this five-minute path, keep the terminal output from:
 
 - `shipper doctor`
 - `shipper plan`
+- `shipper status`
 - `shipper preflight`
 
 When JSON output is required for CI or an internal developer portal, prefer the

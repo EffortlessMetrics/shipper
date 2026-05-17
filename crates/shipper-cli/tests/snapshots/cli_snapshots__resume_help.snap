@@ -2,7 +2,23 @@
 source: crates/shipper-cli/tests/cli_snapshots.rs
 expression: normalize_help_output(&stdout)
 ---
-Resume a previous publish run
+Resume a previous publish run.
+
+Loads `.shipper/state.json`, validates it against the current plan, skips
+already-published packages, and continues from the first pending or failed
+package. Use this after a killed runner, network interruption, or manual
+stop.
+
+EXAMPLES:
+    # Continue the current workspace release from persisted state:
+    shipper resume
+
+    # Resume from a specific crate after reviewing the saved state:
+    shipper resume --resume-from shipper-core
+
+    # Force resume when the computed plan differs from saved state:
+    shipper resume --force-resume
+
 
 Usage: shipper-cli resume [OPTIONS]
 
