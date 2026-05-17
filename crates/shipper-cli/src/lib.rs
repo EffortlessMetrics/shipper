@@ -2548,13 +2548,18 @@ fn follow_authoritative_event_log(state_dir: &Path, format: &str) -> Result<()> 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     loop {
-        offset = write_event_lines_since(&events_path, offset, &mut out)?;
+        offset = write_event_lines_since(&events_path, offset, format, &mut out)?;
         out.flush().context("failed to flush event output")?;
         std::thread::sleep(Duration::from_millis(500));
     }
 }
 
-fn write_event_lines_since<W: Write>(events_path: &Path, offset: u64, out: &mut W) -> Result<u64> {
+fn write_event_lines_since<W: Write>(
+    events_path: &Path,
+    offset: u64,
+    format: &str,
+    out: &mut W,
+) -> Result<u64> {
     if !events_path.exists() {
         return Ok(offset);
     }
@@ -2585,12 +2590,32 @@ fn write_event_lines_since<W: Write>(events_path: &Path, offset: u64, out: &mut 
         }
         let event: shipper_core::types::PublishEvent = serde_json::from_str(trimmed)
             .with_context(|| format!("failed to parse event JSON from line: {}", trimmed))?;
-        serde_json::to_writer(&mut *out, &event).context("failed to serialize event")?;
-        out.write_all(b"\n")
-            .context("failed to write event output")?;
+        write_follow_event_line(&event, format, out)?;
     }
 
     Ok(next_offset)
+}
+
+fn write_follow_event_line<W: Write>(
+    event: &shipper_core::types::PublishEvent,
+    format: &str,
+    out: &mut W,
+) -> Result<()> {
+    if format == "json" {
+        serde_json::to_writer(&mut *out, event).context("failed to serialize event")?;
+        out.write_all(b"\n")
+            .context("failed to write event output")?;
+        return Ok(());
+    }
+
+    let report = status_watch_event_report(event);
+    writeln!(
+        out,
+        "{} {} {} - {}",
+        report.timestamp, report.package, report.kind, report.summary
+    )
+    .context("failed to write event output")?;
+    Ok(())
 }
 
 fn discover_event_logs(state_dir: &Path) -> Result<Vec<PathBuf>> {
@@ -4630,7 +4655,8 @@ mode = "fast"
         .expect("write first event");
 
         let mut out = Vec::new();
-        let offset = write_event_lines_since(&events_path, 0, &mut out).expect("read first");
+        let offset =
+            write_event_lines_since(&events_path, 0, "json", &mut out).expect("read first");
         let first = String::from_utf8(out).expect("utf8");
         assert!(first.contains(r#""type":"plan_created""#));
         assert_eq!(first.lines().count(), 1);
@@ -4650,7 +4676,7 @@ mode = "fast"
 
         let mut out = Vec::new();
         let next_offset =
-            write_event_lines_since(&events_path, offset, &mut out).expect("read second");
+            write_event_lines_since(&events_path, offset, "json", &mut out).expect("read second");
         let second = String::from_utf8(out).expect("utf8");
         assert!(second.contains(r#""type":"execution_started""#));
         assert!(!second.contains(r#""type":"plan_created""#));
@@ -4664,10 +4690,36 @@ mode = "fast"
         let events_path = td.path().join("missing-events.jsonl");
         let mut out = Vec::new();
 
-        let offset = write_event_lines_since(&events_path, 42, &mut out).expect("missing file");
+        let offset =
+            write_event_lines_since(&events_path, 42, "text", &mut out).expect("missing file");
 
         assert_eq!(offset, 42);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn write_event_lines_since_renders_text_follow_events() {
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        fs::write(
+            &events_path,
+            concat!(
+                r#"{"timestamp":"2025-01-01T00:00:00Z","event_type":{"type":"plan_created","plan_id":"abc123","package_count":1},"package":"all"}"#,
+                "\n",
+                r#"{"timestamp":"2025-01-01T00:00:01Z","event_type":{"type":"execution_started"},"package":"all"}"#,
+                "\n",
+            ),
+        )
+        .expect("write events");
+
+        let mut out = Vec::new();
+        let offset = write_event_lines_since(&events_path, 0, "text", &mut out).expect("read");
+        let text = String::from_utf8(out).expect("utf8");
+
+        assert!(offset > 0);
+        assert!(text.contains("2025-01-01T00:00:00Z all plan_created - plan created"));
+        assert!(text.contains("2025-01-01T00:00:01Z all execution_started - execution started"));
+        assert!(!text.contains(r#""type":"plan_created""#));
     }
 
     #[test]
