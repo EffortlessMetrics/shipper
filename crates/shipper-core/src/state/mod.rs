@@ -6,5 +6,6 @@
 pub mod consistency;
 pub mod events;
 pub mod execution_state;
+pub mod rebuild;
 pub mod reconciliation;
 pub mod rehearsal;
