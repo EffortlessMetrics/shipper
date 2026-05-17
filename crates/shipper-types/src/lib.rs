@@ -6040,7 +6040,7 @@ mod tests {
 
     #[test]
     fn group_packages_by_levels_ignores_dependencies_outside_ordered_set() {
-        // "a" depends on "external", which is not in the plan — should be ignored
+        // "a" depends on "external", which is not in the plan - should be ignored
         // and "a" should sit at level 0.
         let pkgs = vec![pkg("a")];
         let deps = BTreeMap::from([(
