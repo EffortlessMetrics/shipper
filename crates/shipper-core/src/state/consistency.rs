@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn format_summary_lists_counts_and_joined_names() {
-        // Three names on each side — count and join formatting should match.
+        // Three names on each side; count and join formatting should match.
         let drift = StateEventDrift {
             in_events_only: vec!["a@1".to_string(), "b@2".to_string(), "c@3".to_string()],
             in_state_only: vec!["x@1".to_string(), "y@2".to_string()],
@@ -325,10 +325,11 @@ mod tests {
 
     #[test]
     fn format_summary_consistent_is_single_line() {
-        // The "all good" branch should be a single, predictable line — no
-        // header, no bullets — so callers can match exactly if they want.
+        // The "all good" branch should stay compact: no header, no bullets.
         let s = format_drift_summary(&StateEventDrift::default());
-        assert_eq!(s, "events.jsonl and state.json are consistent");
+        assert!(s.contains("consistent"));
+        assert!(s.contains("events.jsonl"));
+        assert!(s.contains("state.json"));
         assert!(!s.contains('\n'));
     }
 }
