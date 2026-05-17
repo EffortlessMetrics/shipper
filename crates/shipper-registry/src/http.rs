@@ -1259,4 +1259,145 @@ mod tests {
             }
         }
     }
+
+    // ── Coverage gap fillers ─────────────────────────────────────────
+
+    /// `get_owners` (no-token variant) when the registry returns 403:
+    /// because `fetch_owners_with_token` maps 403/401 to the
+    /// "forbidden" Err arm, `get_owners` propagates that error.
+    /// Exercises the FORBIDDEN/UNAUTHORIZED match arm via the
+    /// no-token entry point.
+    #[test]
+    fn get_owners_returns_error_on_403() {
+        let (server, base) = mock_server();
+        let handle = std::thread::spawn(move || {
+            respond(server.recv().expect("req"), 403, "");
+        });
+        let client = HttpRegistryClient::new(&base);
+        let err = client.get_owners("demo").unwrap_err();
+        assert!(err.to_string().contains("forbidden"));
+        handle.join().expect("join");
+    }
+
+    /// `is_owner` propagates the underlying `get_owners` error when the
+    /// registry returns 403. Exercises the error-propagation path in
+    /// `is_owner`.
+    #[test]
+    fn is_owner_propagates_owners_endpoint_error() {
+        let (server, base) = mock_server();
+        let handle = std::thread::spawn(move || {
+            respond(server.recv().expect("req"), 403, "");
+        });
+        let client = HttpRegistryClient::new(&base);
+        let err = client.is_owner("demo", "alice").unwrap_err();
+        assert!(err.to_string().contains("forbidden"));
+        handle.join().expect("join");
+    }
+
+    /// `is_version_visible_in_sparse_index` propagates fetch errors from
+    /// `fetch_sparse_index_file` (e.g. 404 → "index file not found").
+    /// Exercises the `?` propagation in `is_version_visible_in_sparse_index`.
+    #[test]
+    fn is_version_visible_in_sparse_index_propagates_404_error() {
+        let (server, base) = mock_server();
+        let handle = std::thread::spawn(move || {
+            respond(server.recv().expect("req"), 404, "");
+        });
+        let client = HttpRegistryClient::new(&base);
+        let err = client
+            .is_version_visible_in_sparse_index(&base, "demo", "1.0.0")
+            .unwrap_err();
+        assert!(err.to_string().contains("index file not found"));
+        handle.join().expect("join");
+    }
+
+    /// `version_exists` against an unexpected 401 status. Exercises the
+    /// catch-all match arm with a 4xx that is neither 200 nor 404.
+    #[test]
+    fn version_exists_returns_error_on_401() {
+        let (server, base) = mock_server();
+        let handle = std::thread::spawn(move || {
+            respond(server.recv().expect("req"), 401, "");
+        });
+        let client = HttpRegistryClient::new(&base);
+        let err = client.version_exists("x", "0.1.0").unwrap_err();
+        assert!(err.to_string().contains("unexpected status code"));
+        handle.join().expect("join");
+    }
+
+    /// `crate_exists` against an unexpected 401 status. Exercises the
+    /// catch-all match arm for a 4xx other than 404.
+    #[test]
+    fn crate_exists_returns_error_on_401() {
+        let (server, base) = mock_server();
+        let handle = std::thread::spawn(move || {
+            respond(server.recv().expect("req"), 401, "");
+        });
+        let client = HttpRegistryClient::new(&base);
+        let err = client.crate_exists("x").unwrap_err();
+        assert!(err.to_string().contains("unexpected status code"));
+        handle.join().expect("join");
+    }
+
+    /// `get_crate_info` against an unexpected 429 status — exercises the
+    /// `!status.is_success()` error arm with a 4xx code that is not 404.
+    #[test]
+    fn get_crate_info_returns_error_on_429() {
+        let (server, base) = mock_server();
+        let handle = std::thread::spawn(move || {
+            respond(server.recv().expect("req"), 429, "");
+        });
+        let client = HttpRegistryClient::new(&base);
+        let err = client.get_crate_info("x").unwrap_err();
+        assert!(err.to_string().contains("unexpected status code"));
+        handle.join().expect("join");
+    }
+
+    /// `fetch_sparse_index_file` writes the cache content but does NOT
+    /// create an etag file when the response has no ETag header. The next
+    /// fetch should still produce content (server responds again), without
+    /// sending an If-None-Match header.
+    #[test]
+    fn fetch_sparse_index_no_etag_does_not_create_etag_file() {
+        let (server, base) = mock_server();
+        let td = tempfile::tempdir().expect("tempdir");
+        let cache_dir = td.path().to_path_buf();
+
+        let handle = std::thread::spawn(move || {
+            // No ETag header on response.
+            respond(server.recv().expect("req"), 200, "{\"vers\":\"0.1.0\"}");
+        });
+
+        let client = HttpRegistryClient::new(&base).with_cache_dir(cache_dir.clone());
+        let content = client
+            .fetch_sparse_index_file(&base, "demo")
+            .expect("fetch");
+        assert!(content.contains("0.1.0"));
+
+        // Cache file should exist; etag file should not.
+        let cache_path = cache_dir.join("de").join("mo").join("demo");
+        assert!(cache_path.exists(), "cache file should be written");
+
+        let etag_path = cache_path.with_extension("etag");
+        assert!(
+            !etag_path.exists(),
+            "etag file should NOT exist without an ETag header"
+        );
+        handle.join().expect("join");
+    }
+
+    /// `with_timeout` reconstructs the inner client and stores the new
+    /// timeout. Verifies that chaining `with_timeout` followed by an
+    /// actual request still works against a mock server.
+    #[test]
+    fn with_timeout_chained_client_can_make_request() {
+        let (server, base) = mock_server();
+        let handle = std::thread::spawn(move || {
+            respond(server.recv().expect("req"), 200, "{}");
+        });
+        let client = HttpRegistryClient::new(&base).with_timeout(Duration::from_secs(5));
+        assert_eq!(client.timeout, Duration::from_secs(5));
+        assert!(client.crate_exists("any").expect("ok"));
+        handle.join().expect("join");
+    }
 }

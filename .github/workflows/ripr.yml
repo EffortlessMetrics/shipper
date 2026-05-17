@@ -1,0 +1,85 @@
+# ripr — advisory PR-time exposure lane (#182).
+#
+# ripr is static mutation-exposure analysis: it reads a PR diff and reports
+# whether existing tests appear to observe the changed behavior through a
+# meaningful oracle. It does not run mutants; mutation testing remains the
+# runtime backstop and lives in mutation.yml (nightly + label-gated).
+#
+# Status: ADVISORY. This workflow is never a required check. A failing run
+# does not block merge — it is a signal. Suppressions live in
+# policy/ripr-suppressions.toml. See docs/ci/ripr.md.
+
+name: ripr (advisory)
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "xtask/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "ripr.toml"
+      - "policy/ripr-suppressions.toml"
+      - ".github/workflows/ripr.yml"
+  workflow_dispatch: {}
+
+# A newer commit on the same PR supersedes the prior ripr report. ripr is
+# cheap to re-run and the older artifact is no longer interesting, so
+# cancelling in-progress runs is the right call here (unlike Droid review,
+# which carries human-facing comment side effects).
+concurrency:
+  group: ripr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ripr-pilot:
+    name: ripr pilot (advisory)
+    runs-on: ubuntu-latest
+    # Belt-and-braces: even if ripr exits non-zero, the workflow itself
+    # succeeds. Findings live in the uploaded artifact, not the status.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          # Full history so ripr can compute the diff against the PR base.
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ripr-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-ripr-
+
+      - name: Install ripr (pinned)
+        # Pinned to the current release at PR time; bump deliberately when
+        # the upstream tool ships behaviour changes Shipper wants to track.
+        # `--locked` ensures ripr's own Cargo.lock is respected.
+        run: cargo install ripr --locked --version 0.5.0
+
+      - name: cargo xtask ripr-pr (advisory)
+        run: cargo xtask ripr-pr --base origin/main
+
+      - name: Upload ripr artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ripr-pr
+          # Includes both ripr's native output tree and Shipper's projection
+          # under `target/policy/ripr-report.*` so the artifact carries the
+          # same shape `cargo xtask policy-report` expects.
+          path: |
+            target/ripr/
+            target/policy/ripr-report.*
+          if-no-files-found: ignore
+          retention-days: 30

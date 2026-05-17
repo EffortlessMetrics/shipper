@@ -1,0 +1,22 @@
+# ripr suppression ledger.
+#
+# Receipts for ripr findings that are intentionally left unexposed at the
+# unit-test layer, typically because the change is covered by BDD or
+# integration tests that ripr cannot see statically. Each suppression is
+# a `[[suppression]]` table; the file starts empty and grows by PR.
+#
+# See docs/ci/ripr.md ("Suppression Format") for the field contract.
+# This ledger is never required to be non-empty.
+
+schema_version = "1.0"
+policy = "ripr-suppressions"
+owner = "EffortlessMetrics"
+status = "active"
+
+# [[suppression]]
+# finding_id = "ripr-2026-001"
+# path = "crates/shipper-core/src/engine/publish.rs"
+# owner = "engine-team"
+# reason = "Covered by BDD publish_resume.feature scenarios not visible to ripr."
+# created = "2026-05-12"
+# review_after = "2026-08-12"

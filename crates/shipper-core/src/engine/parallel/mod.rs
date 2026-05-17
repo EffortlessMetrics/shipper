@@ -18,7 +18,7 @@ use crate::plan::PlannedWorkspace;
 use crate::state::events;
 use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
-    ExecutionResult, ExecutionState, PackageEvidence, PackageReceipt, PackageState, RuntimeOptions,
+    ExecutionState, PackageEvidence, PackageReceipt, PackageState, RuntimeOptions,
 };
 
 mod policy;
@@ -31,7 +31,9 @@ mod webhook;
 pub use crate::plan::chunking::chunk_by_max_concurrent;
 
 use publish::run_publish_level;
-use webhook::{WebhookEvent, maybe_send_event};
+use webhook::WebhookEvent;
+#[cfg(test)]
+use webhook::maybe_send_event;
 
 /// Reporter interface shared with the host crate. Parallel publish forwards
 /// status updates and warnings through this trait.
@@ -369,51 +371,6 @@ pub(crate) fn run_publish_parallel_inner(
     // Copy updated state back
     let updated_st = st_arc.lock().unwrap();
     *st = updated_st.clone();
-
-    // Calculate publish completion statistics
-    let total_packages = all_receipts.len();
-    let success_count = all_receipts
-        .iter()
-        .filter(|r| matches!(r.state, PackageState::Published))
-        .count();
-    let failure_count = all_receipts
-        .iter()
-        .filter(|r| matches!(r.state, PackageState::Failed { .. }))
-        .count();
-    let skipped_count = all_receipts
-        .iter()
-        .filter(|r| matches!(r.state, PackageState::Skipped { .. }))
-        .count();
-
-    let exec_result = if all_receipts.iter().all(|r| {
-        matches!(
-            r.state,
-            PackageState::Published | PackageState::Uploaded | PackageState::Skipped { .. }
-        )
-    }) {
-        ExecutionResult::Success
-    } else if success_count == 0 {
-        ExecutionResult::CompleteFailure
-    } else {
-        ExecutionResult::PartialFailure
-    };
-
-    // Send webhook notification: all complete
-    maybe_send_event(
-        &opts.webhook,
-        WebhookEvent::PublishCompleted {
-            plan_id: ws.plan.plan_id.clone(),
-            total_packages,
-            success_count,
-            failure_count,
-            skipped_count,
-            result: match exec_result {
-                ExecutionResult::Success => "success".to_string(),
-                ExecutionResult::PartialFailure => "partial_failure".to_string(),
-                ExecutionResult::CompleteFailure => "complete_failure".to_string(),
-            },
-        },
-    );
 
     Ok(all_receipts)
 }

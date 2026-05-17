@@ -1,0 +1,70 @@
+# Dependency surface allowlist.
+#
+# Files that describe or pin the Rust dependency graph. Changes here are
+# reviewed with supply-chain awareness.
+
+schema_version = "1.0"
+policy = "dependency-surface-allowlist"
+owner = "EffortlessMetrics"
+status = "active"
+
+[[file]]
+path = "Cargo.toml"
+kind = "rust_workspace_manifest"
+surface = "build"
+classification = "config"
+owner = "rust/dependencies"
+reason = "Root workspace manifest: members, dependency versions, profiles, lints, MSRV."
+covered_by = [
+  "cargo check --workspace --locked",
+  "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = "Cargo.lock"
+kind = "rust_lockfile"
+surface = "build"
+classification = "config"
+owner = "rust/dependencies"
+reason = "Pinned dependency graph for reproducible CI and release builds. Updates land via Dependabot or deliberate workspace bumps."
+covered_by = [
+  "cargo check --workspace --locked",
+  "Security Audit job in CI",
+]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[glob]]
+pattern = "crates/*/Cargo.toml"
+kind = "rust_crate_manifest"
+surface = "build"
+classification = "config"
+owner = "rust/dependencies"
+reason = "Per-crate manifests for every workspace member."
+covered_by = ["cargo check --workspace --locked"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = "fuzz/Cargo.toml"
+kind = "rust_crate_manifest"
+surface = "build"
+classification = "config"
+owner = "fuzz/tests"
+reason = "cargo-fuzz harness manifest. Excluded from the default workspace."
+covered_by = ["cargo fuzz (manual)"]
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+[[file]]
+path = "xtask/Cargo.toml"
+kind = "rust_crate_manifest"
+surface = "build"
+classification = "config"
+owner = "rust/build"
+reason = "Internal xtask crate manifest. publish = false; not on crates.io."
+covered_by = ["cargo check -p xtask --locked"]
+created = "2026-05-11"
+review_after = "2026-08-11"

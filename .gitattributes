@@ -1,0 +1,23 @@
+# ─── Line-ending normalization ──────────────────────────────────────────────
+#
+# Every text file is stored with LF line endings regardless of the platform
+# git is running on. Without this, Windows checkouts with historical
+# autocrlf settings can re-commit files with CRLF endings and produce
+# unreviewable diffs — see #235 for a real-world instance where three
+# shipper-core source files flipped to CRLF and showed thousands of
+# "line changes" that were actually pure line-ending churn.
+#
+# `text=auto` lets git detect binary vs text; `eof=lf` forces LF on
+# committed text. Working-tree files may still be CRLF on Windows; that is
+# fine — only what is stored matters.
+
+* text=auto eol=lf
+
+# ─── Machine-generated policy artifacts ─────────────────────────────────────
+#
+# `linguist-generated=true` hides these from GitHub's "files changed"
+# default view (they show up but collapsed) and excludes them from
+# language statistics.
+
+policy/no-panic-baseline.json linguist-generated=true
+badges/*.json                 linguist-generated=true

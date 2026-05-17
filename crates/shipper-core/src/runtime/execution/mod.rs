@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use shipper_retry::{RetryStrategyConfig, RetryStrategyType, calculate_delay};
-use shipper_types::{ErrorClass, ExecutionState, PackageState};
+use shipper_types::{ErrorClass, ExecutionState, PackageState, PublishRegime};
 
 /// Update a package state and persist the entire execution state to disk.
 pub fn update_state(
@@ -103,6 +103,93 @@ pub fn backoff_delay(
 /// <https://crates.io/docs/rate-limits>.
 pub const CRATES_IO_NEW_CRATE_WINDOW: Duration = Duration::from_secs(10 * 60);
 
+/// How Shipper expects a registry to propagate newly published packages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryPropagationModel {
+    /// No registry-specific propagation model is known.
+    Unknown,
+    /// The registry exposes both an HTTP API and sparse index path that can
+    /// be checked for visibility.
+    ApiAndSparseIndex,
+}
+
+/// How Shipper should treat ambiguous cargo publish output for this registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryAmbiguityModel {
+    /// No registry-specific ambiguity model is known.
+    Unknown,
+    /// Cargo process output is only a hint; registry visibility decides.
+    RegistryTruth,
+}
+
+/// Registry-specific publish constraints that affect retry pacing and
+/// operator estimates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegistryProfile {
+    /// Stable registry profile name.
+    pub name: &'static str,
+    /// Initial first-publish burst, when documented.
+    pub first_publish_burst: Option<u32>,
+    /// First-publish refill interval, when documented.
+    pub first_publish_refill: Option<Duration>,
+    /// Initial version-update burst, when documented.
+    pub version_publish_burst: Option<u32>,
+    /// Version-update refill interval, when documented.
+    pub version_publish_refill: Option<Duration>,
+    /// Registry visibility model used by readiness/reconciliation.
+    pub propagation_model: RegistryPropagationModel,
+    /// Registry ambiguity model used after cargo exits unclearly.
+    pub ambiguity_model: RegistryAmbiguityModel,
+}
+
+impl RegistryProfile {
+    /// Built-in crates.io profile.
+    pub const fn crates_io() -> Self {
+        Self {
+            name: "crates-io",
+            first_publish_burst: Some(5),
+            first_publish_refill: Some(CRATES_IO_NEW_CRATE_WINDOW),
+            version_publish_burst: None,
+            version_publish_refill: None,
+            propagation_model: RegistryPropagationModel::ApiAndSparseIndex,
+            ambiguity_model: RegistryAmbiguityModel::RegistryTruth,
+        }
+    }
+
+    /// Conservative profile for registries without documented constraints.
+    pub const fn unknown() -> Self {
+        Self {
+            name: "unknown",
+            first_publish_burst: None,
+            first_publish_refill: None,
+            version_publish_burst: None,
+            version_publish_refill: None,
+            propagation_model: RegistryPropagationModel::Unknown,
+            ambiguity_model: RegistryAmbiguityModel::Unknown,
+        }
+    }
+
+    /// Resolve Shipper's built-in profile for a registry name.
+    pub fn for_registry_name(name: &str) -> Self {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "crates-io" | "crates.io" | "crates_io" => Self::crates_io(),
+            _ => Self::unknown(),
+        }
+    }
+
+    /// Return the documented retry floor for this publish regime, if any.
+    pub fn retry_floor_for(self, regime: PublishRegime, error_message: &str) -> Option<Duration> {
+        if !looks_like_rate_limit(error_message) {
+            return None;
+        }
+
+        match regime {
+            PublishRegime::FirstPublish => self.first_publish_refill,
+            PublishRegime::Update => self.version_publish_refill,
+        }
+    }
+}
+
 /// Return `true` if an error message looks like a rate-limit signal
 /// (HTTP 429 / "too many requests" / "rate limit" phrasings that appear
 /// in cargo publish stderr or common registry error bodies). Used to gate
@@ -114,6 +201,47 @@ pub fn looks_like_rate_limit(message: &str) -> bool {
         || m.contains("rate limit")
         || m.contains("rate-limit")
         || m.contains("too many requests")
+}
+
+/// Parse a `Retry-After` header value from cargo/registry output.
+///
+/// Cargo exposes registry failures through human-facing stderr/stdout rather
+/// than a structured HTTP response. When that text contains a `Retry-After`
+/// header, this returns the registry's requested wait as a duration.
+pub fn retry_after_delay(message: &str) -> Option<Duration> {
+    retry_after_delay_at(message, Utc::now())
+}
+
+fn retry_after_delay_at(message: &str, now: DateTime<Utc>) -> Option<Duration> {
+    message.lines().find_map(|line| {
+        let line = line
+            .trim_start()
+            .trim_start_matches(['<', '>'])
+            .trim_start();
+        let (name, value) = line.split_once(':')?;
+        if !name.trim().eq_ignore_ascii_case("retry-after") {
+            return None;
+        }
+
+        parse_retry_after_value(value.trim(), now)
+    })
+}
+
+fn parse_retry_after_value(value: &str, now: DateTime<Utc>) -> Option<Duration> {
+    let value = value.trim_matches('"').trim_matches('\'').trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if value.bytes().all(|b| b.is_ascii_digit()) {
+        return value.parse::<u64>().ok().map(Duration::from_secs);
+    }
+
+    let target = DateTime::parse_from_rfc2822(value)
+        .ok()?
+        .with_timezone(&Utc);
+    let delta = target.signed_duration_since(now);
+    delta.to_std().ok().or(Some(Duration::ZERO))
 }
 
 /// Registry-aware backoff. Layered on top of the generic [`backoff_delay`]:
@@ -134,12 +262,46 @@ pub fn registry_aware_backoff(
     is_new_crate: bool,
     error_message: &str,
 ) -> Duration {
-    let generic = backoff_delay(base, max, attempt, strategy, jitter);
-    if is_new_crate && looks_like_rate_limit(error_message) {
-        generic.max(CRATES_IO_NEW_CRATE_WINDOW)
+    let regime = if is_new_crate {
+        PublishRegime::FirstPublish
     } else {
-        generic
-    }
+        PublishRegime::Update
+    };
+    registry_profile_aware_backoff(
+        base,
+        max,
+        attempt,
+        strategy,
+        jitter,
+        RegistryProfile::crates_io(),
+        regime,
+        error_message,
+    )
+}
+
+/// Registry-profile-aware backoff.
+///
+/// This is the explicit version of [`registry_aware_backoff`]. It keeps the
+/// existing crates.io behavior while giving later Profile / Adapt work a
+/// named profile object to thread through plan, preflight, and publish.
+pub fn registry_profile_aware_backoff(
+    base: Duration,
+    max: Duration,
+    attempt: u32,
+    strategy: RetryStrategyType,
+    jitter: f64,
+    profile: RegistryProfile,
+    regime: PublishRegime,
+    error_message: &str,
+) -> Duration {
+    let generic = backoff_delay(base, max, attempt, strategy, jitter);
+    [
+        profile.retry_floor_for(regime, error_message),
+        retry_after_delay(error_message),
+    ]
+    .into_iter()
+    .flatten()
+    .fold(generic, Duration::max)
 }
 
 /// Update a package state inside an in-memory execution state.
@@ -180,6 +342,149 @@ mod tests {
         assert!(!looks_like_rate_limit("invalid manifest"));
         assert!(!looks_like_rate_limit("500 internal server error"));
         assert!(!looks_like_rate_limit(""));
+    }
+
+    #[test]
+    fn crates_io_profile_captures_documented_first_publish_window() {
+        let profile = RegistryProfile::crates_io();
+
+        assert_eq!(profile.name, "crates-io");
+        assert_eq!(profile.first_publish_burst, Some(5));
+        assert_eq!(
+            profile.retry_floor_for(PublishRegime::FirstPublish, "HTTP 429 Too Many Requests"),
+            Some(CRATES_IO_NEW_CRATE_WINDOW)
+        );
+        assert_eq!(
+            profile.retry_floor_for(PublishRegime::Update, "HTTP 429 Too Many Requests"),
+            None
+        );
+        assert_eq!(
+            profile.retry_floor_for(PublishRegime::FirstPublish, "connection reset"),
+            None
+        );
+    }
+
+    #[test]
+    fn registry_profile_lookup_recognizes_cargo_crates_io_spellings() {
+        for name in ["crates-io", "crates.io", "crates_io", " CRATES-IO "] {
+            assert_eq!(
+                RegistryProfile::for_registry_name(name),
+                RegistryProfile::crates_io()
+            );
+        }
+
+        assert_eq!(
+            RegistryProfile::for_registry_name("private-registry"),
+            RegistryProfile::unknown()
+        );
+    }
+
+    #[test]
+    fn registry_profile_aware_backoff_uses_profile_floor() {
+        let d = registry_profile_aware_backoff(
+            Duration::from_secs(10),
+            Duration::from_secs(120),
+            1,
+            RetryStrategyType::Exponential,
+            0.0,
+            RegistryProfile::crates_io(),
+            PublishRegime::FirstPublish,
+            "HTTP 429 Too Many Requests",
+        );
+
+        assert_eq!(d, CRATES_IO_NEW_CRATE_WINDOW);
+    }
+
+    #[test]
+    fn retry_after_delay_parses_delta_seconds() {
+        assert_eq!(
+            retry_after_delay("HTTP 429\r\nRetry-After: 90\r\n"),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(
+            retry_after_delay("< retry-after: \"120\""),
+            Some(Duration::from_secs(120))
+        );
+    }
+
+    #[test]
+    fn retry_after_delay_parses_http_date() {
+        let now = DateTime::parse_from_rfc2822("Wed, 21 Oct 2015 07:27:00 GMT")
+            .expect("valid rfc2822")
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            retry_after_delay_at("Retry-After: Wed, 21 Oct 2015 07:28:00 GMT", now),
+            Some(Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn retry_after_delay_past_http_date_is_zero() {
+        let now = DateTime::parse_from_rfc2822("Wed, 21 Oct 2015 07:29:00 GMT")
+            .expect("valid rfc2822")
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            retry_after_delay_at("Retry-After: Wed, 21 Oct 2015 07:28:00 GMT", now),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn retry_after_delay_ignores_invalid_headers() {
+        assert_eq!(retry_after_delay("Retry-After:"), None);
+        assert_eq!(retry_after_delay("X-Retry-After: 60"), None);
+        assert_eq!(retry_after_delay("retry-after: not a date"), None);
+        assert_eq!(retry_after_delay("HTTP 429 Too Many Requests"), None);
+    }
+
+    #[test]
+    fn registry_profile_aware_backoff_honors_retry_after_floor() {
+        let d = registry_profile_aware_backoff(
+            Duration::from_secs(10),
+            Duration::from_secs(120),
+            1,
+            RetryStrategyType::Exponential,
+            0.0,
+            RegistryProfile::unknown(),
+            PublishRegime::Update,
+            "HTTP 429 Too Many Requests\nRetry-After: 75",
+        );
+
+        assert_eq!(d, Duration::from_secs(75));
+    }
+
+    #[test]
+    fn registry_profile_aware_backoff_uses_larger_floor() {
+        let d = registry_profile_aware_backoff(
+            Duration::from_secs(10),
+            Duration::from_secs(120),
+            1,
+            RetryStrategyType::Exponential,
+            0.0,
+            RegistryProfile::crates_io(),
+            PublishRegime::FirstPublish,
+            "HTTP 429 Too Many Requests\nRetry-After: 30",
+        );
+
+        assert_eq!(d, CRATES_IO_NEW_CRATE_WINDOW);
+    }
+
+    #[test]
+    fn unknown_registry_profile_keeps_generic_backoff() {
+        let d = registry_profile_aware_backoff(
+            Duration::from_secs(10),
+            Duration::from_secs(120),
+            1,
+            RetryStrategyType::Exponential,
+            0.0,
+            RegistryProfile::unknown(),
+            PublishRegime::FirstPublish,
+            "HTTP 429 Too Many Requests",
+        );
+
+        assert!(d < CRATES_IO_NEW_CRATE_WINDOW);
     }
 
     #[test]

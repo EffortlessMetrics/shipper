@@ -626,6 +626,23 @@ fn unknown_registry_name_falls_back_to_synthetic() {
 
     assert_eq!(rt.registries.len(), 1);
     assert_eq!(rt.registries[0].name, "unknown-reg");
+    assert_eq!(rt.registries[0].api_base, "https://unknown-reg.crates.io");
+}
+
+#[test]
+fn unsafe_unknown_registry_name_does_not_synthesize_api_host() {
+    let rt = into_runtime_options(default_config().build_runtime_options(CliOverrides {
+        registries: Some(vec!["169.254.169.254/path".to_string()]),
+        ..Default::default()
+    }));
+
+    assert_eq!(rt.registries.len(), 1);
+    assert_eq!(rt.registries[0].name, "169.254.169.254/path");
+    assert_eq!(rt.registries[0].api_base, "https://crates.io");
+    assert_eq!(
+        rt.registries[0].index_base.as_deref(),
+        Some("https://index.crates.io")
+    );
 }
 
 #[test]

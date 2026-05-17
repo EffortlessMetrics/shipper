@@ -7,6 +7,11 @@ registry: crates-io (https://crates.io)
 workspace_root: <WORKSPACE_ROOT>
 
 Total packages to publish: 0
+Plan summary:
+  Publishable packages: 0
+  Skipped packages: 2
+  Internal dependency edges: 0
+  Publish levels: 0
 
 Skipped packages:
   - internal-a@0.1.0 (publish = false)

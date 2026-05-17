@@ -1607,24 +1607,30 @@ fn test_webhook_events_sent_on_publish() {
         1,
     );
 
-    // Webhook receiver: expect 2 POSTs (PublishStarted + PublishCompleted)
+    // The parallel executor announces the start. The outer publish finalizer
+    // owns PublishCompleted so serial and parallel terminal notifications stay
+    // in one place.
     let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
     let webhook_url = format!("http://{}", webhook_server.server_addr());
     let webhook_received = Arc::new(Mutex::new(Vec::<String>::new()));
     let webhook_received_clone = Arc::clone(&webhook_received);
 
     let webhook_handle = std::thread::spawn(move || {
-        // Collect up to 3 requests with a timeout
-        for _ in 0..3 {
-            match webhook_server.recv_timeout(Duration::from_secs(30)) {
-                Ok(Some(mut req)) => {
-                    let mut body = Vec::new();
-                    let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
-                    let text = String::from_utf8_lossy(&body).to_string();
-                    webhook_received_clone.lock().unwrap().push(text);
-                    req.respond(Response::from_string("ok")).expect("respond");
-                }
-                _ => break,
+        if let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_secs(2)) {
+            let mut body = Vec::new();
+            let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+            let text = String::from_utf8_lossy(&body).to_string();
+            webhook_received_clone.lock().unwrap().push(text);
+            req.respond(Response::from_string("ok")).expect("respond");
+        }
+        while let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_millis(50)) {
+            let mut body = Vec::new();
+            let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+            let text = String::from_utf8_lossy(&body).to_string();
+            webhook_received_clone.lock().unwrap().push(text);
+            req.respond(Response::from_string("ok")).expect("respond");
+            if webhook_received_clone.lock().unwrap().len() > 1 {
+                break;
             }
         }
     });
@@ -1657,11 +1663,8 @@ fn test_webhook_events_sent_on_publish() {
     registry_server.join();
 
     let received = webhook_received.lock().unwrap();
-    assert!(
-        received.len() >= 2,
-        "expected at least 2 webhook POSTs (started + completed), got {}",
-        received.len()
-    );
+    assert_eq!(received.len(), 1, "expected only PublishStarted");
+    assert!(received[0].contains("PublishStarted") || received[0].contains("publish_started"));
 }
 
 // ---------------------------------------------------------------------------
@@ -4129,6 +4132,14 @@ fn reconcile_bdd_ambiguous_resolves_to_published() {
         has_reconciled_published,
         "expected PublishReconciled with Published outcome"
     );
+    let infos = reporter.drain_infos();
+    assert!(
+        infos
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: Published")
+                && msg.contains("without retry")),
+        "expected operator-facing Published reconciliation action, infos: {infos:?}"
+    );
 
     server.join();
 }
@@ -4236,6 +4247,14 @@ fn reconcile_bdd_ambiguous_resolves_to_not_published_then_retries() {
     assert!(
         has_reconciled_not_published,
         "expected at least one PublishReconciled with NotPublished outcome"
+    );
+    let infos = reporter.drain_infos();
+    assert!(
+        infos
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: NotPublished")
+                && msg.contains("retry under publish policy")),
+        "expected operator-facing NotPublished retry action, infos: {infos:?}"
     );
 
     server.join();
@@ -4354,6 +4373,123 @@ fn reconcile_bdd_resume_from_ambiguous_state_skips_republish() {
     assert!(
         has_reconciled_published,
         "expected PublishReconciled with Published outcome"
+    );
+    let infos = reporter.drain_infos();
+    assert!(
+        infos
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: Published")
+                && msg.contains("without republish")),
+        "expected operator-facing resume Published action, infos: {infos:?}"
+    );
+
+    server.join();
+}
+
+#[test]
+#[serial]
+fn reconcile_bdd_resume_from_ambiguous_state_still_unknown_writes_report() {
+    // Scenario:
+    //   A prior run left demo@0.1.0 in PackageState::Ambiguous. On resume,
+    //   the entry "already published" check returns 404, then registry
+    //   reconciliation cannot reach truth. Shipper must halt, must not
+    //   republish, and must leave a reconciliation artifact for operators.
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+
+    let server = spawn_registry_server(
+        BTreeMap::from([(
+            "/api/v1/crates/demo/0.1.0".to_string(),
+            vec![(404, "{}".to_string()), (500, "{}".to_string())],
+        )]),
+        2,
+    );
+
+    let ws = planned_workspace(td.path(), server.base_url.clone());
+    let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+    let opts = reconcile_scenario_opts(PathBuf::from(".shipper"));
+    let state_dir = td.path().join(".shipper");
+
+    let mut initial_state =
+        init_state_for_package(&ws.plan.plan_id, &ws.plan.registry, "demo", "0.1.0");
+    if let Some(pr) = initial_state.packages.get_mut("demo@0.1.0") {
+        pr.state = PackageState::Ambiguous {
+            message: "prior reconciliation inconclusive".to_string(),
+        };
+    }
+    let st = Arc::new(Mutex::new(initial_state));
+    let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+    let events_path = events::events_path(&state_dir);
+    let reporter = make_send_reporter();
+    let cargo_log = td.path().join("cargo-calls.log");
+
+    temp_env::with_vars(
+        [
+            (
+                "SHIPPER_CARGO_BIN",
+                Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            ),
+            (
+                "SHIPPER_CARGO_ARGS_LOG",
+                Some(cargo_log.to_str().expect("utf8")),
+            ),
+            ("SHIPPER_CARGO_EXIT", Some("0")),
+        ],
+        || {
+            let result = publish_package(
+                &ws.plan.packages[0],
+                &ws,
+                &opts,
+                &reg,
+                &st,
+                &state_dir,
+                &event_log,
+                &events_path,
+                &reporter,
+            );
+
+            let err = result
+                .result
+                .expect_err("resume-path StillUnknown must halt with Err");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("resume reconciliation still inconclusive"),
+                "expected resume inconclusive error, got: {msg}"
+            );
+        },
+    );
+
+    let cargo_invoked = std::fs::read_to_string(&cargo_log)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    assert!(
+        !cargo_invoked,
+        "cargo should not be invoked when resume reconciliation is StillUnknown"
+    );
+
+    let report_path = crate::state::execution_state::reconciliation_path(&state_dir);
+    let report_json = std::fs::read_to_string(&report_path).expect("read reconciliation report");
+    let report: shipper_types::ReconciliationReport =
+        serde_json::from_str(&report_json).expect("parse reconciliation report");
+    assert_eq!(report.schema_version, "shipper.reconciliation.v1");
+    assert_eq!(report.records.len(), 1);
+    assert_eq!(
+        report.records[0].trigger,
+        shipper_types::ReconciliationTrigger::ResumeAmbiguousState
+    );
+    assert_eq!(report.records[0].cargo_exit_class, None);
+    assert_eq!(
+        report.records[0].operator_action,
+        shipper_types::ReconciliationOperatorAction::OperatorActionRequired
+    );
+    let errors = reporter.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: StillUnknown")
+                && msg.contains("stop before blind retry")),
+        "expected operator-facing StillUnknown stop action, errors: {errors:?}"
     );
 
     server.join();
@@ -4492,6 +4628,24 @@ fn reconcile_bdd_ambiguous_resolves_to_still_unknown() {
     assert!(
         has_reconciled_still_unknown,
         "expected PublishReconciled with StillUnknown outcome"
+    );
+    let errors = reporter.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: StillUnknown")
+                && msg.contains("stop before blind retry")),
+        "expected operator-facing StillUnknown stop action, errors: {errors:?}"
+    );
+    let report_path = crate::state::execution_state::reconciliation_path(&state_dir);
+    let report_json = std::fs::read_to_string(&report_path).expect("read reconciliation report");
+    let report: shipper_types::ReconciliationReport =
+        serde_json::from_str(&report_json).expect("parse reconciliation report");
+    assert_eq!(report.schema_version, "shipper.reconciliation.v1");
+    assert_eq!(report.records.len(), 1);
+    assert_eq!(
+        report.records[0].operator_action,
+        shipper_types::ReconciliationOperatorAction::OperatorActionRequired
     );
 
     server.join();

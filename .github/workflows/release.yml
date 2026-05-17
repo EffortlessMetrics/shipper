@@ -70,7 +70,7 @@ jobs:
             os: windows-latest
             archive: zip
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -113,18 +113,18 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # MSRV sanity check gates the publish train. The published crates declare
-  # rust-version = 1.92; the publish job should not run if MSRV is broken.
+  # rust-version = 1.95; the publish job should not run if MSRV is broken.
   # ---------------------------------------------------------------------------
   msrv-gate:
-    name: MSRV gate (1.92)
+    name: MSRV gate (1.95)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
       - name: Install Rust (MSRV)
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.92.0
+          toolchain: 1.95.0
       - name: Cache Cargo
         uses: actions/cache@v5
         with:
@@ -138,10 +138,48 @@ jobs:
         run: cargo check --workspace
 
   # ---------------------------------------------------------------------------
+  # Policy gate. Enforces release-time policy invariants that PR-time CI also
+  # checks, but pinned to the publish train so a tag push cannot publish if
+  # the baselines have drifted (e.g., new panic-family debt landed without a
+  # baseline regen). Lives here in addition to PR-time CI because the tag
+  # might be cut from an older SHA where the PR-time gate had different
+  # contents.
+  # ---------------------------------------------------------------------------
+  policy-gate:
+    name: Policy gate (no-panic + invariants)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-policy-gate-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-policy-gate-
+      - name: cargo xtask no-panic check (blocking)
+        run: cargo xtask no-panic check --mode blocking
+      - name: cargo xtask check-lint-policy
+        run: cargo xtask check-lint-policy
+      - name: Upload no-panic report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-policy-gate
+          path: target/policy/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
   # The dogfood publish train.
   #
   # Execution order:
-  #   1.  Build shipper (release profile) and install it to PATH.
+  #   1.  Install shipper from the supported facade crate and verify it.
   #   2.  `shipper plan`  — persist plan to .shipper/, also dump JSON to
   #       .shipper/plan.json for artifact review.
   #   3.  Upload .shipper/ as an artifact BEFORE preflight runs (belt-and-
@@ -175,13 +213,13 @@ jobs:
     name: Publish to crates.io (via shipper)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    needs: [msrv-gate]
+    needs: [msrv-gate, policy-gate]
     environment: release
     timeout-minutes: 180
     outputs:
       publish_succeeded: ${{ steps.publish.outcome == 'success' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -196,13 +234,14 @@ jobs:
           key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-publish-
 
-      # --- Step 1: build and install shipper ----------------------------
-      - name: Build shipper (release)
-        run: cargo build --release -p shipper
-
-      - name: Install shipper to PATH
+      # --- Step 1: install shipper from the supported facade crate ---------
+      - name: Install shipper facade crate
         run: |
-          sudo install -m 0755 target/release/shipper /usr/local/bin/shipper
+          cargo install --path crates/shipper --locked --root "$RUNNER_TEMP/shipper-install"
+          echo "$RUNNER_TEMP/shipper-install/bin" >> "$GITHUB_PATH"
+
+      - name: Verify installed shipper
+        run: |
           shipper --version
 
       # --- Step 2: plan -----------------------------------------------------
@@ -361,7 +400,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-binaries, publish-crates-io]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Download binary artifacts
         uses: actions/download-artifact@v8
@@ -417,7 +456,7 @@ jobs:
     environment: release
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
@@ -434,12 +473,13 @@ jobs:
           key: ${{ runner.os }}-cargo-rehearse-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-rehearse-
 
-      - name: Build shipper (release)
-        run: cargo build --release -p shipper
-
-      - name: Install shipper to PATH
+      - name: Install shipper facade crate
         run: |
-          sudo install -m 0755 target/release/shipper /usr/local/bin/shipper
+          cargo install --path crates/shipper --locked --root "$RUNNER_TEMP/shipper-install"
+          echo "$RUNNER_TEMP/shipper-install/bin" >> "$GITHUB_PATH"
+
+      - name: Verify installed shipper
+        run: |
           shipper --version
 
       - name: shipper plan (verbose)
@@ -511,7 +551,7 @@ jobs:
     environment: release
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
@@ -528,12 +568,13 @@ jobs:
           key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-publish-
 
-      - name: Build shipper (release)
-        run: cargo build --release -p shipper
-
-      - name: Install shipper to PATH
+      - name: Install shipper facade crate
         run: |
-          sudo install -m 0755 target/release/shipper /usr/local/bin/shipper
+          cargo install --path crates/shipper --locked --root "$RUNNER_TEMP/shipper-install"
+          echo "$RUNNER_TEMP/shipper-install/bin" >> "$GITHUB_PATH"
+
+      - name: Verify installed shipper
+        run: |
           shipper --version
 
       - name: Download prior .shipper/ state
