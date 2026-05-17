@@ -1,0 +1,85 @@
+# Process policy allowlist.
+#
+# Named profiles enumerate which shell commands and subprocesses are permitted
+# under that policy. Workflows in policy/workflow-allowlist.toml reference one
+# of these profiles via `process_policy = "..."`.
+#
+# These lists are intentionally honest first-pass receipts: they cover what is
+# actually invoked today. PR 8 (#207) adds the checker that scans workflows
+# for command usage and reconciles against these profiles.
+
+schema_version = "1.0"
+policy = "process-allowlist"
+owner = "EffortlessMetrics"
+status = "active"
+
+# ─── ci ─────────────────────────────────────────────────────────────────────
+#
+# Default CI profile: build, lint, test the Rust workspace. Also covers
+# coverage, architecture-guard, fuzz (nightly variant of cargo), and mutation
+# (cargo-mutants installs via taiki-e/install-action).
+
+[[profile]]
+name = "ci"
+allowed_processes = [
+  "cargo",
+  "rustup",
+  "rustc",
+  "shipper",
+  "cargo-fuzz",
+  "cargo-mutants",
+  "cargo-llvm-cov",
+  "cargo-nextest",
+  "sudo",
+  "mkdir",
+  "python3",
+]
+owner = "release/ci"
+reason = "CI compiles, lints, tests, fuzzes, measures coverage, and smoke-tests the supported `cargo install --path crates/shipper --locked` facade path. Tools (cargo-fuzz, cargo-mutants, cargo-llvm-cov, cargo-nextest) are installed via taiki-e/install-action. `shipper` is the locally installed facade binary used only by the install-smoke job. `sudo` is used for cross-compile prep (apt-get install gcc-aarch64-linux-gnu); `mkdir` for ad-hoc directory creation; `python3` for small helper scripts."
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+# ─── release ────────────────────────────────────────────────────────────────
+#
+# Release workflow: builds shipper, runs it as a CLI, publishes via Trusted
+# Publishing, produces signed/checksummed binary artifacts, creates the GitHub
+# release.
+
+[[profile]]
+name = "release"
+allowed_processes = [
+  "cargo",
+  "rustup",
+  "rustc",
+  "shipper",
+  "gh",
+  "tar",
+  "sha256sum",
+  "mkdir",
+]
+owner = "release/ci"
+reason = "Release workflow dogfoods shipper itself, installs the supported facade path with `cargo install --path crates/shipper --locked`, packages release binaries (tar + sha256sum), and creates the GitHub release with gh. Trusted Publishing supplies registry credentials via OIDC."
+created = "2026-05-11"
+review_after = "2026-08-11"
+
+# ─── droid ──────────────────────────────────────────────────────────────────
+#
+# Droid workflows: fetch the Factory CLI via curl + sh, configure MiniMax BYOK,
+# invoke the EffortlessMetrics/droid-action-safe action (which uses bun
+# internally for prepare.ts).
+
+[[profile]]
+name = "droid"
+allowed_processes = [
+  "bash",
+  "curl",
+  "sh",
+  "bun",
+  "mkdir",
+  "cat",
+  "jq",
+]
+owner = "release/ci"
+reason = "Droid workflows write the BYOK settings file (mkdir, cat heredoc), fetch the Factory CLI (curl --proto =https | sh), and invoke the safe Droid action wrapper which uses bun for its prepare.ts entrypoint."
+created = "2026-05-11"
+review_after = "2026-08-11"

@@ -308,7 +308,20 @@ Use `--format json` to get machine-readable output for CI integration:
 shipper preflight --format json
 ```
 
-The JSON output contains the full `PreflightReport` structure including `plan_id`, `token_detected`, `finishability`, `timestamp`, and a `packages` array with per-package results.
+The JSON output is a versioned preflight evidence object. It preserves the
+legacy `PreflightReport` fields (`plan_id`, `token_detected`, `finishability`,
+`timestamp`, `estimated_publish_duration`, and `packages`) and adds fields that
+agents and CI can route on:
+
+| Field | Meaning |
+|-------|---------|
+| `schema_version` | JSON contract version, currently `shipper.preflight.v1` |
+| `proofs[]` | Checks Shipper completed and can treat as evidence |
+| `gaps[]` | Checks that did not prove a release prerequisite |
+| `failed_checks[]` | Checks that failed and block a proven release |
+| `live_release_evidence[]` | Evidence Shipper records during `publish`/`resume`, not local preflight |
+| `registry_profile` | Registry pacing profile summary derived during preflight |
+| `artifacts[]` | Artifact descriptors for captured preflight evidence |
 
 ### Package Status Columns
 

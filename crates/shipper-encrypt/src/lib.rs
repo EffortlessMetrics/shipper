@@ -406,6 +406,7 @@ impl StateEncryption {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::tempdir;
 
     // ── Core encrypt/decrypt roundtrip ──────────────────────────────────
@@ -1408,6 +1409,7 @@ mod tests {
     // ── Env-var passphrase resolution (temp_env) ────────────────────────
 
     #[test]
+    #[serial]
     fn env_var_passphrase_resolution() {
         let cfg = EncryptionConfig::from_env("SHIPPER_TEST_PASS_1".to_string());
         temp_env::with_var("SHIPPER_TEST_PASS_1", Some("env-secret"), || {
@@ -1417,6 +1419,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn env_var_passphrase_missing_returns_none() {
         let cfg = EncryptionConfig::from_env("SHIPPER_TEST_MISSING_VAR".to_string());
         temp_env::with_var("SHIPPER_TEST_MISSING_VAR", None::<&str>, || {
@@ -1426,6 +1429,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn state_encryption_from_env_var_roundtrip() {
         let config = EncryptionConfig::from_env("SHIPPER_TEST_ENC_PASS".to_string());
         let encryption = StateEncryption::new(config).expect("create");
@@ -1441,6 +1445,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn state_encryption_env_var_takes_precedence() {
         let config = EncryptionConfig {
             enabled: true,
@@ -1464,6 +1469,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn state_encryption_file_roundtrip_with_env_var() {
         let td = tempdir().expect("tempdir");
         let path = td.path().join("env_enc.json");
@@ -1636,6 +1642,7 @@ mod tests {
     // ── StateEncryption disabled ignores env var ────────────────────────
 
     #[test]
+    #[serial]
     fn state_encryption_disabled_ignores_env_var() {
         let config = EncryptionConfig {
             enabled: false,
@@ -1651,6 +1658,492 @@ mod tests {
             let result = encryption.decrypt(data).expect("passthrough");
             assert_eq!(data.to_vec(), result);
         });
+    }
+
+    // ── Coverage gap: read_decrypted with non-UTF-8 plaintext ───────────
+
+    /// Invariant: `read_decrypted` returns a UTF-8 error (not garbage) when the
+    /// decrypted bytes are not valid UTF-8. Callers must not silently receive
+    /// `String::from_utf8_lossy`-style data: a binary state file would be a
+    /// bug, and surfacing the error is the safe behavior.
+    #[test]
+    fn read_decrypted_non_utf8_plaintext_errors() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("binary.enc");
+
+        // Bytes that are valid AES-GCM plaintext but invalid UTF-8 (lone 0x80)
+        let binary = vec![0x80u8, 0xFE, 0xFF, 0xC0, 0x80];
+        write_encrypted(&path, &binary, "binary-pass").expect("write");
+
+        let result = read_decrypted(&path, "binary-pass");
+        assert!(
+            result.is_err(),
+            "non-UTF-8 decrypted data must surface as an error"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not valid UTF-8"),
+            "error should mention UTF-8 validation, got: {err}"
+        );
+    }
+
+    // ── Coverage gap: write_encrypted file IO failure ───────────────────
+
+    /// Invariant: `write_encrypted` propagates the underlying fs::write error
+    /// instead of silently dropping the encrypted payload. Writing into a
+    /// non-existent parent directory must fail.
+    #[test]
+    fn write_encrypted_to_invalid_path_errors() {
+        let td = tempdir().expect("tempdir");
+        // Parent directory does not exist
+        let path = td.path().join("does_not_exist_dir").join("file.enc");
+
+        let result = write_encrypted(&path, b"data", "pass");
+        assert!(result.is_err(), "writing into a missing dir must fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("failed to write encrypted file"),
+            "error should mention failing write context, got: {err}"
+        );
+    }
+
+    // ── Coverage gap: StateEncryption::write_file IO failure ────────────
+
+    /// Same invariant as above but via the `StateEncryption` wrapper when
+    /// encryption is enabled: failing fs::write must surface as Err.
+    #[test]
+    fn state_encryption_write_file_encrypted_path_io_error() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("missing_subdir").join("state.enc");
+
+        let config = EncryptionConfig::new("io-err-pass".to_string());
+        let encryption = StateEncryption::new(config).expect("create");
+
+        let result = encryption.write_file(&path, b"payload");
+        assert!(result.is_err(), "write to missing parent dir must fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("failed to write encrypted file"),
+            "error should mention failing write context, got: {err}"
+        );
+    }
+
+    /// Invariant: when encryption is disabled, `write_file` still surfaces IO
+    /// failures (it must not silently swallow the error).
+    #[test]
+    fn state_encryption_write_file_plaintext_path_io_error() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("missing_subdir").join("plain.txt");
+
+        let config = EncryptionConfig::default();
+        let encryption = StateEncryption::new(config).expect("create");
+
+        let result = encryption.write_file(&path, b"plain payload");
+        assert!(result.is_err(), "plain write to missing dir must fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("failed to write file"),
+            "error should mention failing write context, got: {err}"
+        );
+    }
+
+    // ── Coverage gap: StateEncryption::read_file non-UTF-8 decrypted ─────
+
+    /// Invariant: `read_file` returns an error rather than mangling non-UTF-8
+    /// decrypted bytes. This protects callers that expect a `String` back.
+    #[test]
+    fn state_encryption_read_file_non_utf8_decrypted_errors() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("binary.enc");
+
+        let config = EncryptionConfig::new("rf-pass".to_string());
+        let encryption = StateEncryption::new(config).expect("create");
+
+        // Encrypt binary (non-UTF-8) data using the StateEncryption wrapper so
+        // the file on disk is a valid ciphertext under the configured passphrase.
+        let binary = vec![0xFFu8, 0xFE, 0xFD, 0x80, 0xC0];
+        encryption
+            .write_file(&path, &binary)
+            .expect("write encrypted");
+
+        let result = encryption.read_file(&path);
+        assert!(
+            result.is_err(),
+            "non-UTF-8 decrypted state should surface as Err"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not valid UTF-8"),
+            "error should mention UTF-8 validation, got: {err}"
+        );
+    }
+
+    // ── Coverage gap: read_file when enabled and file is not encrypted ──
+
+    /// Invariant: even when encryption is configured, `read_file` falls back
+    /// to returning the raw file contents if decryption fails (so existing
+    /// plaintext state isn't lost during a key rotation). The returned string
+    /// must equal the on-disk bytes exactly.
+    #[test]
+    fn state_encryption_read_file_enabled_returns_plain_when_not_encrypted() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("plain.json");
+
+        // Make sure the file content is short enough that it is not even
+        // a valid base64 encoding of a full salt+nonce+tag payload.
+        let plain = r#"{"unencrypted": "legacy state"}"#;
+        std::fs::write(&path, plain).expect("write plain");
+
+        let config = EncryptionConfig::new("any-pass".to_string());
+        let encryption = StateEncryption::new(config).expect("create");
+
+        let content = encryption.read_file(&path).expect("read");
+        assert_eq!(content, plain);
+    }
+
+    // ── Coverage gap: read_file enabled but read_to_string fails ────────
+
+    /// Invariant: when encryption is enabled and the file cannot be read as a
+    /// UTF-8 string at all (e.g., contains lone high bytes), the wrapper must
+    /// surface the IO/decoding error rather than silently returning empty data.
+    #[test]
+    fn state_encryption_read_file_enabled_non_utf8_file_errors() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("garbage.bin");
+
+        // Write raw non-UTF-8 bytes directly. The file is NOT a valid base64
+        // ciphertext under our wrapper, and `read_to_string` will fail.
+        std::fs::write(&path, [0xFFu8, 0xFE, 0xFD, 0x80, 0xC0]).expect("write");
+
+        let config = EncryptionConfig::new("any-pass".to_string());
+        let encryption = StateEncryption::new(config).expect("create");
+
+        let result = encryption.read_file(&path);
+        assert!(
+            result.is_err(),
+            "non-UTF-8 file contents must surface as Err when encryption enabled"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("failed to read file"),
+            "error should mention failing read context, got: {err}"
+        );
+    }
+
+    // ── Coverage gap: enabled config with no passphrase source ──────────
+
+    /// Invariant: `EncryptionConfig::get_passphrase` returns `Ok(None)` when
+    /// the config has neither an inline passphrase nor an env var. The
+    /// surrounding code uses this to decide whether to require a passphrase
+    /// before encrypting; surfacing `None` (not `Err`, not a default key) is
+    /// the security-critical contract.
+    #[test]
+    fn encryption_config_enabled_no_source_returns_none_passphrase() {
+        let cfg = EncryptionConfig {
+            enabled: true,
+            passphrase: None,
+            env_var: None,
+        };
+        assert_eq!(cfg.get_passphrase().unwrap(), None);
+    }
+
+    /// Invariant: `EncryptionConfig::get_passphrase` returns `Ok(None)` (not
+    /// `Err`) when an env_var is configured but unset. This lets callers
+    /// distinguish "missing passphrase" from "lookup failure".
+    #[test]
+    #[serial]
+    fn encryption_config_env_var_unset_returns_none_not_err() {
+        let cfg = EncryptionConfig::from_env("SHIPPER_TEST_UNSET_PASS_X1".to_string());
+        temp_env::with_var("SHIPPER_TEST_UNSET_PASS_X1", None::<&str>, || {
+            let result = cfg.get_passphrase();
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), None);
+        });
+    }
+
+    // ── StateEncryption::get_passphrase fall-through semantics ───────────
+
+    /// Invariant: when both an inline passphrase and an env_var are configured
+    /// but the env_var is unset, `StateEncryption` falls back to the inline
+    /// passphrase. This is required for roll-out scenarios where the env-var
+    /// is the preferred source but not yet provisioned everywhere.
+    #[test]
+    #[serial]
+    fn state_encryption_falls_back_to_inline_when_env_unset() {
+        let config = EncryptionConfig {
+            enabled: true,
+            passphrase: Some("inline-fallback".to_string()),
+            env_var: Some("SHIPPER_TEST_FALLBACK_VAR".to_string()),
+        };
+        let encryption = StateEncryption::new(config).expect("create");
+
+        temp_env::with_var("SHIPPER_TEST_FALLBACK_VAR", None::<&str>, || {
+            assert!(encryption.is_enabled());
+            let data = b"fallback test data";
+            let encrypted = encryption.encrypt(data).expect("encrypt");
+            let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+
+            // Must decrypt with the inline passphrase (env wasn't set)
+            assert!(
+                decrypt(&encrypted_str, "inline-fallback").is_ok(),
+                "must encrypt with the inline passphrase when env is unset"
+            );
+        });
+    }
+
+    /// Invariant: with `enabled: true` but no passphrase source whatsoever,
+    /// `is_enabled` must return false so that callers don't think encryption
+    /// is active when it actually has no key.
+    #[test]
+    fn state_encryption_is_enabled_false_when_enabled_but_no_passphrase() {
+        let config = EncryptionConfig {
+            enabled: true,
+            passphrase: None,
+            env_var: None,
+        };
+        let encryption = StateEncryption::new(config).expect("create");
+        assert!(
+            !encryption.is_enabled(),
+            "enabled=true with no passphrase must report not-enabled"
+        );
+    }
+
+    /// Invariant: with `enabled: true` and an env_var that is currently unset,
+    /// `is_enabled` must return false (no usable passphrase available).
+    #[test]
+    #[serial]
+    fn state_encryption_is_enabled_false_when_env_var_unset_and_no_inline() {
+        let config = EncryptionConfig {
+            enabled: true,
+            passphrase: None,
+            env_var: Some("SHIPPER_TEST_NOT_SET_AT_ALL_VAR".to_string()),
+        };
+        let encryption = StateEncryption::new(config).expect("create");
+        temp_env::with_var("SHIPPER_TEST_NOT_SET_AT_ALL_VAR", None::<&str>, || {
+            assert!(!encryption.is_enabled());
+        });
+    }
+
+    /// Invariant: when `is_enabled` is false (no passphrase available), the
+    /// `write_file` plaintext branch is taken and the on-disk bytes equal the
+    /// input — encryption must not silently fail-open with a default key.
+    #[test]
+    fn state_encryption_write_file_no_passphrase_writes_plaintext() {
+        let td = tempdir().expect("tempdir");
+        let path = td.path().join("nopass.txt");
+
+        let config = EncryptionConfig {
+            enabled: true,
+            passphrase: None,
+            env_var: None,
+        };
+        let encryption = StateEncryption::new(config).expect("create");
+
+        let data = b"would-be-encrypted but no passphrase";
+        encryption.write_file(&path, data).expect("write plaintext");
+        let on_disk = std::fs::read(&path).expect("read");
+        assert_eq!(
+            on_disk,
+            data.to_vec(),
+            "with no passphrase, write must NOT encrypt and must NOT use a default key"
+        );
+    }
+
+    // ── Coverage gap: EncryptionConfig env_var serde roundtrip ──────────
+
+    /// Invariant: `EncryptionConfig` deserialized from JSON containing only
+    /// `env_var` (no inline passphrase) preserves the env_var.
+    #[test]
+    fn encryption_config_serde_roundtrip_env_var() {
+        let cfg = EncryptionConfig::from_env("SHIPPER_TEST_SERDE_VAR".to_string());
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        assert!(!json.contains("passphrase"));
+        let de: EncryptionConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(de.enabled);
+        assert!(de.passphrase.is_none());
+        assert_eq!(de.env_var.as_deref(), Some("SHIPPER_TEST_SERDE_VAR"));
+    }
+
+    /// Invariant: `enabled: false` is the serde default — `EncryptionConfig`
+    /// deserialized from `{}` is the safe (disabled) default.
+    #[test]
+    fn encryption_config_deserialize_empty_object_is_disabled() {
+        let cfg: EncryptionConfig = serde_json::from_str("{}").expect("deserialize empty");
+        assert!(!cfg.enabled);
+        assert!(cfg.passphrase.is_none());
+        assert!(cfg.env_var.is_none());
+    }
+
+    // ── PBKDF2 constants invariant (security-critical pins) ─────────────
+
+    /// Invariant pin: PBKDF2 iterations is 100,000. Reducing this lowers the
+    /// cost of an offline brute-force attack; any change should be a conscious,
+    /// reviewed action — this test is the trip-wire.
+    #[test]
+    fn pbkdf2_iteration_count_pinned_at_100k() {
+        assert_eq!(
+            PBKDF2_ITERATIONS, 100_000,
+            "PBKDF2 iteration count is a security parameter; \
+             do not change without explicit security review"
+        );
+    }
+
+    /// Invariant pin: derived key size is 256 bits (32 bytes), as required by
+    /// AES-256-GCM. Any other value would break the cipher construction.
+    #[test]
+    fn key_size_pinned_at_32_bytes() {
+        assert_eq!(KEY_SIZE, 32, "AES-256 requires a 256-bit (32-byte) key");
+    }
+
+    /// Invariant pin: AES-GCM nonce is exactly 12 bytes (96 bits), per the
+    /// recommended GCM nonce size. Anything else would either break interop
+    /// or weaken the construction.
+    #[test]
+    fn nonce_size_pinned_at_12_bytes() {
+        assert_eq!(NONCE_SIZE, 12, "AES-GCM standard nonce size is 96 bits");
+    }
+
+    /// Invariant pin: salt is at least 128 bits (16 bytes). This is the
+    /// minimum size that prevents practical precomputation attacks against
+    /// PBKDF2.
+    #[test]
+    fn salt_size_pinned_at_16_bytes() {
+        assert_eq!(SALT_SIZE, 16, "PBKDF2 salt should be at least 128 bits");
+    }
+
+    // ── Format compatibility invariant ──────────────────────────────────
+
+    /// Invariant: the encrypted payload layout is exactly
+    /// `salt(16) || nonce(12) || ciphertext(N) || tag(16)`. This test pins
+    /// the on-disk format so a future refactor that reorders the components
+    /// fails fast. (The existing `encrypted_output_has_expected_structure`
+    /// test pins the total length; this one pins each component's position
+    /// by re-assembling the payload manually and decrypting with our cipher.)
+    #[test]
+    fn ciphertext_layout_is_salt_nonce_ciphertext_tag() {
+        let plaintext = b"layout pin";
+        let passphrase = "layout-pass";
+        let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+        let raw = BASE64.decode(&encrypted_str).expect("base64");
+
+        // Layout: salt(16) | nonce(12) | ciphertext + tag(plaintext.len()+16)
+        assert!(raw.len() >= SALT_SIZE + NONCE_SIZE + 16);
+        let salt = &raw[..SALT_SIZE];
+        let nonce_bytes = &raw[SALT_SIZE..SALT_SIZE + NONCE_SIZE];
+        let ct_tag = &raw[SALT_SIZE + NONCE_SIZE..];
+
+        // Manually derive the key from the extracted salt and decrypt.
+        let key = derive_key(passphrase, salt);
+        let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
+        let nonce = Nonce::from_slice(nonce_bytes);
+        let decrypted = cipher
+            .decrypt(nonce, ct_tag)
+            .expect("manual decrypt should succeed if layout matches");
+        assert_eq!(decrypted, plaintext);
+
+        // ciphertext-plus-tag must be plaintext_len + 16 (GCM tag)
+        assert_eq!(ct_tag.len(), plaintext.len() + 16);
+    }
+
+    /// Invariant: a ciphertext produced by the public `encrypt` API today
+    /// remains decryptable by the public `decrypt` API even if the
+    /// intermediate representation is parsed and re-encoded byte-for-byte.
+    /// This guards against silent base64 alphabet/padding regressions.
+    #[test]
+    fn ciphertext_survives_base64_decode_reencode_cycle() {
+        let plaintext = b"base64 stability pin";
+        let passphrase = "b64-stability";
+        let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+
+        // Decode and re-encode using the same engine — must round-trip and
+        // still decrypt successfully.
+        let raw = BASE64.decode(&encrypted_str).expect("base64 decode");
+        let reencoded = BASE64.encode(&raw);
+        assert_eq!(reencoded, encrypted_str, "base64 round-trip must be stable");
+
+        let decrypted = decrypt(&reencoded, passphrase).expect("decrypt");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    // ── is_encrypted byte-boundary checks ───────────────────────────────
+
+    /// Invariant: `is_encrypted` returns false for base64 whose decoded length
+    /// is exactly one byte below the minimum (salt + nonce + 16). This is the
+    /// boundary that separates "could be a valid GCM payload" from "definitely
+    /// can't be".
+    #[test]
+    fn is_encrypted_rejects_one_byte_below_minimum() {
+        let data = vec![0u8; SALT_SIZE + NONCE_SIZE + 15];
+        let encoded = BASE64.encode(&data);
+        assert!(!is_encrypted(&encoded));
+    }
+
+    // ── StateEncryption::decrypt over actual encrypted bytes ────────────
+
+    /// Invariant: `StateEncryption::decrypt` round-trips an encrypted Vec<u8>
+    /// produced by the same wrapper via env-var, including when the env-var
+    /// is used to source the key.
+    #[test]
+    #[serial]
+    fn state_encryption_env_var_decrypt_handles_encrypted_bytes() {
+        let config = EncryptionConfig::from_env("SHIPPER_TEST_DEC_VAR".to_string());
+        let encryption = StateEncryption::new(config).expect("create");
+
+        temp_env::with_var("SHIPPER_TEST_DEC_VAR", Some("dec-env-pass"), || {
+            let data = b"env decrypt cycle";
+            let encrypted = encryption.encrypt(data).expect("encrypt");
+            let decrypted = encryption.decrypt(&encrypted).expect("decrypt");
+            assert_eq!(decrypted, data);
+        });
+    }
+
+    // ── mask_passphrase grapheme behavior ───────────────────────────────
+
+    /// Invariant: `mask_passphrase` masks by Unicode scalar count, not byte
+    /// count. A 3-char ASCII passphrase produces `*` (1 char) between the
+    /// two anchor chars; a multi-byte 3-char passphrase must produce the
+    /// same single-`*` shape.
+    #[test]
+    fn mask_passphrase_uses_char_count_not_byte_count() {
+        // Three Unicode scalars, but multiple bytes each.
+        let masked = mask_passphrase("αβγ");
+        // Format: first + repeat(chars.len()-2) of '*' + last = "α" + "*" + "γ"
+        assert_eq!(masked.chars().count(), 3);
+        assert!(masked.starts_with('α'));
+        assert!(masked.ends_with('γ'));
+        assert!(masked.contains('*'));
+    }
+
+    /// Invariant: empty passphrases mask to a single `*` (never empty), so
+    /// they can't be confused with an absent passphrase in log output.
+    #[test]
+    fn mask_passphrase_empty_produces_one_asterisk() {
+        assert_eq!(mask_passphrase(""), "*");
+    }
+
+    // ── Negative test: never leak plaintext in masked output ────────────
+
+    /// Invariant: masked passphrases must not contain any middle characters
+    /// from the original passphrase (only the first and last). This is the
+    /// "don't leak secrets in logs" contract.
+    #[test]
+    fn mask_passphrase_does_not_leak_middle_characters() {
+        let secret = "DO-NOT-LEAK-MIDDLE";
+        let masked = mask_passphrase(secret);
+        let secret_chars: Vec<char> = secret.chars().collect();
+        let masked_chars: Vec<char> = masked.chars().collect();
+
+        assert_eq!(masked_chars.len(), secret_chars.len());
+        assert_eq!(masked_chars.first(), secret_chars.first());
+        assert_eq!(masked_chars.last(), secret_chars.last());
+        assert!(
+            masked_chars[1..masked_chars.len() - 1]
+                .iter()
+                .all(|ch| *ch == '*'),
+            "masked output {masked:?} leaked middle characters"
+        );
     }
 }
 

@@ -178,6 +178,57 @@ mod strip_ansi_tests {
         let input = "\x1b]0;title\x07done";
         assert_eq!(strip_ansi(input), "done");
     }
+
+    #[test]
+    fn strips_two_byte_escape_equals() {
+        let input = "a\x1b=b";
+        assert_eq!(strip_ansi(input), "ab");
+    }
+
+    #[test]
+    fn strips_two_byte_escape_greater_than() {
+        let input = "a\x1b>b";
+        assert_eq!(strip_ansi(input), "ab");
+    }
+
+    #[test]
+    fn strips_two_byte_escape_save_cursor() {
+        let input = "save\x1b7state";
+        assert_eq!(strip_ansi(input), "savestate");
+    }
+
+    // \x1b(B is a 3-byte sequence (designate G0 charset). The fallback branch
+    // only consumes ESC + one byte, so the trailing 'B' survives — this test
+    // pins that behavior.
+    #[test]
+    fn two_byte_escape_paren_consumes_only_two_bytes() {
+        let input = "a\x1b(Bb";
+        assert_eq!(strip_ansi(input), "aBb");
+    }
+
+    // OSC with no BEL/ST terminator: the parser consumes everything to EOF,
+    // including any newlines or text the caller might have expected to keep.
+    // This is the observed graceful behavior — no panic, but content after the
+    // unterminated OSC is lost.
+    #[test]
+    fn osc_without_terminator_consumes_to_eof() {
+        let input = "before\x1b]title-without-bel";
+        assert_eq!(strip_ansi(input), "before");
+    }
+
+    #[test]
+    fn osc_without_terminator_does_not_panic_with_following_lines() {
+        let input = "keep\x1b]unterminated\nnext line";
+        let _ = strip_ansi(input);
+    }
+
+    // A bare ESC at end-of-input fails the `i + 1 < bytes.len()` guard and
+    // passes through as a literal byte.
+    #[test]
+    fn bare_esc_at_eof_passes_through() {
+        let input = "text\x1b";
+        assert_eq!(strip_ansi(input), "text\x1b");
+    }
 }
 
 fn redact_line(line: &str) -> String {
@@ -635,6 +686,76 @@ mod tests {
             out,
             "Authorization: Bearer [REDACTED]\ntoken = [REDACTED]\nlast"
         );
+    }
+
+    // When two redactable patterns share one line, the CARGO_REGISTRY_TOKEN env
+    // handler truncates the rest of the line — including the Bearer secret that
+    // would otherwise be redacted by the Authorization handler. Both secrets
+    // disappear, but via truncation rather than independent redaction.
+    #[test]
+    fn redact_cargo_token_env_truncates_trailing_bearer_secret() {
+        let input = "CARGO_REGISTRY_TOKEN=secret1 Authorization: Bearer secret2";
+        let out = redact_sensitive(input);
+        assert_eq!(out, "CARGO_REGISTRY_TOKEN=[REDACTED]");
+        assert!(!out.contains("secret1"));
+        assert!(!out.contains("secret2"));
+    }
+
+    // Reversed order: the Authorization handler runs first and rewrites the
+    // line, dropping the trailing CARGO_REGISTRY_TOKEN entirely.
+    #[test]
+    fn redact_bearer_truncates_trailing_cargo_token_env() {
+        let input = "Authorization: Bearer secret2 CARGO_REGISTRY_TOKEN=secret1";
+        let out = redact_sensitive(input);
+        assert_eq!(out, "Authorization: Bearer [REDACTED]");
+        assert!(!out.contains("secret1"));
+        assert!(!out.contains("secret2"));
+    }
+
+    #[test]
+    fn tail_lines_normalizes_mixed_crlf_lf_cr_endings() {
+        let input = "line1\r\nline2\rline3\n";
+        let out = tail_lines(input, 5);
+        assert_eq!(out, "line1\nline2\nline3\n");
+    }
+
+    #[test]
+    fn tail_lines_mixed_endings_takes_only_last_n() {
+        let input = "line1\r\nline2\rline3\n";
+        let out = tail_lines(input, 2);
+        assert_eq!(out, "line2\nline3");
+    }
+
+    // `find_cargo_token_env` requires `CARGO_REGISTRIES_` to be followed by
+    // text containing `_TOKEN`. `CARGO_REGISTRIES_NAME` (no `_TOKEN` suffix)
+    // must not be treated as a token-bearing env var.
+    #[test]
+    fn cargo_registries_without_token_suffix_not_redacted() {
+        let input = "CARGO_REGISTRIES_NAME=ordinary_value";
+        let out = redact_sensitive(input);
+        assert_eq!(out, input);
+    }
+
+    // The current matcher accepts an empty registry-name segment
+    // (`CARGO_REGISTRIES__TOKEN`). This pins that behavior so a future
+    // tightening is a deliberate decision.
+    #[test]
+    fn cargo_registries_double_underscore_is_still_redacted() {
+        let input = "CARGO_REGISTRIES__TOKEN=secret";
+        let out = redact_sensitive(input);
+        assert_eq!(out, "CARGO_REGISTRIES__TOKEN=[REDACTED]");
+    }
+
+    // The env-name matcher is case-sensitive. A lowercase `cargo_registry_token`
+    // is not recognised as the env var; however the line still triggers the
+    // generic `token`-assignment handler, which is a separate code path.
+    #[test]
+    fn lowercase_cargo_registry_token_not_matched_as_env_name() {
+        let input = "cargo_registry_token=plain";
+        let out = redact_sensitive(input);
+        assert!(!out.contains("plain"));
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.starts_with("cargo_registry_token=[REDACTED]"));
     }
 }
 

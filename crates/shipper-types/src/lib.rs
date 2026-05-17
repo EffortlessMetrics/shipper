@@ -1100,6 +1100,68 @@ pub enum ReconciliationOutcome {
     },
 }
 
+/// Persisted report of registry-truth reconciliation outcomes for a release run.
+///
+/// This artifact is written to `.shipper/reconciliation.json` when a publish or
+/// resume run emits at least one [`EventType::PublishReconciled`] event. It is
+/// derived from the authoritative event log so humans, CI, and agents can
+/// inspect the ambiguity-resolution record without replaying every event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconciliationReport {
+    pub schema_version: String,
+    pub plan_id: String,
+    pub registry: Registry,
+    pub generated_at: DateTime<Utc>,
+    pub evidence_sources: Vec<ReconciliationEvidenceSource>,
+    pub records: Vec<ReconciliationRecord>,
+}
+
+/// File or artifact referenced by a reconciliation report.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReconciliationEvidenceSource {
+    pub kind: ReconciliationEvidenceKind,
+    pub path: String,
+}
+
+/// Kind of artifact referenced by [`ReconciliationEvidenceSource`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationEvidenceKind {
+    EventLog,
+    State,
+    Receipt,
+}
+
+/// One package-level reconciliation outcome.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReconciliationRecord {
+    pub package: String,
+    pub name: String,
+    pub version: String,
+    pub trigger: ReconciliationTrigger,
+    pub method: Option<ReadinessMethod>,
+    pub cargo_exit_class: Option<ErrorClass>,
+    pub outcome: ReconciliationOutcome,
+    pub operator_action: ReconciliationOperatorAction,
+}
+
+/// Why reconciliation was attempted.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationTrigger {
+    CargoAmbiguousExit,
+    ResumeAmbiguousState,
+}
+
+/// Machine-readable operator action implied by a reconciliation outcome.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationOperatorAction {
+    MarkPublishedContinue,
+    RetryAllowed,
+    OperatorActionRequired,
+}
+
 /// Progress tracking for a single package in an execution.
 ///
 /// This struct is persisted to disk during publishing to enable
@@ -1827,8 +1889,35 @@ pub struct PreflightReport {
     pub finishability: Finishability,
     pub packages: Vec<PreflightPackage>,
     pub timestamp: DateTime<Utc>,
+    /// Minimum registry pacing estimate derived from package regimes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_publish_duration: Option<PreflightDurationEstimate>,
     /// Detailed output from workspace-level dry-run verification
     pub dry_run_output: Option<String>,
+}
+
+/// Registry pacing estimate derived during preflight.
+///
+/// This is deliberately a lower-bound pacing estimate, not a full wall-clock
+/// release prediction. It excludes build time, upload time, readiness polling,
+/// network failures, human pauses, and retry jitter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreflightDurationEstimate {
+    /// Registry profile that produced the estimate.
+    pub registry_profile: String,
+    /// Packages that appear to be first publishes for this registry.
+    pub first_publish_count: usize,
+    /// Packages that appear to be version updates for this registry.
+    pub update_count: usize,
+    /// Minimum registry-imposed pacing time expected before all publishes can
+    /// be accepted.
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
+    pub minimum_registry_pacing: Duration,
+    /// Human/agent-readable caveats for what this estimate excludes.
+    pub notes: Vec<String>,
 }
 
 /// Preflight status for a single package.
@@ -3230,6 +3319,7 @@ mod tests {
                     },
                 ],
                 timestamp: fixed_time(),
+                estimated_publish_duration: None,
                 dry_run_output: Some("workspace dry-run passed".to_string()),
             };
             insta::assert_yaml_snapshot!(report);
@@ -3883,6 +3973,7 @@ mod tests {
                     dry_run_output: Some("error: could not compile".to_string()),
                 }],
                 timestamp: fixed_time(),
+                estimated_publish_duration: None,
                 dry_run_output: Some("workspace dry-run failed".to_string()),
             };
             insta::assert_yaml_snapshot!(report);
@@ -3930,6 +4021,7 @@ mod tests {
                     finishability,
                     packages: packages.clone(),
                     timestamp: Utc::now(),
+                    estimated_publish_duration: None,
                     dry_run_output: Some("workspace dry-run output".to_string()),
                 };
 

@@ -26,7 +26,7 @@ jobs:
     name: Lint (fmt + clippy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -49,6 +49,90 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  policy:
+    # File-policy enforcement.
+    #
+    # As of rollout PR 12 (#211): all seven file-policy checks run in
+    # --mode blocking-allowlist. CI fails on unreceipted files, missing
+    # required fields, or expired entries in any of:
+    #
+    #   - non-Rust file allowlist (policy/non-rust-allowlist.toml)
+    #   - generated allowlist
+    #   - executable allowlist
+    #   - dependency-surface allowlist
+    #   - workflow allowlist
+    #   - process policy (per-workflow command set)
+    #   - network policy (per-workflow endpoint set)
+    #
+    # The check-process-policy detector was refined in PR 12 to only
+    # consider the first word of each shell command inside `run:` blocks
+    # (see xtask/src/workflow_checks.rs::detect_commands_in_runs), so
+    # build-target names like `shipper` no longer false-positive.
+    #
+    # `blocking-strict` mode (fails on unused entries + stale review
+    # dates) remains out of scope until a dedicated cleanup pass.
+    #
+    # Source-of-truth document contracts run in advisory mode first. They
+    # produce target/policy/doc-contracts-report.* but do not gate merges yet.
+    #
+    # The unified policy-report runs at the end and uploads
+    # target/policy/ as a `policy-reports` artifact regardless of
+    # pass/fail (`if: always()`). See docs/policy/NON_RUST_ROLLOUT.md.
+    name: Policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-policy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-policy-
+
+      - name: check-file-policy (blocking-allowlist)
+        run: cargo xtask check-file-policy --mode blocking-allowlist
+
+      - name: check-generated (blocking-allowlist)
+        run: cargo xtask check-generated --mode blocking-allowlist
+
+      - name: check-executable-files (blocking-allowlist)
+        run: cargo xtask check-executable-files --mode blocking-allowlist
+
+      - name: check-dependency-surfaces (blocking-allowlist)
+        run: cargo xtask check-dependency-surfaces --mode blocking-allowlist
+
+      - name: check-workflow-surfaces (blocking-allowlist)
+        run: cargo xtask check-workflow-surfaces --mode blocking-allowlist
+
+      - name: check-process-policy (blocking-allowlist)
+        run: cargo xtask check-process-policy --mode blocking-allowlist
+
+      - name: check-network-policy (blocking-allowlist)
+        run: cargo xtask check-network-policy --mode blocking-allowlist
+
+      - name: check-doc-contracts (advisory)
+        run: cargo xtask check-doc-contracts --mode advisory
+
+      - name: Unified policy report
+        if: always()
+        run: cargo xtask policy-report
+
+      - name: Upload policy reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: policy-reports
+          path: target/policy/
+          if-no-files-found: error
+          retention-days: 30
+
   test:
     name: Tests (nextest)
     strategy:
@@ -57,7 +141,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -99,6 +183,38 @@ jobs:
           path: target/nextest/ci/junit.xml
           retention-days: 14
 
+  install-smoke:
+    name: Install Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-install-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-install-
+
+      - name: Install shipper facade crate
+        run: |
+          cargo install --path crates/shipper --locked --root "$RUNNER_TEMP/shipper-install"
+          echo "$RUNNER_TEMP/shipper-install/bin" >> "$GITHUB_PATH"
+
+      - name: Verify installed shipper
+        run: |
+          shipper --version
+          shipper --help
+          shipper doctor --help
+          shipper plan --help
+          shipper preflight --help
+
   crypto-proptests-heavy:
     name: Crypto Proptests (full strength, ubuntu)
     # Deep crypto proving lane. The PR matrix above runs proptests with
@@ -114,7 +230,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -152,12 +268,12 @@ jobs:
     name: MSRV Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust (MSRV)
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.92.0
+          toolchain: 1.95.0
 
       - name: Cache Cargo
         uses: actions/cache@v5
@@ -176,7 +292,7 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -191,7 +307,7 @@ jobs:
     name: Documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -216,7 +332,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
@@ -238,11 +354,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
         with:
+          toolchain: nightly
           components: rust-src
 
       - name: Install cargo-fuzz
@@ -262,6 +379,8 @@ jobs:
           restore-keys: ${{ runner.os }}-fuzz-
 
       - name: Run fuzz targets briefly
+        env:
+          RUSTUP_TOOLCHAIN: nightly
         run: |
           cargo fuzz run load_state --target x86_64-unknown-linux-gnu -- -max_total_time=60
           cargo fuzz run resolve_token --target x86_64-unknown-linux-gnu -- -max_total_time=60
@@ -287,12 +406,15 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Add cross-compilation target
+        run: rustup target add ${{ matrix.target }}
 
       - name: Cache Cargo
         uses: actions/cache@v5
@@ -319,7 +441,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, test]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

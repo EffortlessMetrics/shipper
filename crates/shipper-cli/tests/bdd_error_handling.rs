@@ -378,8 +378,10 @@ mod rate_limiting {
         let fake_cargo = create_fake_cargo_with_stderr(&bin_dir);
         let (new_path, real_cargo) = prepend_fake_bin(&bin_dir);
 
-        // Enough registry responses for version checks + post-attempt checks
-        let registry = spawn_registry(vec![404], 20);
+        // Preflight sees the crate as existing (version absent, crate present)
+        // so this retry-focused test does not take the crates.io first-publish
+        // 10-minute backoff floor.
+        let registry = spawn_registry(vec![404, 404, 200, 404, 404], 20);
 
         let output = shipper_cmd()
             .arg("--manifest-path")
@@ -406,7 +408,12 @@ mod rate_limiting {
             .expect("run");
 
         // Should fail (all retries exhausted)
-        assert!(!output.status.success());
+        assert!(
+            !output.status.success(),
+            "expected publish to fail after retry exhaustion; stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         // The engine should mention retry/attempt or the transient classification
