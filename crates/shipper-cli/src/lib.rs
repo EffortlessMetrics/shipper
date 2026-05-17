@@ -39,9 +39,10 @@ use serde::Serialize;
 use shipper_core::config::{CliOverrides, ShipperConfig};
 use shipper_core::engine::{self, Reporter};
 use shipper_core::plan;
+use shipper_core::runtime::execution::pkg_key;
 use shipper_core::types::{
-    Finishability, PlannedPackage, PreflightPackage, PreflightReport, Registry, ReleasePlan,
-    ReleaseSpec, RuntimeOptions,
+    EventType, ExecutionState, Finishability, PackageState, PlannedPackage, PreflightPackage,
+    PreflightReport, PublishEvent, Registry, ReleasePlan, ReleaseSpec, RuntimeOptions,
 };
 
 mod doctor;
@@ -392,8 +393,19 @@ EXAMPLES:
 
     # Check one package against the configured registry:
     shipper status --package shipper-core
+
+    # Watch persisted release progress while publish or resume is running:
+    shipper status --watch
 ")]
-    Status,
+    Status {
+        /// Watch local `.shipper/` state and events until interrupted.
+        ///
+        /// Watch mode is read-only and does not poll the registry. It summarizes
+        /// `state.json` and `events.jsonl` so operators can see current progress,
+        /// the last durable event, and the next scheduled wait/retry/poll.
+        #[arg(long)]
+        watch: bool,
+    },
     /// Print environment and auth diagnostics.
     #[command(long_about = "\
 Print environment and auth diagnostics.
@@ -1038,12 +1050,22 @@ pub fn run() -> Result<()> {
                 anyhow::bail!("rehearsal did not pass");
             }
         }
-        Commands::Status => {
+        Commands::Status { watch } => {
             let target_registries = if opts.registries.is_empty() {
                 vec![planned.plan.registry.clone()]
             } else {
                 opts.registries.clone()
             };
+
+            if watch {
+                if target_registries.len() > 1 {
+                    bail!(
+                        "status --watch supports one registry at a time; pass --registry once or inspect the registry-specific state directory directly"
+                    );
+                }
+                run_status_watch(&planned, &opts, &cli.format)?;
+                return Ok(());
+            }
 
             for reg in target_registries {
                 if opts.registries.len() > 1 {
@@ -1569,7 +1591,7 @@ fn command_name_for_hint(command: &Commands) -> &'static str {
         Commands::Publish => "publish",
         Commands::Resume => "resume",
         Commands::Rehearse => "rehearse",
-        Commands::Status => "status",
+        Commands::Status { .. } => "status",
         Commands::Doctor => "doctor",
         Commands::InspectEvents { .. } => "inspect-events",
         Commands::InspectReceipt => "inspect-receipt",
@@ -2711,6 +2733,590 @@ fn run_status(ws: &plan::PlannedWorkspace, reporter: &mut dyn Reporter) -> Resul
     Ok(())
 }
 
+fn run_status_watch(
+    ws: &plan::PlannedWorkspace,
+    opts: &RuntimeOptions,
+    format: &str,
+) -> Result<()> {
+    let state_dir = absolute_state_dir(ws, opts);
+    let stdout = std::io::stdout();
+    let mut first = true;
+
+    loop {
+        if !first && format != "json" {
+            println!();
+        }
+        first = false;
+
+        let report = build_status_watch_report(ws, &state_dir)?;
+        {
+            let mut out = stdout.lock();
+            write_status_watch_report(&report, format, &mut out)?;
+            out.flush().context("failed to flush status watch output")?;
+        }
+
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn absolute_state_dir(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> PathBuf {
+    if opts.state_dir.is_absolute() {
+        opts.state_dir.clone()
+    } else {
+        ws.workspace_root.join(&opts.state_dir)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct StatusWatchReport {
+    plan_id: String,
+    state_dir: String,
+    events_path: String,
+    receipt_path: String,
+    state_present: bool,
+    event_count: usize,
+    counts: StatusWatchCounts,
+    current_package: Option<String>,
+    last_event: Option<StatusWatchEventReport>,
+    next_action: Option<StatusWatchNextAction>,
+    packages: Vec<StatusWatchPackageReport>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct StatusWatchCounts {
+    total: usize,
+    pending: usize,
+    uploaded: usize,
+    published: usize,
+    skipped: usize,
+    failed: usize,
+    ambiguous: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusWatchPackageReport {
+    name: String,
+    version: String,
+    state: String,
+    attempts: u32,
+    last_updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusWatchEventReport {
+    timestamp: String,
+    package: String,
+    kind: &'static str,
+    summary: String,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusWatchNextAction {
+    kind: &'static str,
+    package: String,
+    at: String,
+    delay_ms: u64,
+    summary: String,
+}
+
+fn build_status_watch_report(
+    ws: &plan::PlannedWorkspace,
+    state_dir: &Path,
+) -> Result<StatusWatchReport> {
+    let state = shipper_core::state::execution_state::load_state(state_dir)?;
+    let events_path = shipper_core::state::events::events_path(state_dir);
+    let receipt_path = shipper_core::state::execution_state::receipt_path(state_dir);
+    let events = read_status_watch_events(&events_path)
+        .with_context(|| format!("failed to read event log from {}", events_path.display()))?;
+
+    let packages = build_status_watch_packages(ws, state.as_ref());
+    let counts = status_watch_counts(&packages);
+    let current_package = current_status_package(&events, state.as_ref(), &packages);
+    let last_event = events.last().map(status_watch_event_report);
+    let next_action = latest_status_watch_next_action(&events);
+
+    Ok(StatusWatchReport {
+        plan_id: ws.plan.plan_id.clone(),
+        state_dir: state_dir.display().to_string(),
+        events_path: events_path.display().to_string(),
+        receipt_path: receipt_path.display().to_string(),
+        state_present: state.is_some(),
+        event_count: events.len(),
+        counts,
+        current_package,
+        last_event,
+        next_action,
+        packages,
+    })
+}
+
+fn read_status_watch_events(events_path: &Path) -> Result<Vec<PublishEvent>> {
+    if !events_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = std::fs::read_to_string(events_path)
+        .with_context(|| format!("failed to read event log {}", events_path.display()))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let has_complete_tail = content.ends_with('\n');
+    let mut events = Vec::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<PublishEvent>(trimmed) {
+            Ok(event) => events.push(event),
+            Err(err) => {
+                // A live writer can leave a final JSONL line incomplete while
+                // status is reading. Keep the last complete snapshot and retry
+                // on the next watch tick instead of failing the operator view.
+                if idx + 1 == lines.len() && !has_complete_tail {
+                    break;
+                }
+                return Err(err)
+                    .with_context(|| format!("failed to parse event JSON from line: {}", trimmed));
+            }
+        }
+    }
+
+    Ok(events)
+}
+
+fn build_status_watch_packages(
+    ws: &plan::PlannedWorkspace,
+    state: Option<&ExecutionState>,
+) -> Vec<StatusWatchPackageReport> {
+    ws.plan
+        .packages
+        .iter()
+        .map(|planned| {
+            let key = pkg_key(&planned.name, &planned.version);
+            let progress = state
+                .and_then(|state| state.packages.get(&key))
+                .or_else(|| state.and_then(|state| state.packages.get(&planned.name)));
+            StatusWatchPackageReport {
+                name: planned.name.clone(),
+                version: planned.version.clone(),
+                state: progress
+                    .map(|progress| package_state_label(&progress.state).to_string())
+                    .unwrap_or_else(|| "pending".to_string()),
+                attempts: progress.map(|progress| progress.attempts).unwrap_or(0),
+                last_updated_at: progress.map(|progress| format_utc(progress.last_updated_at)),
+            }
+        })
+        .collect()
+}
+
+fn status_watch_counts(packages: &[StatusWatchPackageReport]) -> StatusWatchCounts {
+    let mut counts = StatusWatchCounts {
+        total: packages.len(),
+        ..StatusWatchCounts::default()
+    };
+    for package in packages {
+        match package.state.as_str() {
+            "pending" => counts.pending += 1,
+            "uploaded" => counts.uploaded += 1,
+            "published" => counts.published += 1,
+            "skipped" => counts.skipped += 1,
+            "failed" => counts.failed += 1,
+            "ambiguous" => counts.ambiguous += 1,
+            _ => {}
+        }
+    }
+    counts
+}
+
+fn current_status_package(
+    events: &[PublishEvent],
+    state: Option<&ExecutionState>,
+    packages: &[StatusWatchPackageReport],
+) -> Option<String> {
+    if let Some(state) = state {
+        for package in &state.packages {
+            let progress = package.1;
+            if !matches!(
+                progress.state,
+                PackageState::Published
+                    | PackageState::Skipped { .. }
+                    | PackageState::Failed { .. }
+            ) {
+                return Some(format!("{}@{}", progress.name, progress.version));
+            }
+        }
+        return None;
+    }
+
+    if let Some(event) = latest_active_progress_event(events) {
+        return Some(event.package.clone());
+    }
+
+    packages
+        .iter()
+        .find(|package| {
+            package.state != "published" && package.state != "skipped" && package.state != "failed"
+        })
+        .map(|package| format!("{}@{}", package.name, package.version))
+}
+
+fn latest_active_progress_event(events: &[PublishEvent]) -> Option<&PublishEvent> {
+    for event in events.iter().rev() {
+        if !event.package.is_empty()
+            && event.package != "workspace"
+            && event_type_is_active_progress(&event.event_type)
+        {
+            return Some(event);
+        }
+        if event_type_clears_next_action(&event.event_type) {
+            return None;
+        }
+    }
+    None
+}
+
+fn status_watch_event_report(event: &PublishEvent) -> StatusWatchEventReport {
+    StatusWatchEventReport {
+        timestamp: format_utc(event.timestamp),
+        package: event.package.clone(),
+        kind: event_type_name(&event.event_type),
+        summary: summarize_event(event),
+    }
+}
+
+fn latest_status_watch_next_action(events: &[PublishEvent]) -> Option<StatusWatchNextAction> {
+    for event in events.iter().rev() {
+        if let Some(action) = status_watch_next_action(event) {
+            return Some(action);
+        }
+        if event_type_clears_next_action(&event.event_type) {
+            return None;
+        }
+    }
+    None
+}
+
+fn status_watch_next_action(event: &PublishEvent) -> Option<StatusWatchNextAction> {
+    match &event.event_type {
+        EventType::RetryScheduled {
+            attempt,
+            max_attempts,
+            delay_ms,
+            next_attempt_at,
+            reason,
+            ..
+        }
+        | EventType::RetryBackoffStarted {
+            attempt,
+            max_attempts,
+            delay_ms,
+            next_attempt_at,
+            reason,
+            ..
+        } => Some(StatusWatchNextAction {
+            kind: "retry",
+            package: event.package.clone(),
+            at: format_utc(*next_attempt_at),
+            delay_ms: *delay_ms,
+            summary: format!(
+                "attempt {}/{} scheduled after {} ({:?})",
+                attempt + 1,
+                max_attempts,
+                format_millis(*delay_ms),
+                reason
+            ),
+        }),
+        EventType::PublishWaiting {
+            reason,
+            delay_ms,
+            until,
+        } => Some(StatusWatchNextAction {
+            kind: "wait",
+            package: event.package.clone(),
+            at: format_utc(*until),
+            delay_ms: *delay_ms,
+            summary: format!("{} for {}", reason, format_millis(*delay_ms)),
+        }),
+        EventType::ReadinessPollScheduled {
+            attempt,
+            delay_ms,
+            next_poll_at,
+        } => Some(StatusWatchNextAction {
+            kind: "readiness_poll",
+            package: event.package.clone(),
+            at: format_utc(*next_poll_at),
+            delay_ms: *delay_ms,
+            summary: format!(
+                "readiness poll {} scheduled after {}",
+                attempt + 1,
+                format_millis(*delay_ms)
+            ),
+        }),
+        _ => None,
+    }
+}
+
+fn event_type_is_active_progress(event_type: &EventType) -> bool {
+    matches!(
+        event_type,
+        EventType::PackageStarted { .. }
+            | EventType::PackageAttempted { .. }
+            | EventType::PackageOutput { .. }
+            | EventType::PublishWaiting { .. }
+            | EventType::RateLimitObserved { .. }
+            | EventType::PublishReconciling { .. }
+            | EventType::RetryBackoffStarted { .. }
+            | EventType::RetryScheduled { .. }
+            | EventType::ReadinessStarted { .. }
+            | EventType::ReadinessPoll { .. }
+            | EventType::ReadinessPollScheduled { .. }
+    )
+}
+
+fn event_type_clears_next_action(event_type: &EventType) -> bool {
+    matches!(
+        event_type,
+        EventType::ExecutionFinished { .. }
+            | EventType::PackageStarted { .. }
+            | EventType::PackagePublished { .. }
+            | EventType::PackageFailed { .. }
+            | EventType::PackageSkipped { .. }
+            | EventType::PublishReconciled { .. }
+            | EventType::ReadinessComplete { .. }
+            | EventType::ReadinessTimeout { .. }
+    )
+}
+
+fn write_status_watch_report<W: Write>(
+    report: &StatusWatchReport,
+    format: &str,
+    out: &mut W,
+) -> Result<()> {
+    if format == "json" {
+        serde_json::to_writer(&mut *out, report).context("failed to serialize status")?;
+        out.write_all(b"\n")
+            .context("failed to write status output")?;
+        return Ok(());
+    }
+
+    writeln!(out, "Status watch")?;
+    writeln!(out, "============")?;
+    writeln!(out, "plan_id: {}", report.plan_id)?;
+    writeln!(out, "state_dir: {}", report.state_dir)?;
+    writeln!(
+        out,
+        "state: {}",
+        if report.state_present {
+            "present"
+        } else {
+            "missing"
+        }
+    )?;
+    writeln!(
+        out,
+        "events: {} ({} events)",
+        report.events_path, report.event_count
+    )?;
+    writeln!(out, "receipt: {}", report.receipt_path)?;
+    writeln!(
+        out,
+        "progress: published={} pending={} uploaded={} skipped={} failed={} ambiguous={} total={}",
+        report.counts.published,
+        report.counts.pending,
+        report.counts.uploaded,
+        report.counts.skipped,
+        report.counts.failed,
+        report.counts.ambiguous,
+        report.counts.total
+    )?;
+
+    if let Some(current) = &report.current_package {
+        writeln!(out, "current: {}", current)?;
+    } else {
+        writeln!(out, "current: none")?;
+    }
+
+    if let Some(last_event) = &report.last_event {
+        writeln!(
+            out,
+            "last_event: {} {} {} - {}",
+            last_event.timestamp, last_event.package, last_event.kind, last_event.summary
+        )?;
+    } else {
+        writeln!(out, "last_event: none")?;
+    }
+
+    if let Some(next_action) = &report.next_action {
+        writeln!(
+            out,
+            "next: {} {} at {} - {}",
+            next_action.kind, next_action.package, next_action.at, next_action.summary
+        )?;
+    } else {
+        writeln!(out, "next: none scheduled")?;
+    }
+
+    writeln!(out, "packages:")?;
+    for package in &report.packages {
+        writeln!(
+            out,
+            "  {}@{}: {} (attempts={})",
+            package.name, package.version, package.state, package.attempts
+        )?;
+    }
+
+    Ok(())
+}
+
+fn package_state_label(state: &PackageState) -> &'static str {
+    match state {
+        PackageState::Pending => "pending",
+        PackageState::Uploaded => "uploaded",
+        PackageState::Published => "published",
+        PackageState::Skipped { .. } => "skipped",
+        PackageState::Failed { .. } => "failed",
+        PackageState::Ambiguous { .. } => "ambiguous",
+    }
+}
+
+fn event_type_name(event_type: &EventType) -> &'static str {
+    match event_type {
+        EventType::PlanCreated { .. } => "plan_created",
+        EventType::ExecutionStarted => "execution_started",
+        EventType::ExecutionFinished { .. } => "execution_finished",
+        EventType::PackageStarted { .. } => "package_started",
+        EventType::PackageAttempted { .. } => "package_attempted",
+        EventType::PackageOutput { .. } => "package_output",
+        EventType::PackagePublished { .. } => "package_published",
+        EventType::PackageFailed { .. } => "package_failed",
+        EventType::PackageSkipped { .. } => "package_skipped",
+        EventType::PublishWaiting { .. } => "publish_waiting",
+        EventType::RateLimitObserved { .. } => "rate_limit_observed",
+        EventType::PublishReconciling { .. } => "publish_reconciling",
+        EventType::PublishReconciled { .. } => "publish_reconciled",
+        EventType::StateEventDriftDetected { .. } => "state_event_drift_detected",
+        EventType::PackageYanked { .. } => "package_yanked",
+        EventType::RehearsalStarted { .. } => "rehearsal_started",
+        EventType::RehearsalPackagePublished { .. } => "rehearsal_package_published",
+        EventType::RehearsalPackageFailed { .. } => "rehearsal_package_failed",
+        EventType::RehearsalComplete { .. } => "rehearsal_complete",
+        EventType::RehearsalSmokeCheckStarted { .. } => "rehearsal_smoke_check_started",
+        EventType::RehearsalSmokeCheckSucceeded { .. } => "rehearsal_smoke_check_succeeded",
+        EventType::RehearsalSmokeCheckFailed { .. } => "rehearsal_smoke_check_failed",
+        EventType::RetryBackoffStarted { .. } => "retry_backoff_started",
+        EventType::RetryScheduled { .. } => "retry_scheduled",
+        EventType::ReadinessStarted { .. } => "readiness_started",
+        EventType::ReadinessPoll { .. } => "readiness_poll",
+        EventType::ReadinessPollScheduled { .. } => "readiness_poll_scheduled",
+        EventType::ReadinessComplete { .. } => "readiness_complete",
+        EventType::ReadinessTimeout { .. } => "readiness_timeout",
+        EventType::IndexReadinessStarted { .. } => "index_readiness_started",
+        EventType::IndexReadinessCheck { .. } => "index_readiness_check",
+        EventType::IndexReadinessComplete { .. } => "index_readiness_complete",
+        EventType::PreflightStarted => "preflight_started",
+        EventType::PreflightWorkspaceVerify { .. } => "preflight_workspace_verify",
+        EventType::PreflightNewCrateDetected { .. } => "preflight_new_crate_detected",
+        EventType::PreflightOwnershipCheck { .. } => "preflight_ownership_check",
+        EventType::PreflightComplete { .. } => "preflight_complete",
+    }
+}
+
+fn summarize_event(event: &PublishEvent) -> String {
+    match &event.event_type {
+        EventType::ExecutionStarted => "execution started".to_string(),
+        EventType::ExecutionFinished { result } => format!("execution finished: {:?}", result),
+        EventType::PackageStarted { name, version } => {
+            format!("started {}@{}", name, version)
+        }
+        EventType::PackagePublished { duration_ms } => {
+            format!("published in {}", format_millis(*duration_ms))
+        }
+        EventType::PackageFailed { class, message } => format!("failed ({:?}): {}", class, message),
+        EventType::PackageSkipped { reason } => format!("skipped: {}", reason),
+        EventType::PublishWaiting {
+            reason, delay_ms, ..
+        } => {
+            format!("waiting for {} ({})", reason, format_millis(*delay_ms))
+        }
+        EventType::RateLimitObserved {
+            retry_after_ms,
+            message,
+            ..
+        } => match retry_after_ms {
+            Some(delay) => format!(
+                "rate limit observed: {}; retry-after {}",
+                message,
+                format_millis(*delay)
+            ),
+            None => format!("rate limit observed: {}", message),
+        },
+        EventType::RetryScheduled {
+            attempt,
+            max_attempts,
+            delay_ms,
+            reason,
+            ..
+        } => format!(
+            "retry attempt {}/{} scheduled after {} ({:?})",
+            attempt + 1,
+            max_attempts,
+            format_millis(*delay_ms),
+            reason
+        ),
+        EventType::RetryBackoffStarted {
+            attempt,
+            max_attempts,
+            delay_ms,
+            reason,
+            ..
+        } => format!(
+            "retry backoff before attempt {}/{} for {} ({:?})",
+            attempt + 1,
+            max_attempts,
+            format_millis(*delay_ms),
+            reason
+        ),
+        EventType::ReadinessStarted { method } => format!("readiness started: {:?}", method),
+        EventType::ReadinessPoll { attempt, visible } => {
+            format!("readiness poll {} visible={}", attempt, visible)
+        }
+        EventType::ReadinessPollScheduled {
+            attempt, delay_ms, ..
+        } => format!(
+            "readiness poll {} scheduled after {}",
+            attempt + 1,
+            format_millis(*delay_ms)
+        ),
+        EventType::ReadinessComplete {
+            duration_ms,
+            attempts,
+        } => format!(
+            "readiness complete after {} checks in {}",
+            attempts,
+            format_millis(*duration_ms)
+        ),
+        EventType::ReadinessTimeout { max_wait_ms } => {
+            format!("readiness timed out after {}", format_millis(*max_wait_ms))
+        }
+        EventType::PublishReconciling { method } => {
+            format!("reconciling publish outcome via {:?}", method)
+        }
+        EventType::PublishReconciled { outcome } => {
+            format!("reconciled publish outcome: {:?}", outcome)
+        }
+        other => event_type_name(other).replace('_', " "),
+    }
+}
+
+fn format_utc(value: chrono::DateTime<chrono::Utc>) -> String {
+    value.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+fn format_millis(ms: u64) -> String {
+    humantime::format_duration(Duration::from_millis(ms)).to_string()
+}
+
 fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result<()> {
     let abs_state = if state_dir.is_absolute() {
         state_dir.to_path_buf()
@@ -3133,6 +3739,15 @@ mod tests {
     }
 
     #[test]
+    fn status_watch_flag_parses() {
+        let cli = Cli::try_parse_from(["shipper", "status", "--watch"]).expect("parse status");
+        match cli.cmd {
+            Some(Commands::Status { watch }) => assert!(watch),
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn cli_reporter_methods_are_callable() {
         let mut rep = CliReporter::new(false);
         rep.info("info");
@@ -3375,6 +3990,176 @@ mod tests {
         assert_eq!(reporter.infos, vec!["i".to_string()]);
         assert_eq!(reporter.warns, vec!["w".to_string()]);
         assert_eq!(reporter.errors, vec!["e".to_string()]);
+    }
+
+    #[test]
+    fn status_watch_report_summarizes_state_and_scheduled_events() {
+        let td = tempdir().expect("tempdir");
+        let state_dir = td.path().join(".shipper");
+        let now = Utc::now();
+        let ws = plan::PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "shipper.plan.v1".to_string(),
+                plan_id: "plan-watch".to_string(),
+                created_at: now,
+                registry: Registry::crates_io(),
+                packages: vec![
+                    PlannedPackage {
+                        name: "alpha".to_string(),
+                        version: "0.1.0".to_string(),
+                        manifest_path: td.path().join("alpha/Cargo.toml"),
+                        regime: None,
+                    },
+                    PlannedPackage {
+                        name: "beta".to_string(),
+                        version: "0.2.0".to_string(),
+                        manifest_path: td.path().join("beta/Cargo.toml"),
+                        regime: None,
+                    },
+                ],
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+
+        let state = ExecutionState {
+            state_version: "shipper.state.v1".to_string(),
+            plan_id: "plan-watch".to_string(),
+            registry: Registry::crates_io(),
+            created_at: now,
+            updated_at: now,
+            attempt_history: Vec::new(),
+            packages: BTreeMap::from([
+                (
+                    "alpha@0.1.0".to_string(),
+                    shipper_core::types::PackageProgress {
+                        name: "alpha".to_string(),
+                        version: "0.1.0".to_string(),
+                        attempts: 1,
+                        state: PackageState::Published,
+                        last_updated_at: now,
+                    },
+                ),
+                (
+                    "beta@0.2.0".to_string(),
+                    shipper_core::types::PackageProgress {
+                        name: "beta".to_string(),
+                        version: "0.2.0".to_string(),
+                        attempts: 1,
+                        state: PackageState::Uploaded,
+                        last_updated_at: now,
+                    },
+                ),
+            ]),
+        };
+        shipper_core::state::execution_state::save_state(&state_dir, &state).expect("save state");
+
+        let next_poll_at = now + chrono::Duration::seconds(5);
+        let mut event_log = shipper_core::state::events::EventLog::new();
+        event_log.record(PublishEvent {
+            timestamp: now,
+            package: "beta@0.2.0".to_string(),
+            event_type: EventType::ReadinessPollScheduled {
+                attempt: 1,
+                delay_ms: 5_000,
+                next_poll_at,
+            },
+        });
+        event_log
+            .write_to_file(&shipper_core::state::events::events_path(&state_dir))
+            .expect("write events");
+
+        let report = build_status_watch_report(&ws, &state_dir).expect("report");
+        assert_eq!(report.counts.published, 1);
+        assert_eq!(report.counts.uploaded, 1);
+        assert_eq!(report.current_package.as_deref(), Some("beta@0.2.0"));
+        assert_eq!(
+            report.next_action.as_ref().map(|action| action.kind),
+            Some("readiness_poll")
+        );
+
+        let mut rendered = Vec::new();
+        write_status_watch_report(&report, "text", &mut rendered).expect("render");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+        assert!(rendered.contains("Status watch"));
+        assert!(rendered.contains("progress: published=1 pending=0 uploaded=1"));
+        assert!(rendered.contains("next: readiness_poll beta@0.2.0"));
+    }
+
+    #[test]
+    fn status_watch_next_action_ignores_stale_schedules_after_terminal_event() {
+        let now = Utc::now();
+        let scheduled = PublishEvent {
+            timestamp: now,
+            package: "beta@0.2.0".to_string(),
+            event_type: EventType::RetryScheduled {
+                attempt: 1,
+                max_attempts: 3,
+                delay_ms: 5_000,
+                next_attempt_at: now + chrono::Duration::seconds(5),
+                reason: shipper_core::types::ErrorClass::Retryable,
+                message: "rate limited".to_string(),
+            },
+        };
+        assert!(latest_status_watch_next_action(std::slice::from_ref(&scheduled)).is_some());
+
+        let published = PublishEvent {
+            timestamp: now,
+            package: "beta@0.2.0".to_string(),
+            event_type: EventType::PackagePublished { duration_ms: 10 },
+        };
+        let events = vec![scheduled, published];
+        assert!(latest_status_watch_next_action(&events).is_none());
+    }
+
+    #[test]
+    fn status_watch_current_package_ignores_stale_active_events_after_terminal_event() {
+        let now = Utc::now();
+        let events = vec![
+            PublishEvent {
+                timestamp: now,
+                package: "beta@0.2.0".to_string(),
+                event_type: EventType::PackageStarted {
+                    name: "beta".to_string(),
+                    version: "0.2.0".to_string(),
+                },
+            },
+            PublishEvent {
+                timestamp: now,
+                package: "beta@0.2.0".to_string(),
+                event_type: EventType::PackagePublished { duration_ms: 10 },
+            },
+        ];
+        let packages = vec![StatusWatchPackageReport {
+            name: "beta".to_string(),
+            version: "0.2.0".to_string(),
+            state: "published".to_string(),
+            attempts: 1,
+            last_updated_at: Some(format_utc(now)),
+        }];
+        assert_eq!(current_status_package(&events, None, &packages), None);
+    }
+
+    #[test]
+    fn status_watch_event_reader_ignores_incomplete_tail_line() {
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        let event = PublishEvent {
+            timestamp: Utc::now(),
+            package: "beta@0.2.0".to_string(),
+            event_type: EventType::PackageStarted {
+                name: "beta".to_string(),
+                version: "0.2.0".to_string(),
+            },
+        };
+        let mut content = serde_json::to_string(&event).expect("serialize event");
+        content.push('\n');
+        content.push_str("{\"type\":\"package_started\"");
+        fs::write(&events_path, content).expect("write events");
+
+        let events = read_status_watch_events(&events_path).expect("read events");
+        assert_eq!(events.len(), 1);
     }
 
     #[test]
