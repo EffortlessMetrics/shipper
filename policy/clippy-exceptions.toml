@@ -1,0 +1,29 @@
+# Clippy exception ledger.
+#
+# Intentional suppressions with business justification. Every entry has
+# an owner, a reason, and an expires date (used to force annual review).
+# `check-clippy-exceptions` fails if any entry is past its expires.
+#
+# This file ships empty. Real entries are added intentionally when a
+# specific suppression is judged durable.
+#
+# Suppressions in code must use `#[expect(clippy::lint_name, reason = "...")]`,
+# not bare `#[allow(clippy::...)]`. The check-clippy-exceptions command
+# runs a shallow scan to surface bare-allow occurrences as informational
+# findings.
+#
+# See docs/CLIPPY_POLICY.md, policy/clippy-lints.toml, policy/clippy-debt.toml.
+
+schema_version = "1.0"
+policy = "clippy-exceptions"
+owner = "rust/lints"
+status = "active"
+
+# Entries take this shape:
+#
+# [[exception]]
+# lint = "clippy::needless_pass_by_value"
+# path = "crates/shipper-core/src/engine/publish.rs:142"
+# owner = "rust/lints"
+# reason = "Hot-path function taking owned value by deliberate API contract."
+# expires = "2027-05-12"

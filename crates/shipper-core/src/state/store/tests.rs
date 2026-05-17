@@ -599,12 +599,18 @@ fn file_store_clear_removes_events_too() {
     store.save_events(&events).expect("save events");
     store.save_state(&sample_state()).expect("save state");
     store.save_receipt(&sample_receipt()).expect("save receipt");
+    let reconciliation_path = crate::state::execution_state::reconciliation_path(td.path());
+    std::fs::write(&reconciliation_path, "{}").expect("save reconciliation");
 
     store.clear().expect("clear");
 
     assert!(store.load_state().expect("load state").is_none());
     assert!(store.load_receipt().expect("load receipt").is_none());
     assert!(store.load_events().expect("load events").is_none());
+    assert!(
+        !reconciliation_path.exists(),
+        "reconciliation report should be removed"
+    );
 }
 
 #[test]

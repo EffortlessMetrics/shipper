@@ -1,0 +1,17 @@
+# Executable file allowlist.
+#
+# Any tracked file with the git executable bit must be receipted here with the
+# reason it is executable. No file should become executable without a policy
+# receipt.
+#
+# This file ships empty in PR 2. PR 3 receipts any current executables.
+
+schema_version = "1.0"
+policy = "executable-allowlist"
+owner = "EffortlessMetrics"
+status = "active"
+
+# No tracked executables are receipted at scaffold time. PR 3
+# (chore(policy): receipt high-risk non-Rust surfaces, #203) sweeps current
+# tracked-and-executable files into entries here. The checker (PR 7, #206)
+# enforces that the git executable bit matches this allowlist.

@@ -1,0 +1,6 @@
+# Cargo alias config for the shipper workspace.
+
+[alias]
+# `cargo xtask <cmd>` -> `cargo run --package xtask -- <cmd>`
+# See xtask/src/main.rs and docs/policy/NON_RUST_ROLLOUT.md.
+xtask = "run --package xtask --"

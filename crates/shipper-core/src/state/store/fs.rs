@@ -62,6 +62,7 @@ impl StateStore for FileStore {
     fn clear(&self) -> Result<()> {
         let state_path = state::state_path(&self.state_dir);
         let receipt_path = state::receipt_path(&self.state_dir);
+        let reconciliation_path = state::reconciliation_path(&self.state_dir);
         let events_path = crate::state::events::events_path(&self.state_dir);
 
         // Remove files if they exist
@@ -72,6 +73,14 @@ impl StateStore for FileStore {
         if receipt_path.exists() {
             std::fs::remove_file(&receipt_path).with_context(|| {
                 format!("failed to remove receipt file {}", receipt_path.display())
+            })?;
+        }
+        if reconciliation_path.exists() {
+            std::fs::remove_file(&reconciliation_path).with_context(|| {
+                format!(
+                    "failed to remove reconciliation file {}",
+                    reconciliation_path.display()
+                )
             })?;
         }
         if events_path.exists() {

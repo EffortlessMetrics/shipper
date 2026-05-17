@@ -429,10 +429,19 @@ fn preflight_json_format_produces_valid_json() {
 
     let stdout = String::from_utf8(out).expect("utf8");
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["schema_version"], "shipper.preflight.v1");
     assert!(json["plan_id"].is_string());
     assert!(json["packages"].is_array());
     assert_eq!(json["packages"].as_array().unwrap().len(), 1);
     assert_eq!(json["packages"][0]["name"], "alpha");
+    assert!(json["proofs"].is_array());
+    assert!(json["gaps"].is_array());
+    assert!(json["failed_checks"].is_array());
+    assert_eq!(
+        json.pointer("/registry_profile/name")
+            .and_then(serde_json::Value::as_str),
+        Some("crates-io")
+    );
 
     registry.join();
 }

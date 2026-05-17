@@ -1,0 +1,19 @@
+# Non-Rust file debt ledger.
+#
+# Entries here are non-Rust files that exist *without* a durable receipt and
+# are scheduled for cleanup, conversion, or formal allowlist entry. Every
+# debt entry has an owner and an expires date. When `expires` passes, the
+# checker (PR 5) will fail unless the entry is renewed, moved to the proper
+# allowlist, or the file is removed.
+#
+# This file ships empty in PR 2. Real entries are populated by
+# `cargo xtask non-rust propose` (PR 6) for human review.
+
+schema_version = "1.0"
+policy = "non-rust-debt"
+owner = "EffortlessMetrics"
+status = "active"
+
+# No active debt at scaffold time. Entries are added intentionally — never
+# auto-generated into this file. Use `target/policy/non-rust-proposal.md`
+# (output of `cargo xtask non-rust propose`) as the input for additions here.

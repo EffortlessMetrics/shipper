@@ -3063,12 +3063,12 @@ mod plan_quiet_mode {
 mod plan_json_format {
     use super::*;
 
-    // Scenario: Plan with --format json still succeeds (plan uses text output)
+    // Scenario: Plan with --format json emits the decision-grade plan contract
     //
     // Given: a workspace with core-lib, utils-lib, top-app
     // When: I run "shipper plan --format json"
     // Then: exit code is 0
-    // And: stdout contains the plan data (plan always uses text format)
+    // And: stdout is structured JSON with graph counts and dependency reasons
     #[test]
     fn given_multi_crate_when_plan_json_then_valid_json_output() {
         let td = tempdir().expect("tempdir");
@@ -3087,14 +3087,32 @@ mod plan_json_format {
             .clone();
 
         let stdout = String::from_utf8(output).expect("utf8");
-        // Plan command outputs text format regardless of --format flag
-        assert!(
-            stdout.contains("core-lib@0.1.0"),
-            "plan output should contain core-lib, got: {stdout}"
+        let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid plan JSON");
+
+        assert!(json["plan_id"].is_string(), "missing plan_id: {stdout}");
+        assert_eq!(json["publishable_count"].as_u64(), Some(3));
+        assert_eq!(json["skipped_count"].as_u64(), Some(0));
+        assert_eq!(json["internal_dependency_edges"].as_u64(), Some(3));
+        assert_eq!(json["publish_levels"].as_u64(), Some(3));
+
+        let packages = json["packages"].as_array().expect("packages array");
+        assert_eq!(packages.len(), 3, "unexpected packages: {stdout}");
+        assert_eq!(packages[0]["name"].as_str(), Some("core-lib"));
+        assert_eq!(
+            packages[0]["order_reason"].as_str(),
+            Some("no workspace dependencies")
         );
-        assert!(
-            stdout.contains("Total packages to publish:"),
-            "plan output should contain package count, got: {stdout}"
+        assert_eq!(packages[1]["name"].as_str(), Some("utils-lib"));
+        assert_eq!(
+            packages[1]["dependencies"]
+                .as_array()
+                .expect("dependencies")[0]
+                .as_str(),
+            Some("core-lib@0.1.0")
+        );
+        assert_eq!(
+            packages[2]["order_reason"].as_str(),
+            Some("depends on: core-lib@0.1.0, utils-lib@0.1.0")
         );
     }
 }

@@ -118,7 +118,7 @@ pub fn maybe_send_event(config: &WebhookConfig, event: WebhookEvent) {
     });
 }
 
-fn to_micro_payload(payload: &WebhookPayload) -> shipper_webhook::WebhookPayload {
+pub(crate) fn to_micro_payload(payload: &WebhookPayload) -> shipper_webhook::WebhookPayload {
     let (message, title, success, package, version, registry, error, extra) = match &payload.event {
         WebhookEvent::PublishStarted {
             plan_id,
@@ -231,348 +231,292 @@ fn to_micro_payload(payload: &WebhookPayload) -> shipper_webhook::WebhookPayload
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shipper_webhook::WebhookType;
 
-    fn cfg(url: &str) -> WebhookConfig {
+    fn sample_config(url: &str) -> WebhookConfig {
         WebhookConfig {
             url: url.to_string(),
-            ..WebhookConfig::default()
+            webhook_type: WebhookType::Generic,
+            secret: None,
+            timeout_secs: 30,
         }
     }
 
-    // --- WebhookClient::new ---
+    fn started_event() -> WebhookEvent {
+        WebhookEvent::PublishStarted {
+            plan_id: "plan-1".to_string(),
+            package_count: 3,
+            registry: "crates-io".to_string(),
+        }
+    }
 
-    fn new_err(config: &WebhookConfig) -> anyhow::Error {
-        // WebhookClient doesn't impl Debug, so we can't use expect_err.
-        match WebhookClient::new(config) {
-            Ok(_) => panic!("expected an error from WebhookClient::new"),
-            Err(e) => e,
+    fn succeeded_event() -> WebhookEvent {
+        WebhookEvent::PublishSucceeded {
+            plan_id: "plan-1".to_string(),
+            package_name: "pkg-a".to_string(),
+            package_version: "1.2.3".to_string(),
+            duration_ms: 1500,
+        }
+    }
+
+    fn failed_event() -> WebhookEvent {
+        WebhookEvent::PublishFailed {
+            plan_id: "plan-1".to_string(),
+            package_name: "pkg-b".to_string(),
+            package_version: "0.1.0".to_string(),
+            error_class: "Permanent".to_string(),
+            message: "auth failed".to_string(),
+        }
+    }
+
+    fn completed_event(failure_count: usize) -> WebhookEvent {
+        WebhookEvent::PublishCompleted {
+            plan_id: "plan-1".to_string(),
+            total_packages: 4,
+            success_count: 4 - failure_count,
+            failure_count,
+            skipped_count: 0,
+            result: if failure_count == 0 {
+                "success".to_string()
+            } else {
+                "partial".to_string()
+            },
+        }
+    }
+
+    fn sample_payload(event: WebhookEvent) -> WebhookPayload {
+        WebhookPayload {
+            timestamp: Utc::now(),
+            event,
         }
     }
 
     #[test]
     fn webhook_client_new_rejects_empty_url() {
-        let err = new_err(&cfg(""));
+        let cfg = sample_config("");
+        let err = match WebhookClient::new(&cfg) {
+            Err(e) => e,
+            Ok(_) => panic!("empty url must be rejected"),
+        };
         let msg = format!("{err:#}");
-        assert!(msg.contains("webhook URL is required"), "got: {msg}");
+        assert!(msg.contains("required"), "unexpected error: {msg}");
     }
 
     #[test]
-    fn webhook_client_new_rejects_whitespace_url() {
-        // Trim happens before length check.
-        let err = new_err(&cfg("   \t\n"));
-        let msg = format!("{err:#}");
-        assert!(msg.contains("webhook URL is required"), "got: {msg}");
-    }
-
-    #[test]
-    fn webhook_client_new_accepts_nonempty_url() {
-        let client = WebhookClient::new(&cfg("https://example.invalid/hook"))
-            .expect("non-empty URL accepted");
-        // We didn't expose `config` publicly, so just confirm the value
-        // by going through send_event-free smoke (clone derives).
-        let _cloned = client.clone();
-    }
-
-    // --- maybe_send_event ---
-
-    #[test]
-    fn maybe_send_event_is_noop_for_empty_url() {
-        // Should NOT panic, spawn a thread, or send anything.
-        let config = cfg("");
-        maybe_send_event(
-            &config,
-            WebhookEvent::PublishStarted {
-                plan_id: "p".into(),
-                package_count: 0,
-                registry: "crates-io".into(),
-            },
-        );
-    }
-
-    #[test]
-    fn maybe_send_event_is_noop_for_whitespace_url() {
-        let config = cfg("   ");
-        maybe_send_event(
-            &config,
-            WebhookEvent::PublishCompleted {
-                plan_id: "p".into(),
-                total_packages: 0,
-                success_count: 0,
-                failure_count: 0,
-                skipped_count: 0,
-                result: "ok".into(),
-            },
-        );
-    }
-
-    // --- WebhookEvent serialization round-trips ---
-
-    fn round_trip(ev: &WebhookEvent) -> WebhookEvent {
-        let json = serde_json::to_string(ev).expect("serialize");
-        serde_json::from_str(&json).expect("deserialize")
-    }
-
-    #[test]
-    fn publish_started_round_trips_and_tags_event() {
-        let ev = WebhookEvent::PublishStarted {
-            plan_id: "plan-abc".into(),
-            package_count: 3,
-            registry: "crates-io".into(),
+    fn webhook_client_new_rejects_whitespace_only_url() {
+        let cfg = sample_config("   ");
+        let err = match WebhookClient::new(&cfg) {
+            Err(e) => e,
+            Ok(_) => panic!("whitespace url must be rejected"),
         };
-        let json = serde_json::to_string(&ev).expect("serialize");
-        // serde tag = "event", rename_all = "snake_case"
-        assert!(json.contains(r#""event":"publish_started""#), "json={json}");
-        assert!(json.contains(r#""plan_id":"plan-abc""#));
-
-        match round_trip(&ev) {
-            WebhookEvent::PublishStarted {
-                plan_id,
-                package_count,
-                registry,
-            } => {
-                assert_eq!(plan_id, "plan-abc");
-                assert_eq!(package_count, 3);
-                assert_eq!(registry, "crates-io");
-            }
-            other => panic!("unexpected variant: {other:?}"),
-        }
+        assert!(format!("{err:#}").contains("required"));
     }
 
     #[test]
-    fn publish_succeeded_round_trips() {
-        let ev = WebhookEvent::PublishSucceeded {
-            plan_id: "p".into(),
-            package_name: "foo".into(),
-            package_version: "1.2.3".into(),
-            duration_ms: 250,
-        };
-        let json = serde_json::to_string(&ev).expect("serialize");
-        assert!(json.contains(r#""event":"publish_succeeded""#));
-        match round_trip(&ev) {
-            WebhookEvent::PublishSucceeded {
-                package_name,
-                duration_ms,
-                ..
-            } => {
-                assert_eq!(package_name, "foo");
-                assert_eq!(duration_ms, 250);
-            }
-            other => panic!("unexpected variant: {other:?}"),
-        }
+    fn webhook_client_new_accepts_valid_url() {
+        let cfg = sample_config("https://example.invalid/hook");
+        WebhookClient::new(&cfg).expect("valid url must be accepted");
     }
 
     #[test]
-    fn publish_failed_round_trips() {
-        let ev = WebhookEvent::PublishFailed {
-            plan_id: "p".into(),
-            package_name: "foo".into(),
-            package_version: "1.0.0".into(),
-            error_class: "permanent".into(),
-            message: "denied".into(),
-        };
-        let json = serde_json::to_string(&ev).expect("serialize");
-        assert!(json.contains(r#""event":"publish_failed""#));
-        match round_trip(&ev) {
-            WebhookEvent::PublishFailed {
-                error_class,
-                message,
-                ..
-            } => {
-                assert_eq!(error_class, "permanent");
-                assert_eq!(message, "denied");
-            }
-            other => panic!("unexpected variant: {other:?}"),
-        }
+    fn webhook_client_is_clone() {
+        let cfg = sample_config("https://example.invalid/hook");
+        let client = WebhookClient::new(&cfg).expect("ok");
+        let _ = client.clone();
     }
 
     #[test]
-    fn publish_completed_round_trips() {
-        let ev = WebhookEvent::PublishCompleted {
-            plan_id: "p".into(),
-            total_packages: 5,
-            success_count: 4,
-            failure_count: 1,
-            skipped_count: 0,
-            result: "partial_failure".into(),
-        };
-        let json = serde_json::to_string(&ev).expect("serialize");
-        assert!(json.contains(r#""event":"publish_completed""#));
-        match round_trip(&ev) {
-            WebhookEvent::PublishCompleted {
-                total_packages,
-                success_count,
-                failure_count,
-                result,
-                ..
-            } => {
-                assert_eq!(total_packages, 5);
-                assert_eq!(success_count, 4);
-                assert_eq!(failure_count, 1);
-                assert_eq!(result, "partial_failure");
-            }
-            other => panic!("unexpected variant: {other:?}"),
-        }
-    }
-
-    // --- WebhookPayload round-trip (uses Utc::now()) ---
-
-    #[test]
-    fn webhook_payload_serializes_with_timestamp_and_event() {
-        let payload = WebhookPayload {
-            timestamp: Utc::now(),
-            event: WebhookEvent::PublishStarted {
-                plan_id: "p".into(),
-                package_count: 1,
-                registry: "crates-io".into(),
-            },
-        };
-        let json = serde_json::to_string(&payload).expect("serialize");
-        assert!(json.contains("timestamp"));
-        assert!(json.contains(r#""event":"publish_started""#));
-    }
-
-    // --- to_micro_payload converters: one assertion per variant ---
-
-    fn extra_legacy(payload: &shipper_webhook::WebhookPayload) -> &serde_json::Value {
-        payload
-            .extra
-            .get("legacy")
-            .expect("`legacy` extra field present")
+    fn maybe_send_event_returns_early_on_empty_url() {
+        let cfg = sample_config("");
+        maybe_send_event(&cfg, started_event());
     }
 
     #[test]
-    fn to_micro_payload_publish_started_maps_fields() {
-        let payload = WebhookPayload {
-            timestamp: Utc::now(),
-            event: WebhookEvent::PublishStarted {
-                plan_id: "plan-1".into(),
-                package_count: 4,
-                registry: "crates-io".into(),
-            },
-        };
-        let micro = to_micro_payload(&payload);
-        assert!(micro.success, "publish_started is reported as success");
+    fn maybe_send_event_returns_early_on_whitespace_url() {
+        let cfg = sample_config(" \t ");
+        maybe_send_event(&cfg, succeeded_event());
+    }
+
+    #[test]
+    fn to_micro_payload_publish_started_fields() {
+        let micro = to_micro_payload(&sample_payload(started_event()));
+        assert!(micro.success);
         assert_eq!(micro.title.as_deref(), Some("Publish Started"));
-        assert!(micro.message.contains("plan-1"));
-        assert!(micro.message.contains("4 packages"));
-        assert!(micro.message.contains("crates-io"));
-        assert_eq!(micro.registry.as_deref(), Some("crates-io"));
         assert!(micro.package.is_none());
         assert!(micro.version.is_none());
+        assert_eq!(micro.registry.as_deref(), Some("crates-io"));
         assert!(micro.error.is_none());
-
-        let extra = extra_legacy(&micro);
-        assert_eq!(extra["event"], "publish_started");
-        assert_eq!(extra["plan_id"], "plan-1");
-        assert_eq!(extra["package_count"], 4);
-        assert_eq!(extra["registry"], "crates-io");
+        assert!(micro.message.contains("plan-1"));
+        assert!(micro.message.contains("3 packages"));
+        assert!(micro.message.contains("crates-io"));
+        let legacy = micro.extra.get("legacy").expect("legacy");
+        assert_eq!(
+            legacy.get("event").and_then(|v| v.as_str()),
+            Some("publish_started")
+        );
+        assert_eq!(
+            legacy.get("plan_id").and_then(|v| v.as_str()),
+            Some("plan-1")
+        );
+        assert_eq!(
+            legacy.get("package_count").and_then(|v| v.as_u64()),
+            Some(3)
+        );
+        assert_eq!(
+            legacy.get("registry").and_then(|v| v.as_str()),
+            Some("crates-io")
+        );
     }
 
     #[test]
-    fn to_micro_payload_publish_succeeded_maps_fields() {
-        let payload = WebhookPayload {
-            timestamp: Utc::now(),
-            event: WebhookEvent::PublishSucceeded {
-                plan_id: "plan-1".into(),
-                package_name: "foo".into(),
-                package_version: "0.1.0".into(),
-                duration_ms: 1234,
-            },
-        };
-        let micro = to_micro_payload(&payload);
+    fn to_micro_payload_publish_succeeded_fields() {
+        let micro = to_micro_payload(&sample_payload(succeeded_event()));
         assert!(micro.success);
         assert_eq!(micro.title.as_deref(), Some("Publish Succeeded"));
-        assert!(micro.message.contains("foo"));
-        assert!(micro.message.contains("0.1.0"));
-        assert!(micro.message.contains("1234ms"));
-        assert_eq!(micro.package.as_deref(), Some("foo"));
-        assert_eq!(micro.version.as_deref(), Some("0.1.0"));
+        assert_eq!(micro.package.as_deref(), Some("pkg-a"));
+        assert_eq!(micro.version.as_deref(), Some("1.2.3"));
         assert!(micro.registry.is_none());
         assert!(micro.error.is_none());
-
-        let extra = extra_legacy(&micro);
-        assert_eq!(extra["event"], "publish_succeeded");
-        assert_eq!(extra["duration_ms"], 1234);
+        assert!(micro.message.contains("pkg-a"));
+        assert!(micro.message.contains("1.2.3"));
+        assert!(micro.message.contains("1500ms"));
+        let legacy = micro.extra.get("legacy").expect("legacy");
+        assert_eq!(
+            legacy.get("event").and_then(|v| v.as_str()),
+            Some("publish_succeeded")
+        );
+        assert_eq!(
+            legacy.get("duration_ms").and_then(|v| v.as_u64()),
+            Some(1500)
+        );
     }
 
     #[test]
-    fn to_micro_payload_publish_failed_sets_success_false_and_error() {
-        let payload = WebhookPayload {
-            timestamp: Utc::now(),
-            event: WebhookEvent::PublishFailed {
-                plan_id: "plan-9".into(),
-                package_name: "bar".into(),
-                package_version: "2.0.0".into(),
-                error_class: "permanent".into(),
-                message: "version already exists".into(),
-            },
-        };
-        let micro = to_micro_payload(&payload);
-        assert!(!micro.success, "failures must report success=false");
+    fn to_micro_payload_publish_failed_fields() {
+        let micro = to_micro_payload(&sample_payload(failed_event()));
+        assert!(!micro.success);
         assert_eq!(micro.title.as_deref(), Some("Publish Failed"));
-        assert!(micro.message.contains("bar"));
-        assert!(micro.message.contains("permanent"));
-        assert_eq!(micro.package.as_deref(), Some("bar"));
-        assert_eq!(micro.version.as_deref(), Some("2.0.0"));
-        assert_eq!(micro.error.as_deref(), Some("version already exists"));
-
-        let extra = extra_legacy(&micro);
-        assert_eq!(extra["event"], "publish_failed");
-        assert_eq!(extra["error_class"], "permanent");
+        assert_eq!(micro.package.as_deref(), Some("pkg-b"));
+        assert_eq!(micro.version.as_deref(), Some("0.1.0"));
+        assert!(micro.registry.is_none());
+        assert_eq!(micro.error.as_deref(), Some("auth failed"));
+        assert!(micro.message.contains("Permanent"));
+        assert!(micro.message.contains("auth failed"));
+        let legacy = micro.extra.get("legacy").expect("legacy");
+        assert_eq!(
+            legacy.get("event").and_then(|v| v.as_str()),
+            Some("publish_failed")
+        );
+        assert_eq!(
+            legacy.get("error_class").and_then(|v| v.as_str()),
+            Some("Permanent")
+        );
     }
 
     #[test]
     fn to_micro_payload_publish_completed_success_when_no_failures() {
-        let payload = WebhookPayload {
-            timestamp: Utc::now(),
-            event: WebhookEvent::PublishCompleted {
-                plan_id: "p".into(),
-                total_packages: 3,
-                success_count: 3,
-                failure_count: 0,
-                skipped_count: 0,
-                result: "success".into(),
-            },
-        };
-        let micro = to_micro_payload(&payload);
-        assert!(
-            micro.success,
-            "all-succeeded completion must report success=true"
-        );
+        let micro = to_micro_payload(&sample_payload(completed_event(0)));
+        assert!(micro.success, "no failures -> success=true");
         assert_eq!(micro.title.as_deref(), Some("Publish Completed"));
-        assert!(micro.message.contains("3/3"));
-        assert!(micro.message.contains("success"));
         assert!(micro.package.is_none());
-
-        let extra = extra_legacy(&micro);
-        assert_eq!(extra["event"], "publish_completed");
-        assert_eq!(extra["total_packages"], 3);
-        assert_eq!(extra["success_count"], 3);
-        assert_eq!(extra["failure_count"], 0);
-        assert_eq!(extra["skipped_count"], 0);
-        assert_eq!(extra["result"], "success");
+        assert!(micro.version.is_none());
+        assert!(micro.registry.is_none());
+        assert!(micro.error.is_none());
+        assert!(micro.message.contains("4/4 succeeded"));
+        let legacy = micro.extra.get("legacy").expect("legacy");
+        assert_eq!(
+            legacy.get("total_packages").and_then(|v| v.as_u64()),
+            Some(4)
+        );
+        assert_eq!(
+            legacy.get("success_count").and_then(|v| v.as_u64()),
+            Some(4)
+        );
+        assert_eq!(
+            legacy.get("failure_count").and_then(|v| v.as_u64()),
+            Some(0)
+        );
+        assert_eq!(
+            legacy.get("result").and_then(|v| v.as_str()),
+            Some("success")
+        );
     }
 
     #[test]
-    fn to_micro_payload_publish_completed_failure_when_any_failures() {
-        let payload = WebhookPayload {
-            timestamp: Utc::now(),
-            event: WebhookEvent::PublishCompleted {
-                plan_id: "p".into(),
-                total_packages: 3,
-                success_count: 1,
-                failure_count: 2,
-                skipped_count: 0,
-                result: "partial_failure".into(),
-            },
-        };
-        let micro = to_micro_payload(&payload);
-        assert!(
-            !micro.success,
-            "any-failure completion must report success=false"
+    fn to_micro_payload_publish_completed_failure_when_any_failed() {
+        let micro = to_micro_payload(&sample_payload(completed_event(2)));
+        assert!(!micro.success, "any failures -> success=false");
+        assert!(micro.message.contains("2/4 succeeded"));
+        assert!(micro.message.contains("2 failed"));
+        let legacy = micro.extra.get("legacy").expect("legacy");
+        assert_eq!(
+            legacy.get("failure_count").and_then(|v| v.as_u64()),
+            Some(2)
         );
-        let extra = extra_legacy(&micro);
-        assert_eq!(extra["failure_count"], 2);
-        assert_eq!(extra["result"], "partial_failure");
+        assert_eq!(
+            legacy.get("result").and_then(|v| v.as_str()),
+            Some("partial")
+        );
+    }
+
+    #[test]
+    fn to_micro_payload_includes_legacy_key() {
+        for event in [
+            started_event(),
+            succeeded_event(),
+            failed_event(),
+            completed_event(1),
+        ] {
+            let micro = to_micro_payload(&sample_payload(event));
+            assert!(
+                micro.extra.contains_key("legacy"),
+                "to_micro_payload must always include `legacy` key"
+            );
+        }
+    }
+
+    #[test]
+    fn webhook_event_serde_roundtrip_for_all_variants() {
+        for event in [
+            started_event(),
+            succeeded_event(),
+            failed_event(),
+            completed_event(1),
+        ] {
+            let json = serde_json::to_string(&event).expect("serialize");
+            let back: WebhookEvent = serde_json::from_str(&json).expect("deserialize");
+            // Reuse serialization for structural equality.
+            assert_eq!(
+                json,
+                serde_json::to_string(&back).expect("re-serialize"),
+                "roundtrip must preserve event payload"
+            );
+        }
+    }
+
+    #[test]
+    fn webhook_event_publish_started_tag_in_json() {
+        let json = serde_json::to_string(&started_event()).expect("serialize");
+        assert!(
+            json.contains("\"event\":\"publish_started\""),
+            "expected tagged variant, got {json}"
+        );
+    }
+
+    #[test]
+    fn webhook_event_publish_failed_tag_in_json() {
+        let json = serde_json::to_string(&failed_event()).expect("serialize");
+        assert!(
+            json.contains("\"event\":\"publish_failed\""),
+            "expected tagged variant, got {json}"
+        );
+    }
+
+    #[test]
+    fn webhook_payload_serializes_with_event_and_timestamp() {
+        let payload = sample_payload(started_event());
+        let json = serde_json::to_string(&payload).expect("serialize");
+        assert!(json.contains("\"timestamp\""));
+        assert!(json.contains("\"event\":\"publish_started\""));
     }
 }
