@@ -1104,7 +1104,8 @@ pub fn run() -> Result<()> {
                     if opts.registries.len() > 1 {
                         println!(
                             "\n🩺 Diagnostics for registry: {} ({})",
-                            reg.name, reg.api_base
+                            reg.name,
+                            doctor::redact_diagnostic_value(&reg.api_base)
                         );
                     }
                     let mut current_planned = planned.clone();

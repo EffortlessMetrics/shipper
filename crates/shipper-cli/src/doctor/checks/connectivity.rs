@@ -7,6 +7,7 @@ use shipper_core::engine::Reporter;
 use shipper_core::plan;
 
 use crate::doctor::findings::{Finding, FindingLevel};
+use crate::doctor::redact_diagnostic_value;
 
 #[derive(Debug, Serialize)]
 pub(in crate::doctor) struct ConnectivityCheck {
@@ -39,8 +40,9 @@ pub(in crate::doctor) fn inspect(ws: &plan::PlannedWorkspace) -> Result<Connecti
     let registry_reachable = match reg_client.crate_exists("serde") {
         Ok(_) => true,
         Err(e) => {
-            let evidence = format!("registry_reachable: false ({e:#})");
-            registry_error = Some(format!("{e:#}"));
+            let error = redact_diagnostic_value(&format!("{e:#}"));
+            let evidence = format!("registry_reachable: false ({error})");
+            registry_error = Some(error);
             findings.push(Finding {
                 id: "registry-unreachable",
                 severity: FindingLevel::Blocked,
@@ -60,7 +62,7 @@ pub(in crate::doctor) fn inspect(ws: &plan::PlannedWorkspace) -> Result<Connecti
         }
     };
 
-    let index_base = ws.plan.registry.get_index_base();
+    let index_base = redact_diagnostic_value(&ws.plan.registry.get_index_base());
 
     Ok(ConnectivityCheck {
         registry_reachable,

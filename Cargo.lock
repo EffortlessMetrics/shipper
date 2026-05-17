@@ -2351,6 +2351,7 @@ dependencies = [
  "shipper-config",
  "shipper-core",
  "shipper-duration",
+ "shipper-output-sanitizer",
  "shipper-retry",
  "shipper-types",
  "temp-env",

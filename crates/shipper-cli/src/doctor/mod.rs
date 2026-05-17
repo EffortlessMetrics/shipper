@@ -15,9 +15,11 @@ use shipper_core::types::RuntimeOptions;
 
 mod checks;
 mod findings;
+mod redaction;
 
 #[cfg(test)]
 pub(crate) use checks::tools::print_cmd_version;
+pub(crate) use redaction::redact_diagnostic_value;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct DoctorOutput {
@@ -68,8 +70,13 @@ pub(crate) fn collect_report(
         workspace_root: ws.workspace_root.display().to_string(),
         registry: DoctorRegistryReport {
             name: ws.plan.registry.name.clone(),
-            api_base: ws.plan.registry.api_base.clone(),
-            index_base: ws.plan.registry.index_base.clone(),
+            api_base: redact_diagnostic_value(&ws.plan.registry.api_base),
+            index_base: ws
+                .plan
+                .registry
+                .index_base
+                .as_deref()
+                .map(redact_diagnostic_value),
         },
         auth,
         state_dir,
@@ -103,7 +110,8 @@ pub(crate) fn run(
     println!("workspace_root: {}", ws.workspace_root.display());
     println!(
         "registry: {} ({})",
-        ws.plan.registry.name, ws.plan.registry.api_base
+        ws.plan.registry.name,
+        redact_diagnostic_value(&ws.plan.registry.api_base)
     );
 
     all.extend(checks::auth::check(ws)?);
