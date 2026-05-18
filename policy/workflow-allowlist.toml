@@ -72,6 +72,16 @@ network_policy = "ci"
 created = "2026-05-12"
 review_after = "2026-08-12"
 
+[[workflow]]
+path = ".github/workflows/live-runner-interruption-rehearsal.yml"
+kind = "release_rehearsal"
+owner = "release/ci"
+reason = "Dedicated live-runner interruption proof: creates an interrupted .shipper artifact in one GitHub job, downloads it in a second job, resumes with fake Cargo and a mock registry, and uploads the resumed evidence packet."
+process_policy = "ci"
+network_policy = "ci"
+created = "2026-05-18"
+review_after = "2026-08-18"
+
 # ─── Release workflow (high risk: secrets, Trusted Publishing, registry) ────
 
 [[workflow]]

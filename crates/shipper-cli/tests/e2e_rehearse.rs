@@ -35,6 +35,7 @@
 //! exercises the same invariants against crates.io proper.
 
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -113,6 +114,7 @@ fn write_fake_cargo(bin_dir: &Path) -> PathBuf {
 @echo off\r\n\
 setlocal EnableDelayedExpansion\r\n\
 set ARGS=%*\r\n\
+if defined SHIPPER_FAKE_CARGO_LOG echo !ARGS!>>\"%SHIPPER_FAKE_CARGO_LOG%\"\r\n\
 set MATCH=\r\n\
 echo !ARGS! | findstr /C:\"crate-c\" >nul && set MATCH=C\r\n\
 echo !ARGS! | findstr /C:\"crate-b\" >nul && if \"!MATCH!\"==\"\" set MATCH=B\r\n\
@@ -130,6 +132,9 @@ exit /b 0\r\n";
         use std::os::unix::fs::PermissionsExt;
         let path = bin_dir.join("cargo");
         let script = "#!/usr/bin/env sh\n\
+if [ -n \"${SHIPPER_FAKE_CARGO_LOG:-}\" ]; then\n\
+  printf '%s\\n' \"$*\" >> \"$SHIPPER_FAKE_CARGO_LOG\"\n\
+fi\n\
 case \"$*\" in\n\
   *crate-c*) exit \"${SHIPPER_FAKE_EXIT_FOR_C:-0}\" ;;\n\
   *crate-b*) exit \"${SHIPPER_FAKE_EXIT_FOR_B:-0}\" ;;\n\
@@ -171,7 +176,11 @@ impl RegistryHandles {
 }
 
 fn spawn_registry() -> (String, std::sync::mpsc::Sender<()>, RegistryHandles) {
-    let server = Server::http("127.0.0.1:0").expect("server");
+    spawn_registry_at("127.0.0.1:0")
+}
+
+fn spawn_registry_at(addr: &str) -> (String, std::sync::mpsc::Sender<()>, RegistryHandles) {
+    let server = Server::http(addr).expect("server");
     let base_url = format!("http://{}", server.server_addr());
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
 
@@ -294,6 +303,17 @@ fn common_args(
     state_dir: &Path,
     fake_cargo: &Path,
 ) {
+    common_args_with_max_attempts(cmd, manifest, api_base, state_dir, fake_cargo, "1");
+}
+
+fn common_args_with_max_attempts(
+    cmd: &mut Command,
+    manifest: &Path,
+    api_base: &str,
+    state_dir: &Path,
+    fake_cargo: &Path,
+    max_attempts: &str,
+) {
     cmd.arg("--manifest-path")
         .arg(manifest)
         .arg("--api-base")
@@ -307,12 +327,120 @@ fn common_args(
         .arg("--verify-mode")
         .arg("none")
         .arg("--max-attempts")
-        .arg("1")
+        .arg(max_attempts)
         .arg("--base-delay")
         .arg("0ms")
         .arg("--state-dir")
         .arg(state_dir)
         .env("SHIPPER_CARGO_BIN", fake_cargo);
+}
+
+fn live_rehearsal_root() -> PathBuf {
+    PathBuf::from(
+        env::var("SHIPPER_LIVE_REHEARSAL_ROOT")
+            .expect("SHIPPER_LIVE_REHEARSAL_ROOT must point at the runner fixture root"),
+    )
+}
+
+fn live_registry_addr() -> String {
+    env::var("SHIPPER_LIVE_REHEARSAL_REGISTRY_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:39197".to_string())
+}
+
+fn fake_cargo_log(state_dir: &Path) -> PathBuf {
+    state_dir.join("fake-cargo.log")
+}
+
+fn count_fake_cargo_publishes(log_path: &Path, crate_name: &str) -> usize {
+    fs::read_to_string(log_path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains("publish") && line.contains(crate_name))
+        .count()
+}
+
+fn assert_live_rehearsal_interrupted_state(state_dir: &Path) {
+    let state_path = state_dir.join("state.json");
+    let events_path = state_dir.join("events.jsonl");
+    let state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&state_path).expect("state.json exists"))
+            .expect("state.json is valid JSON");
+
+    assert_eq!(
+        package_state(&state, "crate-a@0.1.0").as_deref(),
+        Some("published"),
+        "crate-a must be published before interruption"
+    );
+    assert_eq!(
+        package_state(&state, "crate-b@0.1.0").as_deref(),
+        Some("published"),
+        "crate-b must be published before interruption"
+    );
+    assert_ne!(
+        package_state(&state, "crate-c@0.1.0").as_deref(),
+        Some("published"),
+        "crate-c must remain unfinished before resume"
+    );
+
+    let events = read_events(&events_path);
+    assert!(
+        !events.is_empty(),
+        "interrupted runner artifact must include events.jsonl"
+    );
+    let published = count_events_matching(&events, |event| {
+        event_type_matches(event, "PackagePublished")
+    });
+    assert_eq!(
+        published, 2,
+        "interrupted artifact should have exactly two PackagePublished events"
+    );
+}
+
+fn assert_live_rehearsal_resumed_state(state_dir: &Path) {
+    let state_path = state_dir.join("state.json");
+    let events_path = state_dir.join("events.jsonl");
+    let receipt_path = state_dir.join("receipt.json");
+    let state_after_raw = fs::read_to_string(&state_path).expect("read state");
+    let state_after: serde_json::Value =
+        serde_json::from_str(&state_after_raw).expect("parse state");
+
+    for pkg in ["crate-a@0.1.0", "crate-b@0.1.0", "crate-c@0.1.0"] {
+        assert_eq!(
+            package_state(&state_after, pkg).as_deref(),
+            Some("published"),
+            "{} must be Published after live-runner resume. state:\n{}",
+            pkg,
+            state_after_raw
+        );
+    }
+    assert!(
+        receipt_path.exists(),
+        "resume must write receipt.json as final release summary"
+    );
+
+    let events = read_events(&events_path);
+    let published_total = count_events_matching(&events, |event| {
+        event_type_matches(event, "PackagePublished")
+    });
+    assert_eq!(
+        published_total, 3,
+        "resume should produce exactly one PackagePublished event per crate"
+    );
+
+    let skipped_total =
+        count_events_matching(&events, |event| event_type_matches(event, "PackageSkipped"));
+    assert!(
+        skipped_total >= 2,
+        "resume should document already-published crates as skipped"
+    );
+
+    let drift_total = count_events_matching(&events, |event| {
+        event_type_matches(event, "StateEventDriftDetected")
+    });
+    assert_eq!(
+        drift_total, 0,
+        "live-runner rehearsal should finish without state/event drift"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -407,12 +535,13 @@ fn rehearsal_interrupted_publish_then_resume_preserves_invariants() {
     registry.clear_pins();
 
     let mut resume = shipper_cmd();
-    common_args(
+    common_args_with_max_attempts(
         &mut resume,
         &root.join("Cargo.toml"),
         &registry_url,
         &state_dir,
         &fake_cargo,
+        "2",
     );
     resume.arg("resume").env("SHIPPER_FAKE_EXIT_FOR_C", "0");
     resume.assert().success();
@@ -472,5 +601,117 @@ fn rehearsal_interrupted_publish_then_resume_preserves_invariants() {
         execution_started, 2,
         "ExecutionStarted events should be exactly 2 (one per run); got {execution_started}. \
          < 2 means events.jsonl was truncated somewhere — append-only invariant broken."
+    );
+}
+
+#[test]
+#[ignore = "workflow-driven: creates the interrupted .shipper artifact for a later runner job"]
+#[serial]
+fn live_runner_interruption_seed_uploads_shipper_artifact() {
+    let root = live_rehearsal_root();
+    if root.exists() {
+        fs::remove_dir_all(&root).expect("remove prior live rehearsal root");
+    }
+    fs::create_dir_all(&root).expect("mkdir live rehearsal root");
+    create_three_crate_workspace(&root);
+
+    let bin_dir = root.join("fake-bin");
+    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    let fake_cargo = write_fake_cargo(&bin_dir);
+
+    let state_dir = root.join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir state dir");
+    let log_path = fake_cargo_log(&state_dir);
+
+    let (registry_url, registry_stop, registry) = spawn_registry_at(&live_registry_addr());
+    registry.pin_404("crate-c");
+
+    let mut cmd = shipper_cmd();
+    common_args(
+        &mut cmd,
+        &root.join("Cargo.toml"),
+        &registry_url,
+        &state_dir,
+        &fake_cargo,
+    );
+    cmd.arg("publish")
+        .env("SHIPPER_FAKE_CARGO_LOG", &log_path)
+        .env("SHIPPER_FAKE_EXIT_FOR_A", "0")
+        .env("SHIPPER_FAKE_EXIT_FOR_B", "0")
+        .env("SHIPPER_FAKE_EXIT_FOR_C", "1");
+    cmd.assert().failure();
+    let _ = registry_stop.send(());
+
+    assert_live_rehearsal_interrupted_state(&state_dir);
+    assert_eq!(
+        count_fake_cargo_publishes(&log_path, "crate-a"),
+        1,
+        "seed run must publish crate-a exactly once"
+    );
+    assert_eq!(
+        count_fake_cargo_publishes(&log_path, "crate-b"),
+        1,
+        "seed run must publish crate-b exactly once"
+    );
+    assert_eq!(
+        count_fake_cargo_publishes(&log_path, "crate-c"),
+        1,
+        "seed run should attempt crate-c once before interruption"
+    );
+}
+
+#[test]
+#[ignore = "workflow-driven: downloads interrupted .shipper artifact and resumes it"]
+#[serial]
+fn live_runner_interruption_resume_downloaded_artifact_preserves_invariants() {
+    let root = live_rehearsal_root();
+    fs::create_dir_all(&root).expect("mkdir live rehearsal root");
+    create_three_crate_workspace(&root);
+
+    let bin_dir = root.join("fake-bin");
+    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    let fake_cargo = write_fake_cargo(&bin_dir);
+
+    let state_dir = root.join(".shipper");
+    let log_path = fake_cargo_log(&state_dir);
+    assert!(
+        state_dir.join("state.json").exists(),
+        "resume job must download interrupted .shipper/state.json first"
+    );
+    assert_live_rehearsal_interrupted_state(&state_dir);
+
+    let (registry_url, registry_stop, _registry) = spawn_registry_at(&live_registry_addr());
+
+    let mut resume = shipper_cmd();
+    common_args_with_max_attempts(
+        &mut resume,
+        &root.join("Cargo.toml"),
+        &registry_url,
+        &state_dir,
+        &fake_cargo,
+        "2",
+    );
+    resume
+        .arg("resume")
+        .env("SHIPPER_FAKE_CARGO_LOG", &log_path)
+        .env("SHIPPER_FAKE_EXIT_FOR_C", "0");
+    resume.assert().success();
+    let _ = registry_stop.send(());
+
+    assert_live_rehearsal_resumed_state(&state_dir);
+    assert_eq!(
+        count_fake_cargo_publishes(&log_path, "crate-a"),
+        1,
+        "resume must not republish crate-a from downloaded state"
+    );
+    assert_eq!(
+        count_fake_cargo_publishes(&log_path, "crate-b"),
+        1,
+        "resume must not republish crate-b from downloaded state"
+    );
+    assert_eq!(
+        count_fake_cargo_publishes(&log_path, "crate-c"),
+        2,
+        "crate-c should be attempted once before interruption and once during resume"
     );
 }

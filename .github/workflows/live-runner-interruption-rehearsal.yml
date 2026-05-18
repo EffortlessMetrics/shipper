@@ -1,0 +1,95 @@
+name: Live runner interruption rehearsal
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/live-runner-interruption-rehearsal.yml"
+      - "crates/shipper-cli/tests/e2e_rehearse.rs"
+      - "crates/shipper-core/src/engine/**"
+      - "crates/shipper-core/src/state/**"
+
+permissions:
+  contents: read
+
+jobs:
+  interrupt:
+    name: Interrupt and upload .shipper
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-live-interruption-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-live-interruption-
+
+      - name: Create interrupted .shipper artifact
+        env:
+          SHIPPER_LIVE_REHEARSAL_ROOT: ${{ runner.temp }}/shipper-live-interruption
+          SHIPPER_LIVE_REHEARSAL_REGISTRY_ADDR: 127.0.0.1:39197
+        run: |
+          cargo test -p shipper-cli --test e2e_rehearse live_runner_interruption_seed_uploads_shipper_artifact -- --ignored --exact --nocapture
+
+      - name: Upload interrupted .shipper
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shipper-live-interruption-seed-${{ github.run_id }}
+          path: ${{ runner.temp }}/shipper-live-interruption/.shipper/
+          include-hidden-files: true
+          retention-days: 30
+
+  resume:
+    name: Download .shipper and resume
+    runs-on: ubuntu-latest
+    needs: interrupt
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-live-interruption-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-live-interruption-
+
+      - name: Prepare rehearsal root
+        run: |
+          mkdir -p "${{ runner.temp }}/shipper-live-interruption/.shipper"
+
+      - name: Download interrupted .shipper
+        uses: actions/download-artifact@v8
+        with:
+          name: shipper-live-interruption-seed-${{ github.run_id }}
+          path: ${{ runner.temp }}/shipper-live-interruption/.shipper/
+
+      - name: Resume from downloaded .shipper
+        env:
+          SHIPPER_LIVE_REHEARSAL_ROOT: ${{ runner.temp }}/shipper-live-interruption
+          SHIPPER_LIVE_REHEARSAL_REGISTRY_ADDR: 127.0.0.1:39197
+        run: |
+          cargo test -p shipper-cli --test e2e_rehearse live_runner_interruption_resume_downloaded_artifact_preserves_invariants -- --ignored --exact --nocapture
+
+      - name: Upload resumed .shipper
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shipper-live-interruption-resume-${{ github.run_id }}
+          path: ${{ runner.temp }}/shipper-live-interruption/.shipper/
+          include-hidden-files: true
+          retention-days: 30

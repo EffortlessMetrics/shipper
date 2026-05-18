@@ -12,6 +12,51 @@ fake cargo. That test runs on every CI commit; the procedure here runs
 can't reach (crates.io rate-limit behavior, sparse-index propagation,
 artifact upload on killed runners, etc.).
 
+## Safe runner-artifact rehearsal
+
+Use the dedicated workflow before attempting the crates.io rehearsal below:
+
+```bash
+gh workflow run live-runner-interruption-rehearsal.yml \
+  --repo EffortlessMetrics/shipper \
+  --ref main
+```
+
+This workflow does not publish to crates.io. It runs the same fake-Cargo/mock
+registry fixture across two real GitHub jobs:
+
+1. `interrupt` creates a three-crate fixture, runs `shipper publish` until the
+   third crate fails, and uploads the interrupted `.shipper/` directory.
+2. `resume` downloads that `.shipper/` artifact into a fresh runner, recreates
+   the same workspace, runs `shipper resume`, verifies no duplicate publishes,
+   and uploads the resumed `.shipper/` directory.
+
+Download both artifacts after the run:
+
+```bash
+gh run download <run-id> \
+  --repo EffortlessMetrics/shipper \
+  --name shipper-live-interruption-seed-<run-id>
+
+gh run download <run-id> \
+  --repo EffortlessMetrics/shipper \
+  --name shipper-live-interruption-resume-<run-id>
+```
+
+The workflow passes only if:
+
+- the interrupted artifact contains `state.json`, `events.jsonl`, and the
+  fake-Cargo command log;
+- the resume job consumes that artifact from a separate runner job;
+- already-published crates are skipped, not republished;
+- the resumed artifact contains `receipt.json`;
+- `events.jsonl` has no state/event drift and records one
+  `PackagePublished` event per crate.
+
+This is the safe proof for artifact upload/download and runner handoff. It does
+not replace the crates.io rehearsal when a release candidate needs real
+registry behavior proof.
+
 ## Prerequisites
 
 - Admin access to <https://github.com/EffortlessMetrics/shipper>.
