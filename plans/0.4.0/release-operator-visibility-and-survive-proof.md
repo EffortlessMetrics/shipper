@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survi
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md; docs/adr/SHIPPER-ADR-0002-registry-truth-over-cargo-output.md
 Linked plan: plans/0.4.0/json-evidence-contracts.md
 Linked issues: #109
-Linked PRs:
+Linked PRs: #330; #331; #333; #310
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: no new policy exceptions
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -128,9 +128,9 @@ State rebuild and live interruption rehearsal.
 
 #### Acceptance
 
-- Finalization detects package state without matching events.
-- Reconciliation evidence is required when ambiguity occurred.
-- Receipt summaries match final state or fail with actionable drift evidence.
+- Finalization detects package state without matching events. [Landed in #333]
+- Reconciliation evidence is required when ambiguity occurred. [Landed in #333]
+- Receipt summaries match final state or fail with actionable drift evidence. [Landed in #333]
 
 #### Proof Commands
 
@@ -165,12 +165,12 @@ Changing normal resume behavior or live interruption rehearsal.
 #### Acceptance
 
 - Events can reconstruct published, pending, failed, ambiguous, and reconciled
-  package states.
+  package states. [Landed in #310]
 - Rebuilt state can be compared with current state for drift diagnostics.
 
 #### Proof Commands
 
-- `cargo test -p shipper-core state_rebuild --lib --locked`
+- `cargo test -p shipper-core rebuild --lib --locked`
 - `cargo xtask policy-report`
 - `cargo fmt --all -- --check`
 - `git diff --check`
