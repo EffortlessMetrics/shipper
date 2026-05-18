@@ -1,6 +1,6 @@
 # SHIPPER-SPEC-0006: Release Auth Evidence and Trusted Publishing
 
-Status: proposed
+Status: accepted
 Owner: EffortlessMetrics
 Created: 2026-05-18
 Milestone: 0.4.0
@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/release-auth-evidence-and-trusted-publishing.md
 Linked issues: #96; #105; #109
-Linked PRs: #338
+Linked PRs: #338; #340
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: policy ledgers remain authoritative for workflow, process, network, and file receipts
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check

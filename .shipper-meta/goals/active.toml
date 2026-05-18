@@ -13,7 +13,7 @@ externally unproven crates.io registration without exposing token values.
 
 end_state = [
   "The active goal points to the accepted auth evidence spec and plan.",
-  "Auth mode and token fallback are visible in release evidence without token values.",
+  "Observed auth mode is visible in release evidence without token values or token-provenance overclaims.",
   "Trusted Publishing workflow proof records whether short-lived token minting succeeded or fallback was used.",
   "Support tiers distinguish advisory diagnostics from a proven Trusted Publishing default.",
 ]
@@ -37,14 +37,20 @@ commands = [
 
 [[work_item]]
 id = "auth-mode-release-evidence"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
 plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
 issue = "105"
+linked_pr = "#340"
+completed = "2026-05-18"
 commands = [
   "cargo test -p shipper-core run_preflight_warns_when_token_auth_overrides_oidc --lib --locked",
+  "cargo test -p shipper-core collect_auth_evidence --lib --locked",
+  "cargo test -p shipper-core run_publish_receipt_contains_evidence_after_success --lib --locked",
+  "cargo test -p shipper-core event_types_serialize_correctly --lib --locked",
   "cargo test -p shipper-output-sanitizer --locked",
+  "cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_command_envelope_to_stdout --locked",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
   "git diff --check",
@@ -52,7 +58,7 @@ commands = [
 
 [[work_item]]
 id = "trusted-publishing-proof-artifact"
-status = "planned"
+status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
 plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
