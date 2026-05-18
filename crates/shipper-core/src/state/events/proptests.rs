@@ -5,7 +5,10 @@
 use super::*;
 use chrono::Utc;
 use proptest::prelude::*;
-use shipper_types::{ErrorClass, EventType, ExecutionResult, Finishability, ReadinessMethod};
+use shipper_types::{
+    AuthEvidence, AuthEvidenceMode, ErrorClass, EventType, ExecutionResult, Finishability,
+    ReadinessMethod,
+};
 use tempfile::tempdir;
 
 fn arb_error_class() -> impl Strategy<Value = ErrorClass> {
@@ -40,6 +43,43 @@ fn arb_finishability() -> impl Strategy<Value = Finishability> {
     ]
 }
 
+fn arb_auth_evidence_mode() -> impl Strategy<Value = AuthEvidenceMode> {
+    prop_oneof![
+        Just(AuthEvidenceMode::CargoToken),
+        Just(AuthEvidenceMode::TrustedPublishingContext),
+        Just(AuthEvidenceMode::CargoTokenWithOidcContext),
+        Just(AuthEvidenceMode::PartialOidcContext),
+        Just(AuthEvidenceMode::Missing),
+        Just(AuthEvidenceMode::Unknown),
+    ]
+}
+
+fn arb_auth_evidence() -> impl Strategy<Value = AuthEvidence> {
+    (
+        ".*",
+        arb_auth_evidence_mode(),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+    )
+        .prop_map(
+            |(
+                registry,
+                auth_mode,
+                token_detected,
+                oidc_request_url_present,
+                oidc_request_token_present,
+            )| AuthEvidence {
+                schema_version: "shipper.auth_evidence.v1".to_string(),
+                registry,
+                auth_mode,
+                token_detected,
+                oidc_request_url_present,
+                oidc_request_token_present,
+            },
+        )
+}
+
 fn arb_event_type() -> impl Strategy<Value = EventType> {
     prop_oneof![
         (".*", 0..100usize).prop_map(|(id, count)| EventType::PlanCreated {
@@ -48,6 +88,7 @@ fn arb_event_type() -> impl Strategy<Value = EventType> {
         }),
         Just(EventType::ExecutionStarted),
         arb_execution_result().prop_map(|result| EventType::ExecutionFinished { result }),
+        arb_auth_evidence().prop_map(|evidence| EventType::AuthEvidenceRecorded { evidence }),
         (".*", ".*").prop_map(|(name, version)| EventType::PackageStarted { name, version }),
         (1..100u32, ".*")
             .prop_map(|(attempt, command)| EventType::PackageAttempted { attempt, command }),

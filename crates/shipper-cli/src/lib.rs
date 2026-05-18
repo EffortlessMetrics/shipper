@@ -3597,6 +3597,7 @@ fn event_type_name(event_type: &EventType) -> &'static str {
         EventType::PlanCreated { .. } => "plan_created",
         EventType::ExecutionStarted => "execution_started",
         EventType::ExecutionFinished { .. } => "execution_finished",
+        EventType::AuthEvidenceRecorded { .. } => "auth_evidence_recorded",
         EventType::PackageStarted { .. } => "package_started",
         EventType::PackageAttempted { .. } => "package_attempted",
         EventType::PackageOutput { .. } => "package_output",

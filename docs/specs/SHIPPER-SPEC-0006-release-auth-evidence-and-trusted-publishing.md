@@ -43,6 +43,9 @@ Release auth evidence must preserve these rules:
   Cargo token auth wins.
 - Publish, resume, and receipt evidence must eventually expose the auth mode
   Shipper used or observed without logging token values.
+- If `CARGO_REGISTRY_TOKEN` is present while GitHub OIDC request variables are
+  also present, Shipper must record that observed state as token auth with OIDC
+  context unless a separate workflow metadata field proves token provenance.
 - Long-lived token fallback must be explicit evidence, not hidden compatibility
   behavior.
 - Unknown or externally unproven facts must be represented as unknown,
@@ -97,8 +100,11 @@ Future implementation proof must cover:
   blocked incomplete OIDC environment and suggests the next action.
 - Preflight runs with both OIDC context and `CARGO_REGISTRY_TOKEN`. It records
   that token auth won and warns that fallback is still configured.
-- A release receipt records `auth_mode = "trusted_publishing"` or
-  `auth_mode = "token_fallback"` without storing the token.
+- A release receipt records `auth_mode = "trusted_publishing_context"`,
+  `auth_mode = "cargo_token"`, or
+  `auth_mode = "cargo_token_with_oidc_context"` without storing the token.
+  The last value is deliberately an observed context, not a claim that the token
+  came from Trusted Publishing or from the fallback secret.
 - A support-tier row remains advisory if the proof only validates repo-visible
   workflow files and does not prove crates.io-side registration.
 
@@ -112,6 +118,8 @@ Expected implementation proof:
 - `cargo test -p shipper-output-sanitizer --locked`
 - focused receipt/event tests for auth-mode evidence when that runtime field is
   added
+- `cargo test -p shipper-core run_publish_receipt_contains_evidence_after_success --lib --locked`
+- `cargo test -p shipper-core event_types_serialize_correctly --lib --locked`
 - `cargo xtask check-doc-contracts --mode advisory`
 - `cargo xtask policy-report`
 

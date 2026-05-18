@@ -65,6 +65,7 @@ fn sample_receipt() -> Receipt {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     }
 }
 
@@ -898,6 +899,7 @@ mod proptests {
                     os: "linux".to_string(),
                     arch: "x86_64".to_string(),
                 },
+                auth_evidence: None,
             };
 
             store.save_receipt(&receipt).expect("save receipt");
@@ -957,6 +959,7 @@ mod proptests {
                     os: "test".to_string(),
                     arch: "test".to_string(),
                 },
+                auth_evidence: None,
             };
 
             let json = serde_json::to_string(&receipt).expect("serialize");
@@ -1246,6 +1249,7 @@ fn file_store_receipt_all_published() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     store.save_receipt(&receipt).expect("save");
@@ -1319,6 +1323,7 @@ fn file_store_receipt_some_failed() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     store.save_receipt(&receipt).expect("save");
@@ -1577,6 +1582,7 @@ fn file_store_receipt_empty_strings_roundtrip() {
             os: String::new(),
             arch: String::new(),
         },
+        auth_evidence: None,
     };
 
     store.save_receipt(&receipt).expect("save");

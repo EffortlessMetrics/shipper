@@ -1530,6 +1530,8 @@ pub struct Receipt {
     #[serde(default)]
     pub git_context: Option<GitContext>,
     pub environment: EnvironmentFingerprint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_evidence: Option<AuthEvidence>,
 }
 
 // Event types for evidence-first receipts
@@ -1616,6 +1618,9 @@ pub enum EventType {
     ExecutionStarted,
     ExecutionFinished {
         result: ExecutionResult,
+    },
+    AuthEvidenceRecorded {
+        evidence: AuthEvidence,
     },
 
     // Package events
@@ -1871,6 +1876,35 @@ pub enum ExecutionResult {
 pub enum AuthType {
     Token,
     TrustedPublishing,
+    Unknown,
+}
+
+/// Release-run authentication evidence observed by Shipper.
+///
+/// This record deliberately captures only non-secret runtime facts. In
+/// particular, `Cargo` receives a `CARGO_REGISTRY_TOKEN` for both a
+/// long-lived token fallback and a token minted by a Trusted Publishing
+/// workflow action, so Shipper reports the observed auth context without
+/// claiming token provenance it cannot prove from environment state alone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthEvidence {
+    pub schema_version: String,
+    pub registry: String,
+    pub auth_mode: AuthEvidenceMode,
+    pub token_detected: bool,
+    pub oidc_request_url_present: bool,
+    pub oidc_request_token_present: bool,
+}
+
+/// Non-secret authentication mode observed for a publish or resume run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthEvidenceMode {
+    CargoToken,
+    TrustedPublishingContext,
+    CargoTokenWithOidcContext,
+    PartialOidcContext,
+    Missing,
     Unknown,
 }
 
@@ -2492,6 +2526,7 @@ mod tests {
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
             },
+            auth_evidence: None,
         };
         let json = serde_json::to_string(&receipt).unwrap();
         let parsed: Receipt = serde_json::from_str(&json).unwrap();
@@ -2520,6 +2555,7 @@ mod tests {
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
             },
+            auth_evidence: None,
         };
         let json = serde_json::to_string(&receipt).unwrap();
         let parsed: Receipt = serde_json::from_str(&json).unwrap();
@@ -2580,6 +2616,7 @@ mod tests {
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
             },
+            auth_evidence: None,
         };
         let json = serde_json::to_string(&receipt).unwrap();
         let parsed: Receipt = serde_json::from_str(&json).unwrap();
@@ -3309,6 +3346,7 @@ mod tests {
                     os: "linux".to_string(),
                     arch: "x86_64".to_string(),
                 },
+                auth_evidence: None,
             };
             insta::assert_yaml_snapshot!(receipt);
         }
@@ -3604,6 +3642,7 @@ mod tests {
                     os: "linux".to_string(),
                     arch: "x86_64".to_string(),
                 },
+                auth_evidence: None,
             };
             insta::assert_yaml_snapshot!(receipt);
         }
@@ -3642,6 +3681,7 @@ mod tests {
                     os: "windows".to_string(),
                     arch: "aarch64".to_string(),
                 },
+                auth_evidence: None,
             };
             insta::assert_yaml_snapshot!(receipt);
         }
@@ -3716,6 +3756,7 @@ mod tests {
                     os: "macos".to_string(),
                     arch: "aarch64".to_string(),
                 },
+                auth_evidence: None,
             };
             insta::assert_yaml_snapshot!(receipt);
         }
@@ -4783,6 +4824,7 @@ mod tests {
                         os: "linux".to_string(),
                         arch: "x86_64".to_string(),
                     },
+                    auth_evidence: None,
                 };
                 let json = serde_json::to_string(&receipt).unwrap();
                 let parsed: Receipt = serde_json::from_str(&json).unwrap();
@@ -5064,6 +5106,7 @@ mod tests {
                     os: "test".to_string(),
                     arch: "test".to_string(),
                 },
+                auth_evidence: None,
             }
         }
 
@@ -5419,6 +5462,7 @@ mod tests {
                         os: os_name.clone(),
                         arch: "x86_64".to_string(),
                     },
+                    auth_evidence: None,
                 };
                 let json = serde_json::to_string(&receipt).unwrap();
                 let parsed: Receipt = serde_json::from_str(&json).unwrap();
@@ -5932,6 +5976,7 @@ mod tests {
                         os: "linux".to_string(),
                         arch: "x86_64".to_string(),
                     },
+                    auth_evidence: None,
                 };
 
                 // Every planned package appears in the receipt

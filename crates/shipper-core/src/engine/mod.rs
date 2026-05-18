@@ -325,6 +325,7 @@ pub fn run_publish(
         _lock,
         git_context,
         environment,
+        auth_evidence,
         registry: reg,
         events_path,
         mut event_log,
@@ -355,6 +356,7 @@ pub fn run_publish(
             run_started,
             git_context,
             environment,
+            auth_evidence,
         );
     }
 
@@ -1127,6 +1129,7 @@ pub fn run_publish(
         run_started,
         git_context,
         environment,
+        auth_evidence,
     )
 }
 
@@ -1879,7 +1882,7 @@ mod tests {
 
     use super::*;
     use crate::plan::PlannedWorkspace;
-    use crate::types::{AuthType, PlannedPackage, Registry, ReleasePlan};
+    use crate::types::{AuthEvidenceMode, AuthType, PlannedPackage, Registry, ReleasePlan};
 
     #[derive(Default)]
     struct CollectingReporter {
@@ -5077,7 +5080,21 @@ mod tests {
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
         let mut env_vars = fake_program_env_vars(&bin);
-        env_vars.extend([("SHIPPER_CARGO_EXIT", Some("0".to_string()))]);
+        env_vars.extend([
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+            (
+                "CARGO_REGISTRY_TOKEN",
+                Some("release-secret-token".to_string()),
+            ),
+            (
+                "ACTIONS_ID_TOKEN_REQUEST_URL",
+                Some("https://example.invalid/oidc".to_string()),
+            ),
+            (
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+                Some("oidc-request-token".to_string()),
+            ),
+        ]);
         temp_env::with_vars(env_vars, || {
             let server = spawn_registry_server(
                 std::collections::BTreeMap::from([(
@@ -5101,6 +5118,22 @@ mod tests {
             assert!(!receipt.packages[0].evidence.attempts.is_empty());
             assert_eq!(receipt.packages[0].evidence.attempts[0].attempt_number, 1);
             assert_eq!(receipt.packages[0].evidence.attempts[0].exit_code, 0);
+            let auth_evidence = receipt
+                .auth_evidence
+                .as_ref()
+                .expect("receipt records auth evidence");
+            assert_eq!(auth_evidence.schema_version, "shipper.auth_evidence.v1");
+            assert_eq!(auth_evidence.registry, "crates-io");
+            assert_eq!(
+                auth_evidence.auth_mode,
+                AuthEvidenceMode::CargoTokenWithOidcContext
+            );
+            assert!(auth_evidence.token_detected);
+            assert!(auth_evidence.oidc_request_url_present);
+            assert!(auth_evidence.oidc_request_token_present);
+            let receipt_json = serde_json::to_string(&receipt).expect("serialize receipt");
+            assert!(!receipt_json.contains("release-secret-token"));
+            assert!(!receipt_json.contains("oidc-request-token"));
             let state = state::load_state(&td.path().join(".shipper"))
                 .expect("load state")
                 .expect("state exists");
@@ -5113,6 +5146,15 @@ mod tests {
             assert!(state.attempt_history[0].next_attempt_at.is_none());
             let events = events::EventLog::read_from_file(&td.path().join(".shipper/events.jsonl"))
                 .expect("read events");
+            let event_auth_evidence = events
+                .all_events()
+                .iter()
+                .find_map(|event| match &event.event_type {
+                    EventType::AuthEvidenceRecorded { evidence } => Some(evidence),
+                    _ => None,
+                })
+                .expect("auth evidence event");
+            assert_eq!(event_auth_evidence, auth_evidence);
             assert!(
                 events
                     .all_events()
@@ -5935,6 +5977,7 @@ mod tests {
             event_log_path: PathBuf::from(".shipper/events.jsonl"),
             git_context: None,
             environment: environment::collect_environment_fingerprint(),
+            auth_evidence: None,
         };
 
         let json = serde_json::to_string_pretty(&receipt).expect("serialize");

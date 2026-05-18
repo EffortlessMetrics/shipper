@@ -4,7 +4,10 @@
 
 use super::*;
 use chrono::{DateTime, Utc};
-use shipper_types::{ErrorClass, EventType, ExecutionResult, Finishability, ReadinessMethod};
+use shipper_types::{
+    AuthEvidence, AuthEvidenceMode, ErrorClass, EventType, ExecutionResult, Finishability,
+    ReadinessMethod,
+};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -421,6 +424,20 @@ fn event_types_serialize_correctly() {
             timestamp: Utc::now(),
             event_type: EventType::ExecutionFinished {
                 result: ExecutionResult::Success,
+            },
+            package: "all".to_string(),
+        },
+        PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::AuthEvidenceRecorded {
+                evidence: AuthEvidence {
+                    schema_version: "shipper.auth_evidence.v1".to_string(),
+                    registry: "crates-io".to_string(),
+                    auth_mode: AuthEvidenceMode::CargoTokenWithOidcContext,
+                    token_detected: true,
+                    oidc_request_url_present: true,
+                    oidc_request_token_present: true,
+                },
             },
             package: "all".to_string(),
         },

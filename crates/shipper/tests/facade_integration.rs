@@ -206,6 +206,7 @@ fn sample_receipt(plan_id: &str, pkg_names: &[&str]) -> shipper::types::Receipt 
             os: "test".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     }
 }
 
@@ -1298,6 +1299,7 @@ fn receipt_mixed_outcomes_through_file_store() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     store.save_receipt(&receipt).expect("save receipt");
@@ -1355,6 +1357,7 @@ fn environment_fingerprint_in_receipt_through_store() {
             os: "windows".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     store.save_receipt(&receipt).expect("save");
@@ -2146,6 +2149,7 @@ fn receipt_all_fields_persisted_and_roundtrip() {
             os: "linux".to_string(),
             arch: "aarch64".to_string(),
         },
+        auth_evidence: None,
     };
 
     state::write_receipt(&state_dir, &receipt).expect("write receipt");

@@ -135,6 +135,7 @@ fn sample_receipt(plan_id: &str) -> shipper::types::Receipt {
             os: "test".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     }
 }
 
@@ -1438,6 +1439,7 @@ fn receipt_with_mixed_outcomes_roundtrips() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     state::write_receipt(&state_dir, &receipt).expect("write receipt");
@@ -1488,6 +1490,7 @@ fn receipt_environment_fingerprint_roundtrips() {
             os: "macos".to_string(),
             arch: "aarch64".to_string(),
         },
+        auth_evidence: None,
     };
 
     state::write_receipt(&state_dir, &receipt).expect("write receipt");

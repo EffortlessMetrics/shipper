@@ -190,6 +190,7 @@ fn snapshot_receipt_minimal() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     let json = serde_json::to_string_pretty(&receipt).expect("serialize");
@@ -235,6 +236,7 @@ fn snapshot_receipt_with_git_context() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     let json = serde_json::to_string_pretty(&receipt).expect("serialize");
@@ -314,6 +316,7 @@ fn snapshot_receipt_mixed_outcomes() {
             os: "macos".to_string(),
             arch: "aarch64".to_string(),
         },
+        auth_evidence: None,
     };
 
     let json = serde_json::to_string_pretty(&receipt).expect("serialize");
@@ -405,6 +408,7 @@ fn snapshot_receipt_persisted_json() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     store.save_receipt(&receipt).expect("save");
@@ -708,6 +712,7 @@ fn snapshot_receipt_all_published() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     let json = serde_json::to_string_pretty(&receipt).expect("serialize");
@@ -771,6 +776,7 @@ fn snapshot_receipt_some_failed() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     let json = serde_json::to_string_pretty(&receipt).expect("serialize");
@@ -838,6 +844,7 @@ fn snapshot_directory_layout_after_full_save() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
     store.save_receipt(&receipt).expect("save receipt");
 

@@ -408,6 +408,7 @@ mod tests {
                 os: "test".to_string(),
                 arch: "test".to_string(),
             },
+            auth_evidence: None,
         }
     }
 

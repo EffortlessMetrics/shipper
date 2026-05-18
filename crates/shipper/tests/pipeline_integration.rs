@@ -134,6 +134,7 @@ fn make_receipt(plan_id: &str, pkgs: &[(&str, &str, PackageState)]) -> shipper::
             os: "test".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     }
 }
 
@@ -688,6 +689,7 @@ fn receipt_with_full_evidence_roundtrips() {
             os: "test".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     state::write_receipt(&state_dir, &receipt).expect("write receipt");
@@ -739,6 +741,7 @@ fn receipt_with_git_context_roundtrips() {
             os: "test".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     state::write_receipt(&state_dir, &receipt).expect("write receipt");
@@ -1372,6 +1375,7 @@ fn full_pipeline_plan_preflight_publish_verify_receipt() {
             os: "test".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
     state::write_receipt(&state_dir, &receipt).expect("write receipt");
 
@@ -1775,6 +1779,7 @@ fn receipt_fields_populated_for_mixed_outcomes() {
             os: "test".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     state::write_receipt(&state_dir, &receipt).expect("write receipt");

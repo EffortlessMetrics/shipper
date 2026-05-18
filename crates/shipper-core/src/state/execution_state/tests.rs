@@ -69,6 +69,7 @@ fn sample_receipt() -> Receipt {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     }
 }
 
@@ -1011,6 +1012,7 @@ fn deterministic_receipt() -> Receipt {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     }
 }
 
@@ -1240,6 +1242,7 @@ fn snapshot_receipt_all_failed() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     let json = serde_json::to_string_pretty(&receipt).expect("serialize");
@@ -1356,6 +1359,7 @@ mod proptests {
                     os: "linux".to_string(),
                     arch: "x86_64".to_string(),
                 },
+                auth_evidence: None,
             })
     }
 
@@ -1694,6 +1698,7 @@ fn receipt_all_fields_individually_verified_after_roundtrip() {
             os: "windows".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     write_receipt(&dir, &receipt).expect("write");
@@ -2178,6 +2183,7 @@ fn snapshot_receipt_with_git_context() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     let json = serde_json::to_string_pretty(&receipt).expect("serialize");
@@ -2244,6 +2250,7 @@ fn snapshot_receipt_with_evidence() {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     };
 
     let json = serde_json::to_string_pretty(&receipt).expect("serialize");
@@ -2454,6 +2461,7 @@ mod proptests_extended {
                     os: "test".to_string(),
                     arch: "x86_64".to_string(),
                 },
+                auth_evidence: None,
             };
 
             write_receipt(&dir, &receipt).expect("write");

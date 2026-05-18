@@ -224,6 +224,7 @@ mod tests {
                 os: "test".into(),
                 arch: "x86_64".into(),
             },
+            auth_evidence: None,
         }
     }
 

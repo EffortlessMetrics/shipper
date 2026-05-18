@@ -62,6 +62,7 @@ fn make_receipt(plan_id: &str, packages: Vec<PackageReceipt>) -> Receipt {
             os: "test".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     }
 }
 
@@ -1043,6 +1044,7 @@ fn make_deterministic_receipt(plan_id: &str, packages: Vec<PackageReceipt>) -> R
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         },
+        auth_evidence: None,
     }
 }
 

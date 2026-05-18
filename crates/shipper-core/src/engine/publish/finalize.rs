@@ -8,8 +8,8 @@ use crate::plan::PlannedWorkspace;
 use crate::state::events;
 use crate::state::execution_state as state;
 use crate::types::{
-    EnvironmentFingerprint, EventType, ExecutionResult, ExecutionState, GitContext, PackageReceipt,
-    PackageState, PublishEvent, Receipt, RuntimeOptions,
+    AuthEvidence, EnvironmentFingerprint, EventType, ExecutionResult, ExecutionState, GitContext,
+    PackageReceipt, PackageState, PublishEvent, Receipt, RuntimeOptions,
 };
 use crate::webhook::{self, WebhookEvent};
 
@@ -45,6 +45,7 @@ pub(in crate::engine) fn finish_sequential_run(
     run_started: DateTime<Utc>,
     git_context: Option<GitContext>,
     environment: EnvironmentFingerprint,
+    auth_evidence: AuthEvidence,
 ) -> Result<Receipt> {
     let exec_result = sequential_execution_result(&receipts);
     event_log.record(PublishEvent {
@@ -66,6 +67,7 @@ pub(in crate::engine) fn finish_sequential_run(
         run_started,
         git_context,
         environment,
+        auth_evidence,
         events_path,
     )
 }
@@ -82,6 +84,7 @@ pub(in crate::engine) fn finish_parallel_run(
     run_started: DateTime<Utc>,
     git_context: Option<GitContext>,
     environment: EnvironmentFingerprint,
+    auth_evidence: AuthEvidence,
 ) -> Result<Receipt> {
     let exec_result = parallel_execution_result(&receipts);
     event_log.record(PublishEvent {
@@ -103,6 +106,7 @@ pub(in crate::engine) fn finish_parallel_run(
         run_started,
         git_context,
         environment,
+        auth_evidence,
         events_path,
     )
 }
@@ -116,6 +120,7 @@ fn write_receipt(
     run_started: DateTime<Utc>,
     git_context: Option<GitContext>,
     environment: EnvironmentFingerprint,
+    auth_evidence: AuthEvidence,
     events_path: &Path,
 ) -> Result<Receipt> {
     let receipt = Receipt {
@@ -128,6 +133,7 @@ fn write_receipt(
         event_log_path: PathBuf::from(state_dir).join("events.jsonl"),
         git_context,
         environment,
+        auth_evidence: Some(auth_evidence),
     };
 
     let reconciliation_report = crate::state::reconciliation::write_report_from_events(

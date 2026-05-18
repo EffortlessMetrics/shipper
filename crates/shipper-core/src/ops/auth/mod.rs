@@ -35,7 +35,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use crate::types::AuthType;
+use crate::types::{AuthEvidence, AuthEvidenceMode, AuthType};
 
 pub(crate) mod credentials;
 pub(crate) mod oidc;
@@ -118,6 +118,50 @@ pub(crate) fn detect_auth_type_from_token(token: Option<&str>) -> Option<AuthTyp
         (true, true) => Some(AuthType::TrustedPublishing),
         (true, false) | (false, true) => Some(AuthType::Unknown),
         (false, false) => None,
+    }
+}
+
+/// Collect non-secret authentication evidence for release artifacts.
+///
+/// This is best-effort evidence: it must not make publish fail merely because
+/// diagnostic token lookup could not read a local Cargo credentials file.
+pub fn collect_auth_evidence(registry_name: &str) -> AuthEvidence {
+    let token_result = resolve_token(registry_name);
+    let token_resolution_failed = token_result.is_err();
+    let token_detected = token_result
+        .as_ref()
+        .ok()
+        .and_then(|token| token.as_deref())
+        .map(str::trim)
+        .map(|token| !token.is_empty())
+        .unwrap_or(false);
+
+    let oidc_request_url_present = env::var_os("ACTIONS_ID_TOKEN_REQUEST_URL").is_some();
+    let oidc_request_token_present = env::var_os("ACTIONS_ID_TOKEN_REQUEST_TOKEN").is_some();
+
+    let auth_mode = if token_resolution_failed {
+        AuthEvidenceMode::Unknown
+    } else {
+        match (
+            token_detected,
+            oidc_request_url_present,
+            oidc_request_token_present,
+        ) {
+            (true, true, true) => AuthEvidenceMode::CargoTokenWithOidcContext,
+            (true, _, _) => AuthEvidenceMode::CargoToken,
+            (false, true, true) => AuthEvidenceMode::TrustedPublishingContext,
+            (false, true, false) | (false, false, true) => AuthEvidenceMode::PartialOidcContext,
+            (false, false, false) => AuthEvidenceMode::Missing,
+        }
+    };
+
+    AuthEvidence {
+        schema_version: "shipper.auth_evidence.v1".to_string(),
+        registry: registry_name.to_string(),
+        auth_mode,
+        token_detected,
+        oidc_request_url_present,
+        oidc_request_token_present,
     }
 }
 
@@ -321,6 +365,107 @@ token = "token-dot"
             || {
                 let auth = detect_auth_type("crates-io").expect("detect");
                 assert_eq!(auth, Some(AuthType::Unknown));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn collect_auth_evidence_reports_token_only_mode() {
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", Some("env-token")),
+                ("ACTIONS_ID_TOKEN_REQUEST_URL", None::<&str>),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None::<&str>),
+            ],
+            || {
+                let evidence = collect_auth_evidence("crates-io");
+                assert_eq!(evidence.schema_version, "shipper.auth_evidence.v1");
+                assert_eq!(evidence.registry, "crates-io");
+                assert_eq!(evidence.auth_mode, AuthEvidenceMode::CargoToken);
+                assert!(evidence.token_detected);
+                assert!(!evidence.oidc_request_url_present);
+                assert!(!evidence.oidc_request_token_present);
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn collect_auth_evidence_reports_oidc_only_context() {
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                (
+                    "ACTIONS_ID_TOKEN_REQUEST_URL",
+                    Some("https://example.invalid/oidc"),
+                ),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", Some("oidc-token")),
+            ],
+            || {
+                let evidence = collect_auth_evidence("crates-io");
+                assert_eq!(
+                    evidence.auth_mode,
+                    AuthEvidenceMode::TrustedPublishingContext
+                );
+                assert!(!evidence.token_detected);
+                assert!(evidence.oidc_request_url_present);
+                assert!(evidence.oidc_request_token_present);
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn collect_auth_evidence_reports_token_with_oidc_context_without_claiming_provenance() {
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", Some("env-token")),
+                (
+                    "ACTIONS_ID_TOKEN_REQUEST_URL",
+                    Some("https://example.invalid/oidc"),
+                ),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", Some("oidc-token")),
+            ],
+            || {
+                let evidence = collect_auth_evidence("crates-io");
+                assert_eq!(
+                    evidence.auth_mode,
+                    AuthEvidenceMode::CargoTokenWithOidcContext
+                );
+                assert!(evidence.token_detected);
+                assert!(evidence.oidc_request_url_present);
+                assert!(evidence.oidc_request_token_present);
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn collect_auth_evidence_reports_partial_oidc_context() {
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                (
+                    "ACTIONS_ID_TOKEN_REQUEST_URL",
+                    Some("https://example.invalid/oidc"),
+                ),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None::<&str>),
+            ],
+            || {
+                let evidence = collect_auth_evidence("crates-io");
+                assert_eq!(evidence.auth_mode, AuthEvidenceMode::PartialOidcContext);
+                assert!(!evidence.token_detected);
+                assert!(evidence.oidc_request_url_present);
+                assert!(!evidence.oidc_request_token_present);
             },
         );
     }

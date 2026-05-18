@@ -233,6 +233,7 @@ mod tests {
                 os: std::env::consts::OS.to_string(),
                 arch: std::env::consts::ARCH.to_string(),
             },
+            auth_evidence: None,
         };
 
         // Serialize large receipt

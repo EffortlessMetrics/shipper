@@ -14,8 +14,8 @@ use crate::runtime::execution::{pkg_key, resolve_state_dir};
 use crate::state::events;
 use crate::state::execution_state as state;
 use crate::types::{
-    EnvironmentFingerprint, EventType, ExecutionState, GitContext, PackageProgress, PackageState,
-    PublishEvent, RuntimeOptions,
+    AuthEvidence, EnvironmentFingerprint, EventType, ExecutionState, GitContext, PackageProgress,
+    PackageState, PublishEvent, RuntimeOptions,
 };
 use crate::webhook::{self, WebhookEvent};
 
@@ -24,6 +24,7 @@ pub(in crate::engine) struct PublishBootstrap {
     pub(in crate::engine) _lock: lock::LockFile,
     pub(in crate::engine) git_context: Option<GitContext>,
     pub(in crate::engine) environment: EnvironmentFingerprint,
+    pub(in crate::engine) auth_evidence: AuthEvidence,
     pub(in crate::engine) registry: RegistryClient,
     pub(in crate::engine) events_path: PathBuf,
     pub(in crate::engine) event_log: events::EventLog,
@@ -61,6 +62,7 @@ pub(in crate::engine) fn prepare_publish_run(
     // Collect git context and environment fingerprint at start of execution.
     let git_context = git::collect_git_context();
     let environment = environment::collect_environment_fingerprint();
+    let auth_evidence = crate::ops::auth::collect_auth_evidence(&ws.plan.registry.name);
 
     if !opts.allow_dirty {
         git::ensure_git_clean(workspace_root)?;
@@ -74,7 +76,14 @@ pub(in crate::engine) fn prepare_publish_run(
     reporter.info(&format!("state dir: {}", state_dir.as_path().display()));
 
     let run_started = Utc::now();
-    record_execution_start(ws, opts, &events_path, &mut event_log, run_started)?;
+    record_execution_start(
+        ws,
+        opts,
+        &events_path,
+        &mut event_log,
+        run_started,
+        &auth_evidence,
+    )?;
     ensure_plan_package_entries(ws, &state_dir, &mut state)?;
 
     Ok(PublishBootstrap {
@@ -82,6 +91,7 @@ pub(in crate::engine) fn prepare_publish_run(
         _lock: lock,
         git_context,
         environment,
+        auth_evidence,
         registry,
         events_path,
         event_log,
@@ -137,6 +147,7 @@ fn record_execution_start(
     events_path: &Path,
     event_log: &mut events::EventLog,
     run_started: DateTime<Utc>,
+    auth_evidence: &AuthEvidence,
 ) -> Result<()> {
     event_log.record(PublishEvent {
         timestamp: run_started,
@@ -158,6 +169,13 @@ fn record_execution_start(
         event_type: EventType::PlanCreated {
             plan_id: ws.plan.plan_id.clone(),
             package_count: ws.plan.packages.len(),
+        },
+        package: "all".to_string(),
+    });
+    event_log.record(PublishEvent {
+        timestamp: run_started,
+        event_type: EventType::AuthEvidenceRecorded {
+            evidence: auth_evidence.clone(),
         },
         package: "all".to_string(),
     });

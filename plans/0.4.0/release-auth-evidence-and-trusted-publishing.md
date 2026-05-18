@@ -99,9 +99,11 @@ release workflow rewrites, and receipt signing.
 
 #### Acceptance
 
-- Evidence distinguishes Trusted Publishing, token fallback, missing auth, and
-  unknown auth paths.
-- Token fallback remains visible when it is configured or used.
+- Evidence distinguishes Trusted Publishing context, Cargo token auth, Cargo
+  token auth with OIDC context, missing auth, and unknown auth paths.
+- Token fallback remains visible when workflow metadata or Doctor-visible
+  workflow configuration proves it; token-plus-OIDC runtime evidence must not
+  overclaim token provenance by itself.
 - Token values never appear in human output, JSON output, events, receipts, or
   snapshots.
 - Unknown crates.io-side registration remains explicit.
@@ -109,6 +111,8 @@ release workflow rewrites, and receipt signing.
 #### Proof Commands
 
 - `cargo test -p shipper-core run_preflight_warns_when_token_auth_overrides_oidc --lib --locked`
+- `cargo test -p shipper-core collect_auth_evidence --lib --locked`
+- `cargo test -p shipper-core run_publish_receipt_contains_evidence_after_success --lib --locked`
 - `cargo test -p shipper-output-sanitizer --locked`
 - focused receipt/event tests for auth-mode evidence
 - `cargo xtask policy-report`
