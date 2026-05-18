@@ -181,51 +181,178 @@ mod strip_ansi_tests {
 }
 
 fn redact_line(line: &str) -> String {
-    let mut out = line.to_string();
+    let out = redact_authorization_bearer(line);
+    let out = redact_cargo_token_envs(&out);
+    redact_token_assignments(&out)
+}
 
-    if let Some(pos) = out.to_ascii_lowercase().find("authorization:") {
-        let after = &out[pos..];
+fn redact_authorization_bearer(line: &str) -> String {
+    if let Some(pos) = line.to_ascii_lowercase().find("authorization:") {
+        let after = &line[pos..];
         if let Some(bearer_pos) = after.to_ascii_lowercase().find("bearer ") {
             let redact_start = pos + bearer_pos + "bearer ".len();
-            out = format!("{}[REDACTED]", &out[..redact_start]);
+            return format!("{}[REDACTED]", &line[..redact_start]);
         }
     }
 
-    if let Some(pos) = out.to_ascii_lowercase().find("token") {
-        let after_key = &out[pos + "token".len()..];
-        let trimmed = after_key.trim_start();
-        if trimmed.starts_with("= ") || trimmed.starts_with("=") {
-            let eq_offset = pos + "token".len() + (after_key.len() - trimmed.len());
-            let after_eq = trimmed.trim_start_matches('=').trim_start();
-            if after_eq.starts_with('"') || after_eq.starts_with('\'') {
-                out = format!("{}= \"[REDACTED]\"", &out[..eq_offset]);
-            } else if !after_eq.is_empty() {
-                out = format!("{}= [REDACTED]", &out[..eq_offset]);
-            }
-        }
-    }
+    line.to_string()
+}
 
-    if let Some(pos) = find_cargo_token_env(&out)
-        && let Some(eq_pos) = out[pos..].find('=')
-    {
-        let abs_eq = pos + eq_pos;
-        out = format!("{}=[REDACTED]", &out[..abs_eq]);
+fn redact_cargo_token_envs(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut cursor = 0;
+
+    while cursor < line.len() {
+        let Some((start, eq_pos)) = find_next_cargo_token_env_assignment(line, cursor) else {
+            out.push_str(&line[cursor..]);
+            break;
+        };
+
+        out.push_str(&line[cursor..start]);
+        out.push_str(&line[start..=eq_pos]);
+        out.push_str("[REDACTED]");
+
+        cursor = value_end(&line[eq_pos + 1..]) + eq_pos + 1;
     }
 
     out
 }
 
-fn find_cargo_token_env(s: &str) -> Option<usize> {
-    if let Some(pos) = s.find("CARGO_REGISTRY_TOKEN") {
-        return Some(pos);
+fn find_next_cargo_token_env_assignment(s: &str, from: usize) -> Option<(usize, usize)> {
+    let registry_token = find_env_assignment_at_or_after(s, from, "CARGO_REGISTRY_TOKEN");
+    let named_token = find_named_registry_token_assignment(s, from);
+
+    match (registry_token, named_token) {
+        (Some(left), Some(right)) => Some(if left.0 <= right.0 { left } else { right }),
+        (Some(found), None) | (None, Some(found)) => Some(found),
+        (None, None) => None,
     }
-    if let Some(pos) = s.find("CARGO_REGISTRIES_") {
-        let after = &s[pos + "CARGO_REGISTRIES_".len()..];
-        if after.contains("_TOKEN") {
-            return Some(pos);
+}
+
+fn find_env_assignment_at_or_after(s: &str, from: usize, name: &str) -> Option<(usize, usize)> {
+    let mut search_from = from;
+    while let Some(rel) = s[search_from..].find(name) {
+        let start = search_from + rel;
+        let eq_pos = start + name.len();
+        if s.as_bytes().get(eq_pos) == Some(&b'=') {
+            return Some((start, eq_pos));
         }
+        search_from = start + name.len();
     }
     None
+}
+
+fn find_named_registry_token_assignment(s: &str, from: usize) -> Option<(usize, usize)> {
+    let prefix = "CARGO_REGISTRIES_";
+    let mut search_from = from;
+
+    while let Some(rel) = s[search_from..].find(prefix) {
+        let start = search_from + rel;
+        let eq_rel = s[start..].find('=')?;
+        let eq_pos = start + eq_rel;
+        let name = &s[start..eq_pos];
+
+        if name.ends_with("_TOKEN") && name[prefix.len()..].chars().all(is_env_name_char) {
+            return Some((start, eq_pos));
+        }
+
+        search_from = start + prefix.len();
+    }
+
+    None
+}
+
+fn is_env_name_char(ch: char) -> bool {
+    ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_'
+}
+
+fn value_end(s: &str) -> usize {
+    s.find(char::is_whitespace).unwrap_or(s.len())
+}
+
+fn token_is_part_of_cargo_env_name(line: &str, token_pos: usize) -> bool {
+    let bytes = line.as_bytes();
+    let mut start = token_pos;
+    while start > 0 && is_env_name_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+
+    let mut end = token_pos + "token".len();
+    while end < bytes.len() && is_env_name_byte(bytes[end]) {
+        end += 1;
+    }
+
+    let name = &line[start..end];
+    name == "CARGO_REGISTRY_TOKEN"
+        || (name.starts_with("CARGO_REGISTRIES_") && name.ends_with("_TOKEN"))
+}
+
+fn is_env_name_byte(byte: u8) -> bool {
+    byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+}
+
+fn redact_token_assignments(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut cursor = 0;
+
+    while cursor < line.len() {
+        let lower_tail = line[cursor..].to_ascii_lowercase();
+        let Some(rel_pos) = lower_tail.find("token") else {
+            out.push_str(&line[cursor..]);
+            break;
+        };
+
+        let token_pos = cursor + rel_pos;
+        let after_key_start = token_pos + "token".len();
+        if token_is_part_of_cargo_env_name(line, token_pos) {
+            out.push_str(&line[cursor..after_key_start]);
+            cursor = after_key_start;
+            continue;
+        }
+        let after_key = &line[after_key_start..];
+        let trimmed = after_key.trim_start();
+
+        if !trimmed.starts_with('=') {
+            out.push_str(&line[cursor..after_key_start]);
+            cursor = after_key_start;
+            continue;
+        }
+
+        let space_before_eq = after_key.len() - trimmed.len();
+        let eq_offset = after_key_start + space_before_eq;
+        let after_eq = trimmed.trim_start_matches('=').trim_start();
+
+        if after_eq.is_empty() {
+            out.push_str(&line[cursor..]);
+            break;
+        }
+
+        let value_start = line.len() - after_eq.len();
+        let (replacement, value_end) = if let Some(quote) = after_eq
+            .chars()
+            .next()
+            .filter(|ch| *ch == '"' || *ch == '\'')
+        {
+            let after_open_quote = value_start + quote.len_utf8();
+            let end = line[after_open_quote..]
+                .find(quote)
+                .map(|rel| after_open_quote + rel + quote.len_utf8())
+                .unwrap_or(line.len());
+            ("= \"[REDACTED]\"", end)
+        } else {
+            let end = line[value_start..]
+                .find(|ch: char| ch.is_whitespace() || ch == '&' || ch == ';' || ch == ',')
+                .map(|rel| value_start + rel)
+                .unwrap_or(line.len());
+            ("= [REDACTED]", end)
+        };
+
+        out.push_str(&line[cursor..eq_offset]);
+        out.push_str(replacement);
+        cursor = value_end;
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -314,11 +441,35 @@ mod tests {
 
     #[test]
     fn redact_multiple_sensitive_patterns_one_line() {
-        // Both "token=" and "CARGO_REGISTRY_TOKEN=" appear; at least one is redacted.
         let input = "CARGO_REGISTRY_TOKEN=secret1 token = secret2";
         let out = redact_sensitive(input);
-        assert!(out.contains("[REDACTED]"));
+        assert_eq!(out, "CARGO_REGISTRY_TOKEN=[REDACTED] token = [REDACTED]");
         assert!(!out.contains("secret1"));
+        assert!(!out.contains("secret2"));
+    }
+
+    #[test]
+    fn redact_preserves_text_after_multiple_secret_values() {
+        let input = "prefix token=secret suffix CARGO_REGISTRY_TOKEN=env_secret done";
+        let out = redact_sensitive(input);
+        assert_eq!(
+            out,
+            "prefix token= [REDACTED] suffix CARGO_REGISTRY_TOKEN=[REDACTED] done"
+        );
+        assert!(!out.contains("secret"));
+        assert!(!out.contains("env_secret"));
+    }
+
+    #[test]
+    fn cargo_registries_token_must_be_exact_env_var_name() {
+        let input = "CARGO_REGISTRIES_FOO_TOKENIZER=not_secret CARGO_REGISTRIES_BAR_TOKEN=secret";
+        let out = redact_sensitive(input);
+        assert_eq!(
+            out,
+            "CARGO_REGISTRIES_FOO_TOKENIZER=not_secret CARGO_REGISTRIES_BAR_TOKEN=[REDACTED]"
+        );
+        assert!(out.contains("not_secret"));
+        assert!(!out.contains("=secret"));
     }
 
     #[test]
