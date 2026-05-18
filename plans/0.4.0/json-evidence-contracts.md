@@ -174,7 +174,7 @@ Resume engine behavior changes and interruption rehearsal.
 
 #### Proof Commands
 
-- focused `shipper resume --format json` CLI test
+- `cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_command_envelope`
 - `cargo clippy -p shipper-cli --all-targets --locked -- -D warnings`
 - `cargo xtask policy-report`
 - `git diff --check`

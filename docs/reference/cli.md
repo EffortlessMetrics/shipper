@@ -21,8 +21,9 @@ release-readiness verdict.
 
 For CI, internal developer portals, or agent consumers, `shipper doctor`,
 `shipper plan`, `shipper status`, `shipper preflight`, `shipper publish`,
-and `shipper resume` support `--format json`. `publish` and `resume` emit the
-release receipt JSON for each targeted registry.
+and `shipper resume` support `--format json`. `publish` and `resume` emit
+command-owned JSON envelopes with artifact paths and nested release receipt
+evidence for each targeted registry.
 
 ## Commands at a glance
 

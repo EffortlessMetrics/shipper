@@ -1026,12 +1026,12 @@ pub fn run() -> Result<()> {
                     progress.finish();
                 }
 
-                print_receipt(
+                print_resume_output(
                     &receipt,
                     &current_planned.workspace_root,
                     &current_opts.state_dir,
                     &cli.format,
-                );
+                )?;
             }
         }
         Commands::Rehearse => {
@@ -2480,13 +2480,33 @@ struct PublishJsonReport<'a> {
     registry: String,
     plan_id: &'a str,
     state_dir: String,
-    packages: Vec<PublishJsonPackageReport>,
-    artifacts: PublishJsonArtifacts,
+    packages: Vec<CommandJsonPackageReport>,
+    artifacts: CommandJsonArtifacts,
     receipt: &'a shipper_core::types::Receipt,
 }
 
 #[derive(Serialize)]
-struct PublishJsonPackageReport {
+struct ResumeJsonReport<'a> {
+    schema_version: &'static str,
+    command: &'static str,
+    safe_to_resume: bool,
+    registry: String,
+    plan_id: &'a str,
+    state_dir: String,
+    published: usize,
+    pending: usize,
+    failed: usize,
+    ambiguous: usize,
+    uploaded: usize,
+    skipped: usize,
+    next_package: Option<String>,
+    packages: Vec<CommandJsonPackageReport>,
+    artifacts: CommandJsonArtifacts,
+    receipt: &'a shipper_core::types::Receipt,
+}
+
+#[derive(Serialize)]
+struct CommandJsonPackageReport {
     name: String,
     version: String,
     state: &'static str,
@@ -2495,15 +2515,15 @@ struct PublishJsonPackageReport {
 }
 
 #[derive(Serialize)]
-struct PublishJsonArtifacts {
-    state: PublishJsonArtifact,
-    events: PublishJsonArtifact,
-    receipt: PublishJsonArtifact,
-    reconciliation: PublishJsonArtifact,
+struct CommandJsonArtifacts {
+    state: CommandJsonArtifact,
+    events: CommandJsonArtifact,
+    receipt: CommandJsonArtifact,
+    reconciliation: CommandJsonArtifact,
 }
 
 #[derive(Serialize)]
-struct PublishJsonArtifact {
+struct CommandJsonArtifact {
     path: String,
     exists: bool,
 }
@@ -2526,22 +2546,30 @@ fn print_publish_output(
     Ok(())
 }
 
+fn print_resume_output(
+    receipt: &shipper_core::types::Receipt,
+    workspace_root: &Path,
+    state_dir: &Path,
+    format: &str,
+) -> Result<()> {
+    if format == "json" {
+        let report = build_resume_json_report(receipt, state_dir)?;
+        let json = serde_json::to_string_pretty(&report)
+            .context("failed to serialize resume JSON envelope")?;
+        println!("{}", json);
+        return Ok(());
+    }
+
+    print_receipt(receipt, workspace_root, state_dir, format);
+    Ok(())
+}
+
 fn build_publish_json_report<'a>(
     receipt: &'a shipper_core::types::Receipt,
     state_dir: &Path,
 ) -> Result<PublishJsonReport<'a>> {
     let reconciled = reconciled_packages(state_dir)?;
-    let packages = receipt
-        .packages
-        .iter()
-        .map(|package| PublishJsonPackageReport {
-            name: package.name.clone(),
-            version: package.version.clone(),
-            state: package_state_name(&package.state),
-            attempts: package.attempts,
-            reconciled: reconciled.contains(&(package.name.clone(), package.version.clone())),
-        })
-        .collect();
+    let packages = command_package_reports(receipt, &reconciled);
 
     Ok(PublishJsonReport {
         schema_version: "shipper.publish.v1",
@@ -2550,24 +2578,103 @@ fn build_publish_json_report<'a>(
         plan_id: &receipt.plan_id,
         state_dir: state_dir.display().to_string(),
         packages,
-        artifacts: PublishJsonArtifacts {
-            state: publish_artifact(
-                state_dir.join(shipper_core::state::execution_state::STATE_FILE),
-            ),
-            events: publish_artifact(state_dir.join(shipper_core::state::events::EVENTS_FILE)),
-            receipt: publish_artifact(
-                state_dir.join(shipper_core::state::execution_state::RECEIPT_FILE),
-            ),
-            reconciliation: publish_artifact(
-                state_dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE),
-            ),
-        },
+        artifacts: command_json_artifacts(state_dir),
         receipt,
     })
 }
 
-fn publish_artifact(path: PathBuf) -> PublishJsonArtifact {
-    PublishJsonArtifact {
+fn build_resume_json_report<'a>(
+    receipt: &'a shipper_core::types::Receipt,
+    state_dir: &Path,
+) -> Result<ResumeJsonReport<'a>> {
+    let reconciled = reconciled_packages(state_dir)?;
+    let packages = command_package_reports(receipt, &reconciled);
+
+    let mut published = 0;
+    let mut pending = 0;
+    let mut failed = 0;
+    let mut ambiguous = 0;
+    let mut uploaded = 0;
+    let mut skipped = 0;
+    let mut next_package = None;
+
+    for package in &receipt.packages {
+        match &package.state {
+            PackageState::Pending => {
+                pending += 1;
+                next_package.get_or_insert_with(|| package.name.clone());
+            }
+            PackageState::Uploaded => {
+                uploaded += 1;
+                next_package.get_or_insert_with(|| package.name.clone());
+            }
+            PackageState::Published => {
+                published += 1;
+            }
+            PackageState::Skipped { .. } => {
+                skipped += 1;
+            }
+            PackageState::Failed { .. } => {
+                failed += 1;
+                next_package.get_or_insert_with(|| package.name.clone());
+            }
+            PackageState::Ambiguous { .. } => {
+                ambiguous += 1;
+                next_package.get_or_insert_with(|| package.name.clone());
+            }
+        }
+    }
+
+    Ok(ResumeJsonReport {
+        schema_version: "shipper.resume.v1",
+        command: "resume",
+        safe_to_resume: true,
+        registry: receipt.registry.name.clone(),
+        plan_id: &receipt.plan_id,
+        state_dir: state_dir.display().to_string(),
+        published,
+        pending,
+        failed,
+        ambiguous,
+        uploaded,
+        skipped,
+        next_package,
+        packages,
+        artifacts: command_json_artifacts(state_dir),
+        receipt,
+    })
+}
+
+fn command_package_reports(
+    receipt: &shipper_core::types::Receipt,
+    reconciled: &BTreeSet<(String, String)>,
+) -> Vec<CommandJsonPackageReport> {
+    receipt
+        .packages
+        .iter()
+        .map(|package| CommandJsonPackageReport {
+            name: package.name.clone(),
+            version: package.version.clone(),
+            state: package_state_name(&package.state),
+            attempts: package.attempts,
+            reconciled: reconciled.contains(&(package.name.clone(), package.version.clone())),
+        })
+        .collect()
+}
+
+fn command_json_artifacts(state_dir: &Path) -> CommandJsonArtifacts {
+    CommandJsonArtifacts {
+        state: json_artifact(state_dir.join(shipper_core::state::execution_state::STATE_FILE)),
+        events: json_artifact(state_dir.join(shipper_core::state::events::EVENTS_FILE)),
+        receipt: json_artifact(state_dir.join(shipper_core::state::execution_state::RECEIPT_FILE)),
+        reconciliation: json_artifact(
+            state_dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE),
+        ),
+    }
+}
+
+fn json_artifact(path: PathBuf) -> CommandJsonArtifact {
+    CommandJsonArtifact {
         exists: path.exists(),
         path: path.display().to_string(),
     }

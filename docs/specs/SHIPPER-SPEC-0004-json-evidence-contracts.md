@@ -65,12 +65,10 @@ or CI under the compatibility rules above:
 | `shipper status --watch --format json` | `shipper.status.watch.v1` | `cargo test -p shipper-cli status_watch_report_summarizes_state_and_scheduled_events --lib` |
 | `shipper doctor --format json` | `shipper.doctor.v1` | `cargo test -p shipper-cli --test e2e_doctor doctor_json_format_reports_diagnostics_without_token_value` |
 | `shipper publish --format json` | `shipper.publish.v1` | `cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_command_envelope_to_stdout` |
-| `shipper resume --format json` | receipt JSON on stdout | `cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_receipt_json` |
+| `shipper resume --format json` | `shipper.resume.v1` | `cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_command_envelope` |
 
-The publish JSON row is a command-owned envelope with nested receipt evidence.
-The resume JSON row remains stable as a receipt-output contract. A future
-command-owned resume envelope such as `shipper.resume.v1` must be promoted
-separately after proof exists.
+The publish and resume JSON rows are command-owned envelopes with nested
+receipt evidence, package summaries, and artifact paths.
 
 ## Advisory Or Planned JSON Surfaces
 
@@ -90,7 +88,7 @@ separately after proof exists.
 - Replacing Rust snapshot or integration tests with schema-only validation.
 - Changing the receipt schema.
 - Changing human output.
-- Promoting resume command envelopes before implementation proof exists.
+- Promoting command envelopes before implementation proof exists.
 
 ## Required Evidence
 
@@ -135,8 +133,8 @@ Current proof is mapped through support tiers:
 - doctor JSON: `doctor_json_format_reports_diagnostics_without_token_value`
 - publish JSON command envelope:
   `publish_json_format_writes_command_envelope_to_stdout`
-- resume JSON receipt stdout:
-  `given_pending_state_when_resume_json_then_stdout_is_receipt_json`
+- resume JSON command envelope:
+  `given_pending_state_when_resume_json_then_stdout_is_command_envelope`
 
 Future implementation PRs should add one focused proof command per promoted
 surface before support tiers change.
@@ -175,14 +173,13 @@ A JSON surface can be stable only when:
 - a proof command parses and asserts the contract
 - `docs/status/SUPPORT_TIERS.md` names that proof command
 
-Receipt JSON emitted by resume remains a receipt contract until a command-owned
-envelope is implemented and promoted. Publish JSON is promoted separately as
-`shipper.publish.v1`.
+Publish and resume JSON are promoted as command-owned envelopes
+(`shipper.publish.v1` and `shipper.resume.v1`) because their proof commands
+assert schema versions, package summaries, artifact paths, and nested receipt
+evidence.
 
 ## Open Questions
 
 - Should Shipper generate JSON Schema files for stable command-owned surfaces
   after the command contracts settle?
-- Should resume keep receipt JSON as its long-term stdout contract, or wrap
-  receipts in a command-owned envelope that links artifacts and next actions?
 - Which artifacts should carry schema versions independently of command output?

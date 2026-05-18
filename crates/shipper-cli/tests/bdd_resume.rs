@@ -809,7 +809,7 @@ mod state_updated_atomically {
 
     #[test]
     #[serial]
-    fn given_pending_state_when_resume_json_then_stdout_is_receipt_json() {
+    fn given_pending_state_when_resume_json_then_stdout_is_command_envelope() {
         let td = tempdir().expect("tempdir");
         create_single_crate_workspace(td.path());
         let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
@@ -864,16 +864,61 @@ mod state_updated_atomically {
             .clone();
 
         let stdout = String::from_utf8(output).expect("utf8");
-        let receipt: serde_json::Value =
-            serde_json::from_str(&stdout).expect("resume stdout should be receipt JSON");
-        assert!(receipt["plan_id"].is_string(), "plan_id should be present");
+        let envelope: serde_json::Value =
+            serde_json::from_str(&stdout).expect("resume stdout should be command envelope JSON");
         assert_eq!(
-            receipt["packages"][0]["name"].as_str(),
-            Some("demo"),
-            "receipt should contain the resumed package"
+            envelope["schema_version"].as_str(),
+            Some("shipper.resume.v1")
+        );
+        assert_eq!(envelope["command"].as_str(), Some("resume"));
+        assert_eq!(envelope["safe_to_resume"].as_bool(), Some(true));
+        assert!(envelope["plan_id"].is_string(), "plan_id should be present");
+        assert_eq!(envelope["published"].as_u64(), Some(1));
+        assert_eq!(envelope["pending"].as_u64(), Some(0));
+        assert_eq!(envelope["failed"].as_u64(), Some(0));
+        assert_eq!(envelope["ambiguous"].as_u64(), Some(0));
+        assert!(
+            envelope["next_package"].is_null(),
+            "completed resume should not name another package"
         );
         assert_eq!(
-            receipt["packages"][0]["state"]["state"].as_str(),
+            envelope["packages"][0]["name"].as_str(),
+            Some("demo"),
+            "envelope should contain the resumed package"
+        );
+        assert_eq!(envelope["packages"][0]["state"].as_str(), Some("published"));
+        assert_eq!(
+            envelope["packages"][0]["attempts"].as_u64(),
+            Some(2),
+            "resume envelope should expose cumulative package attempts"
+        );
+        assert!(
+            envelope["artifacts"]["state"]["path"]
+                .as_str()
+                .expect("state artifact path")
+                .ends_with(".shipper\\state.json")
+                || envelope["artifacts"]["state"]["path"]
+                    .as_str()
+                    .expect("state artifact path")
+                    .ends_with(".shipper/state.json")
+        );
+        assert_eq!(
+            envelope["artifacts"]["state"]["exists"].as_bool(),
+            Some(true),
+            "state artifact should exist after resume"
+        );
+        assert_eq!(
+            envelope["artifacts"]["receipt"]["exists"].as_bool(),
+            Some(true),
+            "receipt artifact should exist after resume"
+        );
+        assert_eq!(
+            envelope["receipt"]["receipt_version"].as_str(),
+            Some("shipper.receipt.v2"),
+            "nested receipt should remain available"
+        );
+        assert_eq!(
+            envelope["receipt"]["packages"][0]["state"]["state"].as_str(),
             Some("published")
         );
 

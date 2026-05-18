@@ -13,8 +13,8 @@ commands.
 
 end_state = [
   "JSON evidence contract spec and plan are accepted.",
-  "Publish JSON either remains receipt-only or gains a proved command envelope.",
-  "Resume JSON either remains receipt-only or gains a proved command envelope.",
+  "Publish JSON emits a proved command envelope.",
+  "Resume JSON emits a proved command envelope.",
   "Support tiers describe only implemented JSON contracts.",
   "Schema-file validation is deferred until command contracts justify it.",
 ]
@@ -51,13 +51,13 @@ commands = [
 
 [[work_item]]
 id = "resume-json-command-envelope"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
 plan = "plans/0.4.0/json-evidence-contracts.md"
 issue = "109"
 commands = [
-  "cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_receipt_json",
+  "cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_command_envelope",
   "cargo clippy -p shipper-cli --all-targets --locked -- -D warnings",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
