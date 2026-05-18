@@ -2516,7 +2516,8 @@ fn print_publish_output(
 ) -> Result<()> {
     if format == "json" {
         let report = build_publish_json_report(receipt, state_dir)?;
-        let json = serde_json::to_string_pretty(&report).expect("serialize publish report");
+        let json = serde_json::to_string_pretty(&report)
+            .context("failed to serialize publish JSON envelope")?;
         println!("{}", json);
         return Ok(());
     }
