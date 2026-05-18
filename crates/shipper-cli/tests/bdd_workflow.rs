@@ -3089,6 +3089,7 @@ mod plan_json_format {
         let stdout = String::from_utf8(output).expect("utf8");
         let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid plan JSON");
 
+        assert_eq!(json["schema_version"].as_str(), Some("shipper.plan.v1"));
         assert!(json["plan_id"].is_string(), "missing plan_id: {stdout}");
         assert_eq!(json["publishable_count"].as_u64(), Some(3));
         assert_eq!(json["skipped_count"].as_u64(), Some(0));

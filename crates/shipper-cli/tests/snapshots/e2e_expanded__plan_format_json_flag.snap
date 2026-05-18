@@ -3,6 +3,7 @@ source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: "normalize_tempdir_json_output(&stdout, td.path())"
 ---
 {
+  "schema_version": "shipper.plan.v1",
   "plan_id": "affac35fb544fb5b3de322fb4c6b26c2be6c9bf3eb7d7edd4af4a29b7b59fd3f",
   "registry": {
     "name": "crates-io",

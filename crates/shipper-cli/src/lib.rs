@@ -1686,6 +1686,7 @@ fn print_version(verbose: bool) {
 
 #[derive(Debug, Serialize)]
 struct PlanReport {
+    schema_version: &'static str,
     plan_id: String,
     registry: PlanRegistryReport,
     workspace_root: String,
@@ -1865,6 +1866,7 @@ fn build_plan_report(ws: &plan::PlannedWorkspace) -> PlanReport {
         .collect();
 
     PlanReport {
+        schema_version: "shipper.plan.v1",
         plan_id: ws.plan.plan_id.clone(),
         registry: PlanRegistryReport {
             name: ws.plan.registry.name.clone(),
@@ -2935,6 +2937,7 @@ fn absolute_state_dir(ws: &plan::PlannedWorkspace, opts: &RuntimeOptions) -> Pat
 
 #[derive(Debug, Serialize)]
 struct StatusWatchReport {
+    schema_version: &'static str,
     plan_id: String,
     state_dir: String,
     events_path: String,
@@ -3002,6 +3005,7 @@ fn build_status_watch_report(
     let next_action = latest_status_watch_next_action(&events);
 
     Ok(StatusWatchReport {
+        schema_version: "shipper.status.watch.v1",
         plan_id: ws.plan.plan_id.clone(),
         state_dir: state_dir.display().to_string(),
         events_path: events_path.display().to_string(),
@@ -4237,6 +4241,7 @@ mod tests {
             .expect("write events");
 
         let report = build_status_watch_report(&ws, &state_dir).expect("report");
+        assert_eq!(report.schema_version, "shipper.status.watch.v1");
         assert_eq!(report.counts.published, 1);
         assert_eq!(report.counts.uploaded, 1);
         assert_eq!(report.current_package.as_deref(), Some("beta@0.2.0"));
@@ -4251,6 +4256,17 @@ mod tests {
         assert!(rendered.contains("Status watch"));
         assert!(rendered.contains("progress: published=1 pending=0 uploaded=1"));
         assert!(rendered.contains("next: readiness_poll beta@0.2.0"));
+
+        let mut rendered_json = Vec::new();
+        write_status_watch_report(&report, "json", &mut rendered_json).expect("render JSON");
+        let rendered_json = String::from_utf8(rendered_json).expect("utf8");
+        let json: serde_json::Value =
+            serde_json::from_str(&rendered_json).expect("status watch JSON");
+        assert_eq!(
+            json.pointer("/schema_version")
+                .and_then(serde_json::Value::as_str),
+            Some("shipper.status.watch.v1")
+        );
     }
 
     #[test]
