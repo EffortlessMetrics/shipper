@@ -1100,6 +1100,68 @@ pub enum ReconciliationOutcome {
     },
 }
 
+/// Persisted report of registry-truth reconciliation outcomes for a release run.
+///
+/// This artifact is written to `.shipper/reconciliation.json` when a publish or
+/// resume run emits at least one [`EventType::PublishReconciled`] event. It is
+/// derived from the authoritative event log so humans, CI, and agents can
+/// inspect the ambiguity-resolution record without replaying every event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconciliationReport {
+    pub schema_version: String,
+    pub plan_id: String,
+    pub registry: Registry,
+    pub generated_at: DateTime<Utc>,
+    pub evidence_sources: Vec<ReconciliationEvidenceSource>,
+    pub records: Vec<ReconciliationRecord>,
+}
+
+/// File or artifact referenced by a reconciliation report.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReconciliationEvidenceSource {
+    pub kind: ReconciliationEvidenceKind,
+    pub path: String,
+}
+
+/// Kind of artifact referenced by [`ReconciliationEvidenceSource`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationEvidenceKind {
+    EventLog,
+    State,
+    Receipt,
+}
+
+/// One package-level reconciliation outcome.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReconciliationRecord {
+    pub package: String,
+    pub name: String,
+    pub version: String,
+    pub trigger: ReconciliationTrigger,
+    pub method: Option<ReadinessMethod>,
+    pub cargo_exit_class: Option<ErrorClass>,
+    pub outcome: ReconciliationOutcome,
+    pub operator_action: ReconciliationOperatorAction,
+}
+
+/// Why reconciliation was attempted.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationTrigger {
+    CargoAmbiguousExit,
+    ResumeAmbiguousState,
+}
+
+/// Machine-readable operator action implied by a reconciliation outcome.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationOperatorAction {
+    MarkPublishedContinue,
+    RetryAllowed,
+    OperatorActionRequired,
+}
+
 /// Progress tracking for a single package in an execution.
 ///
 /// This struct is persisted to disk during publishing to enable
@@ -1129,6 +1191,27 @@ pub struct PackageProgress {
     pub last_updated_at: DateTime<Utc>,
 }
 
+/// Durable state record for one `cargo publish` attempt.
+///
+/// `PackageProgress::attempts` is the fast counter used by resume. This
+/// detail log preserves operator-facing facts needed by `status`, resume
+/// explainers, and release evidence before the final receipt exists.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttemptDetail {
+    pub package: String,
+    pub version: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<ErrorClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacted_message: Option<String>,
+}
+
 /// The complete state of an in-progress publish operation.
 ///
 /// This is the root structure persisted to disk during publishing.
@@ -1146,6 +1229,7 @@ pub struct PackageProgress {
 ///     registry: Registry::crates_io(),
 ///     created_at: Utc::now(),
 ///     updated_at: Utc::now(),
+///     attempt_history: Vec::new(),
 ///     packages: std::collections::BTreeMap::new(),
 /// };
 ///
@@ -1165,6 +1249,10 @@ pub struct ExecutionState {
     pub registry: Registry,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Per-attempt timeline written during publish, before final receipt
+    /// construction. Defaults empty so older state files remain readable.
+    #[serde(default)]
+    pub attempt_history: Vec<AttemptDetail>,
     pub packages: BTreeMap<String, PackageProgress>,
 }
 
@@ -1554,6 +1642,24 @@ pub enum EventType {
         reason: String,
     },
 
+    // Operator-wait visibility. Emitted before Shipper deliberately sleeps so
+    // status/watch consumers can tell the difference between "stuck" and
+    // "waiting on a known release-control condition".
+    PublishWaiting {
+        reason: String,
+        delay_ms: u64,
+        until: DateTime<Utc>,
+    },
+
+    // Registry pacing signal captured before retry scheduling. This is separate
+    // from RetryBackoffStarted because it records why the registry profile path
+    // was selected.
+    RateLimitObserved {
+        is_new_crate: bool,
+        retry_after_ms: Option<u64>,
+        message: String,
+    },
+
     // Reconciliation events (for `ErrorClass::Ambiguous` outcomes)
     PublishReconciling {
         method: ReadinessMethod,
@@ -1649,6 +1755,14 @@ pub enum EventType {
         reason: ErrorClass,
         message: String,
     },
+    RetryScheduled {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        next_attempt_at: DateTime<Utc>,
+        reason: ErrorClass,
+        message: String,
+    },
 
     // Readiness events
     ReadinessStarted {
@@ -1657,6 +1771,11 @@ pub enum EventType {
     ReadinessPoll {
         attempt: u32,
         visible: bool,
+    },
+    ReadinessPollScheduled {
+        attempt: u32,
+        delay_ms: u64,
+        next_poll_at: DateTime<Utc>,
     },
     ReadinessComplete {
         duration_ms: u64,
@@ -1947,6 +2066,7 @@ mod tests {
             registry: Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages,
         };
 
@@ -3223,6 +3343,7 @@ mod tests {
                 registry: Registry::crates_io(),
                 created_at: t,
                 updated_at: t,
+                attempt_history: Vec::new(),
                 packages,
             };
             insta::assert_yaml_snapshot!(state);
@@ -3623,6 +3744,7 @@ mod tests {
                 registry: Registry::crates_io(),
                 created_at: t,
                 updated_at: t,
+                attempt_history: Vec::new(),
                 packages,
             };
             insta::assert_yaml_snapshot!(state);
@@ -3650,6 +3772,7 @@ mod tests {
                 registry: Registry::crates_io(),
                 created_at: t,
                 updated_at: t,
+                attempt_history: Vec::new(),
                 packages,
             };
             insta::assert_yaml_snapshot!(state);
@@ -3712,6 +3835,7 @@ mod tests {
                 registry: Registry::crates_io(),
                 created_at: t,
                 updated_at: t,
+                attempt_history: Vec::new(),
                 packages,
             };
             insta::assert_yaml_snapshot!(state);
@@ -4485,6 +4609,7 @@ mod tests {
                     registry: Registry::crates_io(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages,
                 };
                 let json = serde_json::to_string(&state).unwrap();
@@ -4700,7 +4825,7 @@ mod tests {
 
             // --- EventType all variants roundtrip ---
             #[test]
-            fn event_type_all_variants_roundtrip(variant in 0u8..18) {
+            fn event_type_all_variants_roundtrip(variant in 0u8..22) {
                 let event_type = match variant {
                     0 => EventType::PlanCreated { plan_id: "id1".to_string(), package_count: 5 },
                     1 => EventType::ExecutionStarted,
@@ -4711,14 +4836,18 @@ mod tests {
                     6 => EventType::PackagePublished { duration_ms: 100 },
                     7 => EventType::PackageFailed { class: ErrorClass::Retryable, message: "err".to_string() },
                     8 => EventType::PackageSkipped { reason: "exists".to_string() },
-                    9 => EventType::ReadinessStarted { method: ReadinessMethod::Api },
-                    10 => EventType::ReadinessPoll { attempt: 1, visible: false },
-                    11 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
-                    12 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
-                    13 => EventType::IndexReadinessStarted { crate_name: "a".to_string(), version: "1.0.0".to_string() },
-                    14 => EventType::IndexReadinessCheck { crate_name: "a".to_string(), version: "1.0.0".to_string(), found: true },
-                    15 => EventType::IndexReadinessComplete { crate_name: "a".to_string(), version: "1.0.0".to_string(), visible: true },
-                    16 => EventType::PreflightStarted,
+                    9 => EventType::PublishWaiting { reason: "retry backoff".to_string(), delay_ms: 1000, until: Utc::now() },
+                    10 => EventType::RateLimitObserved { is_new_crate: true, retry_after_ms: Some(30_000), message: "rate limited".to_string() },
+                    11 => EventType::ReadinessStarted { method: ReadinessMethod::Api },
+                    12 => EventType::ReadinessPoll { attempt: 1, visible: false },
+                    13 => EventType::ReadinessPollScheduled { attempt: 2, delay_ms: 1000, next_poll_at: Utc::now() },
+                    14 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
+                    15 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
+                    16 => EventType::IndexReadinessStarted { crate_name: "a".to_string(), version: "1.0.0".to_string() },
+                    17 => EventType::IndexReadinessCheck { crate_name: "a".to_string(), version: "1.0.0".to_string(), found: true },
+                    18 => EventType::IndexReadinessComplete { crate_name: "a".to_string(), version: "1.0.0".to_string(), visible: true },
+                    19 => EventType::RetryScheduled { attempt: 1, max_attempts: 3, delay_ms: 1000, next_attempt_at: Utc::now(), reason: ErrorClass::Retryable, message: "retry".to_string() },
+                    20 => EventType::PreflightStarted,
                     _ => EventType::PreflightComplete { finishability: Finishability::Proven },
                 };
                 let json = serde_json::to_string(&event_type).unwrap();
@@ -4963,6 +5092,7 @@ mod tests {
                     registry: Registry::crates_io(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages,
                 };
 
@@ -5004,6 +5134,7 @@ mod tests {
                     registry: Registry::crates_io(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages,
                 };
 
@@ -5343,6 +5474,7 @@ mod tests {
                     registry: Registry::crates_io(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages: packages.clone(),
                 };
                 let json = serde_json::to_string(&exec_state).unwrap();
@@ -5501,7 +5633,7 @@ mod tests {
 
             #[test]
             fn event_type_debug_never_panics(
-                variant in 0u8..18,
+                variant in 0u8..22,
                 msg in "\\PC{0,100}",
             ) {
                 let event_type = match variant {
@@ -5514,14 +5646,18 @@ mod tests {
                     6 => EventType::PackagePublished { duration_ms: 100 },
                     7 => EventType::PackageFailed { class: ErrorClass::Retryable, message: msg.clone() },
                     8 => EventType::PackageSkipped { reason: msg.clone() },
-                    9 => EventType::ReadinessStarted { method: ReadinessMethod::Api },
-                    10 => EventType::ReadinessPoll { attempt: 1, visible: false },
-                    11 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
-                    12 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
-                    13 => EventType::IndexReadinessStarted { crate_name: msg.clone(), version: "1.0.0".to_string() },
-                    14 => EventType::IndexReadinessCheck { crate_name: msg.clone(), version: "1.0.0".to_string(), found: true },
-                    15 => EventType::IndexReadinessComplete { crate_name: msg.clone(), version: "1.0.0".to_string(), visible: true },
-                    16 => EventType::PreflightStarted,
+                    9 => EventType::PublishWaiting { reason: msg.clone(), delay_ms: 1000, until: Utc::now() },
+                    10 => EventType::RateLimitObserved { is_new_crate: true, retry_after_ms: Some(30_000), message: msg.clone() },
+                    11 => EventType::ReadinessStarted { method: ReadinessMethod::Api },
+                    12 => EventType::ReadinessPoll { attempt: 1, visible: false },
+                    13 => EventType::ReadinessPollScheduled { attempt: 2, delay_ms: 1000, next_poll_at: Utc::now() },
+                    14 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
+                    15 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
+                    16 => EventType::IndexReadinessStarted { crate_name: msg.clone(), version: "1.0.0".to_string() },
+                    17 => EventType::IndexReadinessCheck { crate_name: msg.clone(), version: "1.0.0".to_string(), found: true },
+                    18 => EventType::IndexReadinessComplete { crate_name: msg.clone(), version: "1.0.0".to_string(), visible: true },
+                    19 => EventType::RetryScheduled { attempt: 1, max_attempts: 3, delay_ms: 1000, next_attempt_at: Utc::now(), reason: ErrorClass::Retryable, message: msg.clone() },
+                    20 => EventType::PreflightStarted,
                     _ => EventType::PreflightComplete { finishability: Finishability::Proven },
                 };
                 let debug = format!("{:?}", event_type);
@@ -5811,5 +5947,258 @@ mod tests {
                 prop_assert_eq!(parsed.packages.len(), receipt.packages.len());
             }
         }
+    }
+
+    // ===== StateEventDrift::is_consistent =====
+
+    #[test]
+    fn state_event_drift_default_is_consistent() {
+        let drift = StateEventDrift::default();
+        assert!(drift.is_consistent());
+    }
+
+    #[test]
+    fn state_event_drift_in_events_only_is_inconsistent() {
+        let drift = StateEventDrift {
+            in_events_only: vec!["pkg-a@1.0.0".to_string()],
+            in_state_only: vec![],
+        };
+        assert!(!drift.is_consistent());
+    }
+
+    #[test]
+    fn state_event_drift_in_state_only_is_inconsistent() {
+        let drift = StateEventDrift {
+            in_events_only: vec![],
+            in_state_only: vec!["pkg-b@2.0.0".to_string()],
+        };
+        assert!(!drift.is_consistent());
+    }
+
+    #[test]
+    fn state_event_drift_both_sides_drift_is_inconsistent() {
+        let drift = StateEventDrift {
+            in_events_only: vec!["pkg-a@1.0.0".to_string()],
+            in_state_only: vec!["pkg-b@2.0.0".to_string()],
+        };
+        assert!(!drift.is_consistent());
+    }
+
+    #[test]
+    fn state_event_drift_serde_roundtrip_preserves_consistency_check() {
+        let drift = StateEventDrift {
+            in_events_only: vec!["x@0.1.0".to_string(), "y@0.2.0".to_string()],
+            in_state_only: vec![],
+        };
+
+        let json = serde_json::to_string(&drift).expect("serialize");
+        let parsed: StateEventDrift = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(parsed, drift);
+        assert_eq!(parsed.is_consistent(), drift.is_consistent());
+    }
+
+    // ===== GitContext methods =====
+
+    #[test]
+    fn git_context_new_returns_empty_default() {
+        let ctx = GitContext::new();
+        assert!(ctx.commit.is_none());
+        assert!(ctx.branch.is_none());
+        assert!(ctx.tag.is_none());
+        assert!(ctx.dirty.is_none());
+    }
+
+    #[test]
+    fn git_context_has_commit_returns_true_when_commit_set() {
+        let ctx = GitContext {
+            commit: Some("deadbeefdeadbeef".to_string()),
+            ..GitContext::default()
+        };
+        assert!(ctx.has_commit());
+    }
+
+    #[test]
+    fn git_context_has_commit_returns_false_when_commit_absent() {
+        let ctx = GitContext::new();
+        assert!(!ctx.has_commit());
+    }
+
+    #[test]
+    fn git_context_is_dirty_defaults_to_true_when_unknown() {
+        // Safe-by-default semantics: unknown dirtiness is treated as dirty
+        // so we never claim a clean tree we cannot confirm.
+        let ctx = GitContext::new();
+        assert!(ctx.is_dirty());
+    }
+
+    #[test]
+    fn git_context_is_dirty_true_when_explicitly_dirty() {
+        let ctx = GitContext {
+            dirty: Some(true),
+            ..GitContext::default()
+        };
+        assert!(ctx.is_dirty());
+    }
+
+    #[test]
+    fn git_context_is_dirty_false_when_explicitly_clean() {
+        let ctx = GitContext {
+            dirty: Some(false),
+            ..GitContext::default()
+        };
+        assert!(!ctx.is_dirty());
+    }
+
+    #[test]
+    fn git_context_short_commit_truncates_to_seven_chars() {
+        let ctx = GitContext {
+            commit: Some("0123456789abcdef".to_string()),
+            ..GitContext::default()
+        };
+        assert_eq!(ctx.short_commit(), Some("0123456"));
+    }
+
+    #[test]
+    fn git_context_short_commit_returns_full_when_seven_or_shorter() {
+        let ctx_seven = GitContext {
+            commit: Some("abcdef0".to_string()),
+            ..GitContext::default()
+        };
+        assert_eq!(ctx_seven.short_commit(), Some("abcdef0"));
+
+        let ctx_three = GitContext {
+            commit: Some("abc".to_string()),
+            ..GitContext::default()
+        };
+        assert_eq!(ctx_three.short_commit(), Some("abc"));
+    }
+
+    #[test]
+    fn git_context_short_commit_empty_string_returns_empty() {
+        let ctx = GitContext {
+            commit: Some(String::new()),
+            ..GitContext::default()
+        };
+        assert_eq!(ctx.short_commit(), Some(""));
+    }
+
+    #[test]
+    fn git_context_short_commit_returns_none_when_no_commit() {
+        let ctx = GitContext::new();
+        assert_eq!(ctx.short_commit(), None);
+    }
+
+    // ===== group_packages_by_levels generic edge cases =====
+
+    fn pkg(name: &str) -> String {
+        name.to_string()
+    }
+
+    #[test]
+    fn group_packages_by_levels_empty_input_returns_empty() {
+        let levels: Vec<GenericPublishLevel<String>> =
+            group_packages_by_levels(&[], |s: &String| s.as_str(), &BTreeMap::new());
+        assert!(levels.is_empty());
+    }
+
+    #[test]
+    fn group_packages_by_levels_dedupes_duplicate_package_names() {
+        let pkgs = vec![pkg("a"), pkg("a"), pkg("b")];
+        let levels = group_packages_by_levels(&pkgs, |s: &String| s.as_str(), &BTreeMap::new());
+
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0].packages.len(), 2);
+        assert_eq!(levels[0].packages, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn group_packages_by_levels_ignores_dependencies_outside_ordered_set() {
+        // "a" depends on "external", which is not in the plan - should be ignored
+        // and "a" should sit at level 0.
+        let pkgs = vec![pkg("a")];
+        let deps = BTreeMap::from([(
+            "a".to_string(),
+            vec!["external".to_string(), "another-external".to_string()],
+        )]);
+
+        let levels = group_packages_by_levels(&pkgs, |s: &String| s.as_str(), &deps);
+
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0].level, 0);
+        assert_eq!(levels[0].packages, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn group_packages_by_levels_cycle_falls_back_to_singletons() {
+        // Cycle: a -> b, b -> a. Standard Kahn would stall; the function falls
+        // back to deterministic singleton progress so every package still appears.
+        let pkgs = vec![pkg("a"), pkg("b")];
+        let deps = BTreeMap::from([
+            ("a".to_string(), vec!["b".to_string()]),
+            ("b".to_string(), vec!["a".to_string()]),
+        ]);
+
+        let levels = group_packages_by_levels(&pkgs, |s: &String| s.as_str(), &deps);
+
+        let all: Vec<String> = levels.iter().flat_map(|l| l.packages.clone()).collect();
+
+        assert!(all.contains(&"a".to_string()));
+        assert!(all.contains(&"b".to_string()));
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn group_packages_by_levels_diamond_dependency() {
+        // Diamond: top -> mid_l, top -> mid_r, mid_l -> bottom, mid_r -> bottom.
+        // Expected order: top at level 0, mid_l + mid_r at level 1, bottom at level 2.
+        let pkgs = vec![pkg("top"), pkg("mid_l"), pkg("mid_r"), pkg("bottom")];
+        let deps = BTreeMap::from([
+            ("mid_l".to_string(), vec!["top".to_string()]),
+            ("mid_r".to_string(), vec!["top".to_string()]),
+            (
+                "bottom".to_string(),
+                vec!["mid_l".to_string(), "mid_r".to_string()],
+            ),
+        ]);
+
+        let levels = group_packages_by_levels(&pkgs, |s: &String| s.as_str(), &deps);
+
+        assert_eq!(levels.len(), 3);
+        assert_eq!(levels[0].packages, vec!["top".to_string()]);
+        assert_eq!(levels[1].packages.len(), 2);
+        assert!(levels[1].packages.contains(&"mid_l".to_string()));
+        assert!(levels[1].packages.contains(&"mid_r".to_string()));
+        assert_eq!(levels[2].packages, vec!["bottom".to_string()]);
+    }
+
+    #[test]
+    fn group_packages_by_levels_preserves_input_order_within_level() {
+        // No deps: all 3 at level 0, order should match input order.
+        let pkgs = vec![pkg("zebra"), pkg("apple"), pkg("mango")];
+
+        let levels = group_packages_by_levels(&pkgs, |s: &String| s.as_str(), &BTreeMap::new());
+
+        assert_eq!(levels.len(), 1);
+        assert_eq!(
+            levels[0].packages,
+            vec![
+                "zebra".to_string(),
+                "apple".to_string(),
+                "mango".to_string()
+            ]
+        );
+    }
+
+    // ===== PublishRegime::is_new_crate =====
+
+    #[test]
+    fn publish_regime_is_new_crate_true_for_first_publish() {
+        assert!(PublishRegime::FirstPublish.is_new_crate());
+    }
+
+    #[test]
+    fn publish_regime_is_new_crate_false_for_update() {
+        assert!(!PublishRegime::Update.is_new_crate());
     }
 }

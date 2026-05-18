@@ -2,7 +2,7 @@
 //!
 //! Installable product face for the Shipper release engine.
 //!
-//! This is the crate you install with `cargo install shipper --locked`.
+//! This is the crate that provides the user-facing `shipper` install facade.
 //! It ships the `shipper` binary, which delegates to the CLI adapter in
 //! [`shipper-cli`](https://crates.io/crates/shipper-cli) — which in turn
 //! calls the engine in [`shipper-core`](https://crates.io/crates/shipper-core).
@@ -18,7 +18,7 @@
 //! ## Install
 //!
 //! ```text
-//! cargo install shipper --locked
+//! cargo install shipper --version <published-prerelease> --locked
 //! ```
 //!
 //! ## Embedding

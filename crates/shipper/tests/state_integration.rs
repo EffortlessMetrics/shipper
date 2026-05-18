@@ -40,6 +40,7 @@ fn make_state(plan_id: &str, packages: BTreeMap<String, PackageProgress>) -> Exe
         registry: sample_registry(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }
 }
@@ -995,6 +996,7 @@ fn make_deterministic_state(
         registry: sample_registry(),
         created_at: fixed_time(),
         updated_at: fixed_time(),
+        attempt_history: Vec::new(),
         packages,
     }
 }

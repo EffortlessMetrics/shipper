@@ -92,6 +92,7 @@ fn make_state(plan_id: &str, pkgs: &[(&str, &str, PackageState, u32)]) -> Execut
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }
 }
@@ -190,6 +191,7 @@ fn config_plan_state_receipt_end_to_end_pipeline() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     state::save_state(&state_dir, &exec_state).expect("save state");
@@ -1226,6 +1228,7 @@ fn full_pipeline_plan_preflight_publish_verify_receipt() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     state::save_state(&state_dir, &exec_state).expect("save state");

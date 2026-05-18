@@ -59,14 +59,43 @@ fn arb_event_type() -> impl Strategy<Value = EventType> {
         (arb_error_class(), ".*")
             .prop_map(|(class, message)| EventType::PackageFailed { class, message }),
         ".*".prop_map(|reason| EventType::PackageSkipped { reason }),
+        (".*", 0..u64::MAX).prop_map(|(reason, delay_ms)| EventType::PublishWaiting {
+            reason,
+            delay_ms,
+            until: Utc::now(),
+        }),
+        (any::<bool>(), prop::option::of(0..u64::MAX), ".*").prop_map(
+            |(is_new_crate, retry_after_ms, message)| EventType::RateLimitObserved {
+                is_new_crate,
+                retry_after_ms,
+                message,
+            },
+        ),
         arb_readiness_method().prop_map(|method| EventType::ReadinessStarted { method }),
         (1..100u32, any::<bool>())
             .prop_map(|(attempt, visible)| EventType::ReadinessPoll { attempt, visible }),
+        (1..100u32, 0..u64::MAX).prop_map(|(attempt, delay_ms)| {
+            EventType::ReadinessPollScheduled {
+                attempt,
+                delay_ms,
+                next_poll_at: Utc::now(),
+            }
+        }),
         (0..u64::MAX, 1..100u32).prop_map(|(d, a)| EventType::ReadinessComplete {
             duration_ms: d,
             attempts: a,
         }),
         (0..u64::MAX).prop_map(|d| EventType::ReadinessTimeout { max_wait_ms: d }),
+        (1..100u32, 1..100u32, 0..u64::MAX, arb_error_class(), ".*").prop_map(
+            |(attempt, max_attempts, delay_ms, reason, message)| EventType::RetryScheduled {
+                attempt,
+                max_attempts,
+                delay_ms,
+                next_attempt_at: Utc::now(),
+                reason,
+                message,
+            },
+        ),
         Just(EventType::PreflightStarted),
         (any::<bool>(), ".*").prop_map(|(passed, output)| {
             EventType::PreflightWorkspaceVerify { passed, output }

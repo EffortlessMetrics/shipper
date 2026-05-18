@@ -2,7 +2,18 @@
 source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: normalize_stderr(&stdout)
 ---
-View detailed receipt with evidence
+View the end-of-run receipt with evidence.
+
+Reads `<state-dir>/receipt.json` and prints the completed release summary,
+package outcomes, git context, environment fingerprint, and captured evidence.
+
+EXAMPLES:
+    # Print the human-readable release receipt:
+    shipper inspect-receipt
+
+    # Emit the receipt in JSON for CI or an internal developer portal:
+    shipper inspect-receipt --format json
+
 
 Usage: shipper-cli inspect-receipt [OPTIONS]
 

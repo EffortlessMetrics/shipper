@@ -474,6 +474,205 @@ mod edge_case_tests {
 }
 
 #[cfg(test)]
+mod coverage_gaps {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    struct Holder {
+        #[serde(
+            deserialize_with = "deserialize_duration",
+            serialize_with = "serialize_duration"
+        )]
+        value: Duration,
+    }
+
+    // -- deserialize_duration: unexpected JSON types must error, not silently coerce --
+
+    #[test]
+    fn deserialize_json_null_is_error() {
+        let err = serde_json::from_str::<Holder>(r#"{"value":null}"#).expect_err("null must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn deserialize_json_array_is_error() {
+        let err = serde_json::from_str::<Holder>(r#"{"value":[]}"#).expect_err("array must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn deserialize_json_true_is_error() {
+        let err = serde_json::from_str::<Holder>(r#"{"value":true}"#).expect_err("true must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn deserialize_json_false_is_error() {
+        let err =
+            serde_json::from_str::<Holder>(r#"{"value":false}"#).expect_err("false must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn deserialize_json_float_is_error() {
+        let err = serde_json::from_str::<Holder>(r#"{"value":1.5}"#).expect_err("float must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn deserialize_json_negative_integer_is_error() {
+        let err =
+            serde_json::from_str::<Holder>(r#"{"value":-1}"#).expect_err("negative must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    // -- deserialize_duration: unexpected TOML types must error --
+
+    #[test]
+    fn deserialize_toml_bool_is_error() {
+        let err = toml::from_str::<Holder>(r#"value = true"#).expect_err("bool must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn deserialize_toml_float_is_error() {
+        let err = toml::from_str::<Holder>(r#"value = 1.5"#).expect_err("float must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn deserialize_toml_array_is_error() {
+        let err = toml::from_str::<Holder>(r#"value = []"#).expect_err("array must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn deserialize_toml_negative_integer_is_error() {
+        let err = toml::from_str::<Holder>(r#"value = -1"#).expect_err("negative must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    // -- serialize_duration: sub-millisecond inputs truncate toward zero, never round up --
+
+    #[test]
+    fn serialize_500us_truncates_to_zero() {
+        let h = Holder {
+            value: Duration::from_nanos(500_000),
+        };
+        let json = serde_json::to_value(&h).unwrap();
+        assert_eq!(json["value"], 0);
+    }
+
+    #[test]
+    fn serialize_1us_truncates_to_zero() {
+        let h = Holder {
+            value: Duration::from_micros(1),
+        };
+        let json = serde_json::to_value(&h).unwrap();
+        assert_eq!(json["value"], 0);
+    }
+
+    #[test]
+    fn serialize_1500us_truncates_to_1ms() {
+        // 1500us is 1.5ms; truncation (not rounding) yields 1ms.
+        let h = Holder {
+            value: Duration::from_micros(1500),
+        };
+        let json = serde_json::to_value(&h).unwrap();
+        assert_eq!(json["value"], 1);
+    }
+
+    // -- serialize_duration: very large values must not panic --
+
+    #[test]
+    fn serialize_u32_max_seconds_does_not_panic() {
+        let h = Holder {
+            value: Duration::from_secs(u32::MAX as u64),
+        };
+        let json = serde_json::to_value(&h).expect("serialize");
+        assert_eq!(json["value"], (u32::MAX as u64) * 1000);
+    }
+
+    #[test]
+    fn serialize_duration_max_does_not_panic() {
+        // Duration::MAX.as_millis() exceeds u64::MAX; the `as u64` cast wraps
+        // (returns the low 64 bits of the u128). Pinning: must not panic.
+        let h = Holder {
+            value: Duration::MAX,
+        };
+        let _ = serde_json::to_value(&h).expect("serialize");
+    }
+
+    // -- parse_duration: whitespace handling --
+
+    #[test]
+    fn parse_leading_and_trailing_whitespace_is_accepted() {
+        assert_eq!(parse_duration("  2s  ").unwrap(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn parse_trailing_newline_is_accepted() {
+        assert_eq!(parse_duration("2s\n").unwrap(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn parse_internal_space_between_digit_and_unit_is_accepted() {
+        // humantime allows whitespace between the number and its unit suffix.
+        assert_eq!(parse_duration("2 s").unwrap(), Duration::from_secs(2));
+    }
+
+    // -- parse_duration: error path coverage --
+
+    #[test]
+    fn parse_empty_string_error_is_duration_error() {
+        let err: humantime::DurationError = parse_duration("").expect_err("empty must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn parse_garbage_string_error_is_duration_error() {
+        let err: humantime::DurationError =
+            parse_duration("not a duration").expect_err("garbage must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn parse_negative_string_error_is_duration_error() {
+        let err: humantime::DurationError = parse_duration("-1s").expect_err("negative must fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    // -- Round-trip across JSON and TOML for cross-format consistency --
+
+    #[test]
+    fn json_then_toml_roundtrip_yields_identical_duration() {
+        let original = Holder {
+            value: Duration::from_millis(3_750),
+        };
+
+        let json = serde_json::to_string(&original).expect("json ser");
+        let via_json: Holder = serde_json::from_str(&json).expect("json de");
+        assert_eq!(via_json, original);
+
+        // serialize_duration emits a u64 millisecond count; TOML accepts that as
+        // an integer for the deserializer's u64 arm.
+        let toml_str = toml::to_string(&original).expect("toml ser");
+        let via_toml: Holder = toml::from_str(&toml_str).expect("toml de");
+        assert_eq!(via_toml, original);
+
+        assert_eq!(via_json, via_toml);
+    }
+
+    #[test]
+    fn json_integer_and_toml_string_yield_same_duration() {
+        let json: Holder = serde_json::from_str(r#"{"value":150000}"#).expect("json");
+        let toml_val: Holder = toml::from_str(r#"value = "2m 30s""#).expect("toml");
+        assert_eq!(json, toml_val);
+        assert_eq!(json.value, Duration::from_secs(150));
+    }
+}
+
+#[cfg(test)]
 mod snapshot_tests {
     use super::*;
     use insta::assert_debug_snapshot;

@@ -28,6 +28,7 @@ fn sample_state() -> ExecutionState {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }
 }
@@ -379,6 +380,7 @@ fn file_store_state_with_all_package_states() {
         registry: Registry::crates_io(),
         created_at: now,
         updated_at: now,
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -599,12 +601,18 @@ fn file_store_clear_removes_events_too() {
     store.save_events(&events).expect("save events");
     store.save_state(&sample_state()).expect("save state");
     store.save_receipt(&sample_receipt()).expect("save receipt");
+    let reconciliation_path = crate::state::execution_state::reconciliation_path(td.path());
+    std::fs::write(&reconciliation_path, "{}").expect("save reconciliation");
 
     store.clear().expect("clear");
 
     assert!(store.load_state().expect("load state").is_none());
     assert!(store.load_receipt().expect("load receipt").is_none());
     assert!(store.load_events().expect("load events").is_none());
+    assert!(
+        !reconciliation_path.exists(),
+        "reconciliation report should be removed"
+    );
 }
 
 #[test]
@@ -740,6 +748,7 @@ fn file_store_state_with_empty_packages() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
 
@@ -1109,6 +1118,7 @@ fn file_store_state_very_long_package_name() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -1131,6 +1141,7 @@ fn file_store_state_empty_plan_id() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
 
@@ -1455,6 +1466,7 @@ fn file_store_concurrent_writers_last_write_readable() {
                     registry: Registry::crates_io(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
                     packages: BTreeMap::new(),
                 };
                 state.packages.insert(
@@ -1517,6 +1529,7 @@ fn file_store_state_with_many_packages() {
         registry: Registry::crates_io(),
         created_at: now,
         updated_at: now,
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -1725,6 +1738,7 @@ mod proptests_hardened {
                 registry: Registry::crates_io(),
                 created_at: now,
                 updated_at: now,
+                attempt_history: Vec::new(),
                 packages,
             };
 

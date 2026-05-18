@@ -37,12 +37,30 @@ use anyhow::{Context, Result};
 /// assert!(parse_schema_version("invalid").is_err());
 /// ```
 pub fn parse_schema_version(version: &str) -> Result<u32> {
-    let parts: Vec<&str> = version.split('.').collect();
-    if parts.len() != 3 || !parts[0].starts_with("shipper") || !parts[2].starts_with('v') {
+    let mut parts = version.split('.');
+    let Some(prefix) = parts.next() else {
+        anyhow::bail!("invalid schema version format: {version}");
+    };
+    let Some(document_type) = parts.next() else {
+        anyhow::bail!("invalid schema version format: {version}");
+    };
+    let Some(raw_version) = parts.next() else {
+        anyhow::bail!("invalid schema version format: {version}");
+    };
+
+    if parts.next().is_some()
+        || prefix != "shipper"
+        || document_type.is_empty()
+        || !raw_version.starts_with('v')
+    {
         anyhow::bail!("invalid schema version format: {version}");
     }
 
-    let version_part = &parts[2][1..];
+    let version_part = &raw_version[1..];
+    if version_part.is_empty() || !version_part.bytes().all(|byte| byte.is_ascii_digit()) {
+        anyhow::bail!("invalid version number in schema version: {version}");
+    }
+
     version_part
         .parse::<u32>()
         .with_context(|| format!("invalid version number in schema version: {version}"))
@@ -153,10 +171,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_schema_version_ignores_middle_segment_content() {
-        // The middle segment can be anything; only prefix and version suffix matter
+    fn parse_schema_version_accepts_non_empty_document_type() {
         assert_eq!(parse_schema_version("shipper.anything.v5").unwrap(), 5);
-        assert_eq!(parse_schema_version("shipper..v5").unwrap(), 5);
+    }
+
+    #[test]
+    fn parse_schema_version_rejects_empty_document_type() {
+        assert!(parse_schema_version("shipper..v5").is_err());
     }
 
     // --- Additional validate edge-case tests ---
@@ -334,9 +355,8 @@ mod tests {
     // --- Edge cases: unusual/adversarial inputs ---
 
     #[test]
-    fn parse_schema_version_accepts_shipper_prefix_superstring() {
-        // "shippers" starts with "shipper" so the current impl accepts it
-        assert_eq!(parse_schema_version("shippers.receipt.v3").unwrap(), 3);
+    fn parse_schema_version_rejects_shipper_prefix_superstring() {
+        assert!(parse_schema_version("shippers.receipt.v3").is_err());
     }
 
     #[test]
@@ -361,9 +381,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_schema_version_accepts_version_with_plus_sign() {
-        // Rust's u32::parse treats "+1" as 1; document this accepted behavior
-        assert_eq!(parse_schema_version("shipper.receipt.v+1").unwrap(), 1);
+    fn parse_schema_version_rejects_version_with_plus_sign() {
+        assert!(parse_schema_version("shipper.receipt.v+1").is_err());
     }
 
     #[test]

@@ -1,36 +1,78 @@
-id = "shipper-reconcile-registry-truth"
-title = "Registry-truth reconciliation for ambiguous publish outcomes"
-status = "complete"
+id = "shipper-json-evidence-contracts"
+title = "JSON evidence contracts and release-closure output"
+status = "active"
 owner = "EffortlessMetrics"
-created = "2026-05-13"
+created = "2026-05-18"
 
 objective = """
-Close Reconcile from the source-of-truth stack: ambiguous cargo publish outcomes
-must reconcile against registry truth before retrying or resuming, and the
-support-tier claim must match implementation proof.
+Make Shipper's machine-readable release evidence contract-driven: stable JSON
+surfaces name schema versions or honest receipt contracts, publish and resume
+envelope decisions are explicit, and support tiers link each claim to proof
+commands.
 """
 
 end_state = [
-  "Ambiguous publish outcomes resolve to Published, NotPublished, or StillUnknown.",
-  "Registry evidence is persisted in events and execution state.",
-  "Resume honors persisted reconciliation outcomes.",
-  "StillUnknown stops before blind retry and requires operator action.",
-  "Support-tier and product claims are promoted only after proof exists.",
+  "JSON evidence contract spec and plan are accepted.",
+  "Publish JSON emits a proved command envelope.",
+  "Resume JSON emits a proved command envelope.",
+  "Support tiers describe only implemented JSON contracts.",
+  "Schema-file validation is deferred until command contracts justify it.",
 ]
 
 [[work_item]]
-id = "reconcile-claim-proof"
+id = "json-evidence-contract-spec"
 status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0002-registry-truth-and-reconciliation.md"
-spec = "docs/specs/SHIPPER-SPEC-0003-registry-reconciliation.md"
-plan = "plans/reconcile/implementation-plan.md"
-issue = "102"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
+plan = "plans/0.4.0/json-evidence-contracts.md"
+issue = "109"
 commands = [
-  "cargo fmt --all -- --check",
-  "cargo test -p shipper-types --locked",
-  "cargo test -p shipper-core reconcile --lib --locked",
-  "cargo test -p shipper-core state --lib --locked",
-  "cargo test -p shipper-cli --test bdd_publish --locked",
   "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask policy-report",
+  "cargo xtask package-surface",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "publish-json-command-envelope"
+status = "complete"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
+plan = "plans/0.4.0/json-evidence-contracts.md"
+issue = "109"
+commands = [
+  "cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_command_envelope_to_stdout",
+  "cargo clippy -p shipper-cli --all-targets --locked -- -D warnings",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "resume-json-command-envelope"
+status = "complete"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
+plan = "plans/0.4.0/json-evidence-contracts.md"
+issue = "109"
+commands = [
+  "cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_command_envelope",
+  "cargo clippy -p shipper-cli --all-targets --locked -- -D warnings",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "schema-file-validation"
+status = "planned"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
+plan = "plans/0.4.0/json-evidence-contracts.md"
+issue = "109"
+commands = [
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask policy-report",
+  "git diff --check",
 ]

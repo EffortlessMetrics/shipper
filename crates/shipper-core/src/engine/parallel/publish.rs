@@ -11,24 +11,25 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::ops::cargo;
 use crate::plan::PlannedWorkspace;
 use crate::runtime::execution::{
-    backoff_delay, classify_cargo_failure, pkg_key, registry_aware_backoff, update_state_locked,
+    append_attempt_detail, backoff_delay, classify_cargo_failure, pkg_key, registry_aware_backoff,
+    retry_after_delay, retry_next_attempt_at, update_state_locked,
 };
 use crate::state::events;
 use crate::state::execution_state as state;
 use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{
-    AttemptEvidence, ErrorClass, EventType, ExecutionState, PackageEvidence, PackageReceipt,
-    PackageState, PlannedPackage, PublishEvent, PublishLevel, PublishRegime, ReadinessConfig,
-    ReadinessEvidence, ReconciliationOutcome, RuntimeOptions,
+    AttemptDetail, AttemptEvidence, ErrorClass, EventType, ExecutionState, PackageEvidence,
+    PackageReceipt, PackageState, PlannedPackage, PublishEvent, PublishLevel, PublishRegime,
+    ReadinessConfig, ReadinessEvidence, ReconciliationOutcome, RuntimeOptions,
 };
 
 use super::policy::policy_effects;
-use super::readiness::is_version_visible_with_backoff;
+use super::readiness::is_version_visible_with_backoff_and_events;
 use super::reconcile::reconcile_ambiguous_upload;
 use super::webhook::{WebhookEvent, maybe_send_event};
 use super::{Reporter, SendReporter, drain_retry_waits};
@@ -39,6 +40,18 @@ use crate::plan::chunking::chunk_by_max_concurrent;
 #[derive(Debug)]
 pub(super) struct PackagePublishResult {
     pub(super) result: anyhow::Result<PackageReceipt>,
+}
+
+fn record_attempt_detail(
+    st: &Arc<Mutex<ExecutionState>>,
+    state_dir: &Path,
+    detail: AttemptDetail,
+) -> Result<()> {
+    let mut state = st.lock().map_err(|_| {
+        anyhow::anyhow!("execution state lock poisoned while recording attempt detail")
+    })?;
+    append_attempt_detail(&mut state, detail);
+    state::save_state(state_dir, &state)
 }
 
 /// Emit a [`EventType::RetryBackoffStarted`] event + a human-readable warn
@@ -56,31 +69,134 @@ pub(super) fn emit_retry_backoff(
     attempt: u32,
     max_attempts: u32,
     delay: std::time::Duration,
+    next_attempt_at: DateTime<Utc>,
     reason: ErrorClass,
     message: &str,
 ) {
-    let next_attempt_at =
-        Utc::now() + chrono::Duration::from_std(delay).unwrap_or_else(|_| chrono::Duration::zero());
+    record_retry_backoff(
+        event_log,
+        events_path,
+        pkg_label,
+        attempt,
+        max_attempts,
+        delay,
+        next_attempt_at,
+        &reason,
+        message,
+    );
+    wait_after_retry(
+        reporter,
+        pkg_name,
+        pkg_version,
+        attempt,
+        max_attempts,
+        delay,
+        reason,
+        message,
+    );
+}
 
-    // Record the event (flushed with the next batch of events)
-    {
-        let mut log = event_log.lock().unwrap();
-        log.record(PublishEvent {
-            timestamp: Utc::now(),
-            event_type: EventType::RetryBackoffStarted {
-                attempt,
-                max_attempts,
-                delay_ms: delay.as_millis() as u64,
-                next_attempt_at,
-                reason: reason.clone(),
-                message: message.to_string(),
-            },
-            package: pkg_label.to_string(),
-        });
-        let _ = log.write_to_file(events_path);
-        log.clear();
-    }
+#[allow(clippy::too_many_arguments)]
+fn record_retry_backoff(
+    event_log: &Arc<Mutex<events::EventLog>>,
+    events_path: &Path,
+    pkg_label: &str,
+    attempt: u32,
+    max_attempts: u32,
+    delay: std::time::Duration,
+    next_attempt_at: DateTime<Utc>,
+    reason: &ErrorClass,
+    message: &str,
+) {
+    let Ok(mut log) = event_log.lock() else {
+        return;
+    };
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RetryScheduled {
+            attempt,
+            max_attempts,
+            delay_ms: delay.as_millis() as u64,
+            next_attempt_at,
+            reason: reason.clone(),
+            message: message.to_string(),
+        },
+        package: pkg_label.to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::PublishWaiting {
+            reason: "retry backoff".to_string(),
+            delay_ms: delay.as_millis() as u64,
+            until: next_attempt_at,
+        },
+        package: pkg_label.to_string(),
+    });
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RetryBackoffStarted {
+            attempt,
+            max_attempts,
+            delay_ms: delay.as_millis() as u64,
+            next_attempt_at,
+            reason: reason.clone(),
+            message: message.to_string(),
+        },
+        package: pkg_label.to_string(),
+    });
+    let _ = log.write_to_file(events_path);
+    log.clear();
+}
 
+fn record_rate_limit_observed(
+    event_log: &Arc<Mutex<events::EventLog>>,
+    events_path: &Path,
+    pkg_label: &str,
+    is_new_crate: bool,
+    retry_after: Option<std::time::Duration>,
+    message: &str,
+) {
+    let Ok(mut log) = event_log.lock() else {
+        return;
+    };
+    log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RateLimitObserved {
+            is_new_crate,
+            retry_after_ms: retry_after.map(|delay| delay.as_millis() as u64),
+            message: message.to_string(),
+        },
+        package: pkg_label.to_string(),
+    });
+    let _ = log.write_to_file(events_path);
+    log.clear();
+}
+
+fn record_readiness_event(
+    event_log: &Arc<Mutex<events::EventLog>>,
+    events_path: &Path,
+    event: PublishEvent,
+) -> Result<()> {
+    let mut log = event_log
+        .lock()
+        .map_err(|_| anyhow::anyhow!("event log lock poisoned while recording readiness event"))?;
+    log.record(event);
+    log.write_to_file(events_path)?;
+    log.clear();
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn wait_after_retry(
+    reporter: &Arc<SendReporter>,
+    pkg_name: &str,
+    pkg_version: &str,
+    attempt: u32,
+    max_attempts: u32,
+    delay: std::time::Duration,
+    reason: ErrorClass,
+    message: &str,
+) {
     reporter.retry_wait(
         pkg_name,
         pkg_version,
@@ -90,6 +206,22 @@ pub(super) fn emit_retry_backoff(
         reason,
         message,
     );
+}
+
+fn write_reconciliation_report_best_effort(
+    state_dir: &Path,
+    ws: &PlannedWorkspace,
+    events_path: &Path,
+    reporter: &Arc<SendReporter>,
+) {
+    if let Err(err) = crate::state::reconciliation::write_report_from_events(
+        state_dir,
+        &ws.plan.plan_id,
+        &ws.plan.registry,
+        events_path,
+    ) {
+        reporter.warn(&format!("failed to write reconciliation report: {err}"));
+    }
 }
 
 /// Publish a single package with retries (parallel-safe version)
@@ -246,6 +378,8 @@ pub(super) fn publish_package(
             let _ = log.write_to_file(events_path);
             log.clear();
         }
+        write_reconciliation_report_best_effort(state_dir, ws, events_path, reporter);
+        let reconciliation_report_path = state::reconciliation_path(state_dir);
 
         match outcome {
             ReconciliationOutcome::Published { .. } => {
@@ -255,8 +389,10 @@ pub(super) fn publish_package(
                     let _ = state::save_state(state_dir, &state);
                 }
                 reporter.info(&format!(
-                    "{}@{}: reconciled as published on resume (no republish)",
-                    p.name, p.version
+                    "{}@{}: reconciliation outcome: Published; action: mark published and continue without republish (evidence: {})",
+                    p.name,
+                    p.version,
+                    reconciliation_report_path.display()
                 ));
                 return PackagePublishResult {
                     result: Ok(PackageReceipt {
@@ -284,15 +420,20 @@ pub(super) fn publish_package(
                     let _ = state::save_state(state_dir, &state);
                 }
                 reporter.info(&format!(
-                    "{}@{}: reconciled as not published; proceeding with publish",
-                    p.name, p.version
+                    "{}@{}: reconciliation outcome: NotPublished; action: retry under publish policy (evidence: {})",
+                    p.name,
+                    p.version,
+                    reconciliation_report_path.display()
                 ));
                 // Fall through to the normal retry loop below.
             }
             ReconciliationOutcome::StillUnknown { reason, .. } => {
                 reporter.error(&format!(
-                    "{}@{}: resume reconciliation still inconclusive: {}",
-                    p.name, p.version, reason
+                    "{}@{}: reconciliation outcome: StillUnknown; action: stop before blind retry; operator action required (evidence: {}): {}",
+                    p.name,
+                    p.version,
+                    reconciliation_report_path.display(),
+                    reason
                 ));
                 maybe_send_event(
                     &opts.webhook,
@@ -350,10 +491,11 @@ pub(super) fn publish_package(
 
         if !cargo_succeeded {
             // Event: PackageAttempted
+            let attempt_started_at = Utc::now();
             {
                 let mut log = event_log.lock().unwrap();
                 log.record(PublishEvent {
-                    timestamp: Utc::now(),
+                    timestamp: attempt_started_at,
                     event_type: EventType::PackageAttempted {
                         attempt,
                         command: command.clone(),
@@ -380,6 +522,7 @@ pub(super) fn publish_package(
                     return PackagePublishResult { result: Err(e) };
                 }
             };
+            let attempt_ended_at = Utc::now();
 
             // Collect attempt evidence
             attempt_evidence.push(AttemptEvidence {
@@ -388,7 +531,7 @@ pub(super) fn publish_package(
                 exit_code: out.exit_code,
                 stdout_tail: out.stdout_tail.clone(),
                 stderr_tail: out.stderr_tail.clone(),
-                timestamp: Utc::now(),
+                timestamp: attempt_ended_at,
                 duration: out.duration,
             });
 
@@ -403,9 +546,28 @@ pub(super) fn publish_package(
                     },
                     package: pkg_label.clone(),
                 });
+                let _ = log.write_to_file(events_path);
+                log.clear();
             }
 
             if out.exit_code == 0 && !out.timed_out {
+                if let Err(e) = record_attempt_detail(
+                    st,
+                    state_dir,
+                    AttemptDetail {
+                        package: p.name.clone(),
+                        version: p.version.clone(),
+                        attempt,
+                        max_attempts: opts.max_attempts,
+                        started_at: attempt_started_at,
+                        ended_at: attempt_ended_at,
+                        error_class: None,
+                        next_attempt_at: None,
+                        redacted_message: None,
+                    },
+                ) {
+                    return PackagePublishResult { result: Err(e) };
+                }
                 cargo_succeeded = true;
                 // Persist Uploaded state so resume skips cargo publish
                 {
@@ -420,12 +582,30 @@ pub(super) fn publish_package(
                     p.name, p.version, out.exit_code
                 ));
 
+                let failure_output = format!("{}\n{}", out.stderr_tail, out.stdout_tail);
+                let (class, msg) = classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
+                last_err = Some((class.clone(), msg.clone()));
+                let mut attempt_detail = AttemptDetail {
+                    package: p.name.clone(),
+                    version: p.version.clone(),
+                    attempt,
+                    max_attempts: opts.max_attempts,
+                    started_at: attempt_started_at,
+                    ended_at: attempt_ended_at,
+                    error_class: Some(class.clone()),
+                    next_attempt_at: None,
+                    redacted_message: Some(msg.clone()),
+                };
+
                 if reg.version_exists(&p.name, &p.version).unwrap_or(false) {
                     reporter.info(&format!(
                         "{}@{}: version is present on registry; treating as published",
                         p.name, p.version
                     ));
 
+                    if let Err(e) = record_attempt_detail(st, state_dir, attempt_detail) {
+                        return PackagePublishResult { result: Err(e) };
+                    }
                     {
                         let mut state = st.lock().unwrap();
                         update_state_locked(&mut state, &key, PackageState::Published);
@@ -434,10 +614,6 @@ pub(super) fn publish_package(
                     last_err = None;
                     break;
                 }
-
-                let failure_output = format!("{}\n{}", out.stderr_tail, out.stdout_tail);
-                let (class, msg) = classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
-                last_err = Some((class.clone(), msg.clone()));
 
                 // Event: PackageFailed
                 {
@@ -482,13 +658,24 @@ pub(super) fn publish_package(
                             },
                             package: pkg_label.clone(),
                         });
+                        let _ = log.write_to_file(events_path);
+                        log.clear();
                     }
+                    write_reconciliation_report_best_effort(state_dir, ws, events_path, reporter);
+                    let reconciliation_report_path = state::reconciliation_path(state_dir);
 
                     match outcome {
                         ReconciliationOutcome::Published { .. } => {
+                            if let Err(e) =
+                                record_attempt_detail(st, state_dir, attempt_detail.clone())
+                            {
+                                return PackagePublishResult { result: Err(e) };
+                            }
                             reporter.info(&format!(
-                                "{}@{}: reconciled as published; no retry",
-                                p.name, p.version
+                                "{}@{}: reconciliation outcome: Published; registry shows version present; action: mark published and continue without retry (evidence: {})",
+                                p.name,
+                                p.version,
+                                reconciliation_report_path.display()
                             ));
                             {
                                 let mut state = st.lock().unwrap();
@@ -516,12 +703,23 @@ pub(super) fn publish_package(
                             break;
                         }
                         ReconciliationOutcome::NotPublished { .. } => {
+                            reporter.info(&format!(
+                                "{}@{}: reconciliation outcome: NotPublished; registry still absent; action: retry under publish policy (evidence: {})",
+                                p.name,
+                                p.version,
+                                reconciliation_report_path.display()
+                            ));
                             // Safe to enter the normal Retryable path below;
                             // registry confirms no duplicate-upload risk.
                             // Preserve negative-polling evidence for the receipt.
                             readiness_evidence = reconcile_evidence;
                         }
                         ReconciliationOutcome::StillUnknown { reason, .. } => {
+                            if let Err(e) =
+                                record_attempt_detail(st, state_dir, attempt_detail.clone())
+                            {
+                                return PackagePublishResult { result: Err(e) };
+                            }
                             let ambiguous_state = PackageState::Ambiguous {
                                 message: reason.clone(),
                             };
@@ -535,6 +733,13 @@ pub(super) fn publish_package(
                                 let _ = log.write_to_file(events_path);
                                 log.clear();
                             }
+                            reporter.error(&format!(
+                                "{}@{}: reconciliation outcome: StillUnknown; action: stop before blind retry; operator action required (evidence: {}): {}",
+                                p.name,
+                                p.version,
+                                reconciliation_report_path.display(),
+                                reason
+                            ));
 
                             // Notify operators: reconciliation was inconclusive
                             // and human judgment is required.
@@ -563,6 +768,9 @@ pub(super) fn publish_package(
 
                 match class {
                     ErrorClass::Permanent => {
+                        if let Err(e) = record_attempt_detail(st, state_dir, attempt_detail) {
+                            return PackagePublishResult { result: Err(e) };
+                        }
                         let failed = PackageState::Failed {
                             class: class.clone(),
                             message: msg.clone(),
@@ -614,28 +822,56 @@ pub(super) fn publish_package(
                             } else {
                                 false
                             };
-                        let delay = registry_aware_backoff(
-                            opts.base_delay,
-                            opts.max_delay,
-                            attempt,
-                            opts.retry_strategy,
-                            opts.retry_jitter,
-                            is_new_crate,
-                            &failure_output,
-                        );
-                        emit_retry_backoff(
-                            event_log,
-                            events_path,
-                            reporter,
-                            &pkg_label,
-                            &p.name,
-                            &p.version,
-                            attempt,
-                            opts.max_attempts,
-                            delay,
-                            class.clone(),
-                            &msg,
-                        );
+                        if attempt < opts.max_attempts {
+                            if crate::runtime::execution::looks_like_rate_limit(&failure_output) {
+                                record_rate_limit_observed(
+                                    event_log,
+                                    events_path,
+                                    &pkg_label,
+                                    is_new_crate,
+                                    retry_after_delay(&failure_output),
+                                    &msg,
+                                );
+                            }
+                            let delay = registry_aware_backoff(
+                                opts.base_delay,
+                                opts.max_delay,
+                                attempt,
+                                opts.retry_strategy,
+                                opts.retry_jitter,
+                                is_new_crate,
+                                &failure_output,
+                            );
+                            let next_attempt_at = retry_next_attempt_at(delay);
+                            attempt_detail.next_attempt_at = Some(next_attempt_at);
+                            record_retry_backoff(
+                                event_log,
+                                events_path,
+                                &pkg_label,
+                                attempt,
+                                opts.max_attempts,
+                                delay,
+                                next_attempt_at,
+                                &class,
+                                &msg,
+                            );
+                            if let Err(e) = record_attempt_detail(st, state_dir, attempt_detail) {
+                                return PackagePublishResult { result: Err(e) };
+                            }
+                            wait_after_retry(
+                                reporter,
+                                &p.name,
+                                &p.version,
+                                attempt,
+                                opts.max_attempts,
+                                delay,
+                                class.clone(),
+                                &msg,
+                            );
+                        } else if let Err(e) = record_attempt_detail(st, state_dir, attempt_detail)
+                        {
+                            return PackagePublishResult { result: Err(e) };
+                        }
                     }
                 }
                 continue;
@@ -648,13 +884,48 @@ pub(super) fn publish_package(
             p.name, p.version
         ));
 
-        let verify_result =
-            is_version_visible_with_backoff(reg, &p.name, &p.version, &readiness_config);
+        let readiness_started_at = Instant::now();
+        if let Err(e) = record_readiness_event(
+            event_log,
+            events_path,
+            PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::ReadinessStarted {
+                    method: readiness_config.method,
+                },
+                package: pkg_label.clone(),
+            },
+        ) {
+            return PackagePublishResult { result: Err(e) };
+        }
+        let mut emit_readiness_event =
+            |event| record_readiness_event(event_log, events_path, event);
+        let verify_result = is_version_visible_with_backoff_and_events(
+            reg,
+            &p.name,
+            &p.version,
+            &readiness_config,
+            &mut emit_readiness_event,
+        );
 
         match verify_result {
             Ok((visible, checks)) => {
                 readiness_evidence = checks;
                 if visible {
+                    if let Err(e) = record_readiness_event(
+                        event_log,
+                        events_path,
+                        PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::ReadinessComplete {
+                                duration_ms: readiness_started_at.elapsed().as_millis() as u64,
+                                attempts: readiness_evidence.len() as u32,
+                            },
+                            package: pkg_label.clone(),
+                        },
+                    ) {
+                        return PackagePublishResult { result: Err(e) };
+                    }
                     {
                         let mut state = st.lock().unwrap();
                         update_state_locked(&mut state, &key, PackageState::Published);
@@ -689,6 +960,19 @@ pub(super) fn publish_package(
 
                     break;
                 } else {
+                    if let Err(e) = record_readiness_event(
+                        event_log,
+                        events_path,
+                        PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::ReadinessTimeout {
+                                max_wait_ms: readiness_config.max_total_wait.as_millis() as u64,
+                            },
+                            package: pkg_label.clone(),
+                        },
+                    ) {
+                        return PackagePublishResult { result: Err(e) };
+                    }
                     let message =
                         "published locally, but version not observed on registry within timeout";
                     last_err = Some((ErrorClass::Ambiguous, message.to_string()));
@@ -699,6 +983,7 @@ pub(super) fn publish_package(
                         opts.retry_strategy,
                         opts.retry_jitter,
                     );
+                    let next_attempt_at = retry_next_attempt_at(delay);
                     emit_retry_backoff(
                         event_log,
                         events_path,
@@ -709,6 +994,7 @@ pub(super) fn publish_package(
                         attempt,
                         opts.max_attempts,
                         delay,
+                        next_attempt_at,
                         ErrorClass::Ambiguous,
                         message,
                     );
@@ -724,6 +1010,7 @@ pub(super) fn publish_package(
                     opts.retry_strategy,
                     opts.retry_jitter,
                 );
+                let next_attempt_at = retry_next_attempt_at(delay);
                 emit_retry_backoff(
                     event_log,
                     events_path,
@@ -734,6 +1021,7 @@ pub(super) fn publish_package(
                     attempt,
                     opts.max_attempts,
                     delay,
+                    next_attempt_at,
                     ErrorClass::Ambiguous,
                     message,
                 );

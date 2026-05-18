@@ -143,6 +143,20 @@ fn normalize_stderr(raw: &str) -> String {
     redact_version_metadata(&normalized)
 }
 
+fn normalize_status_help(raw: &str) -> String {
+    trim_trailing_line_whitespace(&normalize_stderr(raw))
+}
+
+fn trim_trailing_line_whitespace(raw: &str) -> String {
+    let trailing_nl = raw.ends_with('\n');
+    let joined = raw
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if trailing_nl { joined + "\n" } else { joined }
+}
+
 /// Redact the three build-time fields embedded in `--version`
 /// (`commit:`, `build:`, `rustc:`) so snapshots are stable regardless of
 /// the git checkout, build profile, or rustc version.
@@ -706,6 +720,7 @@ fn clean_removes_state_and_events_files() {
     fs::write(state_dir.join("state.json"), "{}").expect("write state");
     fs::write(state_dir.join("events.jsonl"), "").expect("write events");
     fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
+    fs::write(state_dir.join("reconciliation.json"), "{}").expect("write reconciliation");
 
     shipper_cmd()
         .arg("--manifest-path")
@@ -721,6 +736,7 @@ fn clean_removes_state_and_events_files() {
     assert!(!state_dir.join("state.json").exists());
     assert!(!state_dir.join("events.jsonl").exists());
     assert!(!state_dir.join("receipt.json").exists());
+    assert!(!state_dir.join("reconciliation.json").exists());
 }
 
 #[test]
@@ -733,6 +749,7 @@ fn clean_keep_receipt_preserves_receipt_file() {
     fs::write(state_dir.join("state.json"), "{}").expect("write state");
     fs::write(state_dir.join("events.jsonl"), "").expect("write events");
     fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
+    fs::write(state_dir.join("reconciliation.json"), "{}").expect("write reconciliation");
 
     shipper_cmd()
         .arg("--manifest-path")
@@ -756,6 +773,10 @@ fn clean_keep_receipt_preserves_receipt_file() {
     assert!(
         state_dir.join("receipt.json").exists(),
         "receipt.json should be preserved with --keep-receipt"
+    );
+    assert!(
+        state_dir.join("reconciliation.json").exists(),
+        "reconciliation.json should be preserved with --keep-receipt"
     );
 }
 
@@ -1444,7 +1465,7 @@ fn help_status_snapshot() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("help_status", normalize_stderr(&stdout));
+    assert_snapshot!("help_status", normalize_status_help(&stdout));
 }
 
 /// Snapshot: `plan --help` output.

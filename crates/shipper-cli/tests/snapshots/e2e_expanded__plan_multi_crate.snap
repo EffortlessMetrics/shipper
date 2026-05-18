@@ -12,6 +12,7 @@ Plan summary:
   Skipped packages: 0
   Internal dependency edges: 2
   Publish levels: 3
+  Plan artifact: .shipper/plan.txt (`shipper plan --format json` capture)
 
   1. core-lib@0.2.0 (no workspace dependencies)
   2. mid-lib@0.3.0 (depends on: core-lib@0.2.0)
