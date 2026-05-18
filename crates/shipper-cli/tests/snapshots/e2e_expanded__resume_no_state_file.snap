@@ -8,6 +8,11 @@ Error: resume failed — next steps:
   * inspect <STATE_DIR>/events.jsonl for the authoritative event log
   * inspect <STATE_DIR>/state.json to see what was already published
   * run `shipper status` to compare local versions to the registry
+  Common blockers to check:
+  * state mismatch: compare the current plan with the saved `plan_id` before forcing
+  * corrupt state: preserve `events.jsonl`, then rebuild or clean state intentionally
+  * stale lock: verify no other release process owns the lock before forcing
+  * ambiguous state: inspect `reconciliation.json` and let resume reconcile registry truth
 
 Caused by:
     no existing state found in <STATE_DIR>; run shipper publish first

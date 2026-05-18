@@ -4,6 +4,27 @@
 
 This page is a topical map, not an exhaustive flag listing. For exhaustive flags, use `--help`.
 
+## First-run command chain
+
+Use the `shipper` facade binary for the user-facing workflow:
+
+```bash
+shipper doctor
+shipper plan
+shipper status
+shipper preflight
+```
+
+`doctor` catches local setup blockers, `plan` shows what would publish,
+`status` compares local versions to the registry, and `preflight` gives the
+release-readiness verdict.
+
+For CI, internal developer portals, or agent consumers, `shipper doctor`,
+`shipper plan`, `shipper status`, `shipper preflight`, `shipper publish`,
+and `shipper resume` support `--format json`. `publish` and `resume` emit
+command-owned JSON envelopes with artifact paths and nested release receipt
+evidence for each targeted registry.
+
 ## Commands at a glance
 
 | Command | What it does | Writes state? |

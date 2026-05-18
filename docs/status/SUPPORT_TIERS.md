@@ -5,7 +5,7 @@ Owner: EffortlessMetrics
 Created: 2026-05-13
 Milestone: 0.4.0
 Linked proposal: docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md
-Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md
+Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md
 Linked ADRs:
 Linked plan:
 Linked issues: #109, #195
@@ -31,9 +31,12 @@ make stronger claims than this file supports.
 
 | Claim | Tier | Proof / Source | Owner |
 |---|---|---|---|
-| Facade / CLI / core crate boundary | stable/internal | `docs/architecture.md`; `cargo xtask package-surface`; `crates/shipper/Cargo.toml`; `crates/shipper-cli/Cargo.toml`; `crates/shipper-core/Cargo.toml` | architecture |
-| `cargo install shipper` install facade | stable | `cargo install --path crates/shipper --locked`; CI `Install Smoke` job; `shipper --version`; `shipper --help`; `shipper doctor --help`; `shipper plan --help`; `shipper preflight --help` | packaging/ux |
+| Facade / CLI / core crate boundary | stable/internal | `cargo xtask package-surface` fails if `shipper` stops depending on `shipper-cli`/`shipper-core`, `shipper-cli` stops depending on `shipper-core`, `shipper-core` has any normal/dev/build dependency on `shipper`/`shipper-cli`/`clap`/`indicatif`, or `xtask` is not the only private workspace package; see `docs/architecture.md` and crate manifests | architecture |
+| `shipper` install facade | stable | `cargo install --path crates/shipper --locked`; CI `Install Smoke` job; `shipper --version`; `shipper --help`; `shipper doctor --help`; `shipper plan --help`; `shipper preflight --help` | packaging/ux |
+| Unversioned `cargo install shipper` from crates.io | planned | Cargo requires `--version` while the public crate is prerelease-only; promote when a non-prerelease `shipper` version is published and smoke-tested | packaging/ux |
 | Manifest-level topological publish planning | stable | Planner regression tests; `shipper plan`; roadmap #109 | engine |
+| Plan JSON publish graph | stable | `cargo test -p shipper-cli --test bdd_workflow given_multi_crate_when_plan_json_then_valid_json_output`; `shipper plan --format json` emits `shipper.plan.v1` | cli/integrations |
+| JSON evidence compatibility contract | stable/internal | `docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md`; `plans/0.4.0/json-evidence-contracts.md`; `cargo xtask check-doc-contracts --mode advisory` | cli/integrations |
 | File-policy enforcement | stable/internal | `cargo xtask check-file-policy --mode blocking-allowlist`; `cargo xtask policy-report`; CI `Policy` job | release/ci |
 | Rust 1.95 / 0.4 policy floor | stable/internal | Workspace lints; `cargo xtask check-lint-policy`; `cargo clippy --workspace --all-targets --all-features -- -D warnings` | rust/lints |
 | No-panic production baseline | stable/internal | `cargo xtask no-panic check`; `policy/no-panic-baseline.json` | rust/lints |
@@ -44,7 +47,15 @@ make stronger claims than this file supports.
 | crates.io first-publish backoff profile | stable | `cargo test -p shipper-core runtime::execution --lib`; `cargo test -p shipper-core publish --lib`; `RegistryProfile::crates_io()` | engine |
 | Retry-After retry floor | stable | `cargo test -p shipper-core retry_after --lib`; `cargo test -p shipper-core publish --lib`; raw cargo stderr/stdout retry signal path | engine |
 | Preflight registry pacing estimate | stable | `cargo test -p shipper-core estimate_preflight_duration --lib`; `cargo test -p shipper-cli preflight`; `estimated_publish_duration` JSON field | engine/cli |
-| Resume under real interruption | planned | Future interruption rehearsal proof | engine |
+| Status JSON registry comparison | stable | `cargo test -p shipper-cli --test e2e_status status_json_format_produces_registry_report`; `shipper status --format json` emits `shipper.status.v1` registry/package state | cli/integrations |
+| Status watch JSON progress | stable | `cargo test -p shipper-cli status_watch_report_summarizes_state_and_scheduled_events --lib`; `shipper status --watch --format json` emits `shipper.status.watch.v1` progress state | cli/integrations |
+| Doctor JSON diagnostics | stable | `cargo test -p shipper-cli --test e2e_doctor doctor_json_format_reports_diagnostics_without_token_value`; `shipper doctor --format json` emits `shipper.doctor.v1` without token values | cli/integrations |
+| Publish JSON command envelope | stable | `cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_command_envelope_to_stdout`; `shipper publish --format json` emits `shipper.publish.v1` with package summary, artifact paths, and nested receipt evidence for the targeted registry | cli/integrations |
+| Resume JSON command envelope | stable | `cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_command_envelope`; `shipper resume --format json` emits `shipper.resume.v1` with safety summary, package counts, artifact paths, and nested receipt evidence for the targeted registry | cli/integrations |
+| Resume after synthetic publish interruption | stable/internal | `cargo test -p shipper-cli --test e2e_rehearse -- --nocapture`; CI `BDD Tests` job; proves persisted `state.json`/`events.jsonl` let `shipper resume` complete without duplicate publishes against fake Cargo and a mock registry | engine |
+| Resume under live runner interruption | planned | Manual release-candidate procedure in `docs/how-to/run-recover-rehearsal.md`; promote only after a completed crates.io rehearsal artifact proves cancelled-run artifact recovery and resume on a real runner | engine |
+| Trusted Publishing prerequisite diagnostics | advisory | `shipper doctor`; `cargo test -p shipper-cli --test cli_e2e doctor_command_detects_trusted_publishing_auth`; validates visible GitHub OIDC env and release workflow prerequisites without claiming crates.io-side registration proof | release/ci |
+| Long-lived token fallback warnings | advisory | `cargo test -p shipper-core run_preflight_warns_when_token_auth_overrides_oidc --lib`; `cargo test -p shipper-cli --test cli_e2e doctor_command_warns_when_token_fallback_is_configured`; warns when Cargo token auth wins while Trusted Publishing signals or fallback config are present | release/ci |
 | Trusted Publishing default | planned/advisory | Future Trusted Publishing spec and #96 | release/ci |
 
 ## Rules

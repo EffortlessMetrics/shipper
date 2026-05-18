@@ -42,7 +42,7 @@ Every workflow under `.github/workflows/` and the lane each one occupies. The au
 | `msrv` | every PR | ~1 min | `cargo check --workspace` on the declared MSRV (1.95). |
 | `security` | every PR | ~1 min | `cargo audit` against the current advisory database. |
 | `docs` | every PR | ~1 min | `cargo doc --workspace --no-deps` clean under `-D warnings` (catches `rustdoc::invalid-html-tags` and friends). |
-| `bdd` | every PR | ~2 min | Cucumber scenarios for core publish/resume/reconcile flows. |
+| `bdd` | every PR | ~3 min | Publish and resume BDD scenarios plus the synthetic interruption-resume rehearsal (`e2e_rehearse`) that proves persisted state/events let `shipper resume` complete without duplicate publishes. |
 | `fuzz-smoke` | every PR except `schedule` | ~10 min | Six fuzz targets at low-energy: parser, encrypt, sanitizer, plan, state, events. |
 | `cross-platform` | every PR | ~2 min per leg | Multi-target builds: Linux x86_64/aarch64, Windows MSVC, macOS x86_64/aarch64. |
 | `release-build` | every PR | ~2 min | Release-profile build (LTO + strip) catches release-only mis-compiles before tag time. |
@@ -124,6 +124,14 @@ A maintainer should apply the label when:
 | `create-release` | Attaches platform binaries and `.shipper/` state to the GitHub Release. Runs only after `publish-crates-io` succeeds. |
 | `release-rehearse` | `workflow_dispatch mode=rehearse`: plan + preflight dry-run only. Useful before cutting a tag. |
 | `release-resume` | `workflow_dispatch mode=resume`: re-enters the publish train from a prior run's `shipper-state-final` artifact. Plan-ID match required. |
+
+The live recover rehearsal remains a manual release-candidate procedure because
+it intentionally publishes throwaway crates.io versions and then yanks them.
+The every-PR CI proof is the synthetic side: `ci.yml` runs
+`cargo test -p shipper-cli --test e2e_rehearse -- --nocapture`, which exercises
+a real `shipper publish` interruption/resume sequence against fake Cargo and a
+mock registry, then checks `state.json`, append-only `events.jsonl`, skipped
+published crates, and duplicate-publish invariants.
 
 ## Evidence Composition
 

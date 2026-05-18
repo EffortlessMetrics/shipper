@@ -21,8 +21,11 @@ In this tutorial you will publish a two-crate workspace to crates.io using Shipp
 
 ## 1. Install
 
+The user-facing package is `shipper`. While Shipper is prerelease-only on
+crates.io, Cargo needs an explicit version:
+
 ```bash
-cargo install shipper --locked
+cargo install shipper --version 0.3.0-rc.2 --locked
 ```
 
 > The binary is named `shipper`; the supported install package is the `shipper`

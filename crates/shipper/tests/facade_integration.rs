@@ -164,6 +164,7 @@ fn sample_state(plan_id: &str, packages: &[(&str, &str, PackageState, u32)]) -> 
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: map,
     }
 }
@@ -972,6 +973,7 @@ fn plan_state_store_full_lifecycle() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -2437,6 +2439,7 @@ fn full_lifecycle_plan_events_receipt_through_store() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: packages.clone(),
     };
     store.save_state(&exec_state).expect("save initial state");
@@ -2500,6 +2503,7 @@ fn full_lifecycle_plan_events_receipt_through_store() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: final_packages,
     };
     store

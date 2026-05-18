@@ -91,7 +91,9 @@ shipper
 ```
 
 `shipper` is the install face and product-name facade. Users install it with
-`cargo install shipper --locked`; its binary forwards to `shipper_cli::run()`.
+the `shipper` install facade; its binary forwards to `shipper_cli::run()`.
+While public releases are prerelease-only, Cargo registry installs need an
+explicit `--version`.
 Its library re-exports a curated subset of `shipper-core` for callers that want
 the product name without depending on every engine crate directly.
 

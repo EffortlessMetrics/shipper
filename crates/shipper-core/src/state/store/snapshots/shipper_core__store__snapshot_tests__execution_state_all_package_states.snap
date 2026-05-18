@@ -1,5 +1,5 @@
 ---
-source: crates/shipper-store/src/lib.rs
+source: crates/shipper-core/src/state/store/snapshot_tests.rs
 expression: json
 ---
 {
@@ -12,6 +12,7 @@ expression: json
   },
   "created_at": "2025-01-15T12:00:00Z",
   "updated_at": "2025-01-15T12:00:00Z",
+  "attempt_history": [],
   "packages": {
     "a@1.0.0": {
       "name": "a",

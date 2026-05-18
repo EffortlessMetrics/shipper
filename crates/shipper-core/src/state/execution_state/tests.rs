@@ -32,6 +32,7 @@ fn sample_state() -> ExecutionState {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }
 }
@@ -544,6 +545,43 @@ fn state_double_save_produces_identical_json() {
 }
 
 #[test]
+fn load_state_defaults_missing_attempt_history_for_old_state_json() {
+    let td = tempdir().expect("tempdir");
+    let dir = td.path().join("old-state");
+    fs::create_dir_all(&dir).expect("mkdir");
+    fs::write(
+        state_path(&dir),
+        r#"{
+  "state_version": "shipper.state.v1",
+  "plan_id": "old-plan",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io",
+    "index_base": null
+  },
+  "created_at": "2025-01-15T12:00:00Z",
+  "updated_at": "2025-01-15T12:00:00Z",
+  "packages": {
+    "demo@0.1.0": {
+      "name": "demo",
+      "version": "0.1.0",
+      "attempts": 1,
+      "state": { "state": "pending" },
+      "last_updated_at": "2025-01-15T12:00:00Z"
+    }
+  }
+}"#,
+    )
+    .expect("write old state");
+
+    let loaded = load_state(&dir).expect("load").expect("exists");
+
+    assert_eq!(loaded.plan_id, "old-plan");
+    assert!(loaded.attempt_history.is_empty());
+    assert_eq!(loaded.packages["demo@0.1.0"].attempts, 1);
+}
+
+#[test]
 fn receipt_double_save_produces_identical_json() {
     let td = tempdir().expect("tempdir");
     let dir1 = td.path().join("first");
@@ -584,6 +622,7 @@ fn state_lifecycle_pending_uploaded_published() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -649,6 +688,7 @@ fn state_all_error_classes_persist() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -689,6 +729,7 @@ fn state_empty_packages_roundtrip() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
 
@@ -740,6 +781,7 @@ fn state_overwrite_replaces_all_data() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
     save_state(&dir, &st1).expect("save v1");
@@ -761,6 +803,7 @@ fn state_overwrite_replaces_all_data() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     save_state(&dir, &st2).expect("save v2");
@@ -808,6 +851,7 @@ fn state_with_special_chars_in_plan_id() {
             registry: Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages: BTreeMap::new(),
         };
 
@@ -828,6 +872,7 @@ fn state_plan_id_mismatch_detection() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
     save_state(&dir, &state).expect("save");
@@ -904,6 +949,7 @@ fn deterministic_state() -> ExecutionState {
         registry: Registry::crates_io(),
         created_at: fixed,
         updated_at: fixed,
+        attempt_history: Vec::new(),
         packages,
     }
 }
@@ -1124,6 +1170,7 @@ fn snapshot_state_all_lifecycle_variants() {
         registry: Registry::crates_io(),
         created_at: fixed,
         updated_at: fixed,
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -1279,6 +1326,7 @@ mod proptests {
                     registry,
                     created_at: created,
                     updated_at: updated,
+                    attempt_history: Vec::new(),
                     packages,
                 },
             )
@@ -1384,6 +1432,7 @@ mod proptests {
                 registry: Registry::crates_io(),
                 created_at: fixed,
                 updated_at: fixed,
+                attempt_history: Vec::new(),
                 packages: BTreeMap::new(),
             };
             let json = serde_json::to_string(&state).expect("serialize");
@@ -1419,6 +1468,7 @@ mod proptests {
                 registry: Registry::crates_io(),
                 created_at: fixed,
                 updated_at: fixed,
+                attempt_history: Vec::new(),
                 packages,
             };
 
@@ -1571,6 +1621,7 @@ fn atomic_write_no_partial_state_on_serialization_error_path() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
     save_state(&dir, &st1).expect("save original");
@@ -1906,6 +1957,7 @@ fn concurrent_readers_all_see_consistent_state() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: pkgs,
     };
     save_state(&dir, &state).expect("save");
@@ -1955,6 +2007,7 @@ fn sequential_writer_reader_pattern() {
             registry: Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages: pkgs,
         };
         save_state(&dir, &state).expect("save");
@@ -1981,6 +2034,7 @@ fn concurrent_writer_then_readers() {
                 registry: Registry::crates_io(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                attempt_history: Vec::new(),
                 packages: BTreeMap::new(),
             };
             save_state(&wd, &state).expect("save");
@@ -2068,6 +2122,7 @@ fn each_package_state_variant_disk_roundtrip() {
             registry: Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages: pkgs,
         };
         save_state(&dir, &state).expect("save");
@@ -2204,6 +2259,7 @@ fn snapshot_state_empty_packages() {
         registry: Registry::crates_io(),
         created_at: fixed,
         updated_at: fixed,
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
     let json = serde_json::to_string_pretty(&state).expect("serialize");
@@ -2343,6 +2399,7 @@ mod proptests_extended {
                     .unwrap_or_default(),
                 updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
                     .unwrap_or_default(),
+                attempt_history: Vec::new(),
                 packages: pkgs,
             };
 
@@ -2408,4 +2465,236 @@ mod proptests_extended {
             }
         }
     }
+}
+
+// ── Reconciliation-report persistence ────────────────────────────────────
+
+#[test]
+fn reconciliation_path_appends_expected_filename() {
+    let base = PathBuf::from("x").join("y");
+    assert_eq!(reconciliation_path(&base), base.join(RECONCILIATION_FILE),);
+    assert_eq!(RECONCILIATION_FILE, "reconciliation.json");
+}
+
+fn sample_reconciliation_report() -> shipper_types::ReconciliationReport {
+    shipper_types::ReconciliationReport {
+        schema_version: "shipper.reconciliation.v1".to_string(),
+        plan_id: "p1".to_string(),
+        registry: Registry::crates_io(),
+        generated_at: Utc::now(),
+        evidence_sources: vec![shipper_types::ReconciliationEvidenceSource {
+            kind: shipper_types::ReconciliationEvidenceKind::EventLog,
+            path: ".shipper/events.jsonl".to_string(),
+        }],
+        records: vec![shipper_types::ReconciliationRecord {
+            package: "demo@0.1.0".to_string(),
+            name: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            trigger: shipper_types::ReconciliationTrigger::CargoAmbiguousExit,
+            method: Some(shipper_types::ReadinessMethod::Api),
+            cargo_exit_class: Some(shipper_types::ErrorClass::Ambiguous),
+            outcome: shipper_types::ReconciliationOutcome::Published {
+                attempts: 1,
+                elapsed_ms: 250,
+            },
+            operator_action: shipper_types::ReconciliationOperatorAction::MarkPublishedContinue,
+        }],
+    }
+}
+
+#[test]
+fn write_reconciliation_report_creates_file_at_expected_path() {
+    let td = tempdir().expect("tempdir");
+    let report = sample_reconciliation_report();
+
+    write_reconciliation_report(td.path(), &report).expect("write reconciliation");
+
+    let written = reconciliation_path(td.path());
+    assert!(written.exists(), "expected {} to exist", written.display());
+
+    let content = std::fs::read_to_string(&written).expect("read");
+    let parsed: shipper_types::ReconciliationReport =
+        serde_json::from_str(&content).expect("parse");
+    assert_eq!(parsed.plan_id, report.plan_id);
+    assert_eq!(parsed.schema_version, report.schema_version);
+    assert_eq!(parsed.records.len(), 1);
+    assert_eq!(parsed.records[0].name, "demo");
+    assert_eq!(parsed.evidence_sources.len(), 1);
+}
+
+#[test]
+fn write_reconciliation_report_creates_parent_directories() {
+    let td = tempdir().expect("tempdir");
+    let nested = td.path().join("nested").join("state-dir");
+    let report = sample_reconciliation_report();
+
+    write_reconciliation_report(&nested, &report).expect("write");
+    assert!(reconciliation_path(&nested).exists());
+}
+
+#[test]
+fn write_reconciliation_report_overwrites_existing_atomically() {
+    let td = tempdir().expect("tempdir");
+    let mut report = sample_reconciliation_report();
+
+    write_reconciliation_report(td.path(), &report).expect("first write");
+
+    report.plan_id = "p2".to_string();
+    write_reconciliation_report(td.path(), &report).expect("second write");
+
+    let content = std::fs::read_to_string(reconciliation_path(td.path())).expect("read");
+    let parsed: shipper_types::ReconciliationReport =
+        serde_json::from_str(&content).expect("parse");
+    assert_eq!(parsed.plan_id, "p2", "second write must replace contents");
+}
+
+// ── Encrypted state I/O ──────────────────────────────────────────────────
+
+fn sample_encryption_config() -> shipper_encrypt::EncryptionConfig {
+    shipper_encrypt::EncryptionConfig::new("test-passphrase".to_string())
+}
+
+#[test]
+fn load_state_encrypted_returns_none_when_file_missing() {
+    let td = tempdir().expect("tempdir");
+    let cfg = sample_encryption_config();
+    let loaded = load_state_encrypted(td.path(), &cfg).expect("load");
+    assert!(loaded.is_none());
+}
+
+#[test]
+fn save_and_load_state_encrypted_roundtrip() {
+    let td = tempdir().expect("tempdir");
+    let cfg = sample_encryption_config();
+    let dir = td.path().join("nested");
+    let st = sample_state();
+
+    save_state_encrypted(&dir, &st, &cfg).expect("save");
+    let loaded = load_state_encrypted(&dir, &cfg)
+        .expect("load")
+        .expect("exists");
+
+    assert_eq!(loaded.plan_id, st.plan_id);
+    assert_eq!(loaded.packages.len(), st.packages.len());
+}
+
+#[test]
+fn save_state_encrypted_does_not_write_plaintext() {
+    let td = tempdir().expect("tempdir");
+    let cfg = sample_encryption_config();
+    let mut st = sample_state();
+    // Distinctive marker unlikely to appear by chance in base64 ciphertext.
+    st.plan_id = "UNIQ-MARKER-PLAINTEXT-XYZZY".to_string();
+
+    save_state_encrypted(td.path(), &st, &cfg).expect("save");
+
+    let raw = std::fs::read_to_string(state_path(td.path())).expect("read raw state.json on disk");
+    assert!(
+        !raw.contains("UNIQ-MARKER-PLAINTEXT-XYZZY"),
+        "plan_id marker must not appear in encrypted-on-disk state",
+    );
+}
+
+#[test]
+fn load_state_encrypted_fails_with_wrong_passphrase() {
+    let td = tempdir().expect("tempdir");
+    let st = sample_state();
+
+    let write_cfg = shipper_encrypt::EncryptionConfig::new("right".to_string());
+    let read_cfg = shipper_encrypt::EncryptionConfig::new("wrong".to_string());
+
+    save_state_encrypted(td.path(), &st, &write_cfg).expect("save");
+    let err = load_state_encrypted(td.path(), &read_cfg).expect_err("must fail to decrypt");
+    let msg = format!("{err:#}");
+    assert!(
+        !msg.is_empty(),
+        "expected a decryption error, got empty message"
+    );
+}
+
+// ── Encrypted receipt I/O ────────────────────────────────────────────────
+
+#[test]
+fn load_receipt_encrypted_returns_none_when_file_missing() {
+    let td = tempdir().expect("tempdir");
+    let cfg = sample_encryption_config();
+    let loaded = load_receipt_encrypted(td.path(), &cfg).expect("load");
+    assert!(loaded.is_none());
+}
+
+#[test]
+fn write_and_load_receipt_encrypted_roundtrip() {
+    let td = tempdir().expect("tempdir");
+    let cfg = sample_encryption_config();
+    let dir = td.path().join("nested");
+    let receipt = sample_receipt();
+
+    write_receipt_encrypted(&dir, &receipt, &cfg).expect("write");
+    let loaded = load_receipt_encrypted(&dir, &cfg)
+        .expect("load")
+        .expect("exists");
+
+    assert_eq!(loaded.plan_id, receipt.plan_id);
+    assert_eq!(loaded.packages.len(), receipt.packages.len());
+    assert_eq!(loaded.packages[0].name, "demo");
+}
+
+#[test]
+fn write_receipt_encrypted_does_not_write_plaintext() {
+    let td = tempdir().expect("tempdir");
+    let cfg = sample_encryption_config();
+    let mut receipt = sample_receipt();
+    receipt.plan_id = "UNIQ-MARKER-PLAINTEXT-XYZZY".to_string();
+
+    write_receipt_encrypted(td.path(), &receipt, &cfg).expect("write");
+
+    let raw =
+        std::fs::read_to_string(receipt_path(td.path())).expect("read raw receipt.json on disk");
+    assert!(
+        !raw.contains("UNIQ-MARKER-PLAINTEXT-XYZZY"),
+        "plan_id marker must not appear in encrypted-on-disk receipt",
+    );
+}
+
+#[test]
+fn load_receipt_encrypted_migrates_v1_to_v2() {
+    let td = tempdir().expect("tempdir");
+    let cfg = sample_encryption_config();
+    let dir = td.path();
+
+    // Build a v1-shaped receipt: same fields as v2 sans git_context/environment.
+    let v1 = serde_json::json!({
+        "receipt_version": "shipper.receipt.v1",
+        "plan_id": "p1",
+        "registry": {
+            "name": "crates-io",
+            "api_base": "https://crates.io",
+            "index_base": "https://index.crates.io",
+        },
+        "started_at": Utc::now(),
+        "finished_at": Utc::now(),
+        "packages": [],
+        "event_log_path": ".shipper/events.jsonl",
+    });
+
+    // Encrypt-write it under the receipt path so the encrypted loader sees v1.
+    let encryption = shipper_encrypt::StateEncryption::new(cfg.clone()).expect("encryption client");
+    std::fs::create_dir_all(dir).expect("mkdir");
+    let data = serde_json::to_vec_pretty(&v1).expect("serialize v1");
+    encryption
+        .write_file(&receipt_path(dir), &data)
+        .expect("encrypt-write v1");
+
+    let migrated = load_receipt_encrypted(dir, &cfg)
+        .expect("load")
+        .expect("exists");
+
+    assert_eq!(
+        migrated.receipt_version, CURRENT_RECEIPT_VERSION,
+        "v1 receipt must be migrated to {CURRENT_RECEIPT_VERSION}",
+    );
+    assert!(
+        migrated.git_context.is_none(),
+        "git_context defaults to None in v1->v2 migration",
+    );
 }

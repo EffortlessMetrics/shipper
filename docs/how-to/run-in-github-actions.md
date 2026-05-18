@@ -147,6 +147,20 @@ jobs:
         run: shipper publish --policy safe
 ```
 
+`shipper doctor` validates the local workflow prerequisites it can see:
+`id-token: write`, `environment: release`,
+`rust-lang/crates-io-auth-action@v1`, and an explicit
+`secrets.CARGO_REGISTRY_TOKEN` fallback. It does not validate crates.io's
+per-crate Trusted Publishing registration; that remains a crates.io-side
+setup step and is proven by the token exchange plus preflight ownership
+checks for existing crates.
+
+When the workflow keeps `secrets.CARGO_REGISTRY_TOKEN` as a fallback,
+`shipper doctor` and `shipper preflight` keep that path visible with
+advisory warnings. Treat the fallback as incident recovery or bootstrap
+support; the normal release path should use the short-lived token produced
+by `rust-lang/crates-io-auth-action@v1`.
+
 **Troubleshooting**:
 
 - `id-token: write` missing → GitHub refuses the OIDC exchange → the
