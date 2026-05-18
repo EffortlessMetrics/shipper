@@ -66,6 +66,17 @@ pub(in crate::engine) fn record_terminal_resume_skip(
         package.name, package.version, short
     ));
 
+    record_terminal_resume_skip_event(progress, pkg_label, events_path, event_log)
+}
+
+pub(in crate::engine) fn record_terminal_resume_skip_event(
+    progress: &PackageProgress,
+    pkg_label: &str,
+    events_path: &std::path::Path,
+    event_log: &mut events::EventLog,
+) -> Result<()> {
+    let short = short_state(&progress.state);
+
     // #125: explicitly record resume's "state already terminal, trusting it"
     // decision so events.jsonl stays legible even though historical receipt
     // shape excludes already-terminal packages in the resume path.

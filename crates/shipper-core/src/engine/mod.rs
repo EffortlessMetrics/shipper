@@ -350,6 +350,7 @@ pub fn run_publish(
             &state_dir,
             &events_path,
             &mut event_log,
+            &st,
             parallel_receipts,
             run_started,
             git_context,
@@ -376,6 +377,17 @@ pub fn run_publish(
             ),
             publish::resume::ResumeGate::Skip
         ) {
+            if matches!(
+                progress.state,
+                PackageState::Published | PackageState::Skipped { .. }
+            ) {
+                publish::resume::record_terminal_resume_skip_event(
+                    &progress,
+                    &pkg_label,
+                    &events_path,
+                    &mut event_log,
+                )?;
+            }
             continue;
         }
 
@@ -804,6 +816,15 @@ pub fn run_publish(
                             ));
                             record_attempt_detail(&mut st, &state_dir, attempt_detail)?;
                             update_state(&mut st, &state_dir, &key, PackageState::Published)?;
+                            event_log.record(PublishEvent {
+                                timestamp: Utc::now(),
+                                event_type: EventType::PackagePublished {
+                                    duration_ms: start_instant.elapsed().as_millis() as u64,
+                                },
+                                package: pkg_label.clone(),
+                            });
+                            event_log.write_to_file(&events_path)?;
+                            event_log.clear();
                             last_err = None;
                             break;
                         }
@@ -983,6 +1004,15 @@ pub fn run_publish(
             if matches!(current_state, Some(PackageState::Uploaded)) {
                 if reg.version_exists(&p.name, &p.version)? {
                     update_state(&mut st, &state_dir, &key, PackageState::Published)?;
+                    event_log.record(PublishEvent {
+                        timestamp: Utc::now(),
+                        event_type: EventType::PackagePublished {
+                            duration_ms: start_instant.elapsed().as_millis() as u64,
+                        },
+                        package: pkg_label.clone(),
+                    });
+                    event_log.write_to_file(&events_path)?;
+                    event_log.clear();
                 } else {
                     last_err = Some((
                         ErrorClass::Ambiguous,
@@ -999,6 +1029,15 @@ pub fn run_publish(
             // Final chance: maybe it eventually showed up.
             if reg.version_exists(&p.name, &p.version)? {
                 update_state(&mut st, &state_dir, &key, PackageState::Published)?;
+                event_log.record(PublishEvent {
+                    timestamp: Utc::now(),
+                    event_type: EventType::PackagePublished {
+                        duration_ms: start_instant.elapsed().as_millis() as u64,
+                    },
+                    package: pkg_label.clone(),
+                });
+                event_log.write_to_file(&events_path)?;
+                event_log.clear();
             } else {
                 let failed = PackageState::Failed {
                     class: class.clone(),
@@ -1083,6 +1122,7 @@ pub fn run_publish(
         &state_dir,
         &events_path,
         &mut event_log,
+        &st,
         receipts,
         run_started,
         git_context,

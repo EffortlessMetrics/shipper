@@ -40,6 +40,7 @@ pub(in crate::engine) fn finish_sequential_run(
     state_dir: &Path,
     events_path: &Path,
     event_log: &mut events::EventLog,
+    state: &ExecutionState,
     receipts: Vec<PackageReceipt>,
     run_started: DateTime<Utc>,
     git_context: Option<GitContext>,
@@ -60,6 +61,7 @@ pub(in crate::engine) fn finish_sequential_run(
     write_receipt(
         ws,
         state_dir,
+        state,
         receipts,
         run_started,
         git_context,
@@ -75,6 +77,7 @@ pub(in crate::engine) fn finish_parallel_run(
     state_dir: &Path,
     events_path: &Path,
     event_log: &mut events::EventLog,
+    state: &ExecutionState,
     receipts: Vec<PackageReceipt>,
     run_started: DateTime<Utc>,
     git_context: Option<GitContext>,
@@ -95,6 +98,7 @@ pub(in crate::engine) fn finish_parallel_run(
     write_receipt(
         ws,
         state_dir,
+        state,
         receipts,
         run_started,
         git_context,
@@ -107,6 +111,7 @@ pub(in crate::engine) fn finish_parallel_run(
 fn write_receipt(
     ws: &PlannedWorkspace,
     state_dir: &Path,
+    state: &ExecutionState,
     receipts: Vec<PackageReceipt>,
     run_started: DateTime<Utc>,
     git_context: Option<GitContext>,
@@ -125,11 +130,17 @@ fn write_receipt(
         environment,
     };
 
-    crate::state::reconciliation::write_report_from_events(
+    let reconciliation_report = crate::state::reconciliation::write_report_from_events(
         state_dir,
         &ws.plan.plan_id,
         &ws.plan.registry,
         events_path,
+    )?;
+    crate::state::consistency::verify_finalization_consistency(
+        events_path,
+        state,
+        &receipt,
+        reconciliation_report.as_ref(),
     )?;
     state::write_receipt(state_dir, &receipt)?;
     Ok(receipt)
