@@ -1,118 +1,31 @@
-id = "shipper-release-operator-visibility"
-title = "Release operator visibility and survive proof"
-status = "complete"
+id = "shipper-release-auth-evidence"
+title = "Release auth evidence and Trusted Publishing"
+status = "active"
 owner = "EffortlessMetrics"
 created = "2026-05-18"
 
 objective = """
-Use Shipper's existing attempt-history, wait/readiness-event, and status/watch
-foundations to close the remaining release black-box recorder gaps: event-follow
-tail safety, event/state drift checks, state rebuild, and live interruption
-proof.
+Make Shipper's release authentication posture evidence-backed: Doctor,
+preflight, publish/resume, events, receipts, release workflows, and support
+tiers should distinguish Trusted Publishing, token fallback, missing auth, and
+externally unproven crates.io registration without exposing token values.
 """
 
 end_state = [
-  "Inspect-events follow mode handles incomplete tail lines without emitting partial events.",
-  "Publish finalization detects material event/state/receipt drift.",
-  "State can be rebuilt from events for recovery or comparison.",
-  "Live-runner interruption proof exists before the support-tier claim is promoted.",
+  "The active goal points to the accepted auth evidence spec and plan.",
+  "Auth mode and token fallback are visible in release evidence without token values.",
+  "Trusted Publishing workflow proof records whether short-lived token minting succeeded or fallback was used.",
+  "Support tiers distinguish advisory diagnostics from a proven Trusted Publishing default.",
 ]
 
 [[work_item]]
-id = "operator-visibility-source-of-truth"
+id = "auth-evidence-source-of-truth"
 status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
-plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
-issue = "109"
-commands = [
-  "cargo xtask check-doc-contracts --mode advisory",
-  "cargo xtask policy-report",
-  "cargo xtask check-file-policy --mode blocking-allowlist",
-  "cargo fmt --all -- --check",
-  "git diff --check",
-]
-
-[[work_item]]
-id = "inspect-events-follow-incomplete-tail"
-status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
-plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
-issue = "109"
-linked_pr = "#331"
-completed = "2026-05-18"
-commands = [
-  "cargo test -p shipper-cli inspect_events --lib --locked",
-  "cargo test -p shipper-cli --test cli_e2e --locked",
-  "cargo xtask policy-report",
-  "cargo fmt --all -- --check",
-  "git diff --check",
-]
-
-[[work_item]]
-id = "events-state-receipt-drift-checks"
-status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
-plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
-issue = "109"
-linked_pr = "#333"
-completed = "2026-05-18"
-commands = [
-  "cargo test -p shipper-core drift --lib --locked",
-  "cargo test -p shipper-core state --lib --locked",
-  "cargo xtask policy-report",
-  "cargo fmt --all -- --check",
-  "git diff --check",
-]
-
-[[work_item]]
-id = "rebuild-state-from-events"
-status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
-plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
-issue = "109"
-linked_pr = "#310"
-completed = "2026-05-17"
-commands = [
-  "cargo test -p shipper-core rebuild --lib --locked",
-  "cargo xtask policy-report",
-  "cargo fmt --all -- --check",
-  "git diff --check",
-]
-
-[[work_item]]
-id = "live-runner-interruption-rehearsal"
-status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
-plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
-issue = "109"
-linked_pr = "#335"
-completed = "2026-05-18"
-commands = [
-  "GitHub Actions Live runner interruption rehearsal run 26051581056",
-  "cargo test -p shipper-cli --test e2e_rehearse -- --nocapture",
-  "cargo xtask policy-report",
-  "cargo fmt --all -- --check",
-  "git diff --check",
-]
-artifacts = [
-  "https://github.com/EffortlessMetrics/shipper/actions/runs/26051581056",
-  "shipper-live-interruption-seed-26051581056",
-  "shipper-live-interruption-resume-26051581056",
-]
-
-[[work_item]]
-id = "support-tier-promotion"
-status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
-plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
-issue = "109"
-linked_pr = "#336"
+spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
+plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
+issue = "105"
+linked_pr = "#338"
 completed = "2026-05-18"
 commands = [
   "cargo xtask check-doc-contracts --mode advisory",
@@ -121,8 +34,45 @@ commands = [
   "cargo fmt --all -- --check",
   "git diff --check",
 ]
-artifacts = [
-  "https://github.com/EffortlessMetrics/shipper/actions/runs/26051581056",
-  "shipper-live-interruption-seed-26051581056",
-  "shipper-live-interruption-resume-26051581056",
+
+[[work_item]]
+id = "auth-mode-release-evidence"
+status = "active"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
+plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
+issue = "105"
+commands = [
+  "cargo test -p shipper-core run_preflight_warns_when_token_auth_overrides_oidc --lib --locked",
+  "cargo test -p shipper-output-sanitizer --locked",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "trusted-publishing-proof-artifact"
+status = "planned"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
+plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
+issue = "105"
+commands = [
+  "release auth rehearsal or release-readiness workflow artifact",
+  "cargo xtask policy-report",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "auth-support-tier-promotion"
+status = "planned"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
+plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
+issue = "105"
+commands = [
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
 ]
