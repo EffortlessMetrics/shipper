@@ -5,7 +5,7 @@ Owner: EffortlessMetrics
 Created: 2026-05-13
 Milestone: 0.4.0
 Linked proposal: docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md
-Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md; docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md
+Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md; docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md; docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md
 Linked ADRs:
 Linked plan:
 Linked issues: #109, #195
@@ -55,9 +55,9 @@ make stronger claims than this file supports.
 | Resume JSON command envelope | stable | `cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_command_envelope`; `shipper resume --format json` emits `shipper.resume.v1` with safety summary, package counts, artifact paths, and nested receipt evidence for the targeted registry | cli/integrations |
 | Resume after synthetic publish interruption | stable/internal | `cargo test -p shipper-cli --test e2e_rehearse -- --nocapture`; CI `BDD Tests` job; proves persisted `state.json`/`events.jsonl` let `shipper resume` complete without duplicate publishes against fake Cargo and a mock registry | engine |
 | Resume under live runner interruption | stable/internal | GitHub Actions `Live runner interruption rehearsal` run 26051581056 uploaded `shipper-live-interruption-seed-26051581056` and `shipper-live-interruption-resume-26051581056`; `cargo test -p shipper-cli --test e2e_rehearse -- --nocapture`; proves real runner artifact handoff and safe resume against fake Cargo/mock registry proof surfaces, not crates.io publication | engine |
-| Trusted Publishing prerequisite diagnostics | advisory | `shipper doctor`; `cargo test -p shipper-cli --test cli_e2e doctor_command_detects_trusted_publishing_auth`; validates visible GitHub OIDC env and release workflow prerequisites without claiming crates.io-side registration proof | release/ci |
-| Long-lived token fallback warnings | advisory | `cargo test -p shipper-core run_preflight_warns_when_token_auth_overrides_oidc --lib`; `cargo test -p shipper-cli --test cli_e2e doctor_command_warns_when_token_fallback_is_configured`; warns when Cargo token auth wins while Trusted Publishing signals or fallback config are present | release/ci |
-| Trusted Publishing default | planned/advisory | Future Trusted Publishing spec and #96 | release/ci |
+| Trusted Publishing prerequisite diagnostics | advisory | `docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md`; `shipper doctor`; `cargo test -p shipper-cli --test cli_e2e doctor_command_detects_trusted_publishing_auth`; inspects visible GitHub OIDC env and release workflow prerequisites without claiming crates.io-side registration proof | release/ci |
+| Long-lived token fallback warnings | advisory | `docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md`; `cargo test -p shipper-core run_preflight_warns_when_token_auth_overrides_oidc --lib`; `cargo test -p shipper-cli --test cli_e2e doctor_command_warns_when_token_fallback_is_configured`; warns when Cargo token auth wins while Trusted Publishing signals or fallback config are present | release/ci |
+| Trusted Publishing default | planned/advisory | `docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md`; `plans/0.4.0/release-auth-evidence-and-trusted-publishing.md`; promote only after release evidence proves the short-lived-token path is the normal path and token fallback state is explicit | release/ci |
 
 ## Rules
 
