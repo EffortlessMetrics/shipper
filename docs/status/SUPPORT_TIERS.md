@@ -5,7 +5,7 @@ Owner: EffortlessMetrics
 Created: 2026-05-13
 Milestone: 0.4.0
 Linked proposal: docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md
-Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md
+Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md
 Linked ADRs:
 Linked plan:
 Linked issues: #109, #195
@@ -36,6 +36,7 @@ make stronger claims than this file supports.
 | Unversioned `cargo install shipper` from crates.io | planned | Cargo requires `--version` while the public crate is prerelease-only; promote when a non-prerelease `shipper` version is published and smoke-tested | packaging/ux |
 | Manifest-level topological publish planning | stable | Planner regression tests; `shipper plan`; roadmap #109 | engine |
 | Plan JSON publish graph | stable | `cargo test -p shipper-cli --test bdd_workflow given_multi_crate_when_plan_json_then_valid_json_output`; `shipper plan --format json` emits `shipper.plan.v1` | cli/integrations |
+| JSON evidence compatibility contract | stable/internal | `docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md`; `plans/0.4.0/json-evidence-contracts.md`; `cargo xtask check-doc-contracts --mode advisory` | cli/integrations |
 | File-policy enforcement | stable/internal | `cargo xtask check-file-policy --mode blocking-allowlist`; `cargo xtask policy-report`; CI `Policy` job | release/ci |
 | Rust 1.95 / 0.4 policy floor | stable/internal | Workspace lints; `cargo xtask check-lint-policy`; `cargo clippy --workspace --all-targets --all-features -- -D warnings` | rust/lints |
 | No-panic production baseline | stable/internal | `cargo xtask no-panic check`; `policy/no-panic-baseline.json` | rust/lints |
