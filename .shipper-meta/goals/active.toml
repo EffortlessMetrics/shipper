@@ -1,79 +1,92 @@
-id = "shipper-json-evidence-contracts"
-title = "JSON evidence contracts and release-closure output"
-status = "complete"
+id = "shipper-release-operator-visibility"
+title = "Release operator visibility and survive proof"
+status = "active"
 owner = "EffortlessMetrics"
 created = "2026-05-18"
-completed = "2026-05-18"
 
 objective = """
-Make Shipper's machine-readable release evidence contract-driven: stable JSON
-surfaces name schema versions or honest receipt contracts, publish and resume
-envelope decisions are explicit, and support tiers link each claim to proof
-commands.
+Use Shipper's existing attempt-history, wait/readiness-event, and status/watch
+foundations to close the remaining release black-box recorder gaps: event-follow
+tail safety, event/state drift checks, state rebuild, and live interruption
+proof.
 """
 
 end_state = [
-  "JSON evidence contract spec and plan are accepted.",
-  "Publish JSON emits a proved command envelope.",
-  "Resume JSON emits a proved command envelope.",
-  "Support tiers describe only implemented JSON contracts.",
-  "Schema-file validation is deferred until command contracts justify it.",
+  "Inspect-events follow mode handles incomplete tail lines without emitting partial events.",
+  "Publish finalization detects material event/state/receipt drift.",
+  "State can be rebuilt from events for recovery or comparison.",
+  "Live-runner interruption proof exists before the support-tier claim is promoted.",
 ]
 
 [[work_item]]
-id = "json-evidence-contract-spec"
+id = "operator-visibility-source-of-truth"
 status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
-plan = "plans/0.4.0/json-evidence-contracts.md"
+spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
+plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
 issue = "109"
 commands = [
   "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask policy-report",
-  "cargo xtask package-surface",
+  "cargo xtask check-file-policy --mode blocking-allowlist",
   "cargo fmt --all -- --check",
   "git diff --check",
 ]
 
 [[work_item]]
-id = "publish-json-command-envelope"
-status = "complete"
+id = "inspect-events-follow-incomplete-tail"
+status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
-plan = "plans/0.4.0/json-evidence-contracts.md"
+spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
+plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
 issue = "109"
 commands = [
-  "cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_command_envelope_to_stdout",
-  "cargo clippy -p shipper-cli --all-targets --locked -- -D warnings",
+  "cargo test -p shipper-cli inspect_events --lib --locked",
+  "cargo test -p shipper-cli --test cli_e2e --locked",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
   "git diff --check",
 ]
 
 [[work_item]]
-id = "resume-json-command-envelope"
-status = "complete"
+id = "events-state-receipt-drift-checks"
+status = "ready"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
-plan = "plans/0.4.0/json-evidence-contracts.md"
+spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
+plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
 issue = "109"
 commands = [
-  "cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_command_envelope",
-  "cargo clippy -p shipper-cli --all-targets --locked -- -D warnings",
+  "cargo test -p shipper-core drift --lib --locked",
+  "cargo test -p shipper-core state --lib --locked",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
   "git diff --check",
 ]
 
 [[work_item]]
-id = "schema-file-validation"
+id = "rebuild-state-from-events"
+status = "ready"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
+plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
+issue = "109"
+commands = [
+  "cargo test -p shipper-core state_rebuild --lib --locked",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "live-runner-interruption-rehearsal"
 status = "planned"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
-plan = "plans/0.4.0/json-evidence-contracts.md"
+spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
+plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
 issue = "109"
 commands = [
-  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo test -p shipper-cli --test e2e_rehearse -- --nocapture",
   "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
   "git diff --check",
 ]
