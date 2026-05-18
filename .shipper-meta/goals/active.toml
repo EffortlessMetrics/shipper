@@ -35,11 +35,13 @@ commands = [
 
 [[work_item]]
 id = "inspect-events-follow-incomplete-tail"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
 plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
 issue = "109"
+linked_pr = "#331"
+completed = "2026-05-18"
 commands = [
   "cargo test -p shipper-cli inspect_events --lib --locked",
   "cargo test -p shipper-cli --test cli_e2e --locked",
@@ -50,7 +52,7 @@ commands = [
 
 [[work_item]]
 id = "events-state-receipt-drift-checks"
-status = "ready"
+status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
 plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
