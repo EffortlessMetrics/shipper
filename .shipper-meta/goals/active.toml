@@ -1,8 +1,9 @@
 id = "shipper-json-evidence-contracts"
 title = "JSON evidence contracts and release-closure output"
-status = "active"
+status = "complete"
 owner = "EffortlessMetrics"
 created = "2026-05-18"
+completed = "2026-05-18"
 
 objective = """
 Make Shipper's machine-readable release evidence contract-driven: stable JSON
