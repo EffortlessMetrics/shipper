@@ -2624,11 +2624,12 @@ fn build_resume_json_report<'a>(
             }
         }
     }
+    let safe_to_resume = failed == 0 && ambiguous == 0;
 
     Ok(ResumeJsonReport {
         schema_version: "shipper.resume.v1",
         command: "resume",
-        safe_to_resume: true,
+        safe_to_resume,
         registry: receipt.registry.name.clone(),
         plan_id: &receipt.plan_id,
         state_dir: state_dir.display().to_string(),
