@@ -1,6 +1,6 @@
 # Plan: JSON Evidence Contracts
 
-Status: proposed
+Status: accepted
 Owner: EffortlessMetrics
 Created: 2026-05-18
 Milestone: 0.4.0
@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/source-of-truth-stack.md
 Linked issues: #109
-Linked PRs: #315, #316, #317
+Linked PRs: #315, #316, #317, #318
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: no new policy exceptions
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo xtask package-surface; cargo fmt --all -- --check
@@ -51,10 +51,7 @@ state, release proof, and product behavior changes.
 
 #### Acceptance
 
-- JSON evidence contract spec exists.
-- This plan exists and links to the spec.
-- Support tiers link JSON claims back to the spec without promoting new runtime
-  behavior.
+Merged as #318.
 
 #### Proof Commands
 
@@ -91,6 +88,7 @@ Runtime JSON output changes and release proof.
 #### Acceptance
 
 - Active goal TOML parses.
+- The completed source-of-truth goal is archived.
 - Work items link to this spec and the current plan.
 - `.shipper/` remains reserved for runtime release evidence.
 

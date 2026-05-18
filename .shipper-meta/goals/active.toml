@@ -1,99 +1,78 @@
-id = "shipper-source-of-truth-stack"
-title = "Source-of-truth stack and doc-contract enforcement"
+id = "shipper-json-evidence-contracts"
+title = "JSON evidence contracts and release-closure output"
 status = "active"
 owner = "EffortlessMetrics"
 created = "2026-05-18"
 
 objective = """
-Make Shipper's proposals, specs, ADRs, implementation plans, active goals,
-support tiers, policy reports, and release artifacts link into an executable
-source-of-truth system that maintainers and agents can follow without stale
-issue archaeology.
+Make Shipper's machine-readable release evidence contract-driven: stable JSON
+surfaces name schema versions or honest receipt contracts, publish and resume
+envelope decisions are explicit, and support tiers link each claim to proof
+commands.
 """
 
 end_state = [
-  "The active goal points to the current accepted spec and plan.",
-  "Doc-contract checks validate IDs, headers, statuses, and links.",
-  "Policy-report includes doc-contract status.",
-  "CI runs doc-contract checks in advisory mode and uploads reports.",
-  "Release-readiness proof can be executed from spec and plan, not issue prose.",
+  "JSON evidence contract spec and plan are accepted.",
+  "Publish JSON either remains receipt-only or gains a proved command envelope.",
+  "Resume JSON either remains receipt-only or gains a proved command envelope.",
+  "Support tiers describe only implemented JSON contracts.",
+  "Schema-file validation is deferred until command contracts justify it.",
 ]
 
 [[work_item]]
-id = "active-goal-refresh"
+id = "json-evidence-contract-spec"
 status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md"
-plan = "plans/0.4.0/source-of-truth-stack.md"
+spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
+plan = "plans/0.4.0/json-evidence-contracts.md"
 issue = "109"
 commands = [
-  "python -c \"import pathlib,tomllib; tomllib.loads(pathlib.Path('.shipper-meta/goals/active.toml').read_text()); print('active goal TOML parses')\"",
-  "cargo xtask check-file-policy --mode blocking-allowlist",
+  "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask policy-report",
+  "cargo xtask package-surface",
   "cargo fmt --all -- --check",
   "git diff --check",
 ]
 
 [[work_item]]
-id = "source-of-truth-status-normalization"
+id = "publish-json-command-envelope"
 status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md"
-plan = "plans/0.4.0/source-of-truth-stack.md"
+spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
+plan = "plans/0.4.0/json-evidence-contracts.md"
+issue = "109"
+commands = [
+  "cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_receipt_to_stdout",
+  "cargo clippy -p shipper-cli --all-targets --locked -- -D warnings",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "resume-json-command-envelope"
+status = "ready"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
+plan = "plans/0.4.0/json-evidence-contracts.md"
+issue = "109"
+commands = [
+  "cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_receipt_json",
+  "cargo clippy -p shipper-cli --all-targets --locked -- -D warnings",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "schema-file-validation"
+status = "planned"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
+plan = "plans/0.4.0/json-evidence-contracts.md"
 issue = "109"
 commands = [
   "cargo xtask check-doc-contracts --mode advisory",
-  "cargo xtask check-file-policy --mode blocking-allowlist",
   "cargo xtask policy-report",
-  "cargo fmt --all -- --check",
   "git diff --check",
-]
-
-[[work_item]]
-id = "release-readiness-proof-plan"
-status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md"
-plan = "plans/0.4.0/release-readiness-proof.md"
-issue = "195"
-commands = [
-  "cargo xtask check-doc-contracts --mode advisory",
-  "cargo xtask policy-report",
-  "cargo fmt --all -- --check",
-  "git diff --check",
-]
-
-[[work_item]]
-id = "release-readiness-artifact-skeleton"
-status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md"
-plan = "plans/0.4.0/release-readiness-proof.md"
-issue = "195"
-commands = [
-  "cargo xtask check-doc-contracts --mode advisory",
-  "cargo xtask policy-report",
-  "cargo fmt --all -- --check",
-  "git diff --check",
-]
-
-[[work_item]]
-id = "release-readiness-proof-execution"
-status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md"
-plan = "plans/0.4.0/release-readiness-proof.md"
-issue = "195"
-commands = [
-  "cargo fmt --all -- --check",
-  "cargo clippy --workspace --all-targets --all-features -- -D warnings",
-  "cargo test --workspace --all-features",
-  "cargo test --workspace --doc",
-  "cargo check --workspace",
-  "cargo audit",
-  "cargo doc --workspace --no-deps --document-private-items",
-  "cargo test -p shipper-cli --test bdd_publish",
-  "cargo xtask check-doc-contracts --mode advisory",
-  "cargo xtask policy-report",
-  "cargo run -p shipper -- plan",
 ]
