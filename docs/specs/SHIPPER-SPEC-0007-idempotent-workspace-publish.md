@@ -3,11 +3,13 @@
 Status: accepted
 Owner: EffortlessMetrics
 Created: 2026-05-18
-Supersedes:
-Superseded-by:
-Linked roadmap pillar: Prove, Reconcile, Integrate
+Milestone: 0.4.0
+Linked proposal: docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md
+Linked specs: docs/specs/SHIPPER-SPEC-0003-registry-reconciliation.md; docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md; docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md
+Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md; docs/adr/SHIPPER-ADR-0002-registry-truth-over-cargo-output.md
+Linked plan:
 Linked issues: #109
-Linked PRs:
+Linked PRs: #339
 Support-tier impact: publish contract + CI behavior surface
 Policy impact: none
 Proof commands: cargo test -p shipper-cli --test bdd_publish --locked; cargo test -p shipper-cli --test e2e_publish --locked; cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report
@@ -78,10 +80,16 @@ shipper publish --policy safe
 For `shipper publish --format json`, the command envelope must carry:
 
 - A stable schema version (`shipper.publish.v1`).
-- A summary surface that distinguishes published vs skipped-existing vs failed.
-- Safety signal (`safe_to_rerun`) for idempotent rerun posture.
+- Per-package `packages[].state` values that distinguish published, skipped,
+  failed, ambiguous, uploaded, and pending outcomes.
 - Artifact paths for `.shipper/state.json`, `.shipper/events.jsonl`, and
   `.shipper/receipt.json` (plus reconciliation artifact when present).
+- A nested receipt that remains the detailed package-outcome authority.
+
+`shipper.publish.v1` does not currently expose a top-level `safe_to_rerun`
+field. A future additive field may make rerun posture easier to consume, but
+this stable contract is based on package states, receipt evidence, and
+reconciliation outcomes that already exist.
 
 ## 5) Relationship to release-plz and Cargo
 
