@@ -26,6 +26,7 @@ fn sample_state() -> ExecutionState {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }
 }

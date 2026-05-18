@@ -807,6 +807,124 @@ mod state_updated_atomically {
         registry.join();
     }
 
+    #[test]
+    #[serial]
+    fn given_pending_state_when_resume_json_then_stdout_is_command_envelope() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
+        let state_dir = td.path().join(".shipper");
+
+        let registry = spawn_registry(vec![404, 404, 404, 404, 200], 6);
+
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--allow-dirty")
+            .arg("--verify-timeout")
+            .arg("0ms")
+            .arg("--verify-poll")
+            .arg("0ms")
+            .arg("--no-readiness")
+            .arg("--max-attempts")
+            .arg("1")
+            .arg("--base-delay")
+            .arg("0ms")
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("publish")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "1")
+            .assert()
+            .failure();
+
+        let mut cmd = shipper_cmd();
+        fast_resume_args(
+            &mut cmd,
+            &td.path().join("Cargo.toml"),
+            &registry.base_url,
+            &state_dir,
+        );
+        let output = cmd
+            .arg("--format")
+            .arg("json")
+            .arg("resume")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8(output).expect("utf8");
+        let envelope: serde_json::Value =
+            serde_json::from_str(&stdout).expect("resume stdout should be command envelope JSON");
+        assert_eq!(
+            envelope["schema_version"].as_str(),
+            Some("shipper.resume.v1")
+        );
+        assert_eq!(envelope["command"].as_str(), Some("resume"));
+        assert_eq!(envelope["safe_to_resume"].as_bool(), Some(true));
+        assert!(envelope["plan_id"].is_string(), "plan_id should be present");
+        assert_eq!(envelope["published"].as_u64(), Some(1));
+        assert_eq!(envelope["pending"].as_u64(), Some(0));
+        assert_eq!(envelope["failed"].as_u64(), Some(0));
+        assert_eq!(envelope["ambiguous"].as_u64(), Some(0));
+        assert!(
+            envelope["next_package"].is_null(),
+            "completed resume should not name another package"
+        );
+        assert_eq!(
+            envelope["packages"][0]["name"].as_str(),
+            Some("demo"),
+            "envelope should contain the resumed package"
+        );
+        assert_eq!(envelope["packages"][0]["state"].as_str(), Some("published"));
+        assert_eq!(
+            envelope["packages"][0]["attempts"].as_u64(),
+            Some(2),
+            "resume envelope should expose cumulative package attempts"
+        );
+        assert!(
+            envelope["artifacts"]["state"]["path"]
+                .as_str()
+                .expect("state artifact path")
+                .ends_with(".shipper\\state.json")
+                || envelope["artifacts"]["state"]["path"]
+                    .as_str()
+                    .expect("state artifact path")
+                    .ends_with(".shipper/state.json")
+        );
+        assert_eq!(
+            envelope["artifacts"]["state"]["exists"].as_bool(),
+            Some(true),
+            "state artifact should exist after resume"
+        );
+        assert_eq!(
+            envelope["artifacts"]["receipt"]["exists"].as_bool(),
+            Some(true),
+            "receipt artifact should exist after resume"
+        );
+        assert_eq!(
+            envelope["receipt"]["receipt_version"].as_str(),
+            Some("shipper.receipt.v2"),
+            "nested receipt should remain available"
+        );
+        assert_eq!(
+            envelope["receipt"]["packages"][0]["state"]["state"].as_str(),
+            Some("published")
+        );
+
+        registry.join();
+    }
+
     /// State file reflects updated package states after resume completes for
     /// a two-crate workspace.
     #[test]

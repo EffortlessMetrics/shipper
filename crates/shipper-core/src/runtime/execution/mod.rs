@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
 use shipper_retry::{RetryStrategyConfig, RetryStrategyType, calculate_delay};
-use shipper_types::{ErrorClass, ExecutionState, PackageState, PublishRegime};
+use shipper_types::{AttemptDetail, ErrorClass, ExecutionState, PackageState, PublishRegime};
 
 /// Update a package state and persist the entire execution state to disk.
 pub fn update_state(
@@ -29,6 +29,27 @@ pub fn update_state(
     pr.last_updated_at = Utc::now();
     st.updated_at = Utc::now();
     crate::state::execution_state::save_state(state_dir, st)
+}
+
+/// Append an attempt detail to an in-memory state and refresh its timestamp.
+pub fn append_attempt_detail(st: &mut ExecutionState, detail: AttemptDetail) {
+    st.attempt_history.push(detail);
+    st.updated_at = Utc::now();
+}
+
+/// Append an attempt detail and persist the execution state.
+pub fn record_attempt_detail(
+    st: &mut ExecutionState,
+    state_dir: &Path,
+    detail: AttemptDetail,
+) -> Result<()> {
+    append_attempt_detail(st, detail);
+    crate::state::execution_state::save_state(state_dir, st)
+}
+
+/// Calculate the wall-clock time for a scheduled retry.
+pub fn retry_next_attempt_at(delay: Duration) -> DateTime<Utc> {
+    Utc::now() + chrono::Duration::from_std(delay).unwrap_or_else(|_| chrono::Duration::zero())
 }
 
 /// Resolve the effective state directory from a workspace root and user option.
@@ -586,6 +607,7 @@ mod tests {
             registry: shipper_types::Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages: BTreeMap::from([(key.to_string(), make_progress("demo", "0.1.0", state))]),
         }
     }
@@ -836,6 +858,7 @@ mod tests {
             registry: shipper_types::Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages: BTreeMap::new(),
         };
         let td = tempdir().expect("tempdir");
@@ -850,6 +873,7 @@ mod tests {
             registry: shipper_types::Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages: BTreeMap::new(),
         };
         // Should not panic
@@ -873,6 +897,7 @@ mod tests {
             registry: shipper_types::Registry::crates_io(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            attempt_history: Vec::new(),
             packages,
         }
     }
@@ -1673,6 +1698,7 @@ mod tests {
                 registry: shipper_types::Registry::crates_io(),
                 created_at: fixed_time(),
                 updated_at: fixed_time(),
+                attempt_history: Vec::new(),
                 packages,
             }
         }

@@ -1467,6 +1467,127 @@ fn roundtrip_readiness_poll_preserves_all_fields() {
 }
 
 #[test]
+fn roundtrip_readiness_poll_scheduled_preserves_all_fields() {
+    let next_poll_at = DateTime::parse_from_rfc3339("2026-05-17T10:00:30Z")
+        .expect("timestamp")
+        .with_timezone(&Utc);
+    let event = fixed_event(
+        EventType::ReadinessPollScheduled {
+            attempt: 8,
+            delay_ms: 30_000,
+            next_poll_at,
+        },
+        "x@1.0.0",
+    );
+    let json = serde_json::to_string(&event).expect("serialize");
+    let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+    match &parsed.event_type {
+        EventType::ReadinessPollScheduled {
+            attempt,
+            delay_ms,
+            next_poll_at: parsed_next_poll_at,
+        } => {
+            assert_eq!(*attempt, 8);
+            assert_eq!(*delay_ms, 30_000);
+            assert_eq!(*parsed_next_poll_at, next_poll_at);
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
+fn roundtrip_retry_scheduled_preserves_all_fields() {
+    let next_attempt_at = DateTime::parse_from_rfc3339("2026-05-17T10:01:00Z")
+        .expect("timestamp")
+        .with_timezone(&Utc);
+    let event = fixed_event(
+        EventType::RetryScheduled {
+            attempt: 2,
+            max_attempts: 4,
+            delay_ms: 60_000,
+            next_attempt_at,
+            reason: ErrorClass::Retryable,
+            message: "rate limited".to_string(),
+        },
+        "x@1.0.0",
+    );
+    let json = serde_json::to_string(&event).expect("serialize");
+    let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+    match &parsed.event_type {
+        EventType::RetryScheduled {
+            attempt,
+            max_attempts,
+            delay_ms,
+            next_attempt_at: parsed_next_attempt_at,
+            reason,
+            message,
+        } => {
+            assert_eq!(*attempt, 2);
+            assert_eq!(*max_attempts, 4);
+            assert_eq!(*delay_ms, 60_000);
+            assert_eq!(*parsed_next_attempt_at, next_attempt_at);
+            assert_eq!(*reason, ErrorClass::Retryable);
+            assert_eq!(message, "rate limited");
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
+fn roundtrip_publish_waiting_and_rate_limit_preserve_fields() {
+    let until = DateTime::parse_from_rfc3339("2026-05-17T10:02:00Z")
+        .expect("timestamp")
+        .with_timezone(&Utc);
+    let waiting = fixed_event(
+        EventType::PublishWaiting {
+            reason: "retry backoff".to_string(),
+            delay_ms: 120_000,
+            until,
+        },
+        "x@1.0.0",
+    );
+    let parsed: PublishEvent =
+        serde_json::from_str(&serde_json::to_string(&waiting).expect("serialize"))
+            .expect("deserialize");
+    match &parsed.event_type {
+        EventType::PublishWaiting {
+            reason,
+            delay_ms,
+            until: parsed_until,
+        } => {
+            assert_eq!(reason, "retry backoff");
+            assert_eq!(*delay_ms, 120_000);
+            assert_eq!(*parsed_until, until);
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+
+    let rate_limit = fixed_event(
+        EventType::RateLimitObserved {
+            is_new_crate: true,
+            retry_after_ms: Some(90_000),
+            message: "HTTP 429".to_string(),
+        },
+        "x@1.0.0",
+    );
+    let parsed: PublishEvent =
+        serde_json::from_str(&serde_json::to_string(&rate_limit).expect("serialize"))
+            .expect("deserialize");
+    match &parsed.event_type {
+        EventType::RateLimitObserved {
+            is_new_crate,
+            retry_after_ms,
+            message,
+        } => {
+            assert!(*is_new_crate);
+            assert_eq!(*retry_after_ms, Some(90_000));
+            assert_eq!(message, "HTTP 429");
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
 fn roundtrip_readiness_timeout_preserves_all_fields() {
     let event = fixed_event(
         EventType::ReadinessTimeout {
@@ -1645,6 +1766,61 @@ fn snapshot_readiness_poll_debug() {
         "my-crate@1.0.0",
     );
     insta::assert_debug_snapshot!("readiness_poll_debug", event);
+}
+
+#[test]
+fn snapshot_readiness_poll_scheduled_debug() {
+    let event = fixed_event(
+        EventType::ReadinessPollScheduled {
+            attempt: 4,
+            delay_ms: 1500,
+            next_poll_at: fixed_time(),
+        },
+        "my-crate@1.0.0",
+    );
+    insta::assert_debug_snapshot!("readiness_poll_scheduled_debug", event);
+}
+
+#[test]
+fn snapshot_retry_scheduled_debug() {
+    let event = fixed_event(
+        EventType::RetryScheduled {
+            attempt: 2,
+            max_attempts: 5,
+            delay_ms: 10_000,
+            next_attempt_at: fixed_time(),
+            reason: ErrorClass::Retryable,
+            message: "HTTP 503".to_string(),
+        },
+        "my-crate@1.0.0",
+    );
+    insta::assert_debug_snapshot!("retry_scheduled_debug", event);
+}
+
+#[test]
+fn snapshot_publish_waiting_debug() {
+    let event = fixed_event(
+        EventType::PublishWaiting {
+            reason: "retry backoff".to_string(),
+            delay_ms: 10_000,
+            until: fixed_time(),
+        },
+        "my-crate@1.0.0",
+    );
+    insta::assert_debug_snapshot!("publish_waiting_debug", event);
+}
+
+#[test]
+fn snapshot_rate_limit_observed_debug() {
+    let event = fixed_event(
+        EventType::RateLimitObserved {
+            is_new_crate: true,
+            retry_after_ms: Some(90_000),
+            message: "HTTP 429".to_string(),
+        },
+        "my-crate@1.0.0",
+    );
+    insta::assert_debug_snapshot!("rate_limit_observed_debug", event);
 }
 
 #[test]

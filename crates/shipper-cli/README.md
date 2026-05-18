@@ -5,8 +5,11 @@ CLI adapter for [Shipper](https://crates.io/crates/shipper).
 **Most users should install `shipper`, not this crate:**
 
 ```bash
-cargo install shipper --locked
+cargo install shipper --version 0.3.0-rc.2 --locked
 ```
+
+Cargo requires `--version` while Shipper is prerelease-only on crates.io. Once
+a non-prerelease `shipper` is published, use `cargo install shipper --locked`.
 
 ## Use this crate when
 
@@ -22,8 +25,10 @@ fn main() -> anyhow::Result<()> {
 Or you want to install the adapter binary directly:
 
 ```bash
-cargo install shipper-cli --locked   # same code path as `cargo install shipper`
+cargo install shipper-cli --version 0.3.0-rc.2 --locked
 ```
+
+That adapter binary runs the same code path as the `shipper` facade.
 
 For programmatic use **without** the `clap` graph, depend on [`shipper-core`](https://crates.io/crates/shipper-core) instead — that's the lean embedding surface.
 

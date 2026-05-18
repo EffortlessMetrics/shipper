@@ -20,11 +20,19 @@ Publishing a multi-crate Rust workspace is easy to start and hard to trust. Ship
 
 ## Install
 
-Shipper's supported install handle is the product facade crate:
+Shipper's supported install package is the product facade crate, `shipper`.
+Because the public crates.io package is currently prerelease-only, Cargo needs
+an explicit version when installing from the registry:
+
+```bash
+cargo install shipper --version 0.3.0-rc.2 --locked
+shipper --version
+```
+
+Once a non-prerelease version is published, the stable install handle becomes:
 
 ```bash
 cargo install shipper --locked
-shipper --version
 ```
 
 For local checkout validation before a release, use the same facade crate:

@@ -20,7 +20,7 @@ Shipper ships as three crates with distinct roles:
 
 | Crate | Role | What it owns |
 |---|---|---|
-| **`shipper`** | Install face | The `shipper` binary (3-line forwarder), plus a curated library re-export of `shipper-core` for drivers that prefer the product name. This is what `cargo install shipper --locked` installs. |
+| **`shipper`** | Install face | The `shipper` binary (3-line forwarder), plus a curated library re-export of `shipper-core` for drivers that prefer the product name. This is the user-facing facade package; while public releases are prerelease-only, Cargo registry installs require an explicit `--version`. |
 | **`shipper-cli`** | CLI adapter | `clap` parsing, subcommand dispatch, help text, progress rendering. Exposes `pub fn run() -> anyhow::Result<()>` as the embedding entry point. |
 | **`shipper-core`** | Engine library | Plan, preflight, publish, resume, reconcile, rehearsal, remediate, state/events/receipts. **No CLI dependencies.** This is the stable embedding surface for IDP plugins, dashboards, and automation. |
 
@@ -37,7 +37,7 @@ The nine competencies from [../ROADMAP.md](../ROADMAP.md) are all present in `ma
 - **Remediate** — receipt-driven `yank`, reverse-topological `plan-yank` (saveable and replayable), and `fix-forward` for partial releases.
 - **Harden** — Trusted Publishing (OIDC) is a first-class path for crates.io, alongside tokens.
 - **Consistency** — events-as-truth invariant enforced at end-of-run; drift is detected and reported.
-- **Ergonomics** — `cargo install shipper --locked` works end-to-end via the install façade.
+- **Ergonomics** — the `shipper` install facade works end-to-end from a checkout; unversioned crates.io install is promoted after a non-prerelease public version is published.
 - **Integrate** — `shipper-core` is consumable as a library without pulling the CLI graph.
 
 For per-capability status and sequencing, see [../ROADMAP.md](../ROADMAP.md). For what changed when, see [../CHANGELOG.md](../CHANGELOG.md).

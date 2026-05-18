@@ -12,6 +12,7 @@ Plan summary:
   Skipped packages: 1
   Internal dependency edges: 0
   Publish levels: 1
+  Plan artifact: .shipper/plan.txt (`shipper plan --format json` capture)
 
 Skipped packages:
   - beta-internal@0.0.1 (publish = false)

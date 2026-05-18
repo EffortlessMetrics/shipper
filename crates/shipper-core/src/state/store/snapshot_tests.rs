@@ -42,6 +42,7 @@ fn snapshot_execution_state_single_pending() {
         registry: Registry::crates_io(),
         created_at: t,
         updated_at: t,
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -128,6 +129,7 @@ fn snapshot_execution_state_all_package_states() {
         registry: Registry::crates_io(),
         created_at: t,
         updated_at: t,
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -144,6 +146,7 @@ fn snapshot_execution_state_empty_packages() {
         registry: Registry::crates_io(),
         created_at: t,
         updated_at: t,
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
 
@@ -353,6 +356,7 @@ fn snapshot_state_persisted_json() {
         registry: Registry::crates_io(),
         created_at: t,
         updated_at: t,
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -642,6 +646,7 @@ fn snapshot_state_retry_cycle() {
         registry: Registry::crates_io(),
         created_at: t,
         updated_at: t,
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -797,6 +802,7 @@ fn snapshot_directory_layout_after_full_save() {
         registry: Registry::crates_io(),
         created_at: t,
         updated_at: t,
+        attempt_history: Vec::new(),
         packages,
     };
     store.save_state(&state).expect("save state");
@@ -885,6 +891,7 @@ fn snapshot_state_with_custom_registry() {
         },
         created_at: t,
         updated_at: t,
+        attempt_history: Vec::new(),
         packages,
     };
 

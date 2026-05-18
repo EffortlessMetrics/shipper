@@ -98,6 +98,7 @@ fn sample_state(plan_id: &str) -> ExecutionState {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }
 }
@@ -215,6 +216,7 @@ fn plan_build_then_persist_state() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -1065,6 +1067,7 @@ fn state_roundtrip_preserves_all_package_state_variants() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
 
@@ -1183,6 +1186,7 @@ fn resume_skips_published_and_retries_failed() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
 

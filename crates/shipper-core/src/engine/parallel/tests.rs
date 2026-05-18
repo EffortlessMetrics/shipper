@@ -74,6 +74,7 @@ fn emit_retry_backoff_does_not_block_other_reporter_calls_during_sleep() {
             1,
             3,
             delay,
+            chrono::Utc::now() + chrono::Duration::milliseconds(250),
             ErrorClass::Retryable,
             "rate limited",
         );
@@ -347,6 +348,7 @@ fn init_state_for_package(
         registry: registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }
 }
@@ -680,6 +682,7 @@ fn test_run_publish_level_processes_packages() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -727,6 +730,7 @@ fn test_update_state_locked_sets_state() {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::from([(
             "demo@0.1.0".to_string(),
             PackageProgress {
@@ -871,6 +875,7 @@ fn test_run_publish_parallel_multiple_levels() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -949,6 +954,7 @@ fn test_publish_package_handles_uploaded_resume() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -1151,6 +1157,7 @@ fn test_run_publish_level_respects_max_concurrent() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -1300,6 +1307,7 @@ fn test_levels_execute_in_dependency_order() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -1408,6 +1416,7 @@ fn test_failed_level_stops_subsequent_levels() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -1528,6 +1537,7 @@ fn test_partial_success_within_level() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -1752,6 +1762,7 @@ fn test_resume_from_skips_earlier_levels() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -1888,6 +1899,7 @@ fn test_all_packages_already_published() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -2011,6 +2023,7 @@ fn test_max_concurrency_one_serializes_execution() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -2903,6 +2916,7 @@ fn test_error_in_first_level_prevents_all_subsequent() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -2977,6 +2991,7 @@ fn test_empty_plan_produces_no_receipts() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::new(),
     };
     let mut reporter = CollectingReporter::default();
@@ -3180,6 +3195,7 @@ fn test_max_concurrent_exceeds_package_count() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -3293,6 +3309,7 @@ fn test_independent_failures_both_reported() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -3408,6 +3425,7 @@ fn test_concurrent_state_updates_consistent() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     }));
     let event_log = Arc::new(Mutex::new(events::EventLog::new()));
@@ -3715,6 +3733,7 @@ fn test_level_message_includes_max_concurrent() {
         registry: ws.plan.registry.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: state_packages,
     };
     let mut reporter = CollectingReporter::default();
@@ -4132,6 +4151,14 @@ fn reconcile_bdd_ambiguous_resolves_to_published() {
         has_reconciled_published,
         "expected PublishReconciled with Published outcome"
     );
+    let infos = reporter.drain_infos();
+    assert!(
+        infos
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: Published")
+                && msg.contains("without retry")),
+        "expected operator-facing Published reconciliation action, infos: {infos:?}"
+    );
 
     server.join();
 }
@@ -4239,6 +4266,14 @@ fn reconcile_bdd_ambiguous_resolves_to_not_published_then_retries() {
     assert!(
         has_reconciled_not_published,
         "expected at least one PublishReconciled with NotPublished outcome"
+    );
+    let infos = reporter.drain_infos();
+    assert!(
+        infos
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: NotPublished")
+                && msg.contains("retry under publish policy")),
+        "expected operator-facing NotPublished retry action, infos: {infos:?}"
     );
 
     server.join();
@@ -4357,6 +4392,123 @@ fn reconcile_bdd_resume_from_ambiguous_state_skips_republish() {
     assert!(
         has_reconciled_published,
         "expected PublishReconciled with Published outcome"
+    );
+    let infos = reporter.drain_infos();
+    assert!(
+        infos
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: Published")
+                && msg.contains("without republish")),
+        "expected operator-facing resume Published action, infos: {infos:?}"
+    );
+
+    server.join();
+}
+
+#[test]
+#[serial]
+fn reconcile_bdd_resume_from_ambiguous_state_still_unknown_writes_report() {
+    // Scenario:
+    //   A prior run left demo@0.1.0 in PackageState::Ambiguous. On resume,
+    //   the entry "already published" check returns 404, then registry
+    //   reconciliation cannot reach truth. Shipper must halt, must not
+    //   republish, and must leave a reconciliation artifact for operators.
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+
+    let server = spawn_registry_server(
+        BTreeMap::from([(
+            "/api/v1/crates/demo/0.1.0".to_string(),
+            vec![(404, "{}".to_string()), (500, "{}".to_string())],
+        )]),
+        2,
+    );
+
+    let ws = planned_workspace(td.path(), server.base_url.clone());
+    let reg = RegistryClient::new(ws.plan.registry.api_base.as_str());
+    let opts = reconcile_scenario_opts(PathBuf::from(".shipper"));
+    let state_dir = td.path().join(".shipper");
+
+    let mut initial_state =
+        init_state_for_package(&ws.plan.plan_id, &ws.plan.registry, "demo", "0.1.0");
+    if let Some(pr) = initial_state.packages.get_mut("demo@0.1.0") {
+        pr.state = PackageState::Ambiguous {
+            message: "prior reconciliation inconclusive".to_string(),
+        };
+    }
+    let st = Arc::new(Mutex::new(initial_state));
+    let event_log = Arc::new(Mutex::new(events::EventLog::new()));
+    let events_path = events::events_path(&state_dir);
+    let reporter = make_send_reporter();
+    let cargo_log = td.path().join("cargo-calls.log");
+
+    temp_env::with_vars(
+        [
+            (
+                "SHIPPER_CARGO_BIN",
+                Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            ),
+            (
+                "SHIPPER_CARGO_ARGS_LOG",
+                Some(cargo_log.to_str().expect("utf8")),
+            ),
+            ("SHIPPER_CARGO_EXIT", Some("0")),
+        ],
+        || {
+            let result = publish_package(
+                &ws.plan.packages[0],
+                &ws,
+                &opts,
+                &reg,
+                &st,
+                &state_dir,
+                &event_log,
+                &events_path,
+                &reporter,
+            );
+
+            let err = result
+                .result
+                .expect_err("resume-path StillUnknown must halt with Err");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("resume reconciliation still inconclusive"),
+                "expected resume inconclusive error, got: {msg}"
+            );
+        },
+    );
+
+    let cargo_invoked = std::fs::read_to_string(&cargo_log)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    assert!(
+        !cargo_invoked,
+        "cargo should not be invoked when resume reconciliation is StillUnknown"
+    );
+
+    let report_path = crate::state::execution_state::reconciliation_path(&state_dir);
+    let report_json = std::fs::read_to_string(&report_path).expect("read reconciliation report");
+    let report: shipper_types::ReconciliationReport =
+        serde_json::from_str(&report_json).expect("parse reconciliation report");
+    assert_eq!(report.schema_version, "shipper.reconciliation.v1");
+    assert_eq!(report.records.len(), 1);
+    assert_eq!(
+        report.records[0].trigger,
+        shipper_types::ReconciliationTrigger::ResumeAmbiguousState
+    );
+    assert_eq!(report.records[0].cargo_exit_class, None);
+    assert_eq!(
+        report.records[0].operator_action,
+        shipper_types::ReconciliationOperatorAction::OperatorActionRequired
+    );
+    let errors = reporter.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: StillUnknown")
+                && msg.contains("stop before blind retry")),
+        "expected operator-facing StillUnknown stop action, errors: {errors:?}"
     );
 
     server.join();
@@ -4495,6 +4647,24 @@ fn reconcile_bdd_ambiguous_resolves_to_still_unknown() {
     assert!(
         has_reconciled_still_unknown,
         "expected PublishReconciled with StillUnknown outcome"
+    );
+    let errors = reporter.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|msg| msg.contains("reconciliation outcome: StillUnknown")
+                && msg.contains("stop before blind retry")),
+        "expected operator-facing StillUnknown stop action, errors: {errors:?}"
+    );
+    let report_path = crate::state::execution_state::reconciliation_path(&state_dir);
+    let report_json = std::fs::read_to_string(&report_path).expect("read reconciliation report");
+    let report: shipper_types::ReconciliationReport =
+        serde_json::from_str(&report_json).expect("parse reconciliation report");
+    assert_eq!(report.schema_version, "shipper.reconciliation.v1");
+    assert_eq!(report.records.len(), 1);
+    assert_eq!(
+        report.records[0].operator_action,
+        shipper_types::ReconciliationOperatorAction::OperatorActionRequired
     );
 
     server.join();

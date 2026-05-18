@@ -102,7 +102,7 @@ pub fn maybe_send_event(config: &WebhookConfig, event: WebhookEvent) {
     });
 }
 
-fn to_micro_payload(payload: &WebhookPayload) -> shipper_webhook::WebhookPayload {
+pub(crate) fn to_micro_payload(payload: &WebhookPayload) -> shipper_webhook::WebhookPayload {
     let (message, title, success, package, version, registry, error, extra) = match &payload.event {
         WebhookEvent::PublishStarted {
             plan_id,
@@ -209,5 +209,240 @@ fn to_micro_payload(payload: &WebhookPayload) -> shipper_webhook::WebhookPayload
         registry,
         error,
         extra: extra_fields,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shipper_webhook::WebhookType;
+
+    fn sample_config(url: &str) -> WebhookConfig {
+        WebhookConfig {
+            url: url.to_string(),
+            webhook_type: WebhookType::Generic,
+            secret: None,
+            timeout_secs: 30,
+        }
+    }
+
+    fn started_event() -> WebhookEvent {
+        WebhookEvent::PublishStarted {
+            plan_id: "plan-x".to_string(),
+            package_count: 2,
+            registry: "crates-io".to_string(),
+        }
+    }
+
+    fn succeeded_event() -> WebhookEvent {
+        WebhookEvent::PublishSucceeded {
+            plan_id: "plan-x".to_string(),
+            package_name: "core".to_string(),
+            package_version: "0.4.0".to_string(),
+            duration_ms: 250,
+        }
+    }
+
+    fn failed_event() -> WebhookEvent {
+        WebhookEvent::PublishFailed {
+            plan_id: "plan-x".to_string(),
+            package_name: "cli".to_string(),
+            package_version: "0.4.0".to_string(),
+            error_class: "Retryable".to_string(),
+            message: "429 rate limited".to_string(),
+        }
+    }
+
+    fn completed_event(failure_count: usize) -> WebhookEvent {
+        WebhookEvent::PublishCompleted {
+            plan_id: "plan-x".to_string(),
+            total_packages: 5,
+            success_count: 5 - failure_count,
+            failure_count,
+            skipped_count: 0,
+            result: if failure_count == 0 {
+                "success".to_string()
+            } else {
+                "partial".to_string()
+            },
+        }
+    }
+
+    fn sample_payload(event: WebhookEvent) -> WebhookPayload {
+        WebhookPayload {
+            timestamp: Utc::now(),
+            event,
+        }
+    }
+
+    #[test]
+    fn webhook_client_new_rejects_empty_url() {
+        let cfg = sample_config("");
+        let err = match WebhookClient::new(&cfg) {
+            Err(e) => e,
+            Ok(_) => panic!("empty url must be rejected"),
+        };
+        assert!(format!("{err:#}").contains("required"));
+    }
+
+    #[test]
+    fn webhook_client_new_rejects_whitespace_url() {
+        let cfg = sample_config("\t \n");
+        match WebhookClient::new(&cfg) {
+            Err(_) => {}
+            Ok(_) => panic!("whitespace url must be rejected"),
+        }
+    }
+
+    #[test]
+    fn webhook_client_new_accepts_valid_url() {
+        let cfg = sample_config("https://example.invalid/hook");
+        WebhookClient::new(&cfg).expect("ok");
+    }
+
+    #[test]
+    fn maybe_send_event_returns_early_on_empty_url() {
+        let cfg = sample_config("");
+        maybe_send_event(&cfg, started_event());
+    }
+
+    #[test]
+    fn maybe_send_event_returns_early_on_whitespace_url() {
+        let cfg = sample_config("  \t");
+        maybe_send_event(&cfg, failed_event());
+    }
+
+    #[test]
+    fn to_micro_payload_publish_started_fields() {
+        let micro = to_micro_payload(&sample_payload(started_event()));
+        assert!(micro.success);
+        assert_eq!(micro.title.as_deref(), Some("Publish Started"));
+        assert_eq!(micro.registry.as_deref(), Some("crates-io"));
+        assert!(micro.package.is_none());
+        assert!(micro.message.contains("plan-x"));
+        assert!(micro.message.contains("2 packages"));
+        let legacy = micro.extra.get("legacy").expect("legacy");
+        assert_eq!(
+            legacy.get("event").and_then(|v| v.as_str()),
+            Some("publish_started")
+        );
+        assert_eq!(
+            legacy.get("package_count").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn to_micro_payload_publish_succeeded_fields() {
+        let micro = to_micro_payload(&sample_payload(succeeded_event()));
+        assert!(micro.success);
+        assert_eq!(micro.title.as_deref(), Some("Publish Succeeded"));
+        assert_eq!(micro.package.as_deref(), Some("core"));
+        assert_eq!(micro.version.as_deref(), Some("0.4.0"));
+        assert!(micro.message.contains("core"));
+        assert!(micro.message.contains("250ms"));
+        let legacy = micro.extra.get("legacy").expect("legacy");
+        assert_eq!(
+            legacy.get("event").and_then(|v| v.as_str()),
+            Some("publish_succeeded")
+        );
+        assert_eq!(
+            legacy.get("duration_ms").and_then(|v| v.as_u64()),
+            Some(250)
+        );
+    }
+
+    #[test]
+    fn to_micro_payload_publish_failed_fields() {
+        let micro = to_micro_payload(&sample_payload(failed_event()));
+        assert!(!micro.success);
+        assert_eq!(micro.title.as_deref(), Some("Publish Failed"));
+        assert_eq!(micro.package.as_deref(), Some("cli"));
+        assert_eq!(micro.version.as_deref(), Some("0.4.0"));
+        assert_eq!(micro.error.as_deref(), Some("429 rate limited"));
+        assert!(micro.message.contains("Retryable"));
+        let legacy = micro.extra.get("legacy").expect("legacy");
+        assert_eq!(
+            legacy.get("event").and_then(|v| v.as_str()),
+            Some("publish_failed")
+        );
+        assert_eq!(
+            legacy.get("error_class").and_then(|v| v.as_str()),
+            Some("Retryable")
+        );
+    }
+
+    #[test]
+    fn to_micro_payload_publish_completed_success_when_no_failures() {
+        let micro = to_micro_payload(&sample_payload(completed_event(0)));
+        assert!(micro.success);
+        assert_eq!(micro.title.as_deref(), Some("Publish Completed"));
+        assert!(micro.message.contains("5/5 succeeded"));
+        let legacy = micro.extra.get("legacy").expect("legacy");
+        assert_eq!(
+            legacy.get("failure_count").and_then(|v| v.as_u64()),
+            Some(0)
+        );
+        assert_eq!(
+            legacy.get("result").and_then(|v| v.as_str()),
+            Some("success")
+        );
+    }
+
+    #[test]
+    fn to_micro_payload_publish_completed_failure_when_any_failed() {
+        let micro = to_micro_payload(&sample_payload(completed_event(3)));
+        assert!(!micro.success);
+        assert!(micro.message.contains("2/5 succeeded"));
+        assert!(micro.message.contains("3 failed"));
+        let legacy = micro.extra.get("legacy").expect("legacy");
+        assert_eq!(
+            legacy.get("result").and_then(|v| v.as_str()),
+            Some("partial")
+        );
+    }
+
+    #[test]
+    fn to_micro_payload_includes_legacy_key_for_all_variants() {
+        for event in [
+            started_event(),
+            succeeded_event(),
+            failed_event(),
+            completed_event(2),
+        ] {
+            let micro = to_micro_payload(&sample_payload(event));
+            assert!(micro.extra.contains_key("legacy"));
+        }
+    }
+
+    #[test]
+    fn webhook_event_serde_roundtrip_for_all_variants() {
+        for event in [
+            started_event(),
+            succeeded_event(),
+            failed_event(),
+            completed_event(1),
+        ] {
+            let json = serde_json::to_string(&event).expect("serialize");
+            let back: WebhookEvent = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(json, serde_json::to_string(&back).expect("re-serialize"));
+        }
+    }
+
+    #[test]
+    fn webhook_event_tagged_with_snake_case_event() {
+        let json = serde_json::to_string(&completed_event(0)).expect("serialize");
+        assert!(
+            json.contains("\"event\":\"publish_completed\""),
+            "expected tagged variant, got {json}"
+        );
+    }
+
+    #[test]
+    fn webhook_payload_serializes_with_event_and_timestamp() {
+        let payload = sample_payload(failed_event());
+        let json = serde_json::to_string(&payload).expect("serialize");
+        assert!(json.contains("\"timestamp\""));
+        assert!(json.contains("\"event\":\"publish_failed\""));
     }
 }

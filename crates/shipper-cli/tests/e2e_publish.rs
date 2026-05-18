@@ -280,6 +280,98 @@ fn single_crate_publish_creates_state_and_receipt() {
     registry.join();
 }
 
+#[test]
+fn publish_json_format_writes_command_envelope_to_stdout() {
+    let td = tempdir().expect("tempdir");
+    create_single_crate_workspace(td.path());
+    let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
+
+    let registry = spawn_registry(vec![404, 200], 2);
+    let state_dir = td.path().join(".shipper");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("--verify-timeout")
+        .arg("0ms")
+        .arg("--verify-poll")
+        .arg("0ms")
+        .arg("--max-attempts")
+        .arg("1")
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--format")
+        .arg("json")
+        .arg("publish")
+        .env("PATH", &new_path)
+        .env("REAL_CARGO", &real_cargo)
+        .env("SHIPPER_CARGO_BIN", &fake_cargo)
+        .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    let report: serde_json::Value =
+        serde_json::from_str(&stdout).expect("publish stdout should be command JSON");
+    assert_eq!(
+        report["schema_version"].as_str(),
+        Some("shipper.publish.v1"),
+        "publish JSON should carry a command-owned schema version"
+    );
+    assert_eq!(report["command"].as_str(), Some("publish"));
+    assert_eq!(report["registry"].as_str(), Some("crates-io"));
+    assert!(report["plan_id"].is_string(), "plan_id should be present");
+    assert_eq!(
+        report["packages"][0]["name"].as_str(),
+        Some("demo"),
+        "command envelope should contain the published package"
+    );
+    assert_eq!(report["packages"][0]["state"].as_str(), Some("published"));
+    assert_eq!(report["packages"][0]["attempts"].as_u64(), Some(1));
+    assert_eq!(report["packages"][0]["reconciled"].as_bool(), Some(false));
+    assert_eq!(
+        report["artifacts"]["state"]["exists"].as_bool(),
+        Some(true),
+        "state artifact should exist"
+    );
+    assert_eq!(
+        report["artifacts"]["events"]["exists"].as_bool(),
+        Some(true),
+        "events artifact should exist"
+    );
+    assert_eq!(
+        report["artifacts"]["receipt"]["exists"].as_bool(),
+        Some(true),
+        "receipt artifact should exist"
+    );
+    assert_eq!(
+        report["artifacts"]["reconciliation"]["exists"].as_bool(),
+        Some(false),
+        "reconciliation artifact should be absent when no ambiguity occurred"
+    );
+    assert_eq!(
+        report["receipt"]["receipt_version"].as_str(),
+        Some("shipper.receipt.v2"),
+        "receipt remains nested as its own evidence contract"
+    );
+    assert_eq!(
+        report["receipt"]["packages"][0]["state"]["state"].as_str(),
+        Some("published")
+    );
+    assert!(
+        state_dir.join("receipt.json").exists(),
+        "receipt artifact should still be written"
+    );
+
+    registry.join();
+}
+
 // ============================================================================
 // Test 2: Multi-crate workspace respects dependency ordering
 // ============================================================================

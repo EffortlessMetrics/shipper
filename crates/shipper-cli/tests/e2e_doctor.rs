@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command as StdCommand;
 use std::thread;
 
 use assert_cmd::Command;
@@ -43,6 +44,19 @@ edition = "2021"
 
 fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
+}
+
+fn init_git_repo(root: &Path) {
+    let output = StdCommand::new("git")
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .expect("git init");
+    assert!(
+        output.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 struct TestRegistry {
@@ -172,6 +186,118 @@ fn doctor_detects_token_when_set() {
     registry.join();
 }
 
+#[test]
+fn doctor_json_format_reports_diagnostics_without_token_value() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    let registry = spawn_registry(1);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--format")
+        .arg("json")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env("CARGO_REGISTRY_TOKEN", "secret-test-token")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert!(
+        !stdout.contains("secret-test-token"),
+        "doctor JSON must not expose token values: {stdout}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        json.pointer("/schema_version")
+            .and_then(serde_json::Value::as_str),
+        Some("shipper.doctor.v1")
+    );
+    assert_eq!(
+        json.pointer("/reports/0/registry/name")
+            .and_then(serde_json::Value::as_str),
+        Some("crates-io")
+    );
+    assert_eq!(
+        json.pointer("/reports/0/auth/auth_type")
+            .and_then(serde_json::Value::as_str),
+        Some("token (detected)")
+    );
+    assert_eq!(
+        json.pointer("/reports/0/connectivity/registry_reachable")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        json.pointer("/reports/0/tools/0/version")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+    );
+
+    registry.join();
+}
+
+#[test]
+fn doctor_json_format_redacts_registry_url_secrets() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let dead_port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+    let api_base = format!(
+        "http://user:url-user-secret@127.0.0.1:{dead_port}/api?token=url-token-secret&api_key=url-key-secret&scope=all"
+    );
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&api_base)
+        .arg("--format")
+        .arg("json")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    assert!(!stdout.contains("url-user-secret"), "{stdout}");
+    assert!(!stdout.contains("url-token-secret"), "{stdout}");
+    assert!(!stdout.contains("url-key-secret"), "{stdout}");
+    assert!(stdout.contains("[REDACTED]"), "{stdout}");
+
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let api_base = json
+        .pointer("/reports/0/registry/api_base")
+        .and_then(serde_json::Value::as_str)
+        .expect("api_base");
+    assert!(!api_base.contains("url-token-secret"));
+    assert!(!api_base.contains("url-key-secret"));
+
+    let error = json
+        .pointer("/reports/0/connectivity/registry_error")
+        .and_then(serde_json::Value::as_str)
+        .expect("registry error");
+    assert!(!error.contains("url-token-secret"));
+    assert!(!error.contains("url-key-secret"));
+}
+
 /// 4. Doctor reports missing token when not set
 #[test]
 fn doctor_reports_missing_token() {
@@ -290,6 +416,45 @@ fn doctor_reports_state_file_if_present() {
         .success()
         .stdout(contains("state_dir:"))
         .stdout(contains("state_dir_writable: true"));
+
+    registry.join();
+}
+
+/// 8. Doctor turns dirty git state into an actionable finding.
+#[test]
+fn doctor_reports_dirty_git_remediation() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    init_git_repo(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+    let registry = spawn_registry(1);
+
+    shipper_cmd()
+        .current_dir(td.path())
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .stdout(contains("git_dirty: true"))
+        .stdout(contains(
+            "[blocked] git working tree is dirty (git-working-tree-dirty)",
+        ))
+        .stdout(contains(
+            "why: release evidence must describe the exact source tree being planned, proven, published, and resumed",
+        ))
+        .stdout(contains(
+            "- commit, stash, or revert unrelated changes before release",
+        ))
+        .stdout(contains(
+            "- use `--allow-dirty` only for intentional local rehearsal",
+        ));
 
     registry.join();
 }

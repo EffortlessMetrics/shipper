@@ -43,6 +43,20 @@ fn normalize_help_output(raw: &str) -> String {
     normalize_output(raw)
 }
 
+fn normalize_status_help_output(raw: &str) -> String {
+    trim_trailing_line_whitespace(&normalize_help_output(raw))
+}
+
+fn trim_trailing_line_whitespace(raw: &str) -> String {
+    let trailing_nl = raw.ends_with('\n');
+    let joined = raw
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if trailing_nl { joined + "\n" } else { joined }
+}
+
 fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
@@ -103,7 +117,7 @@ fn status_help() {
         .output()
         .expect("failed to run");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_snapshot!("status_help", normalize_help_output(&stdout));
+    assert_snapshot!("status_help", normalize_status_help_output(&stdout));
 }
 
 #[test]

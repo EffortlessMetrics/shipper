@@ -1,9 +1,20 @@
 ---
 source: crates/shipper-cli/tests/e2e_expanded.rs
-assertion_line: 1022
 expression: normalize_stderr(&stdout)
 ---
-View detailed event log
+View the authoritative event log.
+
+Reads `<state-dir>/events.jsonl`, which is the truth source for publish and
+resume state transitions. Use `--follow` while another terminal is running
+publish or resume.
+
+EXAMPLES:
+    # Print the current event log:
+    shipper inspect-events
+
+    # Follow appended events during a release:
+    shipper inspect-events --follow
+
 
 Usage: shipper-cli inspect-events [OPTIONS]
 

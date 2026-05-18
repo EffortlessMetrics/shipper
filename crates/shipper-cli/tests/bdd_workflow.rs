@@ -3089,11 +3089,22 @@ mod plan_json_format {
         let stdout = String::from_utf8(output).expect("utf8");
         let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid plan JSON");
 
+        assert_eq!(json["schema_version"].as_str(), Some("shipper.plan.v1"));
         assert!(json["plan_id"].is_string(), "missing plan_id: {stdout}");
         assert_eq!(json["publishable_count"].as_u64(), Some(3));
         assert_eq!(json["skipped_count"].as_u64(), Some(0));
         assert_eq!(json["internal_dependency_edges"].as_u64(), Some(3));
         assert_eq!(json["publish_levels"].as_u64(), Some(3));
+        assert_eq!(
+            json.pointer("/artifacts/0/kind")
+                .and_then(serde_json::Value::as_str),
+            Some("plan_json_stdout")
+        );
+        assert_eq!(
+            json.pointer("/artifacts/0/path")
+                .and_then(serde_json::Value::as_str),
+            Some(".shipper/plan.txt")
+        );
 
         let packages = json["packages"].as_array().expect("packages array");
         assert_eq!(packages.len(), 3, "unexpected packages: {stdout}");

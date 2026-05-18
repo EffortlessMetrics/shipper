@@ -345,8 +345,14 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Run BDD tests
+      - name: Run publish BDD tests
         run: cargo test -p shipper-cli --test bdd_publish -- --nocapture
+
+      - name: Run resume BDD tests
+        run: cargo test -p shipper-cli --test bdd_resume -- --nocapture
+
+      - name: Run synthetic interruption resume rehearsal
+        run: cargo test -p shipper-cli --test e2e_rehearse -- --nocapture
 
   fuzz-smoke:
     name: Fuzz Smoke (PR)

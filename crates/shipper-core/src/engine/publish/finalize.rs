@@ -64,6 +64,7 @@ pub(in crate::engine) fn finish_sequential_run(
         run_started,
         git_context,
         environment,
+        events_path,
     )
 }
 
@@ -98,6 +99,7 @@ pub(in crate::engine) fn finish_parallel_run(
         run_started,
         git_context,
         environment,
+        events_path,
     )
 }
 
@@ -109,6 +111,7 @@ fn write_receipt(
     run_started: DateTime<Utc>,
     git_context: Option<GitContext>,
     environment: EnvironmentFingerprint,
+    events_path: &Path,
 ) -> Result<Receipt> {
     let receipt = Receipt {
         receipt_version: "shipper.receipt.v2".to_string(),
@@ -122,6 +125,12 @@ fn write_receipt(
         environment,
     };
 
+    crate::state::reconciliation::write_report_from_events(
+        state_dir,
+        &ws.plan.plan_id,
+        &ws.plan.registry,
+        events_path,
+    )?;
     state::write_receipt(state_dir, &receipt)?;
     Ok(receipt)
 }

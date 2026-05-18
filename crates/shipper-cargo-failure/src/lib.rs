@@ -23,28 +23,69 @@ pub struct CargoFailureOutcome {
     pub message: &'static str,
 }
 
-const RETRYABLE_PATTERNS: [&str; 20] = [
-    "too many requests",
-    "429",
-    "timeout",
-    "timed out",
-    "connection reset",
-    "connection refused",
-    "connection closed",
-    "dns",
-    "tls",
-    "temporarily unavailable",
-    "failed to download",
-    "failed to send",
-    "server error",
-    "500",
-    "502",
-    "503",
-    "504",
-    "broken pipe",
-    "reset by peer",
-    "network unreachable",
+#[derive(Debug, Clone, Copy)]
+enum FailurePattern {
+    /// Match a literal substring anywhere in the combined cargo output.
+    Substring(&'static str),
+    /// Match an isolated token bounded by non-alphanumeric characters.
+    Token(&'static str),
+}
+
+impl FailurePattern {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Substring(pattern) | Self::Token(pattern) => pattern,
+        }
+    }
+
+    fn matches(self, haystack: &str) -> bool {
+        match self {
+            Self::Substring(pattern) => haystack.contains(pattern),
+            Self::Token(pattern) => contains_token(haystack, pattern),
+        }
+    }
+}
+
+impl std::fmt::Display for FailurePattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+const RETRYABLE_PATTERNS: [FailurePattern; 20] = [
+    FailurePattern::Substring("too many requests"),
+    FailurePattern::Token("429"),
+    FailurePattern::Substring("timeout"),
+    FailurePattern::Substring("timed out"),
+    FailurePattern::Substring("connection reset"),
+    FailurePattern::Substring("connection refused"),
+    FailurePattern::Substring("connection closed"),
+    FailurePattern::Token("dns"),
+    FailurePattern::Token("tls"),
+    FailurePattern::Substring("temporarily unavailable"),
+    FailurePattern::Substring("failed to download"),
+    FailurePattern::Substring("failed to send"),
+    FailurePattern::Substring("server error"),
+    FailurePattern::Token("500"),
+    FailurePattern::Token("502"),
+    FailurePattern::Token("503"),
+    FailurePattern::Token("504"),
+    FailurePattern::Substring("broken pipe"),
+    FailurePattern::Substring("reset by peer"),
+    FailurePattern::Substring("network unreachable"),
 ];
+
+fn contains_token(haystack: &str, token: &str) -> bool {
+    haystack.match_indices(token).any(|(start, matched)| {
+        let end = start + matched.len();
+        is_token_boundary(haystack[..start].chars().next_back())
+            && is_token_boundary(haystack[end..].chars().next())
+    })
+}
+
+fn is_token_boundary(ch: Option<char>) -> bool {
+    ch.is_none_or(|ch| !ch.is_ascii_alphanumeric())
+}
 
 const PERMANENT_PATTERNS: [&str; 26] = [
     "failed to parse manifest",
@@ -88,7 +129,7 @@ pub fn classify_publish_failure(stderr: &str, stdout: &str) -> CargoFailureOutco
 
     if RETRYABLE_PATTERNS
         .iter()
-        .any(|pattern| haystack.contains(pattern))
+        .any(|pattern| pattern.matches(&haystack))
     {
         return CargoFailureOutcome {
             class: CargoFailureClass::Retryable,
@@ -605,11 +646,26 @@ mod tests {
 
     #[test]
     fn numeric_pattern_500_not_in_port_number() {
-        // "500" as a substring will match even in "port 15003" — this confirms
-        // the classifier uses simple substring matching, which is the intended
-        // behavior as documented.
         let o = classify_publish_failure("listening on port 15003", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn numeric_status_code_with_punctuation_boundaries_is_retryable() {
+        let o = classify_publish_failure("registry response: status=500; retry later", "");
         assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn dns_token_does_not_match_inside_unrelated_word() {
+        let o = classify_publish_failure("registry mention: dnsimple owner metadata", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn tls_token_does_not_match_inside_unrelated_word() {
+        let o = classify_publish_failure("registry mention: rustls workspace member", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
     }
 
     #[test]
@@ -1082,7 +1138,7 @@ mod tests {
     fn pattern_as_exact_input_retryable() {
         // Each retryable pattern, when given as the *exact* input, classifies correctly
         for pattern in &RETRYABLE_PATTERNS {
-            let o = classify_publish_failure(pattern, "");
+            let o = classify_publish_failure(pattern.as_str(), "");
             assert_eq!(o.class, CargoFailureClass::Retryable, "pattern: {pattern}");
         }
     }
@@ -1107,7 +1163,7 @@ mod tests {
         let results: Vec<_> = RETRYABLE_PATTERNS
             .iter()
             .map(|p| {
-                let o = classify_publish_failure(p, "");
+                let o = classify_publish_failure(p.as_str(), "");
                 format!("{p} => {:?}", o.class)
             })
             .collect();
@@ -1642,7 +1698,7 @@ mod property_tests {
             idx in 0..20usize,
         ) {
             let pattern = RETRYABLE_PATTERNS[idx];
-            let stderr = format!("{prefix}{pattern}{suffix}");
+            let stderr = format!("{prefix} {pattern} {suffix}");
             let outcome = classify_publish_failure(&stderr, "");
             prop_assert_eq!(outcome.class, CargoFailureClass::Retryable);
         }
@@ -1657,7 +1713,7 @@ mod property_tests {
         ) {
             let pattern = PERMANENT_PATTERNS[idx];
             // Ensure no retryable substring sneaks in via prefix/suffix
-            let stderr = format!("{prefix}{pattern}{suffix}");
+            let stderr = format!("{prefix} {pattern} {suffix}");
             let outcome = classify_publish_failure(&stderr, "");
             // May be retryable if noise accidentally contains a retryable pattern,
             // but must never be ambiguous when a permanent pattern is explicitly present.
@@ -1675,11 +1731,11 @@ mod property_tests {
             let retryable = RETRYABLE_PATTERNS[r_idx];
             let permanent = PERMANENT_PATTERNS[p_idx];
             // permanent before retryable
-            let stderr_a = format!("{permanent}{sep}{retryable}");
+            let stderr_a = format!("{permanent}{sep} {retryable}");
             let outcome_a = classify_publish_failure(&stderr_a, "");
             prop_assert_eq!(outcome_a.class, CargoFailureClass::Retryable);
             // retryable before permanent
-            let stderr_b = format!("{retryable}{sep}{permanent}");
+            let stderr_b = format!("{retryable} {sep}{permanent}");
             let outcome_b = classify_publish_failure(&stderr_b, "");
             prop_assert_eq!(outcome_b.class, CargoFailureClass::Retryable);
         }
@@ -1703,5 +1759,214 @@ mod property_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod gap_tests {
+    use super::*;
+
+    #[test]
+    fn permanent_required_dependency_is_missing_from_the_registry() {
+        let o = classify_publish_failure("required dependency is missing from the registry", "");
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn permanent_candidate_versions_didnt_match_standalone() {
+        let o = classify_publish_failure("candidate versions found which didn't match: 0.6.5", "");
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn permanent_no_matching_package_named_standalone() {
+        let o = classify_publish_failure("no matching package named `foo` found", "");
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn permanent_failed_to_select_a_version_standalone() {
+        let o = classify_publish_failure(
+            "failed to select a version for the requirement `bar = \"^1.0\"`",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn crlf_line_endings_do_not_block_retryable_match() {
+        let o = classify_publish_failure("error\r\nconnection refused\r\n", "");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn crlf_line_endings_do_not_block_permanent_match() {
+        let o = classify_publish_failure("error\r\ntoken is invalid\r\n", "");
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn stderr_stdout_separator_is_single_newline() {
+        let o = classify_publish_failure("connection ", "refused");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn pattern_spanning_stderr_newline_stdout_does_not_match() {
+        let o = classify_publish_failure("dn", "s lookup failed");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn outcome_is_copy() {
+        let a = classify_publish_failure("429", "");
+        let b = a;
+        assert_eq!(a, b);
+        assert_eq!(a.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn outcome_clone_equals_original() {
+        let a = classify_publish_failure("token is invalid", "");
+        let b = a;
+        assert_eq!(a, b.clone());
+    }
+
+    #[test]
+    fn class_variants_are_pairwise_distinct() {
+        assert_ne!(CargoFailureClass::Retryable, CargoFailureClass::Permanent);
+        assert_ne!(CargoFailureClass::Retryable, CargoFailureClass::Ambiguous);
+        assert_ne!(CargoFailureClass::Permanent, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn class_self_equality() {
+        assert_eq!(CargoFailureClass::Retryable, CargoFailureClass::Retryable);
+        assert_eq!(CargoFailureClass::Permanent, CargoFailureClass::Permanent);
+        assert_eq!(CargoFailureClass::Ambiguous, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn outcome_message_is_static_lifetime() {
+        fn requires_static(_s: &'static str) {}
+        let o = classify_publish_failure("503", "");
+        requires_static(o.message);
+    }
+
+    #[test]
+    fn massive_stdout_only_input_classifies_retryable() {
+        let big = format!("{}\n429\n{}", "x".repeat(10_000), "y".repeat(10_000));
+        let o = classify_publish_failure("", &big);
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn massive_input_no_patterns_is_ambiguous() {
+        let big = "abcdefg ".repeat(20_000);
+        let o = classify_publish_failure(&big, &big);
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn null_byte_does_not_block_subsequent_retryable_match() {
+        let o = classify_publish_failure("\0connection refused\0", "");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn null_byte_does_not_block_subsequent_permanent_match() {
+        let o = classify_publish_failure("\0token is invalid\0", "");
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn tab_separated_pattern_matches() {
+        let o = classify_publish_failure("error:\ttoo many requests", "");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn ambiguous_message_is_actionable_for_reconciliation() {
+        let o = classify_publish_failure("", "");
+        assert!(o.message.contains("ambiguous"));
+        assert!(o.message.contains("registry"));
+    }
+
+    #[test]
+    fn ambiguous_upload_in_progress_then_eof() {
+        let o = classify_publish_failure(
+            "Uploading my-crate v0.1.0 (registry `crates-io`)\nerror: unexpected EOF",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn ambiguous_io_error_unspecified_without_pattern() {
+        let o = classify_publish_failure("error: an I/O error occurred", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn http_502_pattern_is_retryable() {
+        let o = classify_publish_failure("got 502 from upstream", "");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn stderr_only_with_trailing_newline_classifies_correctly() {
+        let o = classify_publish_failure("permission denied\n", "");
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn stdout_only_with_leading_newline_classifies_correctly() {
+        let o = classify_publish_failure("", "\nbroken pipe");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn upload_then_429_is_retryable_even_when_upload_text_might_imply_ambiguity() {
+        let o = classify_publish_failure("Uploading my-crate v0.1.0\n429 Too Many Requests", "");
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn upload_then_already_uploaded_is_permanent() {
+        let o = classify_publish_failure(
+            "Uploading my-crate v0.1.0\ncrate version is already uploaded",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn realworld_sparse_index_503() {
+        let o = classify_publish_failure(
+            "error: download of config.json failed\n\
+             Caused by:\n  failed to get successful HTTP response from \
+             `https://index.crates.io/config.json` (146.75.30.39), got 503\n\
+             body:\nService Unavailable",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn realworld_missing_dependency_pre_verify() {
+        let o = classify_publish_failure(
+            "error: required dependency is missing from the registry: \
+             foo-internal v0.1.0 (required by bar v0.1.0)",
+            "",
+        );
+        assert_eq!(o.class, CargoFailureClass::Permanent);
+    }
+
+    #[test]
+    fn ascii_uppercase_input_classifies_identically_to_lowercase() {
+        let upper = classify_publish_failure("ERROR: CONNECTION RESET BY PEER", "");
+        let lower = classify_publish_failure("error: connection reset by peer", "");
+        assert_eq!(upper.class, lower.class);
+        assert_eq!(upper.message, lower.message);
     }
 }

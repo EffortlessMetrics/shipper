@@ -2408,6 +2408,114 @@ mod tests {
         handle.join().unwrap();
     }
 
+    #[tokio::test]
+    async fn send_webhook_async_slack_format_to_server() {
+        // Covers the Slack branch of the async webhook body builder.
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+
+        let config = WebhookConfig {
+            url: format!("http://{addr}/async-slack"),
+            webhook_type: WebhookType::Slack,
+            timeout_secs: 5,
+            secret: None,
+        };
+        let payload = publish_success_payload("async-slack-pkg", "0.3.0", "crates-io");
+
+        let handle = std::thread::spawn(move || {
+            let mut req = match server.recv_timeout(Duration::from_secs(5)) {
+                Ok(Some(req)) => req,
+                other => panic!("expected async Slack webhook request, got {other:?}"),
+            };
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+            // Slack format must have "attachments"
+            assert!(parsed["attachments"].is_array());
+            req.respond(tiny_http::Response::from_string("ok")).unwrap();
+        });
+
+        send_webhook_async(&config, &payload).await.unwrap();
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_webhook_async_discord_format_to_server() {
+        // Covers the Discord branch of the async webhook body builder.
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+
+        let config = WebhookConfig {
+            url: format!("http://{addr}/async-discord"),
+            webhook_type: WebhookType::Discord,
+            timeout_secs: 5,
+            secret: None,
+        };
+        let payload = publish_failure_payload("async-discord-pkg", "0.4.0", "registry timed out");
+
+        let handle = std::thread::spawn(move || {
+            let mut req = match server.recv_timeout(Duration::from_secs(5)) {
+                Ok(Some(req)) => req,
+                other => panic!("expected async Discord webhook request, got {other:?}"),
+            };
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+            // Discord format must have "embeds"
+            assert!(parsed["embeds"].is_array());
+            req.respond(tiny_http::Response::from_string("ok")).unwrap();
+        });
+
+        send_webhook_async(&config, &payload).await.unwrap();
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_webhook_async_slack_with_signature_and_error_payload() {
+        // Combines the async Slack body branch with the signature branch and
+        // a failure-style payload, exercising both the HMAC and the error
+        // field renderer in a single async-path test.
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+
+        let config = WebhookConfig {
+            url: format!("http://{addr}/async-slack-signed"),
+            webhook_type: WebhookType::Slack,
+            timeout_secs: 5,
+            secret: Some("async-slack-secret".to_string()),
+        };
+        let payload = publish_failure_payload("signed-pkg", "1.2.3", "boom");
+
+        let handle = std::thread::spawn(move || {
+            let mut req = match server.recv_timeout(Duration::from_secs(5)) {
+                Ok(Some(req)) => req,
+                other => panic!("expected signed async Slack webhook request, got {other:?}"),
+            };
+            let sig_header = req
+                .headers()
+                .iter()
+                .find(|h| {
+                    h.field
+                        .as_str()
+                        .as_str()
+                        .eq_ignore_ascii_case("x-hub-signature-256")
+                })
+                .expect("signature header missing on async slack path");
+            let sig_header = sig_header.value.as_str().to_string();
+
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body).unwrap();
+            let expected = webhook_signature("async-slack-secret", &body).unwrap();
+            assert_eq!(sig_header, expected);
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert!(parsed["attachments"].is_array());
+            req.respond(tiny_http::Response::from_string("ok")).unwrap();
+        });
+
+        send_webhook_async(&config, &payload).await.unwrap();
+        handle.join().unwrap();
+    }
+
     // --- Hardened tests: authentication / HMAC ---
 
     #[test]

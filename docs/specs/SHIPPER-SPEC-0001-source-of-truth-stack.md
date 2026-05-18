@@ -1,18 +1,18 @@
 # SHIPPER-SPEC-0001: Source-of-Truth Stack
 
-Status: proposed
+Status: accepted
 Owner: EffortlessMetrics
 Created: 2026-05-13
 Milestone: 0.4.0
 Linked proposal: docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md
 Linked specs:
 Linked ADRs:
-Linked plan:
+Linked plan: plans/0.4.0/source-of-truth-stack.md
 Linked issues: #109, #195
-Linked PRs:
-Support-tier impact: future support-tier claim map
-Policy impact: future doc-contract advisory report
-Proof commands: cargo xtask check-file-policy --mode blocking-allowlist; cargo xtask policy-report; cargo fmt --all -- --check
+Linked PRs: #239, #240, #241, #242, #243, #244, #250, #251, #252, #253, #319
+Support-tier impact: docs/status/SUPPORT_TIERS.md
+Policy impact: doc-contract advisory report and policy-report integration
+Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask check-file-policy --mode blocking-allowlist; cargo xtask policy-report; cargo fmt --all -- --check
 
 ## Problem
 
@@ -44,7 +44,7 @@ define PR order, product rationale, or release evidence for a specific version.
 
 - Implementing registry reconciliation.
 - Executing #195 release proof.
-- Adding active goal manifests in this spec PR.
+- Changing runtime release behavior.
 - Replacing policy ledgers with prose.
 - Making doc-contract checks blocking before advisory reports exist.
 
@@ -52,15 +52,10 @@ define PR order, product rationale, or release evidence for a specific version.
 
 For source-of-truth document changes:
 
+- `cargo xtask check-doc-contracts --mode advisory`
 - `cargo xtask check-file-policy --mode blocking-allowlist`
 - `cargo xtask policy-report`
 - `cargo fmt --all -- --check`
-
-After the checker exists:
-
-- `cargo xtask check-doc-contracts --mode advisory`
-- `target/policy/doc-contracts-report.md`
-- `target/policy/doc-contracts-report.json`
 
 ## Acceptance Examples
 
@@ -77,20 +72,18 @@ After the checker exists:
 
 ## Test Mapping
 
-Initial proof uses existing repository gates:
+Proof uses existing repository gates:
 
+- doc-contract checks for source-of-truth links and active goal references
 - file-policy checks for non-Rust receipts
 - policy-report checks for unified policy evidence
 - format checks for repository hygiene
 
-Later proof comes from the advisory doc-contract checker.
-
 ## Implementation Mapping
 
-The implementation sequence belongs in `plans/0.4.0/source-of-truth-stack.md`
-after that plan exists.
+The implementation sequence belongs in `plans/0.4.0/source-of-truth-stack.md`.
 
-The first checker should validate:
+The advisory checker validates:
 
 - proposal/spec/ADR filename IDs against title IDs
 - required header fields
@@ -101,8 +94,8 @@ The first checker should validate:
 
 ## CI Proof
 
-CI should first run doc-contract checks in advisory mode and upload reports.
-Blocking mode should come only after the reports have burned in.
+CI runs doc-contract checks in advisory mode and uploads reports. Blocking mode
+should come only after the reports have burned in.
 
 ## Promotion Rule
 

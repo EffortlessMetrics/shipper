@@ -9,10 +9,10 @@ Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan:
 Linked issues: #109, #195
-Linked PRs: #239, #240, #241, #242, #243, #244
+Linked PRs: #239, #240, #241, #242, #243, #244, #250, #251, #252, #253, #254, #255, #319
 Support-tier impact: docs/status/SUPPORT_TIERS.md
-Policy impact: future doc-contract advisory report
-Proof commands: cargo xtask check-file-policy --mode blocking-allowlist; cargo xtask policy-report; cargo fmt --all -- --check
+Policy impact: doc-contract advisory report and policy-report integration
+Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask check-file-policy --mode blocking-allowlist; cargo xtask policy-report; cargo fmt --all -- --check
 
 ## End State
 
@@ -26,8 +26,9 @@ Shipper's source-of-truth stack is executable by maintainers and agents:
 - support tiers map claims to proof commands and artifacts
 - policy ledgers remain authoritative for exceptions and receipts
 
-The stack is complete enough when #195 can be executed from a
-release-readiness spec and plan instead of from issue prose.
+The stack reached its first release-proof use when #195 was executed from the
+release-readiness spec and plan instead of issue prose. Later work may harden
+the checker from advisory to blocking once the reports have burned in.
 
 ## PR Sequence
 
@@ -251,9 +252,10 @@ proof, and Reconcile behavior.
 
 #### Acceptance
 
-- `.shipper-meta/goals/active.toml` parses as TOML.
-- The active goal references this plan and the source-of-truth spec.
-- The PR diff excludes templates, checker code, CI wiring, and release proof.
+Merged as #250.
+
+The active goal was later refreshed for the current source-of-truth lane in
+#319.
 
 #### Proof Commands
 
@@ -287,9 +289,7 @@ Reconcile behavior.
 
 #### Acceptance
 
-- The command writes `target/policy/doc-contracts-report.md`.
-- The command writes `target/policy/doc-contracts-report.json`.
-- Advisory mode exits zero while reporting findings.
+Merged as #251.
 
 #### Proof Commands
 
@@ -324,8 +324,7 @@ CI wiring, blocking doc-contract mode, release proof, and Reconcile behavior.
 
 #### Acceptance
 
-- `cargo xtask policy-report` includes doc-contract status.
-- Policy report JSON points to the doc-contract report artifacts.
+Merged as #252.
 
 #### Proof Commands
 
@@ -358,9 +357,7 @@ Blocking enforcement, release proof execution, and Reconcile behavior.
 
 #### Acceptance
 
-- CI runs `cargo xtask check-doc-contracts --mode advisory`.
-- CI uploads doc-contract report artifacts.
-- Failures remain advisory.
+Merged as #253.
 
 #### Proof Commands
 
@@ -373,7 +370,7 @@ Remove the CI advisory step and artifact upload.
 
 ### PR 11 - Release-readiness spec and plan
 
-Linked spec: future `docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md`
+Linked spec: docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md
 Blocks: PR 12
 Blocked by: PR 10
 
@@ -391,8 +388,7 @@ Running dry-run publish, tagging, publishing, and Reconcile behavior.
 
 #### Acceptance
 
-- The release-readiness spec defines required evidence.
-- The 0.4.0 plan defines the dry-run and gate sequence.
+Merged as #254.
 
 #### Proof Commands
 
@@ -406,7 +402,7 @@ Revert the spec and plan if the release proof contract is replaced.
 
 ### PR 12 - Execute #195 release proof
 
-Linked spec: future `docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md`
+Linked spec: docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md
 Blocks: Reconcile proposal/spec/ADR/plan
 Blocked by: PR 11
 
@@ -424,10 +420,7 @@ Registry reconciliation implementation and release publication.
 
 #### Acceptance
 
-- #195 gates are run.
-- All publishable crates are dry-run in authoritative plan order.
-- Readiness evidence is recorded.
-- Support tiers are updated only according to observed proof.
+Merged as #255.
 
 #### Proof Commands
 
