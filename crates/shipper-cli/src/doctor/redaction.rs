@@ -9,42 +9,42 @@ pub(crate) fn redact_diagnostic_value(value: &str) -> String {
 
 fn redact_sensitive_query_values(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
-    let bytes = value.as_bytes();
-    let mut i = 0;
+    let mut chars = value.chars().peekable();
 
-    while i < bytes.len() {
-        let delimiter = bytes[i] as char;
-        if delimiter == '?' || delimiter == '&' {
-            out.push(delimiter);
-            i += 1;
+    while let Some(ch) = chars.next() {
+        if ch == '?' || ch == '&' {
+            out.push(ch);
 
-            let key_start = i;
-            while i < bytes.len() && !matches!(bytes[i] as char, '=' | '&' | '#' | ' ' | '"' | '\'')
-            {
-                i += 1;
-            }
-            let key = &value[key_start..i];
-            out.push_str(key);
-
-            if i < bytes.len() && bytes[i] == b'=' {
-                out.push('=');
-                i += 1;
-                let value_start = i;
-                while i < bytes.len()
-                    && !matches!(bytes[i] as char, '&' | '#' | ' ' | '"' | '\'' | ')' | ']')
-                {
-                    i += 1;
+            let mut key = String::new();
+            while let Some(next) = chars.peek().copied() {
+                if matches!(next, '=' | '&' | '#' | ' ' | '"' | '\'') {
+                    break;
                 }
-                if is_sensitive_query_key(key) {
+                key.push(next);
+                chars.next();
+            }
+            out.push_str(&key);
+
+            if matches!(chars.peek(), Some('=')) {
+                out.push('=');
+                chars.next();
+
+                let mut raw_value = String::new();
+                while let Some(next) = chars.peek().copied() {
+                    if matches!(next, '&' | '#' | ' ' | '"' | '\'' | ')' | ']') {
+                        break;
+                    }
+                    raw_value.push(next);
+                    chars.next();
+                }
+                if is_sensitive_query_key(&key) {
                     out.push_str("[REDACTED]");
                 } else {
-                    out.push_str(&value[value_start..i]);
+                    out.push_str(&raw_value);
                 }
             }
         } else {
-            let ch = value[i..].chars().next().unwrap_or('\0');
             out.push(ch);
-            i += ch.len_utf8();
         }
     }
 
@@ -67,27 +67,32 @@ fn redact_url_userinfo(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut remaining = value;
 
-    while let Some(scheme_pos) = remaining.find("://") {
-        let authority_start = scheme_pos + "://".len();
-        out.push_str(&remaining[..authority_start]);
-        let after_scheme = &remaining[authority_start..];
-        let authority_end = after_scheme
-            .find(['/', '?', '#', ' ', '"', '\''])
-            .unwrap_or(after_scheme.len());
-        let authority = &after_scheme[..authority_end];
+    while let Some((before_scheme, after_scheme)) = remaining.split_once("://") {
+        out.push_str(before_scheme);
+        out.push_str("://");
 
-        if let Some(at_pos) = authority.rfind('@') {
+        let (authority, rest) = split_authority(after_scheme);
+        if let Some((_userinfo, host)) = authority.rsplit_once('@') {
             out.push_str("[REDACTED]@");
-            out.push_str(&authority[at_pos + 1..]);
+            out.push_str(host);
         } else {
             out.push_str(authority);
         }
 
-        remaining = &after_scheme[authority_end..];
+        remaining = rest;
     }
 
     out.push_str(remaining);
     out
+}
+
+fn split_authority(after_scheme: &str) -> (&str, &str) {
+    for (idx, ch) in after_scheme.char_indices() {
+        if matches!(ch, '/' | '?' | '#' | ' ' | '"' | '\'') {
+            return after_scheme.split_at(idx);
+        }
+    }
+    (after_scheme, "")
 }
 
 #[cfg(test)]

@@ -914,10 +914,15 @@ pub fn run() -> Result<()> {
 
             for reg in target_registries {
                 if opts.registries.len() > 1 {
-                    println!(
-                        "\n🚀 Publishing to registry: {} ({})",
-                        reg.name, reg.api_base
-                    );
+                    if cli.format == "json" {
+                        eprintln!();
+                        eprintln!("Publishing to registry: {} ({})", reg.name, reg.api_base);
+                    } else {
+                        println!(
+                            "\n🚀 Publishing to registry: {} ({})",
+                            reg.name, reg.api_base
+                        );
+                    }
                 }
 
                 let mut current_planned = planned.clone();
@@ -974,10 +979,15 @@ pub fn run() -> Result<()> {
 
             for reg in target_registries {
                 if opts.registries.len() > 1 {
-                    println!(
-                        "\n🔄 Resuming for registry: {} ({})",
-                        reg.name, reg.api_base
-                    );
+                    if cli.format == "json" {
+                        eprintln!();
+                        eprintln!("Resuming for registry: {} ({})", reg.name, reg.api_base);
+                    } else {
+                        println!(
+                            "\n🔄 Resuming for registry: {} ({})",
+                            reg.name, reg.api_base
+                        );
+                    }
                 }
 
                 let mut current_planned = planned.clone();

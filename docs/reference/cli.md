@@ -20,8 +20,9 @@ shipper preflight
 release-readiness verdict.
 
 For CI, internal developer portals, or agent consumers, `shipper doctor`,
-`shipper plan`, `shipper status`, and `shipper preflight` support
-`--format json`.
+`shipper plan`, `shipper status`, `shipper preflight`, `shipper publish`,
+and `shipper resume` support `--format json`. `publish` and `resume` emit the
+release receipt JSON for each targeted registry.
 
 ## Commands at a glance
 

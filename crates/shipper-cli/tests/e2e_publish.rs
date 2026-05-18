@@ -280,6 +280,63 @@ fn single_crate_publish_creates_state_and_receipt() {
     registry.join();
 }
 
+#[test]
+fn publish_json_format_writes_receipt_to_stdout() {
+    let td = tempdir().expect("tempdir");
+    create_single_crate_workspace(td.path());
+    let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
+
+    let registry = spawn_registry(vec![404, 200], 2);
+    let state_dir = td.path().join(".shipper");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("--verify-timeout")
+        .arg("0ms")
+        .arg("--verify-poll")
+        .arg("0ms")
+        .arg("--max-attempts")
+        .arg("1")
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--format")
+        .arg("json")
+        .arg("publish")
+        .env("PATH", &new_path)
+        .env("REAL_CARGO", &real_cargo)
+        .env("SHIPPER_CARGO_BIN", &fake_cargo)
+        .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    let receipt: serde_json::Value =
+        serde_json::from_str(&stdout).expect("publish stdout should be receipt JSON");
+    assert!(receipt["plan_id"].is_string(), "plan_id should be present");
+    assert_eq!(
+        receipt["packages"][0]["name"].as_str(),
+        Some("demo"),
+        "receipt should contain the published package"
+    );
+    assert_eq!(
+        receipt["packages"][0]["state"]["state"].as_str(),
+        Some("published")
+    );
+    assert!(
+        state_dir.join("receipt.json").exists(),
+        "receipt artifact should still be written"
+    );
+
+    registry.join();
+}
+
 // ============================================================================
 // Test 2: Multi-crate workspace respects dependency ordering
 // ============================================================================

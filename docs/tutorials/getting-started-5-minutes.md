@@ -99,4 +99,5 @@ After this five-minute path, keep the terminal output from:
 
 When JSON output is required for CI or an internal developer portal, prefer the
 command's `--format json` option where available. The first-run decision path
-now supports JSON for `doctor`, `plan`, `status`, and `preflight`.
+now supports JSON for `doctor`, `plan`, `status`, `preflight`, `publish`, and
+`resume`.
