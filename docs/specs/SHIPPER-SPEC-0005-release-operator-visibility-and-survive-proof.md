@@ -1,6 +1,6 @@
 # SHIPPER-SPEC-0005: Release Operator Visibility and Survive Proof
 
-Status: proposed
+Status: implemented
 Owner: EffortlessMetrics
 Created: 2026-05-18
 Milestone: 0.4.0
@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md; docs/adr/SHIPPER-ADR-0002-registry-truth-over-cargo-output.md
 Linked plan: plans/0.4.0/release-operator-visibility-and-survive-proof.md
 Linked issues: #109
-Linked PRs:
+Linked PRs: #310; #331; #333; #335; #336
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: policy ledgers remain authoritative for exceptions and receipts
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -155,7 +155,9 @@ Support-tier claims may move only when the named proof exists:
   fail on inconsistent evidence
 - rebuild-from-events stays planned until tests prove a reconstructed projection
 - live-runner interruption stays planned until a real runner rehearsal artifact
-  proves artifact recovery and safe resume
+  proves artifact recovery and safe resume. Implemented proof is GitHub Actions
+  run 26051581056, with `shipper-live-interruption-seed-26051581056` and
+  `shipper-live-interruption-resume-26051581056` artifacts.
 
 ## Open Questions
 

@@ -1,6 +1,6 @@
 id = "shipper-release-operator-visibility"
 title = "Release operator visibility and survive proof"
-status = "active"
+status = "complete"
 owner = "EffortlessMetrics"
 created = "2026-05-18"
 
@@ -85,14 +85,44 @@ commands = [
 
 [[work_item]]
 id = "live-runner-interruption-rehearsal"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
 plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
 issue = "109"
+linked_pr = "#335"
+completed = "2026-05-18"
 commands = [
+  "GitHub Actions Live runner interruption rehearsal run 26051581056",
   "cargo test -p shipper-cli --test e2e_rehearse -- --nocapture",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
   "git diff --check",
+]
+artifacts = [
+  "https://github.com/EffortlessMetrics/shipper/actions/runs/26051581056",
+  "shipper-live-interruption-seed-26051581056",
+  "shipper-live-interruption-resume-26051581056",
+]
+
+[[work_item]]
+id = "support-tier-promotion"
+status = "complete"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md"
+plan = "plans/0.4.0/release-operator-visibility-and-survive-proof.md"
+issue = "109"
+linked_pr = "#336"
+completed = "2026-05-18"
+commands = [
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask check-file-policy --mode blocking-allowlist",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+artifacts = [
+  "https://github.com/EffortlessMetrics/shipper/actions/runs/26051581056",
+  "shipper-live-interruption-seed-26051581056",
+  "shipper-live-interruption-resume-26051581056",
 ]

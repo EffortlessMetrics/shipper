@@ -1,6 +1,6 @@
 # Plan: Release Operator Visibility and Survive Proof
 
-Status: proposed
+Status: implemented
 Owner: EffortlessMetrics
 Created: 2026-05-18
 Milestone: 0.4.0
@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survi
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md; docs/adr/SHIPPER-ADR-0002-registry-truth-over-cargo-output.md
 Linked plan: plans/0.4.0/json-evidence-contracts.md
 Linked issues: #109
-Linked PRs: #330; #331; #333; #310
+Linked PRs: #330; #331; #333; #310; #335; #336
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: no new policy exceptions
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -204,6 +204,9 @@ artifact exists.
 - Controlled interruption produces a `.shipper/` artifact.
 - Resume uses the artifact and completes without duplicate publish.
 - Events, state, receipt, and reconciliation evidence remain coherent.
+- GitHub Actions run 26051581056 uploaded
+  `shipper-live-interruption-seed-26051581056` and
+  `shipper-live-interruption-resume-26051581056`. [Landed in #335]
 
 #### Proof Commands
 
@@ -239,6 +242,9 @@ Runtime changes.
 
 - Support tiers name exact proof commands and artifacts.
 - README and product claims do not exceed proven evidence.
+- `docs/status/SUPPORT_TIERS.md` names the main-run proof artifacts and keeps
+  the claim scoped to real runner artifact recovery with fake Cargo/mock
+  registry proof.
 
 #### Proof Commands
 
