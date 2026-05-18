@@ -2893,10 +2893,15 @@ fn write_event_lines_since<W: Write>(
     let mut line = String::new();
     loop {
         line.clear();
+        let line_start = next_offset;
         let read = reader
             .read_line(&mut line)
             .with_context(|| format!("failed to read event log {}", events_path.display()))?;
         if read == 0 {
+            break;
+        }
+        if !line.ends_with('\n') {
+            next_offset = line_start;
             break;
         }
         next_offset += read as u64;
@@ -5076,6 +5081,69 @@ mode = "fast"
         assert!(!second.contains(r#""type":"plan_created""#));
         assert_eq!(second.lines().count(), 1);
         assert!(next_offset > offset);
+    }
+
+    #[test]
+    fn inspect_events_follow_defers_incomplete_tail_line() {
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        let first_event = concat!(
+            r#"{"timestamp":"2025-01-01T00:00:00Z","event_type":{"type":"plan_created","plan_id":"abc123","package_count":1},"package":"all"}"#,
+            "\n",
+        );
+        let partial_event =
+            r#"{"timestamp":"2025-01-01T00:00:01Z","event_type":{"type":"execution_started"}"#;
+        fs::write(&events_path, format!("{first_event}{partial_event}")).expect("write events");
+
+        let mut out = Vec::new();
+        let offset =
+            write_event_lines_since(&events_path, 0, "json", &mut out).expect("read complete");
+        let text = String::from_utf8(out).expect("utf8");
+
+        assert_eq!(offset, first_event.len() as u64);
+        assert!(text.contains(r#""type":"plan_created""#));
+        assert!(!text.contains(r#""type":"execution_started""#));
+        assert_eq!(text.lines().count(), 1);
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&events_path)
+            .expect("open append")
+            .write_all(br#","package":"all"}"#)
+            .expect("append event body");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&events_path)
+            .expect("open append")
+            .write_all(b"\n")
+            .expect("append newline");
+
+        let mut out = Vec::new();
+        let next_offset =
+            write_event_lines_since(&events_path, offset, "json", &mut out).expect("read tail");
+        let text = String::from_utf8(out).expect("utf8");
+
+        assert!(next_offset > offset);
+        assert!(text.contains(r#""type":"execution_started""#));
+        assert!(!text.contains(r#""type":"plan_created""#));
+        assert_eq!(text.lines().count(), 1);
+    }
+
+    #[test]
+    fn inspect_events_follow_reports_completed_malformed_line() {
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        fs::write(&events_path, "{\"not\":\"a publish event\"}\n").expect("write events");
+
+        let mut out = Vec::new();
+        let err = write_event_lines_since(&events_path, 0, "json", &mut out)
+            .expect_err("malformed completed line should fail");
+
+        assert!(
+            err.to_string().contains("failed to parse event JSON"),
+            "{err:#}"
+        );
+        assert!(out.is_empty());
     }
 
     #[test]
