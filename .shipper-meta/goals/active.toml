@@ -1,36 +1,99 @@
-id = "shipper-reconcile-registry-truth"
-title = "Registry-truth reconciliation for ambiguous publish outcomes"
-status = "complete"
+id = "shipper-source-of-truth-stack"
+title = "Source-of-truth stack and doc-contract enforcement"
+status = "active"
 owner = "EffortlessMetrics"
-created = "2026-05-13"
+created = "2026-05-18"
 
 objective = """
-Close Reconcile from the source-of-truth stack: ambiguous cargo publish outcomes
-must reconcile against registry truth before retrying or resuming, and the
-support-tier claim must match implementation proof.
+Make Shipper's proposals, specs, ADRs, implementation plans, active goals,
+support tiers, policy reports, and release artifacts link into an executable
+source-of-truth system that maintainers and agents can follow without stale
+issue archaeology.
 """
 
 end_state = [
-  "Ambiguous publish outcomes resolve to Published, NotPublished, or StillUnknown.",
-  "Registry evidence is persisted in events and execution state.",
-  "Resume honors persisted reconciliation outcomes.",
-  "StillUnknown stops before blind retry and requires operator action.",
-  "Support-tier and product claims are promoted only after proof exists.",
+  "The active goal points to the current accepted spec and plan.",
+  "Doc-contract checks validate IDs, headers, statuses, and links.",
+  "Policy-report includes doc-contract status.",
+  "CI runs doc-contract checks in advisory mode and uploads reports.",
+  "Release-readiness proof can be executed from spec and plan, not issue prose.",
 ]
 
 [[work_item]]
-id = "reconcile-claim-proof"
-status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0002-registry-truth-and-reconciliation.md"
-spec = "docs/specs/SHIPPER-SPEC-0003-registry-reconciliation.md"
-plan = "plans/reconcile/implementation-plan.md"
-issue = "102"
+id = "active-goal-refresh"
+status = "active"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md"
+plan = "plans/0.4.0/source-of-truth-stack.md"
+issue = "109"
 commands = [
+  "python -c \"import pathlib,tomllib; tomllib.loads(pathlib.Path('.shipper-meta/goals/active.toml').read_text()); print('active goal TOML parses')\"",
+  "cargo xtask check-file-policy --mode blocking-allowlist",
+  "cargo xtask policy-report",
   "cargo fmt --all -- --check",
-  "cargo test -p shipper-types --locked",
-  "cargo test -p shipper-core reconcile --lib --locked",
-  "cargo test -p shipper-core state --lib --locked",
-  "cargo test -p shipper-cli --test bdd_publish --locked",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "source-of-truth-status-normalization"
+status = "ready"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md"
+plan = "plans/0.4.0/source-of-truth-stack.md"
+issue = "109"
+commands = [
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask check-file-policy --mode blocking-allowlist",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "release-readiness-proof-plan"
+status = "ready"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md"
+plan = "plans/0.4.0/release-readiness-proof.md"
+issue = "195"
+commands = [
   "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "release-readiness-artifact-skeleton"
+status = "planned"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md"
+plan = "plans/0.4.0/release-readiness-proof.md"
+issue = "195"
+commands = [
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "release-readiness-proof-execution"
+status = "planned"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md"
+plan = "plans/0.4.0/release-readiness-proof.md"
+issue = "195"
+commands = [
+  "cargo fmt --all -- --check",
+  "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+  "cargo test --workspace --all-features",
+  "cargo test --workspace --doc",
+  "cargo check --workspace",
+  "cargo audit",
+  "cargo doc --workspace --no-deps --document-private-items",
+  "cargo test -p shipper-cli --test bdd_publish",
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask policy-report",
+  "cargo run -p shipper -- plan",
 ]
