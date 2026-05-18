@@ -21,7 +21,7 @@ end_state = [
 
 [[work_item]]
 id = "active-goal-refresh"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md"
 plan = "plans/0.4.0/source-of-truth-stack.md"
@@ -36,7 +36,7 @@ commands = [
 
 [[work_item]]
 id = "source-of-truth-status-normalization"
-status = "ready"
+status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md"
 plan = "plans/0.4.0/source-of-truth-stack.md"
@@ -51,7 +51,7 @@ commands = [
 
 [[work_item]]
 id = "release-readiness-proof-plan"
-status = "ready"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md"
 plan = "plans/0.4.0/release-readiness-proof.md"
@@ -65,7 +65,7 @@ commands = [
 
 [[work_item]]
 id = "release-readiness-artifact-skeleton"
-status = "planned"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md"
 plan = "plans/0.4.0/release-readiness-proof.md"
@@ -79,7 +79,7 @@ commands = [
 
 [[work_item]]
 id = "release-readiness-proof-execution"
-status = "planned"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md"
 plan = "plans/0.4.0/release-readiness-proof.md"
