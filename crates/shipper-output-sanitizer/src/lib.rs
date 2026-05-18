@@ -181,51 +181,204 @@ mod strip_ansi_tests {
 }
 
 fn redact_line(line: &str) -> String {
-    let mut out = line.to_string();
+    let out = redact_authorization_bearer(line);
+    let out = redact_token_assignments(&out);
+    redact_cargo_token_env(&out)
+}
 
-    if let Some(pos) = out.to_ascii_lowercase().find("authorization:") {
-        let after = &out[pos..];
+fn redact_authorization_bearer(line: &str) -> String {
+    if let Some(pos) = line.to_ascii_lowercase().find("authorization:") {
+        let after = &line[pos..];
         if let Some(bearer_pos) = after.to_ascii_lowercase().find("bearer ") {
             let redact_start = pos + bearer_pos + "bearer ".len();
-            out = format!("{}[REDACTED]", &out[..redact_start]);
+            return format!("{}[REDACTED]", &line[..redact_start]);
         }
     }
 
-    if let Some(pos) = out.to_ascii_lowercase().find("token") {
-        let after_key = &out[pos + "token".len()..];
-        let trimmed = after_key.trim_start();
-        if trimmed.starts_with("= ") || trimmed.starts_with("=") {
-            let eq_offset = pos + "token".len() + (after_key.len() - trimmed.len());
-            let after_eq = trimmed.trim_start_matches('=').trim_start();
-            if after_eq.starts_with('"') || after_eq.starts_with('\'') {
-                out = format!("{}= \"[REDACTED]\"", &out[..eq_offset]);
-            } else if !after_eq.is_empty() {
-                out = format!("{}= [REDACTED]", &out[..eq_offset]);
-            }
-        }
-    }
+    line.to_string()
+}
 
-    if let Some(pos) = find_cargo_token_env(&out)
-        && let Some(eq_pos) = out[pos..].find('=')
-    {
-        let abs_eq = pos + eq_pos;
-        out = format!("{}=[REDACTED]", &out[..abs_eq]);
+fn redact_token_assignments(line: &str) -> String {
+    let mut out = line.to_string();
+    let mut search_from = 0;
+
+    while let Some(relative_pos) = out[search_from..].to_ascii_lowercase().find("token") {
+        let token_pos = search_from + relative_pos;
+        let after_token = token_pos + "token".len();
+
+        if !is_token_key_boundary(out.as_bytes(), token_pos) {
+            search_from = after_token;
+            continue;
+        }
+
+        let after_key = &out[after_token..];
+        let whitespace_after_key = leading_whitespace_len(after_key);
+        let eq_pos = after_token + whitespace_after_key;
+        if out.as_bytes().get(eq_pos) != Some(&b'=') {
+            search_from = after_token;
+            continue;
+        }
+
+        let after_eq = eq_pos + 1;
+        let whitespace_after_eq = leading_whitespace_len(&out[after_eq..]);
+        let value_start = after_eq + whitespace_after_eq;
+        if value_start >= out.len() {
+            search_from = after_eq;
+            continue;
+        }
+
+        let value_range = token_value_range(&out, value_start);
+        let redacted_end = value_range.start + "[REDACTED]".len();
+        out.replace_range(value_range, "[REDACTED]");
+        search_from = redacted_end;
     }
 
     out
 }
 
-fn find_cargo_token_env(s: &str) -> Option<usize> {
-    if let Some(pos) = s.find("CARGO_REGISTRY_TOKEN") {
-        return Some(pos);
-    }
-    if let Some(pos) = s.find("CARGO_REGISTRIES_") {
-        let after = &s[pos + "CARGO_REGISTRIES_".len()..];
-        if after.contains("_TOKEN") {
-            return Some(pos);
+fn is_token_key_boundary(bytes: &[u8], token_pos: usize) -> bool {
+    token_pos == 0
+        || !matches!(
+            bytes[token_pos - 1],
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_'
+        )
+}
+
+fn leading_whitespace_len(s: &str) -> usize {
+    s.bytes().take_while(|b| matches!(b, b' ' | b'\t')).count()
+}
+
+fn token_value_range(s: &str, value_start: usize) -> std::ops::Range<usize> {
+    let bytes = s.as_bytes();
+    match bytes[value_start] {
+        quote @ (b'"' | b'\'') => {
+            let redaction_start = value_start + 1;
+            let mut pos = redaction_start;
+            while pos < bytes.len() {
+                if bytes[pos] == quote {
+                    return redaction_start..pos;
+                }
+                pos += 1;
+            }
+            redaction_start..bytes.len()
+        }
+        _ => {
+            let mut pos = value_start;
+            while pos < bytes.len() {
+                match bytes[pos] {
+                    b'&' | b'#' => break,
+                    b' ' | b'\t' if starts_comment_after_whitespace(&s[pos..]) => break,
+                    b' ' | b'\t' if starts_another_assignment_after_whitespace(&s[pos..]) => break,
+                    _ => pos += 1,
+                }
+            }
+            value_start..pos
         }
     }
+}
+
+fn starts_comment_after_whitespace(s: &str) -> bool {
+    s.trim_start_matches([' ', '\t']).starts_with('#')
+}
+
+fn starts_another_assignment_after_whitespace(s: &str) -> bool {
+    let trimmed = s.trim_start_matches([' ', '\t']);
+    let Some(eq_pos) = trimmed.find('=') else {
+        return false;
+    };
+    let key = trimmed[..eq_pos].trim_end_matches([' ', '\t']);
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+}
+
+fn redact_cargo_token_env(line: &str) -> String {
+    let mut out = line.to_string();
+    let mut search_from = 0;
+
+    while let Some((_var_start, eq_pos)) = find_cargo_token_env_assignment(&out, search_from) {
+        let value_start = eq_pos + 1;
+        let value_end = env_value_end(&out, value_start);
+        out.replace_range(value_start..value_end, "[REDACTED]");
+        search_from = value_start + "[REDACTED]".len();
+    }
+
+    out
+}
+
+fn find_cargo_token_env_assignment(s: &str, search_from: usize) -> Option<(usize, usize)> {
+    let exact = find_exact_env_assignment(s, search_from, "CARGO_REGISTRY_TOKEN");
+    let named = find_named_registry_token_env_assignment(s, search_from);
+
+    match (exact, named) {
+        (Some(exact), Some(named)) => Some(if exact.0 <= named.0 { exact } else { named }),
+        (Some(exact), None) => Some(exact),
+        (None, Some(named)) => Some(named),
+        (None, None) => None,
+    }
+}
+
+fn find_exact_env_assignment(s: &str, search_from: usize, name: &str) -> Option<(usize, usize)> {
+    let mut cursor = search_from;
+    while let Some(relative_pos) = s[cursor..].find(name) {
+        let pos = cursor + relative_pos;
+        let after_name = pos + name.len();
+        if env_name_has_boundary(s.as_bytes(), pos, after_name)
+            && s.as_bytes().get(after_name) == Some(&b'=')
+        {
+            return Some((pos, after_name));
+        }
+        cursor = after_name;
+    }
     None
+}
+
+fn find_named_registry_token_env_assignment(s: &str, search_from: usize) -> Option<(usize, usize)> {
+    const PREFIX: &str = "CARGO_REGISTRIES_";
+    let mut cursor = search_from;
+
+    while let Some(relative_pos) = s[cursor..].find(PREFIX) {
+        let pos = cursor + relative_pos;
+        let eq_relative_pos = s[pos..].find('=')?;
+        let eq_pos = pos + eq_relative_pos;
+        let name = &s[pos..eq_pos];
+
+        if env_name_has_boundary(s.as_bytes(), pos, eq_pos)
+            && name
+                .strip_prefix(PREFIX)
+                .is_some_and(is_named_registry_token_name)
+        {
+            return Some((pos, eq_pos));
+        }
+
+        cursor = eq_pos + 1;
+    }
+
+    None
+}
+
+fn env_name_has_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
+    let has_start_boundary = start == 0 || !is_env_name_byte(bytes[start - 1]);
+    let has_end_boundary = end < bytes.len() && bytes[end] == b'=';
+    has_start_boundary && has_end_boundary
+}
+
+fn is_named_registry_token_name(name_after_prefix: &str) -> bool {
+    let Some(registry_name) = name_after_prefix.strip_suffix("_TOKEN") else {
+        return false;
+    };
+    !registry_name.is_empty() && registry_name.bytes().all(is_env_name_byte)
+}
+
+fn is_env_name_byte(b: u8) -> bool {
+    matches!(b, b'A'..=b'Z' | b'0'..=b'9' | b'_')
+}
+
+fn env_value_end(s: &str, value_start: usize) -> usize {
+    s[value_start..]
+        .find(|ch: char| ch.is_ascii_whitespace())
+        .map_or(s.len(), |relative_pos| value_start + relative_pos)
 }
 
 #[cfg(test)]
@@ -478,11 +631,51 @@ mod tests {
     }
 
     #[test]
+    fn redact_mixed_cargo_env_tokens_in_original_order() {
+        let input = "CARGO_REGISTRIES_PRIVATE_TOKEN=private CARGO_REGISTRY_TOKEN=default";
+        let out = redact_sensitive(input);
+        assert_eq!(
+            out,
+            "CARGO_REGISTRIES_PRIVATE_TOKEN=[REDACTED] CARGO_REGISTRY_TOKEN=[REDACTED]"
+        );
+    }
+
+    #[test]
     fn redact_token_in_url_query_param() {
         let input = "https://crates.io/api?token=secret_api_key";
         let out = redact_sensitive(input);
         assert!(out.contains("[REDACTED]"));
         assert!(!out.contains("secret_api_key"));
+    }
+
+    #[test]
+    fn redact_token_query_param_preserves_other_params_and_fragment() {
+        let input = "GET https://crates.io/api/v1?crate=demo&token=secret_api_key&feature=a#frag";
+        let out = redact_sensitive(input);
+        assert_eq!(
+            out,
+            "GET https://crates.io/api/v1?crate=demo&token=[REDACTED]&feature=a#frag"
+        );
+        assert!(!out.contains("secret_api_key"));
+    }
+
+    #[test]
+    fn redact_token_assignment_preserves_trailing_context() {
+        let input = "token = secret_api_key # generated by cargo login";
+        let out = redact_sensitive(input);
+        assert_eq!(out, "token = [REDACTED] # generated by cargo login");
+        assert!(!out.contains("secret_api_key"));
+    }
+
+    #[test]
+    fn cargo_registry_token_names_require_exact_token_segment() {
+        for input in [
+            "CARGO_REGISTRIES_PRIVATE_TOKENIZER=not_secret",
+            "CARGO_REGISTRIES_PRIVATE_TOKEN_BACKUP=not_secret",
+            "CARGO_REGISTRIES_PRIVATE_AUTH_TOKENIZER=not_secret",
+        ] {
+            assert_eq!(redact_sensitive(input), input);
+        }
     }
 
     #[test]
