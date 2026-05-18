@@ -190,6 +190,7 @@ This prints a recent-defaults template you can customize.
 
 ## See also
 
+- [Publish missing workspace crates](publish-missing-workspace-crates.md) — minimal idempotent publish recipe for CI
 - [Tutorial: First publish](../tutorials/first-publish.md)
 - [Tutorial: Recover from an interrupted release](../tutorials/recover-from-interruption.md)
 - [Release runbook](../release-runbook.md) — operator reference for production releases

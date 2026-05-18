@@ -31,7 +31,7 @@ evidence for each targeted registry.
 |---|---|---|
 | `shipper plan` | Compute and print the deterministic publish order | No |
 | `shipper preflight` | Run safety checks without publishing | No (emits events) |
-| `shipper publish` | Execute the plan (the irreversible step) | Yes |
+| `shipper publish` | Publish missing workspace versions; skip already-published `name@version` pairs | Yes |
 | `shipper resume` | Continue from the last persisted state | Yes |
 | `shipper status` | Compare local workspace versions to the registry | No |
 | `shipper doctor` | Environment / auth / connectivity diagnostics | No |
@@ -89,7 +89,22 @@ evidence for each targeted registry.
 
 ## Exit codes
 
-(Exit-code reference is tracked separately; see `shipper --help` for the current list.)
+For canonical command-level behavior, `shipper --help` remains authoritative.
+The table below documents the stable CI contract surfaces for idempotent
+workspace publishing and recovery.
+
+| Command | Scenario | Exit |
+|---|---|---:|
+| `shipper publish` | All package versions already exist | `0` |
+| `shipper publish` | Mixed skipped-existing and successful publishes | `0` |
+| `shipper publish` | Permanent publish failure | non-zero |
+| `shipper publish` | Retry budget exhausted | non-zero |
+| `shipper publish` | Ambiguous cargo result reconciled to published | `0` |
+| `shipper publish` | Ambiguous cargo result remains unknown | non-zero |
+| `shipper resume` | All packages already terminal | `0` |
+| `shipper resume` | Plan/state mismatch | non-zero unless forced |
+| `shipper status` | Mixed registry state read succeeds | `0` |
+| `shipper status` | Registry/query failure | non-zero |
 
 ## See also
 
