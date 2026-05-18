@@ -1,6 +1,6 @@
 # SHIPPER-SPEC-0004: JSON Evidence Contracts
 
-Status: proposed
+Status: accepted
 Owner: EffortlessMetrics
 Created: 2026-05-18
 Milestone: 0.4.0
@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/json-evidence-contracts.md
 Linked issues: #109
-Linked PRs: #315, #316, #317
+Linked PRs: #315, #316, #317, #318
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: policy ledgers remain the source of truth for exceptions and receipts
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo xtask package-surface; cargo fmt --all -- --check
