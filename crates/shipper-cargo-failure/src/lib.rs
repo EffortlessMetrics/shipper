@@ -23,28 +23,69 @@ pub struct CargoFailureOutcome {
     pub message: &'static str,
 }
 
-const RETRYABLE_PATTERNS: [&str; 20] = [
-    "too many requests",
-    "429",
-    "timeout",
-    "timed out",
-    "connection reset",
-    "connection refused",
-    "connection closed",
-    "dns",
-    "tls",
-    "temporarily unavailable",
-    "failed to download",
-    "failed to send",
-    "server error",
-    "500",
-    "502",
-    "503",
-    "504",
-    "broken pipe",
-    "reset by peer",
-    "network unreachable",
+#[derive(Debug, Clone, Copy)]
+enum FailurePattern {
+    /// Match a literal substring anywhere in the combined cargo output.
+    Substring(&'static str),
+    /// Match an isolated token bounded by non-alphanumeric characters.
+    Token(&'static str),
+}
+
+impl FailurePattern {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Substring(pattern) | Self::Token(pattern) => pattern,
+        }
+    }
+
+    fn matches(self, haystack: &str) -> bool {
+        match self {
+            Self::Substring(pattern) => haystack.contains(pattern),
+            Self::Token(pattern) => contains_token(haystack, pattern),
+        }
+    }
+}
+
+impl std::fmt::Display for FailurePattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+const RETRYABLE_PATTERNS: [FailurePattern; 20] = [
+    FailurePattern::Substring("too many requests"),
+    FailurePattern::Token("429"),
+    FailurePattern::Substring("timeout"),
+    FailurePattern::Substring("timed out"),
+    FailurePattern::Substring("connection reset"),
+    FailurePattern::Substring("connection refused"),
+    FailurePattern::Substring("connection closed"),
+    FailurePattern::Token("dns"),
+    FailurePattern::Token("tls"),
+    FailurePattern::Substring("temporarily unavailable"),
+    FailurePattern::Substring("failed to download"),
+    FailurePattern::Substring("failed to send"),
+    FailurePattern::Substring("server error"),
+    FailurePattern::Token("500"),
+    FailurePattern::Token("502"),
+    FailurePattern::Token("503"),
+    FailurePattern::Token("504"),
+    FailurePattern::Substring("broken pipe"),
+    FailurePattern::Substring("reset by peer"),
+    FailurePattern::Substring("network unreachable"),
 ];
+
+fn contains_token(haystack: &str, token: &str) -> bool {
+    haystack.match_indices(token).any(|(start, matched)| {
+        let end = start + matched.len();
+        is_token_boundary(haystack[..start].chars().next_back())
+            && is_token_boundary(haystack[end..].chars().next())
+    })
+}
+
+fn is_token_boundary(ch: Option<char>) -> bool {
+    ch.is_none_or(|ch| !ch.is_ascii_alphanumeric())
+}
 
 const PERMANENT_PATTERNS: [&str; 26] = [
     "failed to parse manifest",
@@ -88,7 +129,7 @@ pub fn classify_publish_failure(stderr: &str, stdout: &str) -> CargoFailureOutco
 
     if RETRYABLE_PATTERNS
         .iter()
-        .any(|pattern| haystack.contains(pattern))
+        .any(|pattern| pattern.matches(&haystack))
     {
         return CargoFailureOutcome {
             class: CargoFailureClass::Retryable,
@@ -605,11 +646,26 @@ mod tests {
 
     #[test]
     fn numeric_pattern_500_not_in_port_number() {
-        // "500" as a substring will match even in "port 15003" — this confirms
-        // the classifier uses simple substring matching, which is the intended
-        // behavior as documented.
         let o = classify_publish_failure("listening on port 15003", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn numeric_status_code_with_punctuation_boundaries_is_retryable() {
+        let o = classify_publish_failure("registry response: status=500; retry later", "");
         assert_eq!(o.class, CargoFailureClass::Retryable);
+    }
+
+    #[test]
+    fn dns_token_does_not_match_inside_unrelated_word() {
+        let o = classify_publish_failure("registry mention: dnsimple owner metadata", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
+    }
+
+    #[test]
+    fn tls_token_does_not_match_inside_unrelated_word() {
+        let o = classify_publish_failure("registry mention: rustls workspace member", "");
+        assert_eq!(o.class, CargoFailureClass::Ambiguous);
     }
 
     #[test]
@@ -1082,7 +1138,7 @@ mod tests {
     fn pattern_as_exact_input_retryable() {
         // Each retryable pattern, when given as the *exact* input, classifies correctly
         for pattern in &RETRYABLE_PATTERNS {
-            let o = classify_publish_failure(pattern, "");
+            let o = classify_publish_failure(pattern.as_str(), "");
             assert_eq!(o.class, CargoFailureClass::Retryable, "pattern: {pattern}");
         }
     }
@@ -1107,7 +1163,7 @@ mod tests {
         let results: Vec<_> = RETRYABLE_PATTERNS
             .iter()
             .map(|p| {
-                let o = classify_publish_failure(p, "");
+                let o = classify_publish_failure(p.as_str(), "");
                 format!("{p} => {:?}", o.class)
             })
             .collect();
@@ -1642,7 +1698,7 @@ mod property_tests {
             idx in 0..20usize,
         ) {
             let pattern = RETRYABLE_PATTERNS[idx];
-            let stderr = format!("{prefix}{pattern}{suffix}");
+            let stderr = format!("{prefix} {pattern} {suffix}");
             let outcome = classify_publish_failure(&stderr, "");
             prop_assert_eq!(outcome.class, CargoFailureClass::Retryable);
         }
@@ -1657,7 +1713,7 @@ mod property_tests {
         ) {
             let pattern = PERMANENT_PATTERNS[idx];
             // Ensure no retryable substring sneaks in via prefix/suffix
-            let stderr = format!("{prefix}{pattern}{suffix}");
+            let stderr = format!("{prefix} {pattern} {suffix}");
             let outcome = classify_publish_failure(&stderr, "");
             // May be retryable if noise accidentally contains a retryable pattern,
             // but must never be ambiguous when a permanent pattern is explicitly present.
@@ -1675,11 +1731,11 @@ mod property_tests {
             let retryable = RETRYABLE_PATTERNS[r_idx];
             let permanent = PERMANENT_PATTERNS[p_idx];
             // permanent before retryable
-            let stderr_a = format!("{permanent}{sep}{retryable}");
+            let stderr_a = format!("{permanent}{sep} {retryable}");
             let outcome_a = classify_publish_failure(&stderr_a, "");
             prop_assert_eq!(outcome_a.class, CargoFailureClass::Retryable);
             // retryable before permanent
-            let stderr_b = format!("{retryable}{sep}{permanent}");
+            let stderr_b = format!("{retryable} {sep}{permanent}");
             let outcome_b = classify_publish_failure(&stderr_b, "");
             prop_assert_eq!(outcome_b.class, CargoFailureClass::Retryable);
         }
