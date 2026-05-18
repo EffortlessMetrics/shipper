@@ -238,11 +238,29 @@ fn redact_line(line: &str) -> String {
 }
 
 fn redact_authorization_bearer(line: &str) -> String {
-    if let Some(pos) = line.to_ascii_lowercase().find("authorization:") {
-        let after = &line[pos..];
-        if let Some(bearer_pos) = after.to_ascii_lowercase().find("bearer ") {
-            let redact_start = pos + bearer_pos + "bearer ".len();
-            return format!("{}[REDACTED]", &line[..redact_start]);
+    if let Some(pos) = find_ascii_case_insensitive(line, "authorization:", 0) {
+        let after_authorization = pos + "authorization:".len();
+        if let Some(bearer_pos) = find_ascii_case_insensitive(line, "bearer", after_authorization) {
+            let after_bearer = bearer_pos + "bearer".len();
+            if !line
+                .as_bytes()
+                .get(after_bearer)
+                .is_some_and(|b| matches!(b, b' ' | b'\t'))
+            {
+                return line.to_string();
+            }
+
+            let whitespace_after_bearer = leading_whitespace_len(&line[after_bearer..]);
+            let token_start = after_bearer + whitespace_after_bearer;
+            if token_start >= line.len() {
+                return line.to_string();
+            }
+
+            let token_end = env_value_end(line, token_start);
+            let redact_start = after_bearer + 1;
+            let mut out = line.to_string();
+            out.replace_range(redact_start..token_end, "[REDACTED]");
+            return out;
         }
     }
 
@@ -253,8 +271,7 @@ fn redact_token_assignments(line: &str) -> String {
     let mut out = line.to_string();
     let mut search_from = 0;
 
-    while let Some(relative_pos) = out[search_from..].to_ascii_lowercase().find("token") {
-        let token_pos = search_from + relative_pos;
+    while let Some(token_pos) = find_ascii_case_insensitive(&out, "token", search_from) {
         let after_token = token_pos + "token".len();
 
         if !is_token_key_boundary(out.as_bytes(), token_pos) {
@@ -297,6 +314,24 @@ fn is_token_key_boundary(bytes: &[u8], token_pos: usize) -> bool {
 
 fn leading_whitespace_len(s: &str) -> usize {
     s.bytes().take_while(|b| matches!(b, b' ' | b'\t')).count()
+}
+
+fn find_ascii_case_insensitive(s: &str, needle: &str, search_from: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.is_empty() || search_from > bytes.len() {
+        return None;
+    }
+
+    bytes[search_from..]
+        .windows(needle.len())
+        .position(|window| {
+            window
+                .iter()
+                .zip(needle)
+                .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
+        })
+        .map(|relative_pos| search_from + relative_pos)
 }
 
 fn token_value_range(s: &str, value_start: usize) -> std::ops::Range<usize> {
@@ -488,7 +523,7 @@ mod tests {
     fn redact_unicode_surrounding_text() {
         let input = "日本語 Authorization: Bearer secret_tok 中文";
         let out = redact_sensitive(input);
-        assert_eq!(out, "日本語 Authorization: Bearer [REDACTED]");
+        assert_eq!(out, "日本語 Authorization: Bearer [REDACTED] 中文");
     }
 
     #[test]
@@ -878,13 +913,16 @@ mod tests {
         assert!(!out.contains("secret2"));
     }
 
-    // Reversed order: the Authorization handler runs first and rewrites the
-    // line, dropping the trailing CARGO_REGISTRY_TOKEN entirely.
+    // Reversed order: the Authorization handler runs first, but it preserves
+    // trailing context so the later CARGO_REGISTRY_TOKEN pass can redact it.
     #[test]
-    fn redact_bearer_truncates_trailing_cargo_token_env() {
+    fn redact_bearer_preserves_trailing_redacted_cargo_token_env() {
         let input = "Authorization: Bearer secret2 CARGO_REGISTRY_TOKEN=secret1";
         let out = redact_sensitive(input);
-        assert_eq!(out, "Authorization: Bearer [REDACTED]");
+        assert_eq!(
+            out,
+            "Authorization: Bearer [REDACTED] CARGO_REGISTRY_TOKEN=[REDACTED]"
+        );
         assert!(!out.contains("secret1"));
         assert!(!out.contains("secret2"));
     }
