@@ -291,7 +291,7 @@ fn is_token_key_boundary(bytes: &[u8], token_pos: usize) -> bool {
     token_pos == 0
         || !matches!(
             bytes[token_pos - 1],
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_'
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
         )
 }
 
@@ -318,30 +318,13 @@ fn token_value_range(s: &str, value_start: usize) -> std::ops::Range<usize> {
             while pos < bytes.len() {
                 match bytes[pos] {
                     b'&' | b'#' => break,
-                    b' ' | b'\t' if starts_comment_after_whitespace(&s[pos..]) => break,
-                    b' ' | b'\t' if starts_another_assignment_after_whitespace(&s[pos..]) => break,
+                    b' ' | b'\t' => break,
                     _ => pos += 1,
                 }
             }
             value_start..pos
         }
     }
-}
-
-fn starts_comment_after_whitespace(s: &str) -> bool {
-    s.trim_start_matches([' ', '\t']).starts_with('#')
-}
-
-fn starts_another_assignment_after_whitespace(s: &str) -> bool {
-    let trimmed = s.trim_start_matches([' ', '\t']);
-    let Some(eq_pos) = trimmed.find('=') else {
-        return false;
-    };
-    let key = trimmed[..eq_pos].trim_end_matches([' ', '\t']);
-    !key.is_empty()
-        && key
-            .bytes()
-            .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
 fn redact_cargo_token_env(line: &str) -> String {
@@ -419,7 +402,7 @@ fn is_named_registry_token_name(name_after_prefix: &str) -> bool {
     let Some(registry_name) = name_after_prefix.strip_suffix("_TOKEN") else {
         return false;
     };
-    !registry_name.is_empty() && registry_name.bytes().all(is_env_name_byte)
+    registry_name.bytes().all(is_env_name_byte)
 }
 
 fn is_env_name_byte(b: u8) -> bool {
@@ -881,15 +864,16 @@ mod tests {
         );
     }
 
-    // When two redactable patterns share one line, the CARGO_REGISTRY_TOKEN env
-    // handler truncates the rest of the line — including the Bearer secret that
-    // would otherwise be redacted by the Authorization handler. Both secrets
-    // disappear, but via truncation rather than independent redaction.
+    // When two redactable patterns share one line, both secrets disappear while
+    // preserving the surrounding context for evidence readability.
     #[test]
-    fn redact_cargo_token_env_truncates_trailing_bearer_secret() {
+    fn redact_cargo_token_env_preserves_trailing_redacted_bearer_secret() {
         let input = "CARGO_REGISTRY_TOKEN=secret1 Authorization: Bearer secret2";
         let out = redact_sensitive(input);
-        assert_eq!(out, "CARGO_REGISTRY_TOKEN=[REDACTED]");
+        assert_eq!(
+            out,
+            "CARGO_REGISTRY_TOKEN=[REDACTED] Authorization: Bearer [REDACTED]"
+        );
         assert!(!out.contains("secret1"));
         assert!(!out.contains("secret2"));
     }
@@ -940,15 +924,15 @@ mod tests {
     }
 
     // The env-name matcher is case-sensitive. A lowercase `cargo_registry_token`
-    // is not recognised as the env var; however the line still triggers the
-    // generic `token`-assignment handler, which is a separate code path.
+    // is not recognised as the env var, but the generic `token` assignment path
+    // must still fail closed and redact its value.
     #[test]
     fn lowercase_cargo_registry_token_not_matched_as_env_name() {
         let input = "cargo_registry_token=plain";
         let out = redact_sensitive(input);
         assert!(!out.contains("plain"));
         assert!(out.contains("[REDACTED]"));
-        assert!(!out.starts_with("cargo_registry_token=[REDACTED]"));
+        assert_eq!(out, "cargo_registry_token=[REDACTED]");
     }
 }
 
