@@ -128,12 +128,15 @@ changes unless explicitly required by the selected contract.
 #### Acceptance
 
 - stdout is parseable JSON.
+- `shipper publish --format json` emits `shipper.publish.v1`.
+- the envelope links state, events, receipt, and reconciliation artifact paths.
+- the receipt remains nested as its own evidence contract.
 - tests assert the selected contract.
 - support tiers name the exact proof command.
 
 #### Proof Commands
 
-- focused `shipper publish --format json` CLI test
+- `cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_command_envelope_to_stdout`
 - `cargo clippy -p shipper-cli --all-targets --locked -- -D warnings`
 - `cargo xtask policy-report`
 - `git diff --check`

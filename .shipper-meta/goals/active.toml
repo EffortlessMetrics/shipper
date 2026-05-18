@@ -36,13 +36,13 @@ commands = [
 
 [[work_item]]
 id = "publish-json-command-envelope"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
 plan = "plans/0.4.0/json-evidence-contracts.md"
 issue = "109"
 commands = [
-  "cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_receipt_to_stdout",
+  "cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_command_envelope_to_stdout",
   "cargo clippy -p shipper-cli --all-targets --locked -- -D warnings",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
@@ -51,7 +51,7 @@ commands = [
 
 [[work_item]]
 id = "resume-json-command-envelope"
-status = "ready"
+status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md"
 plan = "plans/0.4.0/json-evidence-contracts.md"

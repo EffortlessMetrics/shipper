@@ -962,12 +962,12 @@ pub fn run() -> Result<()> {
                     progress.finish();
                 }
 
-                print_receipt(
+                print_publish_output(
                     &receipt,
                     &current_planned.workspace_root,
                     &current_opts.state_dir,
                     &cli.format,
-                );
+                )?;
             }
         }
         Commands::Resume => {
@@ -2471,6 +2471,134 @@ fn preflight_auth_gap(rep: &PreflightReport) -> Option<PreflightEvidenceItem> {
 
 fn package_noun(count: usize) -> &'static str {
     if count == 1 { "package" } else { "packages" }
+}
+
+#[derive(Serialize)]
+struct PublishJsonReport<'a> {
+    schema_version: &'static str,
+    command: &'static str,
+    registry: String,
+    plan_id: &'a str,
+    state_dir: String,
+    packages: Vec<PublishJsonPackageReport>,
+    artifacts: PublishJsonArtifacts,
+    receipt: &'a shipper_core::types::Receipt,
+}
+
+#[derive(Serialize)]
+struct PublishJsonPackageReport {
+    name: String,
+    version: String,
+    state: &'static str,
+    attempts: u32,
+    reconciled: bool,
+}
+
+#[derive(Serialize)]
+struct PublishJsonArtifacts {
+    state: PublishJsonArtifact,
+    events: PublishJsonArtifact,
+    receipt: PublishJsonArtifact,
+    reconciliation: PublishJsonArtifact,
+}
+
+#[derive(Serialize)]
+struct PublishJsonArtifact {
+    path: String,
+    exists: bool,
+}
+
+fn print_publish_output(
+    receipt: &shipper_core::types::Receipt,
+    workspace_root: &Path,
+    state_dir: &Path,
+    format: &str,
+) -> Result<()> {
+    if format == "json" {
+        let report = build_publish_json_report(receipt, state_dir)?;
+        let json = serde_json::to_string_pretty(&report).expect("serialize publish report");
+        println!("{}", json);
+        return Ok(());
+    }
+
+    print_receipt(receipt, workspace_root, state_dir, format);
+    Ok(())
+}
+
+fn build_publish_json_report<'a>(
+    receipt: &'a shipper_core::types::Receipt,
+    state_dir: &Path,
+) -> Result<PublishJsonReport<'a>> {
+    let reconciled = reconciled_packages(state_dir)?;
+    let packages = receipt
+        .packages
+        .iter()
+        .map(|package| PublishJsonPackageReport {
+            name: package.name.clone(),
+            version: package.version.clone(),
+            state: package_state_name(&package.state),
+            attempts: package.attempts,
+            reconciled: reconciled.contains(&(package.name.clone(), package.version.clone())),
+        })
+        .collect();
+
+    Ok(PublishJsonReport {
+        schema_version: "shipper.publish.v1",
+        command: "publish",
+        registry: receipt.registry.name.clone(),
+        plan_id: &receipt.plan_id,
+        state_dir: state_dir.display().to_string(),
+        packages,
+        artifacts: PublishJsonArtifacts {
+            state: publish_artifact(
+                state_dir.join(shipper_core::state::execution_state::STATE_FILE),
+            ),
+            events: publish_artifact(state_dir.join(shipper_core::state::events::EVENTS_FILE)),
+            receipt: publish_artifact(
+                state_dir.join(shipper_core::state::execution_state::RECEIPT_FILE),
+            ),
+            reconciliation: publish_artifact(
+                state_dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE),
+            ),
+        },
+        receipt,
+    })
+}
+
+fn publish_artifact(path: PathBuf) -> PublishJsonArtifact {
+    PublishJsonArtifact {
+        exists: path.exists(),
+        path: path.display().to_string(),
+    }
+}
+
+fn reconciled_packages(state_dir: &Path) -> Result<BTreeSet<(String, String)>> {
+    let path = shipper_core::state::execution_state::reconciliation_path(state_dir);
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read reconciliation report {}", path.display()))?;
+    let report: shipper_core::types::ReconciliationReport = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse reconciliation report {}", path.display()))?;
+
+    Ok(report
+        .records
+        .into_iter()
+        .map(|record| (record.name, record.version))
+        .collect())
+}
+
+fn package_state_name(state: &PackageState) -> &'static str {
+    match state {
+        PackageState::Pending => "pending",
+        PackageState::Uploaded => "uploaded",
+        PackageState::Published => "published",
+        PackageState::Skipped { .. } => "skipped",
+        PackageState::Failed { .. } => "failed",
+        PackageState::Ambiguous { .. } => "ambiguous",
+    }
 }
 
 fn print_receipt(

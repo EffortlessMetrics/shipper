@@ -64,12 +64,13 @@ or CI under the compatibility rules above:
 | `shipper status --format json` | `shipper.status.v1` | `cargo test -p shipper-cli --test e2e_status status_json_format_produces_registry_report` |
 | `shipper status --watch --format json` | `shipper.status.watch.v1` | `cargo test -p shipper-cli status_watch_report_summarizes_state_and_scheduled_events --lib` |
 | `shipper doctor --format json` | `shipper.doctor.v1` | `cargo test -p shipper-cli --test e2e_doctor doctor_json_format_reports_diagnostics_without_token_value` |
-| `shipper publish --format json` | receipt JSON on stdout | `cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_receipt_to_stdout` |
+| `shipper publish --format json` | `shipper.publish.v1` | `cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_command_envelope_to_stdout` |
 | `shipper resume --format json` | receipt JSON on stdout | `cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_receipt_json` |
 
-The publish and resume JSON rows are stable as receipt-output contracts. A
-future command-owned envelope such as `shipper.publish.v1` or
-`shipper.resume.v1` must be promoted separately after proof exists.
+The publish JSON row is a command-owned envelope with nested receipt evidence.
+The resume JSON row remains stable as a receipt-output contract. A future
+command-owned resume envelope such as `shipper.resume.v1` must be promoted
+separately after proof exists.
 
 ## Advisory Or Planned JSON Surfaces
 
@@ -89,8 +90,7 @@ future command-owned envelope such as `shipper.publish.v1` or
 - Replacing Rust snapshot or integration tests with schema-only validation.
 - Changing the receipt schema.
 - Changing human output.
-- Promoting publish or resume command envelopes before implementation proof
-  exists.
+- Promoting resume command envelopes before implementation proof exists.
 
 ## Required Evidence
 
@@ -118,9 +118,8 @@ For future stable JSON surfaces:
   requires a new schema version.
 - Printing a human "Publishing..." banner to stdout before JSON is invalid for
   `--format json`; stdout must remain parseable as the documented JSON object.
-- A README claim that "publish JSON is versioned" is invalid until a
-  `shipper.publish.v1`-style command envelope exists and support tiers name its
-  proof command.
+- A README claim that "publish JSON is versioned" is valid only because
+  `shipper.publish.v1` exists and support tiers name its proof command.
 - A command may emit receipt JSON without a command-owned `schema_version` only
   if the support-tier row says the contract is receipt JSON, not a command
   envelope.
@@ -134,8 +133,8 @@ Current proof is mapped through support tiers:
 - status JSON: `status_json_format_produces_registry_report`
 - status watch JSON: `status_watch_report_summarizes_state_and_scheduled_events`
 - doctor JSON: `doctor_json_format_reports_diagnostics_without_token_value`
-- publish JSON receipt stdout:
-  `publish_json_format_writes_receipt_to_stdout`
+- publish JSON command envelope:
+  `publish_json_format_writes_command_envelope_to_stdout`
 - resume JSON receipt stdout:
   `given_pending_state_when_resume_json_then_stdout_is_receipt_json`
 
@@ -176,14 +175,14 @@ A JSON surface can be stable only when:
 - a proof command parses and asserts the contract
 - `docs/status/SUPPORT_TIERS.md` names that proof command
 
-Receipt JSON emitted by publish or resume remains a receipt contract until a
-command-owned envelope is implemented and promoted.
+Receipt JSON emitted by resume remains a receipt contract until a command-owned
+envelope is implemented and promoted. Publish JSON is promoted separately as
+`shipper.publish.v1`.
 
 ## Open Questions
 
 - Should Shipper generate JSON Schema files for stable command-owned surfaces
   after the command contracts settle?
-- Should publish and resume keep receipt JSON as their long-term stdout
-  contract, or wrap receipts in command-owned envelopes that link artifacts and
-  next actions?
+- Should resume keep receipt JSON as its long-term stdout contract, or wrap
+  receipts in a command-owned envelope that links artifacts and next actions?
 - Which artifacts should carry schema versions independently of command output?
