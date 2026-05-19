@@ -65,6 +65,9 @@ plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
 issue = "105"
 commands = [
   "release auth rehearsal or release-readiness workflow artifact",
+  "cargo xtask check-workflow-surfaces --mode advisory",
+  "cargo xtask check-process-policy --mode advisory",
+  "cargo xtask check-network-policy --mode advisory",
   "cargo xtask policy-report",
   "git diff --check",
 ]

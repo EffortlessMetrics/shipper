@@ -300,6 +300,53 @@ jobs:
         continue-on-error: true
         uses: rust-lang/crates-io-auth-action@v1
 
+      - name: Record release auth evidence
+        if: always()
+        env:
+          SHIPPER_RELEASE_AUTH_ACTION_OUTCOME: ${{ steps.auth.outcome }}
+          SHIPPER_RELEASE_AUTH_TOKEN_MINTED: ${{ steps.auth.outputs.token != '' }}
+          SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+          SHIPPER_RELEASE_AUTH_RUN_ID: ${{ github.run_id }}
+          SHIPPER_RELEASE_AUTH_RUN_ATTEMPT: ${{ github.run_attempt }}
+          SHIPPER_RELEASE_AUTH_COMMIT: ${{ github.sha }}
+        run: |
+          mkdir -p .shipper
+          token_minted="${SHIPPER_RELEASE_AUTH_TOKEN_MINTED:-false}"
+          fallback_configured="${SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED:-false}"
+          fallback_used=false
+          selected_token_source="missing"
+          if [ "$token_minted" = "true" ]; then
+            selected_token_source="trusted_publishing"
+          elif [ "$fallback_configured" = "true" ]; then
+            selected_token_source="fallback_secret"
+            fallback_used=true
+          fi
+          printf '%s\n' \
+            '{' \
+            '  "schema_version": "shipper.release_auth_evidence.v1",' \
+            '  "workflow": "Release",' \
+            '  "job": "publish-crates-io",' \
+            "  \"run_id\": \"${SHIPPER_RELEASE_AUTH_RUN_ID}\"," \
+            "  \"run_attempt\": \"${SHIPPER_RELEASE_AUTH_RUN_ATTEMPT}\"," \
+            "  \"commit\": \"${SHIPPER_RELEASE_AUTH_COMMIT}\"," \
+            '  "environment": "release",' \
+            '  "auth_action": {' \
+            '    "name": "rust-lang/crates-io-auth-action@v1",' \
+            "    \"outcome\": \"${SHIPPER_RELEASE_AUTH_ACTION_OUTCOME}\"," \
+            "    \"token_minted\": ${token_minted}" \
+            '  },' \
+            '  "fallback": {' \
+            "    \"configured\": ${fallback_configured}," \
+            "    \"used\": ${fallback_used}" \
+            '  },' \
+            "  \"selected_token_source\": \"${selected_token_source}\"," \
+            '  "limits": [' \
+            '    "token values are intentionally omitted",' \
+            '    "crates.io-side trusted-publisher registration is not proven by this artifact"' \
+            '  ]' \
+            '}' \
+            > .shipper/auth-evidence.json
+
       # --- Step 4: preflight ------------------------------------------------
       # `--policy safe` enables ownership checks. For existing crates
       # those checks exercise the minted OIDC token against crates.io;
@@ -508,6 +555,53 @@ jobs:
         continue-on-error: true
         uses: rust-lang/crates-io-auth-action@v1
 
+      - name: Record release auth evidence
+        if: always()
+        env:
+          SHIPPER_RELEASE_AUTH_ACTION_OUTCOME: ${{ steps.auth.outcome }}
+          SHIPPER_RELEASE_AUTH_TOKEN_MINTED: ${{ steps.auth.outputs.token != '' }}
+          SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+          SHIPPER_RELEASE_AUTH_RUN_ID: ${{ github.run_id }}
+          SHIPPER_RELEASE_AUTH_RUN_ATTEMPT: ${{ github.run_attempt }}
+          SHIPPER_RELEASE_AUTH_COMMIT: ${{ github.sha }}
+        run: |
+          mkdir -p .shipper
+          token_minted="${SHIPPER_RELEASE_AUTH_TOKEN_MINTED:-false}"
+          fallback_configured="${SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED:-false}"
+          fallback_used=false
+          selected_token_source="missing"
+          if [ "$token_minted" = "true" ]; then
+            selected_token_source="trusted_publishing"
+          elif [ "$fallback_configured" = "true" ]; then
+            selected_token_source="fallback_secret"
+            fallback_used=true
+          fi
+          printf '%s\n' \
+            '{' \
+            '  "schema_version": "shipper.release_auth_evidence.v1",' \
+            '  "workflow": "Release",' \
+            '  "job": "release-rehearse",' \
+            "  \"run_id\": \"${SHIPPER_RELEASE_AUTH_RUN_ID}\"," \
+            "  \"run_attempt\": \"${SHIPPER_RELEASE_AUTH_RUN_ATTEMPT}\"," \
+            "  \"commit\": \"${SHIPPER_RELEASE_AUTH_COMMIT}\"," \
+            '  "environment": "release",' \
+            '  "auth_action": {' \
+            '    "name": "rust-lang/crates-io-auth-action@v1",' \
+            "    \"outcome\": \"${SHIPPER_RELEASE_AUTH_ACTION_OUTCOME}\"," \
+            "    \"token_minted\": ${token_minted}" \
+            '  },' \
+            '  "fallback": {' \
+            "    \"configured\": ${fallback_configured}," \
+            "    \"used\": ${fallback_used}" \
+            '  },' \
+            "  \"selected_token_source\": \"${selected_token_source}\"," \
+            '  "limits": [' \
+            '    "token values are intentionally omitted",' \
+            '    "crates.io-side trusted-publisher registration is not proven by this artifact"' \
+            '  ]' \
+            '}' \
+            > .shipper/auth-evidence.json
+
       # Preflight against crates.io without publishing. A token isn't strictly
       # required here (ownership checks are best-effort), but supply it if the
       # `release` environment is available for a deeper check.
@@ -604,6 +698,53 @@ jobs:
         # the whole release just because OIDC isn't configured yet.
         continue-on-error: true
         uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Record release auth evidence
+        if: always()
+        env:
+          SHIPPER_RELEASE_AUTH_ACTION_OUTCOME: ${{ steps.auth.outcome }}
+          SHIPPER_RELEASE_AUTH_TOKEN_MINTED: ${{ steps.auth.outputs.token != '' }}
+          SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+          SHIPPER_RELEASE_AUTH_RUN_ID: ${{ github.run_id }}
+          SHIPPER_RELEASE_AUTH_RUN_ATTEMPT: ${{ github.run_attempt }}
+          SHIPPER_RELEASE_AUTH_COMMIT: ${{ github.sha }}
+        run: |
+          mkdir -p .shipper
+          token_minted="${SHIPPER_RELEASE_AUTH_TOKEN_MINTED:-false}"
+          fallback_configured="${SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED:-false}"
+          fallback_used=false
+          selected_token_source="missing"
+          if [ "$token_minted" = "true" ]; then
+            selected_token_source="trusted_publishing"
+          elif [ "$fallback_configured" = "true" ]; then
+            selected_token_source="fallback_secret"
+            fallback_used=true
+          fi
+          printf '%s\n' \
+            '{' \
+            '  "schema_version": "shipper.release_auth_evidence.v1",' \
+            '  "workflow": "Release",' \
+            '  "job": "release-resume",' \
+            "  \"run_id\": \"${SHIPPER_RELEASE_AUTH_RUN_ID}\"," \
+            "  \"run_attempt\": \"${SHIPPER_RELEASE_AUTH_RUN_ATTEMPT}\"," \
+            "  \"commit\": \"${SHIPPER_RELEASE_AUTH_COMMIT}\"," \
+            '  "environment": "release",' \
+            '  "auth_action": {' \
+            '    "name": "rust-lang/crates-io-auth-action@v1",' \
+            "    \"outcome\": \"${SHIPPER_RELEASE_AUTH_ACTION_OUTCOME}\"," \
+            "    \"token_minted\": ${token_minted}" \
+            '  },' \
+            '  "fallback": {' \
+            "    \"configured\": ${fallback_configured}," \
+            "    \"used\": ${fallback_used}" \
+            '  },' \
+            "  \"selected_token_source\": \"${selected_token_source}\"," \
+            '  "limits": [' \
+            '    "token values are intentionally omitted",' \
+            '    "crates.io-side trusted-publisher registration is not proven by this artifact"' \
+            '  ]' \
+            '}' \
+            > .shipper/auth-evidence.json
 
       - name: shipper resume
         env:

@@ -91,6 +91,36 @@ Future implementation proof must cover:
   or fell back explicitly
 - Support-tier promotion only after the proof command or artifact exists
 
+## Workflow Auth Evidence Artifact
+
+The release workflow must write `.shipper/auth-evidence.json` before any
+release-mode `.shipper/` upload that follows Trusted Publishing token minting.
+The artifact is intentionally workflow-scoped evidence, not a runtime Shipper
+receipt field.
+
+Required fields:
+
+- `schema_version = "shipper.release_auth_evidence.v1"`
+- `workflow`
+- `job`
+- `run_id`
+- `run_attempt`
+- `commit`
+- `environment`
+- `auth_action.name = "rust-lang/crates-io-auth-action@v1"`
+- `auth_action.outcome`
+- `auth_action.token_minted`
+- `fallback.configured`
+- `fallback.used`
+- `selected_token_source`
+- `limits`
+
+`selected_token_source` may be `trusted_publishing`, `fallback_secret`, or
+`missing`. Token values must never be written. The artifact may prove that the
+GitHub-side token mint step succeeded or that fallback was selected; it must not
+claim crates.io-side trusted-publisher registration for every publishable crate
+unless a later rehearsal or release artifact proves that separately.
+
 ## Acceptance Examples
 
 - A release workflow has `id-token: write`, `environment: release`, the crates.io

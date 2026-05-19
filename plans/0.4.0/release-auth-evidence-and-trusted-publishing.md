@@ -137,7 +137,9 @@ whether fallback was used.
 
 #### Production Delta
 
-Release workflow/rehearsal evidence only.
+Release workflow/rehearsal evidence only. The release workflow writes
+`.shipper/auth-evidence.json` after each Trusted Publishing token mint step and
+before the following `.shipper/` artifact upload.
 
 #### Non-Goals
 
@@ -152,10 +154,16 @@ not rehearsed.
 - Artifact names the workflow, run ID, commit, and environment.
 - Failed Trusted Publishing registration remains an actionable setup gap, not a
   generic auth failure.
+- Artifact limits state that token values are omitted and crates.io-side
+  trusted-publisher registration is externally unproven unless separately
+  rehearsed.
 
 #### Proof Commands
 
 - release auth rehearsal or release-readiness workflow artifact
+- `cargo xtask check-workflow-surfaces --mode advisory`
+- `cargo xtask check-process-policy --mode advisory`
+- `cargo xtask check-network-policy --mode advisory`
 - `cargo xtask policy-report`
 - `git diff --check`
 
