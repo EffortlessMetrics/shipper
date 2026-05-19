@@ -105,14 +105,22 @@ These are proven today:
   --locked help_plan_yank_snapshot`, and `cargo test -p shipper-cli --test
   e2e_expanded --locked help_fix_forward_snapshot` prove the CLI command
   contracts are visible in help output.
+- `cargo test -p shipper-cli --test e2e_expanded --locked
+  plan_yank_json_format_emits_schema_version` proves `shipper plan-yank
+  --format json` emits a command-owned `shipper.plan_yank.v1` envelope with
+  top-level yank-plan fields plus `schema_version` and `command`.
+- `cargo test -p shipper-cli --test e2e_expanded --locked
+  fix_forward_json_format_emits_schema_version` proves `shipper fix-forward
+  --format json` emits a command-owned `shipper.fix_forward.v1` envelope with
+  top-level fix-forward plan fields plus `schema_version` and `command`.
 
 These are not proven by this map and must not be promoted yet:
 
 - end-to-end CLI execution of `shipper yank`, `shipper yank --plan`,
-  `shipper plan-yank`, or `shipper fix-forward`
+  or future `shipper remediate`
 - targeted `PackageYanked` event serialization or event-log tests
-- stable command-owned JSON envelopes for remediation plans
-- `.shipper/remediation-plan.json` artifact emission
+- `.shipper/remediation-plan.json` artifact emission; the current
+  command-owned envelopes are stdout contracts only
 - guarded live yank execution beyond fake Cargo/unit-level proof
 
 ## Acceptance Examples
@@ -141,6 +149,8 @@ Expected proof:
 - `cargo test -p shipper-cli --test e2e_expanded --locked help_yank_snapshot`
 - `cargo test -p shipper-cli --test e2e_expanded --locked help_plan_yank_snapshot`
 - `cargo test -p shipper-cli --test e2e_expanded --locked help_fix_forward_snapshot`
+- `cargo test -p shipper-cli --test e2e_expanded --locked plan_yank_json_format_emits_schema_version`
+- `cargo test -p shipper-cli --test e2e_expanded --locked fix_forward_json_format_emits_schema_version`
 - `cargo xtask check-doc-contracts --mode advisory`
 - `cargo xtask policy-report`
 

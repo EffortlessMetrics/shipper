@@ -145,13 +145,19 @@ Executing yanks or publishing fix-forward successors.
 
 #### Acceptance
 
-- Stable fields are named and versioned, or the surface is explicitly advisory.
-- `.shipper/remediation-plan.json` ownership is decided or deferred.
+- `plan-yank --format json` emits a command-owned `shipper.plan_yank.v1`
+  envelope with top-level yank-plan fields plus `schema_version` and
+  `command`.
+- `fix-forward --format json` emits a command-owned `shipper.fix_forward.v1`
+  envelope with top-level fix-forward plan fields plus `schema_version` and
+  `command`.
+- `.shipper/remediation-plan.json` ownership is deferred to PR 4.
 - Unknown and operator-supplied facts are explicit.
 
 #### Proof Commands
 
-- focused JSON output tests for the chosen command surface
+- `cargo test -p shipper-cli --test e2e_expanded --locked plan_yank_json_format_emits_schema_version`
+- `cargo test -p shipper-cli --test e2e_expanded --locked fix_forward_json_format_emits_schema_version`
 - `cargo xtask check-doc-contracts --mode advisory`
 - `cargo xtask policy-report`
 - `cargo fmt --all -- --check`

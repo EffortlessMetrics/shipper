@@ -279,6 +279,61 @@ mid-lib = { path = "../mid-lib" }
     );
 }
 
+fn write_remediation_receipt(path: &Path) {
+    write_file(
+        path,
+        r#"{
+  "receipt_version": "shipper.receipt.v2",
+  "plan_id": "plan-remediate-json",
+  "registry": {
+    "name": "crates-io",
+    "api_base": "https://crates.io"
+  },
+  "started_at": "2026-01-01T00:00:00Z",
+  "finished_at": "2026-01-01T00:01:00Z",
+  "packages": [
+    {
+      "name": "core-lib",
+      "version": "0.2.0",
+      "attempts": 1,
+      "state": { "state": "published" },
+      "started_at": "2026-01-01T00:00:00Z",
+      "finished_at": "2026-01-01T00:00:20Z",
+      "duration_ms": 20000,
+      "evidence": {
+        "attempts": [],
+        "readiness_checks": []
+      },
+      "compromised_at": "2026-01-01T00:02:00Z",
+      "compromised_by": "CVE-2026-0001"
+    },
+    {
+      "name": "top-app",
+      "version": "0.4.0",
+      "attempts": 1,
+      "state": { "state": "published" },
+      "started_at": "2026-01-01T00:00:20Z",
+      "finished_at": "2026-01-01T00:01:00Z",
+      "duration_ms": 40000,
+      "evidence": {
+        "attempts": [],
+        "readiness_checks": []
+      }
+    }
+  ],
+  "event_log_path": ".shipper/events.jsonl",
+  "environment": {
+    "shipper_version": "0.4.0-test",
+    "cargo_version": null,
+    "rust_version": null,
+    "os": "test",
+    "arch": "x86_64"
+  }
+}
+"#,
+    );
+}
+
 /// Create a workspace with a publish = false crate mixed in.
 fn create_workspace_with_unpublished(root: &Path) {
     write_file(
@@ -1531,6 +1586,93 @@ fn help_fix_forward_snapshot() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_snapshot!("help_fix_forward", normalize_stderr(&stdout));
+}
+
+#[test]
+fn plan_yank_json_format_emits_schema_version() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+    let receipt_path = td.path().join("receipt.json");
+    write_remediation_receipt(&receipt_path);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .args(["--format", "json", "plan-yank", "--from-receipt"])
+        .arg(&receipt_path)
+        .output()
+        .expect("failed to run");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("plan-yank JSON parses");
+    assert_eq!(
+        json.pointer("/schema_version").and_then(|v| v.as_str()),
+        Some("shipper.plan_yank.v1")
+    );
+    assert_eq!(
+        json.pointer("/command").and_then(|v| v.as_str()),
+        Some("plan-yank")
+    );
+    assert_eq!(
+        json.pointer("/plan_id").and_then(|v| v.as_str()),
+        Some("plan-remediate-json")
+    );
+    assert_eq!(
+        json.pointer("/entries/0/name").and_then(|v| v.as_str()),
+        Some("top-app"),
+        "yank plan should stay reverse-topological inside the envelope"
+    );
+
+    let parsed_plan: shipper_core::engine::plan_yank::YankPlan =
+        serde_json::from_slice(&output.stdout)
+            .expect("plan-yank envelope remains readable as a yank plan");
+    assert_eq!(parsed_plan.entries.len(), 2);
+}
+
+#[test]
+fn fix_forward_json_format_emits_schema_version() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+    let receipt_path = td.path().join("receipt.json");
+    write_remediation_receipt(&receipt_path);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .args(["--format", "json", "fix-forward", "--from-receipt"])
+        .arg(&receipt_path)
+        .output()
+        .expect("failed to run");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("fix-forward JSON parses");
+    assert_eq!(
+        json.pointer("/schema_version").and_then(|v| v.as_str()),
+        Some("shipper.fix_forward.v1")
+    );
+    assert_eq!(
+        json.pointer("/command").and_then(|v| v.as_str()),
+        Some("fix-forward")
+    );
+    assert_eq!(
+        json.pointer("/plan_id").and_then(|v| v.as_str()),
+        Some("plan-remediate-json")
+    );
+    assert_eq!(
+        json.pointer("/steps/0/name").and_then(|v| v.as_str()),
+        Some("core-lib"),
+        "fix-forward plan should stay topological inside the envelope"
+    );
 }
 
 /// Snapshot: `config init --help` output.

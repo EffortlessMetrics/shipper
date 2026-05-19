@@ -1434,7 +1434,12 @@ pub fn run() -> Result<()> {
 
             match cli.format.as_str() {
                 "json" => {
-                    let out = serde_json::to_string_pretty(&plan)
+                    let report = PlanYankJsonReport {
+                        schema_version: "shipper.plan_yank.v1",
+                        command: "plan-yank",
+                        plan: &plan,
+                    };
+                    let out = serde_json::to_string_pretty(&report)
                         .context("failed to serialize yank plan as JSON")?;
                     println!("{out}");
                 }
@@ -1462,7 +1467,12 @@ pub fn run() -> Result<()> {
 
             match cli.format.as_str() {
                 "json" => {
-                    let out = serde_json::to_string_pretty(&plan)
+                    let report = FixForwardJsonReport {
+                        schema_version: "shipper.fix_forward.v1",
+                        command: "fix-forward",
+                        plan: &plan,
+                    };
+                    let out = serde_json::to_string_pretty(&report)
                         .context("failed to serialize fix-forward plan as JSON")?;
                     println!("{out}");
                 }
@@ -2503,6 +2513,22 @@ struct ResumeJsonReport<'a> {
     packages: Vec<CommandJsonPackageReport>,
     artifacts: CommandJsonArtifacts,
     receipt: &'a shipper_core::types::Receipt,
+}
+
+#[derive(Serialize)]
+struct PlanYankJsonReport<'a> {
+    schema_version: &'static str,
+    command: &'static str,
+    #[serde(flatten)]
+    plan: &'a shipper_core::engine::plan_yank::YankPlan,
+}
+
+#[derive(Serialize)]
+struct FixForwardJsonReport<'a> {
+    schema_version: &'static str,
+    command: &'static str,
+    #[serde(flatten)]
+    plan: &'a shipper_core::engine::fix_forward::FixForwardPlan,
 }
 
 #[derive(Serialize)]

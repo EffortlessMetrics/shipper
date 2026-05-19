@@ -66,9 +66,14 @@ or CI under the compatibility rules above:
 | `shipper doctor --format json` | `shipper.doctor.v1` | `cargo test -p shipper-cli --test e2e_doctor doctor_json_format_reports_diagnostics_without_token_value` |
 | `shipper publish --format json` | `shipper.publish.v1` | `cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_command_envelope_to_stdout` |
 | `shipper resume --format json` | `shipper.resume.v1` | `cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_command_envelope` |
+| `shipper plan-yank --format json` | `shipper.plan_yank.v1` | `cargo test -p shipper-cli --test e2e_expanded --locked plan_yank_json_format_emits_schema_version` |
+| `shipper fix-forward --format json` | `shipper.fix_forward.v1` | `cargo test -p shipper-cli --test e2e_expanded --locked fix_forward_json_format_emits_schema_version` |
 
 The publish and resume JSON rows are command-owned envelopes with nested
 receipt evidence, package summaries, and artifact paths.
+The remediation command rows are command-owned envelopes with top-level
+planning fields plus `schema_version` and `command`; they do not imply
+`.shipper/remediation-plan.json` artifact emission or guarded live execution.
 
 ## Advisory Or Planned JSON Surfaces
 
