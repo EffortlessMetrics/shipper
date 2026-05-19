@@ -13,11 +13,11 @@ will do and which proof gaps remain before the first irreversible command.
 
 ## 1. Install Shipper
 
-The user-facing package is `shipper`. While Shipper is prerelease-only on
-crates.io, install the published prerelease with an explicit version:
+After the stable `0.4.0` release is published, the user-facing package is
+`shipper`:
 
 ```bash
-cargo install shipper --version 0.3.0-rc.2 --locked
+cargo install shipper --locked
 shipper --version
 ```
 

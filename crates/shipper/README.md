@@ -6,13 +6,19 @@ A workspace release can fail after some crates publish and before the rest do. C
 
 ## Install
 
-The supported install package is `shipper`. Because Shipper is currently
-published to crates.io only as prereleases, Cargo needs an explicit version
-for registry installs:
+The stable 0.4.0 install package is `shipper`:
 
 ```bash
-cargo install shipper --version 0.3.0-rc.2 --locked
+cargo install shipper --locked
 ```
+
+For reproducible 0.4.0 installs, pin the version:
+
+```bash
+cargo install shipper --version 0.4.0 --locked
+```
+
+This becomes the supported crates.io path after the `v0.4.0` publish completes.
 
 From a checkout, validate the same install facade with:
 

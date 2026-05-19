@@ -46,14 +46,21 @@ Shipper is the narrow tool for the middle: versions are already chosen, and you 
 
 ## Install
 
-> [!NOTE]
-> Shipper is currently published as a prerelease. Install with an explicit version:
->
-> ```bash
-> cargo install shipper --version 0.3.0-rc.2 --locked
-> ```
->
-> Once a non-prerelease version is published, `cargo install shipper --locked` becomes the stable install path.
+The stable 0.4.0 install path is:
+
+```bash
+cargo install shipper --locked
+```
+
+For a reproducible 0.4.0 install, pin the version:
+
+```bash
+cargo install shipper --version 0.4.0 --locked
+```
+
+This becomes the supported crates.io path after the `v0.4.0` publish completes.
+Until that proof exists, `docs/status/SUPPORT_TIERS.md` remains the source of
+truth for install-support status.
 
 For local checkout validation before a release, use the same facade crate:
 

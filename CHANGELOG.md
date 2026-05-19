@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-19
+
+Stable release of the 0.4.0 release-closure line. This release makes Shipper a
+usable, evidence-backed publishing tool for Rust workspaces whose versions are
+already chosen: it plans the publish graph, proves what can be proven before
+publish, publishes missing `name@version` pairs in dependency order, reconciles
+ambiguous Cargo outcomes against registry truth, resumes from durable state, and
+leaves artifacts operators and agents can inspect.
+
+### Added
+
+- **Idempotent workspace publish.** `shipper publish` now treats registry
+  `name@version` truth as the safety boundary: already-published package
+  versions are skipped explicitly, mixed existing/missing workspaces publish the
+  missing versions, and publish JSON/receipts expose package outcomes and
+  artifact paths. Proof is captured in the idempotent publish spec, how-to, and
+  focused `bdd_publish` / `e2e_publish` suites.
+- **Versioned command evidence.** `shipper plan`, `preflight`, `status`,
+  `status --watch`, `doctor`, `publish`, and `resume` expose stable JSON
+  surfaces for CI, IDPs, and agent workflows. Publish and resume now emit
+  command-owned envelopes with package summaries, safety state, and evidence
+  artifact paths.
+- **Release black-box recorder hardening.** Publish state, append-only events,
+  receipts, reconciliation evidence, attempt history, wait/retry/readiness
+  scheduling events, status watch output, event following, finalization drift
+  checks, and state rebuild support are now proof-backed surfaces.
+- **Interruption proof.** In addition to synthetic resume coverage, the release
+  lane now has a live-runner interruption rehearsal artifact proving artifact
+  handoff and safe resume against fake Cargo and a mock registry.
+- **Auth evidence.** Release auth evidence records observed auth mode,
+  Trusted Publishing context, fallback configuration/use, and token-sanitized
+  receipt/event state. Trusted Publishing default remains deliberately
+  unpromoted until crates.io-side registration and short-lived-token release
+  proof exist.
+- **Bounded remediation surfaces.** Receipt-driven yank planning,
+  fix-forward planning, remediation dry-run artifacts, and guarded fake-Cargo
+  execution are available and proof-backed. Live crates.io yank execution and
+  fix-forward publication remain outside the promoted 0.4.0 claim.
+- **Source-of-truth stack.** Proposals, specs, ADRs, plans, active goals,
+  support tiers, doc-contract checks, and policy-report integration now form the
+  claim-to-proof map for release work.
+
+### Changed
+
+- **README and crate docs now present Shipper as the install facade.** Most
+  users install `shipper`; `shipper-cli` is the CLI adapter surface and
+  `shipper-core` is the clap-free engine surface for embedders.
+- **Preflight and status outputs are more decision-grade.** Plan/preflight now
+  surface evidence paths, proof gaps, registry pacing estimates, and auth
+  posture more explicitly.
+- **Registry pacing is visible.** The crates.io profile, Retry-After floor, and
+  preflight pacing estimate make long waits understandable rather than silent.
+- **Policy rails are part of release readiness.** Package-surface checks,
+  file/process/network policy, doc-contract checks, no-panic tracking, ripr
+  advisory evidence, and release-readiness artifacts are integrated into the
+  0.4.0 release process.
+
+### Fixed
+
+- Hardened schema-version parsing, output token redaction, and cargo-failure
+  token matching so evidence artifacts do not accept ambiguous schema tags, leak
+  token-shaped values, or classify failures from substring accidents.
+- Added common release-blocker hints and Doctor remediation output so operators
+  get next actions for dirty git state, auth gaps, registry failures, state
+  mismatches, ambiguous publish outcomes, and rate limits.
+
+### Carry-over
+
+- Trusted Publishing default remains planned/advisory until a release workflow
+  artifact proves the short-lived-token path is the normal path and fallback
+  state is explicit.
+- Live crates.io yank/fix-forward execution is not promoted beyond the bounded
+  proof surfaces above.
+- Receipt signing, SBOM, SLSA provenance, alternative registry profiles, broader
+  mutation routing, and deeper CI cost routing remain future work.
+- The stable 0.4.0 readiness proof must be refreshed after the version bump and
+  before tagging.
+
 ## [0.4.0-rc.1] - 2026-05-12
 
 This is the first release candidate of the **0.4.0** line. The line bumps MSRV from 1.92 to 1.95 (and therefore takes a minor-version step per semver), threads the Rust 1.95 lint floor and Clippy ratchets through the workspace, lands an exact no-panic baseline + check + release CI gate, adopts the external `ripr` static-exposure tool as an advisory PR lane, sets up policy receipts for every non-Rust surface, and stabilises a long-standing macOS test flake. See the per-area entries below for citations.
