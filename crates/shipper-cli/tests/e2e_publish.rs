@@ -357,6 +357,12 @@ fn publish_json_format_writes_command_envelope_to_stdout() {
     assert_eq!(report["command"].as_str(), Some("publish"));
     assert_eq!(report["registry"].as_str(), Some("crates-io"));
     assert!(report["plan_id"].is_string(), "plan_id should be present");
+    assert_eq!(report["published"].as_u64(), Some(1));
+    assert_eq!(report["pending"].as_u64(), Some(0));
+    assert_eq!(report["failed"].as_u64(), Some(0));
+    assert_eq!(report["ambiguous"].as_u64(), Some(0));
+    assert_eq!(report["uploaded"].as_u64(), Some(0));
+    assert_eq!(report["skipped"].as_u64(), Some(0));
     assert_eq!(
         report["packages"][0]["name"].as_str(),
         Some("demo"),
@@ -807,6 +813,12 @@ fn publish_when_already_published_skips_all() {
     let report_packages = report["packages"].as_array().expect("report packages");
 
     assert_eq!(report_packages.len(), 3, "all packages should be reported");
+    assert_eq!(report["published"].as_u64(), Some(0));
+    assert_eq!(report["pending"].as_u64(), Some(0));
+    assert_eq!(report["failed"].as_u64(), Some(0));
+    assert_eq!(report["ambiguous"].as_u64(), Some(0));
+    assert_eq!(report["uploaded"].as_u64(), Some(0));
+    assert_eq!(report["skipped"].as_u64(), Some(3));
     for package in ["core", "utils", "app"] {
         assert_eq!(
             command_package_state(report_packages, package),
@@ -883,6 +895,12 @@ fn publish_mixed_existing_and_missing_publishes_missing_only() {
     assert_eq!(command_package_state(report_packages, "core"), "skipped");
     assert_eq!(command_package_state(report_packages, "utils"), "published");
     assert_eq!(command_package_state(report_packages, "app"), "published");
+    assert_eq!(report["published"].as_u64(), Some(2));
+    assert_eq!(report["pending"].as_u64(), Some(0));
+    assert_eq!(report["failed"].as_u64(), Some(0));
+    assert_eq!(report["ambiguous"].as_u64(), Some(0));
+    assert_eq!(report["uploaded"].as_u64(), Some(0));
+    assert_eq!(report["skipped"].as_u64(), Some(1));
 
     let publish_log = read_publish_log(&publish_log);
     assert_eq!(

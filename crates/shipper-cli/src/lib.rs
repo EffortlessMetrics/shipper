@@ -2738,6 +2738,12 @@ struct PublishJsonReport<'a> {
     registry: String,
     plan_id: &'a str,
     state_dir: String,
+    published: usize,
+    pending: usize,
+    failed: usize,
+    ambiguous: usize,
+    uploaded: usize,
+    skipped: usize,
     packages: Vec<CommandJsonPackageReport>,
     artifacts: CommandJsonArtifacts,
     receipt: &'a shipper_core::types::Receipt,
@@ -2761,6 +2767,16 @@ struct ResumeJsonReport<'a> {
     packages: Vec<CommandJsonPackageReport>,
     artifacts: CommandJsonArtifacts,
     receipt: &'a shipper_core::types::Receipt,
+}
+
+struct CommandJsonPackageCounts {
+    published: usize,
+    pending: usize,
+    failed: usize,
+    ambiguous: usize,
+    uploaded: usize,
+    skipped: usize,
+    next_package: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2844,6 +2860,7 @@ fn build_publish_json_report<'a>(
 ) -> Result<PublishJsonReport<'a>> {
     let reconciled = reconciled_packages(state_dir)?;
     let packages = command_package_reports(receipt, &reconciled);
+    let counts = command_package_counts(receipt);
 
     Ok(PublishJsonReport {
         schema_version: "shipper.publish.v1",
@@ -2851,6 +2868,12 @@ fn build_publish_json_report<'a>(
         registry: receipt.registry.name.clone(),
         plan_id: &receipt.plan_id,
         state_dir: state_dir.display().to_string(),
+        published: counts.published,
+        pending: counts.pending,
+        failed: counts.failed,
+        ambiguous: counts.ambiguous,
+        uploaded: counts.uploaded,
+        skipped: counts.skipped,
         packages,
         artifacts: command_json_artifacts(state_dir),
         receipt,
@@ -2863,42 +2886,8 @@ fn build_resume_json_report<'a>(
 ) -> Result<ResumeJsonReport<'a>> {
     let reconciled = reconciled_packages(state_dir)?;
     let packages = command_package_reports(receipt, &reconciled);
-
-    let mut published = 0;
-    let mut pending = 0;
-    let mut failed = 0;
-    let mut ambiguous = 0;
-    let mut uploaded = 0;
-    let mut skipped = 0;
-    let mut next_package = None;
-
-    for package in &receipt.packages {
-        match &package.state {
-            PackageState::Pending => {
-                pending += 1;
-                next_package.get_or_insert_with(|| package.name.clone());
-            }
-            PackageState::Uploaded => {
-                uploaded += 1;
-                next_package.get_or_insert_with(|| package.name.clone());
-            }
-            PackageState::Published => {
-                published += 1;
-            }
-            PackageState::Skipped { .. } => {
-                skipped += 1;
-            }
-            PackageState::Failed { .. } => {
-                failed += 1;
-                next_package.get_or_insert_with(|| package.name.clone());
-            }
-            PackageState::Ambiguous { .. } => {
-                ambiguous += 1;
-                next_package.get_or_insert_with(|| package.name.clone());
-            }
-        }
-    }
-    let safe_to_resume = failed == 0 && ambiguous == 0;
+    let counts = command_package_counts(receipt);
+    let safe_to_resume = counts.failed == 0 && counts.ambiguous == 0;
 
     Ok(ResumeJsonReport {
         schema_version: "shipper.resume.v1",
@@ -2907,17 +2896,66 @@ fn build_resume_json_report<'a>(
         registry: receipt.registry.name.clone(),
         plan_id: &receipt.plan_id,
         state_dir: state_dir.display().to_string(),
-        published,
-        pending,
-        failed,
-        ambiguous,
-        uploaded,
-        skipped,
-        next_package,
+        published: counts.published,
+        pending: counts.pending,
+        failed: counts.failed,
+        ambiguous: counts.ambiguous,
+        uploaded: counts.uploaded,
+        skipped: counts.skipped,
+        next_package: counts.next_package,
         packages,
         artifacts: command_json_artifacts(state_dir),
         receipt,
     })
+}
+
+fn command_package_counts(receipt: &shipper_core::types::Receipt) -> CommandJsonPackageCounts {
+    let mut counts = CommandJsonPackageCounts {
+        published: 0,
+        pending: 0,
+        failed: 0,
+        ambiguous: 0,
+        uploaded: 0,
+        skipped: 0,
+        next_package: None,
+    };
+
+    for package in &receipt.packages {
+        match &package.state {
+            PackageState::Pending => {
+                counts.pending += 1;
+                counts
+                    .next_package
+                    .get_or_insert_with(|| package.name.clone());
+            }
+            PackageState::Uploaded => {
+                counts.uploaded += 1;
+                counts
+                    .next_package
+                    .get_or_insert_with(|| package.name.clone());
+            }
+            PackageState::Published => {
+                counts.published += 1;
+            }
+            PackageState::Skipped { .. } => {
+                counts.skipped += 1;
+            }
+            PackageState::Failed { .. } => {
+                counts.failed += 1;
+                counts
+                    .next_package
+                    .get_or_insert_with(|| package.name.clone());
+            }
+            PackageState::Ambiguous { .. } => {
+                counts.ambiguous += 1;
+                counts
+                    .next_package
+                    .get_or_insert_with(|| package.name.clone());
+            }
+        }
+    }
+
+    counts
 }
 
 fn command_package_reports(
