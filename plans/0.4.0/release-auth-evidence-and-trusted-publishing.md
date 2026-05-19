@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-pub
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/release-operator-visibility-and-survive-proof.md
 Linked issues: #96; #105; #109
-Linked PRs: #338; #340
+Linked PRs: #338; #340; #342
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: no new policy exceptions
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -157,6 +157,10 @@ not rehearsed.
 - Artifact limits state that token values are omitted and crates.io-side
   trusted-publisher registration is externally unproven unless separately
   rehearsed.
+- Release workflow run `26072938626` uploaded `shipper-rehearse-26072938626`
+  with `.shipper/auth-evidence.json`; the artifact records token mint failure,
+  fallback configured, fallback used, and `selected_token_source =
+  "fallback_secret"`.
 
 #### Proof Commands
 
@@ -171,6 +175,13 @@ not rehearsed.
 
 Demote any Trusted Publishing claim if the artifact is missing or proves only
 fallback behavior.
+
+#### Result
+
+Complete. The first proof artifact exists and proves fallback behavior for the
+current release environment. It intentionally does not promote Trusted
+Publishing as the default, because crates.io returned `No Trusted Publishing
+config found for repository EffortlessMetrics/shipper`.
 
 ### PR 4 - Support-tier promotion
 
@@ -196,6 +207,12 @@ Runtime changes and release workflow changes.
 - Trusted Publishing default remains planned/advisory unless short-lived-token
   use is proven as the normal path.
 - README and product claims do not exceed proven evidence.
+
+#### Result
+
+Complete for the bounded proof-artifact claim. Support tiers now name the
+workflow artifact proof and keep the stronger Trusted Publishing default claim
+planned/advisory.
 
 #### Proof Commands
 

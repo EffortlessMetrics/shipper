@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/release-auth-evidence-and-trusted-publishing.md
 Linked issues: #96; #105; #109
-Linked PRs: #338; #340
+Linked PRs: #338; #340; #342
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: policy ledgers remain authoritative for workflow, process, network, and file receipts
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -172,6 +172,22 @@ CI should prove unit, integration, BDD, policy, and doc-contract gates for each
 implementation PR. A future Trusted Publishing default claim also requires a
 workflow artifact proving the short-lived-token path or an explicitly recorded
 fallback path; green CI without that artifact is not sufficient.
+
+Current workflow proof:
+
+- Release workflow run `26072938626` (`workflow_dispatch`, `mode=rehearse`,
+  `main`) completed successfully without running publish jobs.
+- The uploaded `shipper-rehearse-26072938626` artifact contains
+  `.shipper/auth-evidence.json`.
+- That artifact records `schema_version = "shipper.release_auth_evidence.v1"`,
+  `auth_action.outcome = "failure"`, `auth_action.token_minted = false`,
+  `fallback.configured = true`, `fallback.used = true`, and
+  `selected_token_source = "fallback_secret"`.
+- The action log records the actionable external setup gap:
+  `No Trusted Publishing config found for repository
+  EffortlessMetrics/shipper`.
+- This proves fallback evidence is recorded and uploaded. It does not prove
+  Trusted Publishing is the default release auth path.
 
 ## Promotion Rule
 
