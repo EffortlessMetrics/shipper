@@ -1,20 +1,28 @@
 <p align="center">
-  <img src="assets/logo/shipper-container-plain.svg" alt="Shipper logo" width="128">
+  <img src="assets/logo/shipper-container-plain.svg" alt="Shipper logo" width="128" />
 </p>
 
 <h1 align="center">shipper</h1>
 
 <p align="center">
-  <a href="https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://codecov.io/gh/EffortlessMetrics/shipper"><img alt="Codecov" src="https://codecov.io/gh/EffortlessMetrics/shipper/branch/main/graph/badge.svg"></a>
-  <a href="docs/ci/ripr.md"><img alt="ripr" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/EffortlessMetrics/shipper/main/badges/ripr.json"></a>
-  <a href="docs/ci/ripr.md"><img alt="ripr+" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/EffortlessMetrics/shipper/main/badges/ripr-plus.json"></a>
-  <a href="https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field"><img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.95-blue.svg"></a>
-  <a href="#license"><img alt="License" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg"></a>
+  <em>Idempotent, resumable publishing for Rust workspaces.</em>
 </p>
 
 <p align="center">
-  <em>Idempotent, resumable publishing for Rust workspaces.</em>
+  <a href="https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml/badge.svg?branch=main" /></a>
+  <a href="https://codecov.io/gh/EffortlessMetrics/shipper"><img alt="Codecov" src="https://codecov.io/gh/EffortlessMetrics/shipper/branch/main/graph/badge.svg" /></a>
+  <a href="docs/ci/ripr.md"><img alt="ripr+" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/EffortlessMetrics/shipper/main/badges/ripr-plus.json" /></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/EffortlessMetrics/shipper/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/EffortlessMetrics/shipper?sort=semver&label=release" /></a>
+  <a href="https://crates.io/crates/shipper"><img alt="crates.io downloads" src="https://img.shields.io/crates/d/shipper.svg?label=crates.io%20downloads" /></a>
+  <a href="https://docs.rs/shipper"><img alt="docs.rs" src="https://docs.rs/shipper/badge.svg" /></a>
+</p>
+
+<p align="center">
+  <a href="https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field"><img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.95-blue.svg" /></a>
+  <a href="#license"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" /></a>
 </p>
 
 Shipper publishes missing `name@version` pairs in dependency order, skips versions already on the registry, verifies visibility, records evidence, and resumes cleanly after interruption.
