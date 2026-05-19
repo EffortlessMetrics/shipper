@@ -1,6 +1,6 @@
 # Plan: Receipt-Driven Remediation
 
-Status: proposed
+Status: accepted
 Owner: EffortlessMetrics
 Created: 2026-05-19
 Milestone: 0.4.0
@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/release-readiness-proof.md
 Linked issues: #98; #104; #109
-Linked PRs: #344; #345
+Linked PRs: #344; #345; #347; #349
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: no new policy exceptions
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -172,7 +172,7 @@ Demote JSON contract claims if the shape is not stable enough.
 Linked spec: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Blocks: PR 5
 Blocked by: PR 3
-Status: active
+Status: landed in #349
 
 #### Goal
 
@@ -212,6 +212,7 @@ Remove artifact emission if it overclaims or duplicates unstable JSON output.
 Linked spec: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Blocks:
 Blocked by: PR 4
+Status: active
 
 #### Goal
 
@@ -231,12 +232,17 @@ in PR CI.
 
 - Execution reads a reviewed plan.
 - Each yank emits event evidence.
-- Retry/backoff and redaction behavior match release safety rules.
+- Event evidence records the reviewed plan's redacted reason placeholder, not
+  an operator-supplied secret.
 - Failures leave actionable state.
 
 #### Proof Commands
 
-- focused fake-Cargo execution tests
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_executes_reviewed_plan_with_fake_cargo`
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_halts_on_failed_yank`
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_redacts_event_reason`
+- `cargo test -p shipper-core remediation --lib --locked`
+- `cargo xtask check-file-policy --mode blocking-allowlist`
 - `cargo xtask policy-report`
 - `cargo fmt --all -- --check`
 - `git diff --check`

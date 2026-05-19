@@ -1,6 +1,6 @@
 # SHIPPER-SPEC-0008: Receipt-Driven Remediation
 
-Status: proposed
+Status: accepted
 Owner: EffortlessMetrics
 Created: 2026-05-19
 Milestone: 0.4.0
@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/receipt-driven-remediation.md
 Linked issues: #98; #104; #109
-Linked PRs: #344; #345
+Linked PRs: #344; #345; #347; #349
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: policy ledgers remain authoritative for workflow, process, network, and file receipts
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
