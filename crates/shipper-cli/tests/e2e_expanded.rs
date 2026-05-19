@@ -200,6 +200,13 @@ fn normalize_tempdir_json_output(raw: &str, tempdir: &Path) -> String {
     )
 }
 
+fn trim_trailing_line_ws(raw: &str) -> String {
+    raw.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Create a simple workspace with a single publishable crate.
 fn create_workspace(root: &Path) {
     write_file(
@@ -1588,6 +1595,22 @@ fn help_fix_forward_snapshot() {
     assert_snapshot!("help_fix_forward", normalize_stderr(&stdout));
 }
 
+/// Snapshot: `remediate --help` output.
+#[test]
+fn help_remediate_snapshot() {
+    let output = shipper_cmd()
+        .args(["remediate", "--help"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_snapshot!(
+        "help_remediate",
+        trim_trailing_line_ws(&normalize_stderr(&stdout))
+    );
+}
+
 #[test]
 fn plan_yank_json_format_emits_schema_version() {
     let td = tempdir().expect("tempdir");
@@ -1672,6 +1695,118 @@ fn fix_forward_json_format_emits_schema_version() {
         json.pointer("/steps/0/name").and_then(|v| v.as_str()),
         Some("core-lib"),
         "fix-forward plan should stay topological inside the envelope"
+    );
+}
+
+#[test]
+fn remediate_dry_run_writes_remediation_plan_artifact() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+    let receipt_path = td.path().join("receipt.json");
+    let state_dir = td.path().join(".shipper");
+    write_remediation_receipt(&receipt_path);
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .args([
+            "remediate",
+            "--dry-run",
+            "--from-receipt",
+            receipt_path.to_str().expect("utf8 path"),
+            "--crate",
+            "core-lib",
+            "--target-version",
+            "0.2.0",
+            "--reason",
+            "plain-text incident token secret123",
+        ])
+        .output()
+        .expect("failed to run");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("remediation-plan.json"),
+        "human output should point at the artifact: {stdout}"
+    );
+    assert!(
+        stdout.contains("No yanks, manifest edits, or publishes were executed."),
+        "human output should make dry-run scope explicit: {stdout}"
+    );
+
+    let artifact = state_dir.join("remediation-plan.json");
+    let raw = fs::read_to_string(&artifact).expect("read remediation artifact");
+    assert!(
+        !raw.contains("secret123"),
+        "artifact should not persist operator-supplied reason text"
+    );
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("artifact JSON parses");
+    assert_eq!(
+        json.pointer("/schema_version").and_then(|v| v.as_str()),
+        Some("shipper.remediation_plan.v1")
+    );
+    assert!(
+        json.pointer("/source_receipt")
+            .and_then(|v| v.as_str())
+            .expect("source receipt path")
+            .replace('\\', "/")
+            .ends_with("receipt.json")
+    );
+    assert_eq!(
+        json.pointer("/target/crate").and_then(|v| v.as_str()),
+        Some("core-lib")
+    );
+    assert_eq!(
+        json.pointer("/target/version").and_then(|v| v.as_str()),
+        Some("0.2.0")
+    );
+    assert_eq!(
+        json.pointer("/target/reason").and_then(|v| v.as_str()),
+        Some("[OPERATOR_REASON_REDACTED]")
+    );
+    assert_eq!(
+        json.pointer("/affected_packages")
+            .and_then(|v| v.as_array())
+            .expect("affected packages")
+            .len(),
+        2
+    );
+    assert_eq!(
+        json.pointer("/yank_order/0/name").and_then(|v| v.as_str()),
+        Some("top-app"),
+        "containment should be dependents-first"
+    );
+    assert_eq!(
+        json.pointer("/fix_forward_suggestions/0/name")
+            .and_then(|v| v.as_str()),
+        Some("core-lib"),
+        "fix-forward should be dependencies-first"
+    );
+    assert_eq!(
+        json.pointer("/command_sequence/0/argv/1")
+            .and_then(|v| v.as_str()),
+        Some("yank")
+    );
+    assert_eq!(
+        json.pointer("/command_sequence/0/argv/7")
+            .and_then(|v| v.as_str()),
+        Some("<operator-reason>")
+    );
+    assert!(
+        json.pointer("/risk_notes")
+            .and_then(|v| v.as_array())
+            .expect("risk notes")
+            .iter()
+            .any(|note| note
+                .as_str()
+                .is_some_and(|text| text.contains("Dry-run only")))
     );
 }
 

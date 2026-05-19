@@ -84,7 +84,9 @@ spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
 plan = "plans/0.4.0/receipt-driven-remediation.md"
 issue = "104"
 commands = [
-  "focused CLI/integration tests for .shipper/remediation-plan.json artifact generation",
+  "cargo test -p shipper-core remediation --lib --locked",
+  "cargo test -p shipper-cli --test e2e_expanded --locked help_remediate_snapshot",
+  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_dry_run_writes_remediation_plan_artifact",
   "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",

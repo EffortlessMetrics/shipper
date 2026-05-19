@@ -41,6 +41,7 @@ pub const CURRENT_PLAN_VERSION: &str = "shipper.plan.v1";
 pub const STATE_FILE: &str = "state.json";
 pub const RECEIPT_FILE: &str = "receipt.json";
 pub const RECONCILIATION_FILE: &str = "reconciliation.json";
+pub const REMEDIATION_PLAN_FILE: &str = "remediation-plan.json";
 
 pub fn state_path(state_dir: &Path) -> PathBuf {
     state_dir.join(STATE_FILE)
@@ -52,6 +53,10 @@ pub fn receipt_path(state_dir: &Path) -> PathBuf {
 
 pub fn reconciliation_path(state_dir: &Path) -> PathBuf {
     state_dir.join(RECONCILIATION_FILE)
+}
+
+pub fn remediation_plan_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(REMEDIATION_PLAN_FILE)
 }
 
 pub fn load_state(state_dir: &Path) -> Result<Option<ExecutionState>> {
@@ -319,7 +324,7 @@ pub fn fsync_parent_dir(path: &Path) {
     }
 }
 
-fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
+pub(crate) fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     let tmp = path.with_extension("tmp");
     let data = serde_json::to_vec_pretty(value).context("failed to serialize JSON")?;
 

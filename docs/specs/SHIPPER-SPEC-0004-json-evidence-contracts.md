@@ -68,21 +68,25 @@ or CI under the compatibility rules above:
 | `shipper resume --format json` | `shipper.resume.v1` | `cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_command_envelope` |
 | `shipper plan-yank --format json` | `shipper.plan_yank.v1` | `cargo test -p shipper-cli --test e2e_expanded --locked plan_yank_json_format_emits_schema_version` |
 | `shipper fix-forward --format json` | `shipper.fix_forward.v1` | `cargo test -p shipper-cli --test e2e_expanded --locked fix_forward_json_format_emits_schema_version` |
+| `.shipper/remediation-plan.json` from `shipper remediate --dry-run` | `shipper.remediation_plan.v1` | `cargo test -p shipper-cli --test e2e_expanded --locked remediate_dry_run_writes_remediation_plan_artifact` |
 
 The publish and resume JSON rows are command-owned envelopes with nested
 receipt evidence, package summaries, and artifact paths.
 The remediation command rows are command-owned envelopes with top-level
-planning fields plus `schema_version` and `command`; they do not imply
-`.shipper/remediation-plan.json` artifact emission or guarded live execution.
+planning fields plus `schema_version` and `command`. The remediation artifact
+row is durable dry-run evidence only; neither surface implies guarded live
+execution. Operator-supplied remediation reason text is represented with a
+placeholder in durable remediation artifacts.
 
 ## Advisory Or Planned JSON Surfaces
 
 - Reconciliation evidence under `.shipper/reconciliation.json` is a product
   target for ambiguity proof. It must not be promoted beyond its implemented
   evidence and tests.
-- Remediation plans under `.shipper/remediation-plan.json` are planned
-  recovery evidence. They must not be described as stable until receipt-driven
-  dry-run proof exists.
+- Remediation plans under `.shipper/remediation-plan.json` use
+  `shipper.remediation_plan.v1` once receipt-driven dry-run proof exists. The
+  artifact is planning evidence only; it must not imply live yanks, manifest
+  edits, or fix-forward publishing.
 - Release readiness summaries may link JSON artifacts, but the readiness
   document remains a release artifact, not a schema registry.
 

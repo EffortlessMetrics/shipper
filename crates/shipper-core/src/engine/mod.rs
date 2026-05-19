@@ -8176,3 +8176,6 @@ pub mod plan_yank;
 
 /// Fix-forward: supersession plan from a compromised receipt (#98 PR 3).
 pub mod fix_forward;
+
+/// Remediation dry-run artifact planning.
+pub mod remediation;

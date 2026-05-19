@@ -196,7 +196,9 @@ Live yanks, manifest edits, or fix-forward publish execution.
 
 #### Proof Commands
 
-- focused CLI/integration tests for artifact generation
+- `cargo test -p shipper-core remediation --lib --locked`
+- `cargo test -p shipper-cli --test e2e_expanded --locked help_remediate_snapshot`
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_dry_run_writes_remediation_plan_artifact`
 - `cargo xtask policy-report`
 - `cargo fmt --all -- --check`
 - `git diff --check`
