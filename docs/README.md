@@ -30,6 +30,7 @@ Task-oriented recipes. Each solves one focused problem.
 - [Run the Recover rehearsal](how-to/run-recover-rehearsal.md) — once-per-RC proof that interrupted releases resume cleanly
 - [Rehearse against an alternate registry](how-to/rehearse-against-an-alt-registry.md) — Prove tier 2 walkthrough with kellnr example (#97)
 - [Remediate a compromised release](how-to/remediate-a-compromised-release.md) — yank + fix-forward walkthrough (#98)
+- [Migrate `shipper` to `shipper-swarm` (runbook)](how-to/shipper-swarm-migration-runbook.md) — CI lane routing, proof sequence, and cutover checklist
 
 Operator runbook (promotion to how-to pending): [release-runbook.md](release-runbook.md)
 
