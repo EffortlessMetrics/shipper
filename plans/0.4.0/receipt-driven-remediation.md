@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/release-readiness-proof.md
 Linked issues: #98; #104; #109
-Linked PRs:
+Linked PRs: #344
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: no new policy exceptions
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -34,6 +34,7 @@ Shipper remediation is spec-addressable and evidence-backed:
 Linked spec: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Blocks: PR 2
 Blocked by:
+Status: landed in #344
 
 #### Goal
 
@@ -76,6 +77,7 @@ lane is superseded before follow-up proof work depends on it.
 Linked spec: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Blocks: PR 3
 Blocked by: PR 1
+Status: active
 
 #### Goal
 
@@ -96,13 +98,22 @@ New commands, new JSON shape, guarded execution changes, and live yanks.
   already implemented.
 - Stale issue language is not used as authoritative state.
 - Any unproven surface remains advisory or planned.
+- Missing proof is explicit: remediation CLI execution, targeted
+  `PackageYanked` event proof, stable remediation JSON envelopes, and
+  `.shipper/remediation-plan.json` artifact emission remain follow-up work.
 
 #### Proof Commands
 
 - `cargo test -p shipper-core plan_yank --lib --locked`
 - `cargo test -p shipper-core fix_forward --lib --locked`
 - `cargo test -p shipper-core cargo_yank --lib --locked`
-- `cargo test -p shipper-cli --test e2e_expanded --locked`
+- `cargo test -p shipper-types package_receipt_roundtrip --lib --locked`
+- `cargo test -p shipper-types receipt_roundtrip --lib --locked`
+- `cargo test -p shipper-core event_types_serialize_correctly --lib --locked`
+- `cargo test -p shipper-cli --test e2e_expanded --locked help_yank_snapshot`
+- `cargo test -p shipper-cli --test e2e_expanded --locked help_plan_yank_snapshot`
+- `cargo test -p shipper-cli --test e2e_expanded --locked help_fix_forward_snapshot`
+- `cargo xtask check-doc-contracts --mode advisory`
 - `cargo xtask policy-report`
 - `cargo fmt --all -- --check`
 - `git diff --check`

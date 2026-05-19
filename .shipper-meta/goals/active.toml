@@ -20,11 +20,12 @@ end_state = [
 
 [[work_item]]
 id = "remediation-source-of-truth"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
 plan = "plans/0.4.0/receipt-driven-remediation.md"
 issue = "104"
+linked_pr = "#344"
 commands = [
   "python -c \"import pathlib,tomllib; tomllib.loads(pathlib.Path('.shipper-meta/goals/active.toml').read_text()); print('active goal TOML parses')\"",
   "cargo xtask check-doc-contracts --mode advisory",
@@ -36,7 +37,7 @@ commands = [
 
 [[work_item]]
 id = "remediation-existing-proof-map"
-status = "ready"
+status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
 plan = "plans/0.4.0/receipt-driven-remediation.md"
@@ -45,7 +46,13 @@ commands = [
   "cargo test -p shipper-core plan_yank --lib --locked",
   "cargo test -p shipper-core fix_forward --lib --locked",
   "cargo test -p shipper-core cargo_yank --lib --locked",
-  "cargo test -p shipper-cli --test e2e_expanded --locked",
+  "cargo test -p shipper-types package_receipt_roundtrip --lib --locked",
+  "cargo test -p shipper-types receipt_roundtrip --lib --locked",
+  "cargo test -p shipper-core event_types_serialize_correctly --lib --locked",
+  "cargo test -p shipper-cli --test e2e_expanded --locked help_yank_snapshot",
+  "cargo test -p shipper-cli --test e2e_expanded --locked help_plan_yank_snapshot",
+  "cargo test -p shipper-cli --test e2e_expanded --locked help_fix_forward_snapshot",
+  "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
   "git diff --check",

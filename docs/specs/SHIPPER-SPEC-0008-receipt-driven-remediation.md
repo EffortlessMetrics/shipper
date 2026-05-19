@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/receipt-driven-remediation.md
 Linked issues: #98; #104; #109
-Linked PRs:
+Linked PRs: #344
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: policy ledgers remain authoritative for workflow, process, network, and file receipts
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -80,6 +80,41 @@ Future implementation and promotion proof must cover:
 - JSON contract proof before declaring remediation plan JSON stable
 - support-tier rows that name exact tests, commands, and artifacts
 
+## Current Proof Map
+
+The existing implementation is intentionally split into bounded primitives.
+These are proven today:
+
+- `cargo test -p shipper-core plan_yank --lib --locked` proves the
+  reverse-topological yank planner, all-published mode, compromised-only mode,
+  starting-crate graph mode, explicit reasons, and yank-plan JSON roundtrip.
+- `cargo test -p shipper-core fix_forward --lib --locked` proves the
+  fix-forward planner for compromised published receipt entries, empty
+  compromise receipts, topological successor ordering, and human text output.
+- `cargo test -p shipper-core cargo_yank --lib --locked` proves the
+  `cargo yank` wrapper command construction, registry flag handling for
+  crates.io and custom registries, output capture, and nonzero exit handling.
+- `cargo test -p shipper-types package_receipt_roundtrip --lib --locked` and
+  `cargo test -p shipper-types receipt_roundtrip --lib --locked` prove receipt
+  serialization keeps the remediation marker fields in the durable receipt
+  shape.
+- `cargo test -p shipper-core event_types_serialize_correctly --lib --locked`
+  proves the event enum serializes as part of the existing event-type surface.
+- `cargo test -p shipper-cli --test e2e_expanded --locked
+  help_yank_snapshot`, `cargo test -p shipper-cli --test e2e_expanded
+  --locked help_plan_yank_snapshot`, and `cargo test -p shipper-cli --test
+  e2e_expanded --locked help_fix_forward_snapshot` prove the CLI command
+  contracts are visible in help output.
+
+These are not proven by this map and must not be promoted yet:
+
+- end-to-end CLI execution of `shipper yank`, `shipper yank --plan`,
+  `shipper plan-yank`, or `shipper fix-forward`
+- targeted `PackageYanked` event serialization or event-log tests
+- stable command-owned JSON envelopes for remediation plans
+- `.shipper/remediation-plan.json` artifact emission
+- guarded live yank execution beyond fake Cargo/unit-level proof
+
 ## Acceptance Examples
 
 - Given a receipt with packages published in topological order `core`, `api`,
@@ -100,8 +135,12 @@ Expected proof:
 - `cargo test -p shipper-core plan_yank --lib --locked`
 - `cargo test -p shipper-core fix_forward --lib --locked`
 - `cargo test -p shipper-core cargo_yank --lib --locked`
-- `cargo test -p shipper-types package_yanked --lib --locked`
-- `cargo test -p shipper-cli --test e2e_expanded --locked`
+- `cargo test -p shipper-types package_receipt_roundtrip --lib --locked`
+- `cargo test -p shipper-types receipt_roundtrip --lib --locked`
+- `cargo test -p shipper-core event_types_serialize_correctly --lib --locked`
+- `cargo test -p shipper-cli --test e2e_expanded --locked help_yank_snapshot`
+- `cargo test -p shipper-cli --test e2e_expanded --locked help_plan_yank_snapshot`
+- `cargo test -p shipper-cli --test e2e_expanded --locked help_fix_forward_snapshot`
 - `cargo xtask check-doc-contracts --mode advisory`
 - `cargo xtask policy-report`
 
