@@ -1,31 +1,31 @@
-id = "shipper-idempotent-workspace-publish"
-title = "Idempotent workspace publish proof"
-status = "complete"
+id = "shipper-trusted-publishing-default-proof"
+title = "Trusted Publishing default proof"
+status = "active"
 owner = "EffortlessMetrics"
 created = "2026-05-19"
 
 objective = """
-Make Shipper's publish command a spec-addressable safe retry surface:
-publishing must be version-idempotent against registry truth, skipped-existing
-packages must be explicit, mixed existing/missing workspaces must remain safe,
-and JSON/receipt evidence must tell operators and agents whether rerun/resume
-is safe.
+Make Shipper's Trusted Publishing default claim proof-backed instead of
+aspirational: release evidence must prove whether the short-lived-token path is
+available, whether fallback was used, which external crates.io registration gap
+remains, and why support tiers should or should not promote the default claim.
 """
 
 end_state = [
-  "The active goal points to the accepted idempotent workspace publish spec and plan.",
-  "Focused tests prove all-existing and mixed existing/missing publish behavior.",
-  "Publish JSON and receipts expose package outcomes and artifact paths without overclaiming source-diff truth.",
-  "Support tiers promote idempotent workspace publish only after the proof commands exist.",
+  "The active goal points to the accepted release-auth evidence spec and plan.",
+  "The completed idempotent workspace publish goal is archived.",
+  "The release-auth plan separates existing fallback proof from future Trusted Publishing default proof.",
+  "Support tiers keep Trusted Publishing default planned/advisory until short-lived-token proof exists.",
+  "Any external crates.io registration blocker is recorded as evidence, not hidden prose.",
 ]
 
 [[work_item]]
-id = "idempotent-source-of-truth"
-status = "complete"
+id = "trusted-publishing-default-source-of-truth"
+status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
-plan = "plans/0.4.0/idempotent-workspace-publish.md"
-issue = "109"
+spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
+plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
+issue = "105"
 commands = [
   "python -c \"import pathlib,tomllib; tomllib.loads(pathlib.Path('.shipper-meta/goals/active.toml').read_text()); print('active goal TOML parses')\"",
   "cargo xtask check-doc-contracts --mode advisory",
@@ -36,39 +36,28 @@ commands = [
 ]
 
 [[work_item]]
-id = "idempotent-publish-regression-suite"
-status = "complete"
+id = "trusted-publishing-registration-proof"
+status = "planned"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
-plan = "plans/0.4.0/idempotent-workspace-publish.md"
-issue = "109"
+spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
+plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
+issue = "105"
 commands = [
-  "cargo test -p shipper-cli --test bdd_publish --locked",
-  "cargo test -p shipper-cli --test e2e_publish --locked",
+  "release auth rehearsal or release-readiness workflow artifact proving selected_token_source = trusted_publishing",
+  "cargo xtask check-workflow-surfaces --mode advisory",
+  "cargo xtask check-process-policy --mode advisory",
+  "cargo xtask check-network-policy --mode advisory",
   "cargo xtask policy-report",
-  "cargo fmt --all -- --check",
   "git diff --check",
 ]
 
 [[work_item]]
-id = "publish-rerun-posture-evidence"
-status = "complete"
+id = "trusted-publishing-default-promotion"
+status = "planned"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
-plan = "plans/0.4.0/idempotent-workspace-publish.md"
-issue = "109"
-commands = [
-  "cargo test -p shipper-cli --test e2e_publish --locked",
-  "cargo xtask policy-report",
-]
-
-[[work_item]]
-id = "idempotent-support-tier-promotion"
-status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
-plan = "plans/0.4.0/idempotent-workspace-publish.md"
-issue = "109"
+spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
+plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
+issue = "105"
 commands = [
   "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask policy-report",

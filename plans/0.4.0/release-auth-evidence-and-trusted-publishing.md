@@ -224,3 +224,127 @@ planned/advisory.
 #### Rollback
 
 Demote any claim whose proof artifact is missing or weak.
+
+### PR 5 - Trusted Publishing default proof activation
+
+Linked spec: docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md
+Blocks: PR 6
+Blocked by: PR 4
+
+#### Goal
+
+Move the active goal from completed idempotent publish proof to the remaining
+Trusted Publishing default proof gap, and archive the completed goal.
+
+#### Production Delta
+
+No product runtime behavior change.
+
+#### Non-Goals
+
+Trusted Publishing promotion, crates.io-side registration changes, release
+publication, release tagging, and workflow credential changes.
+
+#### Acceptance
+
+- `.shipper-meta/goals/active.toml` points to this accepted spec and plan.
+- The completed idempotent workspace publish goal is archived under
+  `.shipper-meta/goals/archive/`.
+- Support tiers continue to say that Trusted Publishing default is
+  planned/advisory until short-lived-token proof exists.
+- The plan distinguishes the existing fallback proof artifact from the future
+  default proof artifact.
+
+#### Proof Commands
+
+- `python -c "import pathlib,tomllib; tomllib.loads(pathlib.Path('.shipper-meta/goals/active.toml').read_text()); print('active goal TOML parses')"`
+- `cargo xtask check-doc-contracts --mode advisory`
+- `cargo xtask check-file-policy --mode blocking-allowlist`
+- `cargo xtask policy-report`
+- `cargo fmt --all -- --check`
+- `git diff --check`
+
+#### Rollback
+
+Restore the completed idempotent active goal if the Trusted Publishing default
+proof lane is deferred before follow-up work depends on it.
+
+### PR 6 - Trusted Publishing default proof artifact
+
+Linked spec: docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md
+Blocks: PR 7
+Blocked by: PR 5 and external crates.io trusted-publisher registration
+
+#### Goal
+
+Produce release evidence proving whether the short-lived-token path is the
+normal release auth path and whether fallback remained unused.
+
+#### Production Delta
+
+Release rehearsal or release-readiness evidence only.
+
+#### Non-Goals
+
+Removing fallback, publishing without explicit release approval, hiding fallback
+configuration, or claiming crates.io registration from repo files alone.
+
+#### Acceptance
+
+- The evidence artifact records `selected_token_source = "trusted_publishing"`
+  for the rehearsed release path, or records the exact external blocker.
+- Fallback configured/used state is explicit.
+- The artifact names workflow, run ID, commit, environment, and limits.
+- Token values are omitted.
+- Any crates.io-side registration gap remains explicit.
+
+#### Proof Commands
+
+- release auth rehearsal or release-readiness workflow artifact
+- `cargo xtask check-workflow-surfaces --mode advisory`
+- `cargo xtask check-process-policy --mode advisory`
+- `cargo xtask check-network-policy --mode advisory`
+- `cargo xtask policy-report`
+- `git diff --check`
+
+#### Rollback
+
+Demote or leave unpromoted the Trusted Publishing default claim if the artifact
+proves fallback, missing registration, or any unknown auth path.
+
+### PR 7 - Trusted Publishing default support-tier promotion
+
+Linked spec: docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md
+Blocks:
+Blocked by: PR 6
+
+#### Goal
+
+Promote the Trusted Publishing default claim only if the release evidence proves
+the short-lived-token path.
+
+#### Production Delta
+
+Documentation/status only.
+
+#### Non-Goals
+
+Runtime changes, workflow changes, release publication, or release tagging.
+
+#### Acceptance
+
+- `docs/status/SUPPORT_TIERS.md` names the exact proof artifact and commands.
+- The promoted claim remains limited to the rehearsed/proven release path.
+- Token fallback remains documented as explicit incident-response behavior if
+  it remains configured.
+
+#### Proof Commands
+
+- `cargo xtask check-doc-contracts --mode advisory`
+- `cargo xtask policy-report`
+- `cargo fmt --all -- --check`
+- `git diff --check`
+
+#### Rollback
+
+Demote the claim if the proof artifact is missing, weak, or proves fallback.
