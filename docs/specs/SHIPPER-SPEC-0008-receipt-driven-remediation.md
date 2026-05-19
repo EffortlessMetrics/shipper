@@ -121,13 +121,13 @@ These are proven today:
   notes, and command sequence. Operator-supplied remediation reason text is
   deliberately omitted from the durable artifact and represented as a
   placeholder in generated commands.
-- `cargo test -p shipper-cli --test e2e_expanded --locked
-  remediate_guarded_execution` proves `shipper remediate --execute-plan`
-  executes the reviewed `.shipper/remediation-plan.json` containment order
-  against fake Cargo, rejects plans outside the configured state directory,
-  rejects registry mismatches, validates yank identifiers, emits
-  `PackageYanked` event evidence, halts on the first failed yank, and records
-  only the redacted reason placeholder.
+- The five focused `remediate_guarded_execution_*` CLI tests prove `shipper
+  remediate --execute-plan` executes the reviewed
+  `.shipper/remediation-plan.json` containment order against fake Cargo,
+  rejects plans outside the configured state directory, rejects registry
+  mismatches, validates yank identifiers, emits `PackageYanked` event
+  evidence, halts on the first failed yank, and records only the redacted
+  reason placeholder.
 
 These are not proven by this map and must not be promoted yet:
 
@@ -168,7 +168,11 @@ Expected proof:
 - `cargo test -p shipper-cli --test e2e_expanded --locked plan_yank_json_format_emits_schema_version`
 - `cargo test -p shipper-cli --test e2e_expanded --locked fix_forward_json_format_emits_schema_version`
 - `cargo test -p shipper-cli --test e2e_expanded --locked remediate_dry_run_writes_remediation_plan_artifact`
-- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution`
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_executes_reviewed_plan_with_fake_cargo`
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_halts_on_failed_yank`
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_redacts_event_reason`
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_requires_state_dir_plan`
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_rejects_registry_mismatch`
 - `cargo xtask check-doc-contracts --mode advisory`
 - `cargo xtask policy-report`
 
