@@ -259,6 +259,17 @@ created = "2026-05-11"
 review_after = "2026-08-11"
 
 [[glob]]
+pattern = "assets/logo/**"
+kind = "brand_asset"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Shipper logo assets used by README and project presentation surfaces."
+covered_by = ["manual review", "cargo xtask check-file-policy"]
+created = "2026-05-19"
+review_after = "2026-11-19"
+
+[[glob]]
 pattern = "features/**/*.feature"
 kind = "bdd_spec"
 surface = "tests"

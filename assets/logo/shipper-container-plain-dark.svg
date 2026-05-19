@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc" fill="none" color="#1d7d8a">
+  <title id="title">Shipper logo</title>
+  <desc id="desc">A plain stylized side-view shipping container.</desc>
+  <rect x="28" y="88" width="200" height="80" rx="2" stroke="currentColor" stroke-width="10"/>
+  <path d="M58 100V156 M88 100V156 M118 100V156 M148 100V156 M178 100V156 M208 100V156" stroke="currentColor" stroke-width="7" stroke-linecap="square"/>
+</svg>

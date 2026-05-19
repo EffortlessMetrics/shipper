@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo/shipper-container-plain.svg" alt="Shipper logo" width="128">
+</p>
+
 # shipper
 
 [![CI](https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml/badge.svg)](https://github.com/EffortlessMetrics/shipper/actions/workflows/ci.yml)
