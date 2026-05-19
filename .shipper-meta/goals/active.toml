@@ -21,7 +21,7 @@ end_state = [
 
 [[work_item]]
 id = "trusted-publishing-default-source-of-truth"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
 plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
@@ -37,11 +37,15 @@ commands = [
 
 [[work_item]]
 id = "trusted-publishing-registration-proof"
-status = "planned"
+status = "blocked"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
 plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
 issue = "105"
+blocked_by = [
+  "External crates.io trusted-publisher registration is not proven for EffortlessMetrics/shipper; release workflow run 26072938626 recorded selected_token_source = \"fallback_secret\" and the setup gap `No Trusted Publishing config found for repository EffortlessMetrics/shipper`.",
+]
+next_action = "After crates.io trusted-publisher registration is configured, run a release auth rehearsal and record the resulting `.shipper/auth-evidence.json` artifact."
 commands = [
   "release auth rehearsal or release-readiness workflow artifact proving selected_token_source = trusted_publishing",
   "cargo xtask check-workflow-surfaces --mode advisory",
