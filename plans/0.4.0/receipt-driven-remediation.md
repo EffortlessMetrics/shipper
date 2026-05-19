@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/release-readiness-proof.md
 Linked issues: #98; #104; #109
-Linked PRs: #344; #345; #347; #349
+Linked PRs: #344; #345; #347; #349; #352
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: no new policy exceptions
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -212,7 +212,7 @@ Remove artifact emission if it overclaims or duplicates unstable JSON output.
 Linked spec: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Blocks:
 Blocked by: PR 4
-Status: active
+Status: landed in #352
 
 #### Goal
 
@@ -241,6 +241,8 @@ in PR CI.
 - `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_executes_reviewed_plan_with_fake_cargo`
 - `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_halts_on_failed_yank`
 - `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_redacts_event_reason`
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_requires_state_dir_plan`
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_rejects_registry_mismatch`
 - `cargo test -p shipper-core remediation --lib --locked`
 - `cargo xtask check-file-policy --mode blocking-allowlist`
 - `cargo xtask policy-report`
