@@ -7,7 +7,7 @@ Milestone: 0.4.0
 Linked proposal: docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md
 Linked specs: docs/specs/SHIPPER-SPEC-0003-registry-reconciliation.md; docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md; docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md; docs/adr/SHIPPER-ADR-0002-registry-truth-over-cargo-output.md
-Linked plan:
+Linked plan: plans/0.4.0/idempotent-workspace-publish.md
 Linked issues: #109
 Linked PRs: #339
 Support-tier impact: publish contract + CI behavior surface

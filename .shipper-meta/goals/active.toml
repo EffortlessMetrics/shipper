@@ -1,31 +1,31 @@
-id = "shipper-receipt-driven-remediation"
-title = "Receipt-driven remediation"
-status = "complete"
+id = "shipper-idempotent-workspace-publish"
+title = "Idempotent workspace publish proof"
+status = "active"
 owner = "EffortlessMetrics"
 created = "2026-05-19"
 
 objective = """
-Make Shipper's Remediate pillar spec-addressable and evidence-backed:
-yank containment, reverse-topological yank planning, fix-forward planning,
-remediation artifacts, support-tier claims, and future guarded execution must
-link to proof instead of stale issue prose.
+Make Shipper's publish command a spec-addressable safe retry surface:
+publishing must be version-idempotent against registry truth, skipped-existing
+packages must be explicit, mixed existing/missing workspaces must remain safe,
+and JSON/receipt evidence must tell operators and agents whether rerun/resume
+is safe.
 """
 
 end_state = [
-  "The active goal points to the accepted remediation spec and plan.",
-  "Existing remediation behavior is mapped to proof commands before support-tier promotion.",
-  "Remediation JSON/artifact surfaces are either versioned or explicitly advisory.",
-  "Dry-run artifacts and guarded execution are proven before any stronger remediation claim is promoted.",
+  "The active goal points to the accepted idempotent workspace publish spec and plan.",
+  "Focused tests prove all-existing and mixed existing/missing publish behavior.",
+  "Publish JSON and receipts expose package outcomes and artifact paths without overclaiming source-diff truth.",
+  "Support tiers promote idempotent workspace publish only after the proof commands exist.",
 ]
 
 [[work_item]]
-id = "remediation-source-of-truth"
-status = "complete"
+id = "idempotent-source-of-truth"
+status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
-plan = "plans/0.4.0/receipt-driven-remediation.md"
-issue = "104"
-linked_pr = "#344"
+spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
+plan = "plans/0.4.0/idempotent-workspace-publish.md"
+issue = "109"
 commands = [
   "python -c \"import pathlib,tomllib; tomllib.loads(pathlib.Path('.shipper-meta/goals/active.toml').read_text()); print('active goal TOML parses')\"",
   "cargo xtask check-doc-contracts --mode advisory",
@@ -36,81 +36,41 @@ commands = [
 ]
 
 [[work_item]]
-id = "remediation-existing-proof-map"
-status = "complete"
+id = "idempotent-publish-regression-suite"
+status = "ready"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
-plan = "plans/0.4.0/receipt-driven-remediation.md"
-issue = "104"
-linked_pr = "#345"
+spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
+plan = "plans/0.4.0/idempotent-workspace-publish.md"
+issue = "109"
 commands = [
-  "cargo test -p shipper-core plan_yank --lib --locked",
-  "cargo test -p shipper-core fix_forward --lib --locked",
-  "cargo test -p shipper-core cargo_yank --lib --locked",
-  "cargo test -p shipper-types package_receipt_roundtrip --lib --locked",
-  "cargo test -p shipper-types receipt_roundtrip --lib --locked",
-  "cargo test -p shipper-core event_types_serialize_correctly --lib --locked",
-  "cargo test -p shipper-cli --test e2e_expanded --locked help_yank_snapshot",
-  "cargo test -p shipper-cli --test e2e_expanded --locked help_plan_yank_snapshot",
-  "cargo test -p shipper-cli --test e2e_expanded --locked help_fix_forward_snapshot",
-  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo test -p shipper-cli --test bdd_publish --locked",
+  "cargo test -p shipper-cli --test e2e_publish --locked",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
   "git diff --check",
 ]
 
 [[work_item]]
-id = "remediation-json-contract"
-status = "complete"
+id = "publish-rerun-posture-evidence"
+status = "planned"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
-plan = "plans/0.4.0/receipt-driven-remediation.md"
-issue = "104"
-linked_pr = "#347"
+spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
+plan = "plans/0.4.0/idempotent-workspace-publish.md"
+issue = "109"
 commands = [
-  "cargo test -p shipper-cli --test e2e_expanded --locked plan_yank_json_format_emits_schema_version",
-  "cargo test -p shipper-cli --test e2e_expanded --locked fix_forward_json_format_emits_schema_version",
-  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo test -p shipper-cli --test e2e_publish --locked",
   "cargo xtask policy-report",
-  "cargo fmt --all -- --check",
-  "git diff --check",
 ]
 
 [[work_item]]
-id = "remediation-dry-run-artifact"
-status = "complete"
+id = "idempotent-support-tier-promotion"
+status = "planned"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
-plan = "plans/0.4.0/receipt-driven-remediation.md"
-issue = "104"
-linked_pr = "#349"
+spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
+plan = "plans/0.4.0/idempotent-workspace-publish.md"
+issue = "109"
 commands = [
-  "cargo test -p shipper-core remediation --lib --locked",
-  "cargo test -p shipper-cli --test e2e_expanded --locked help_remediate_snapshot",
-  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_dry_run_writes_remediation_plan_artifact",
   "cargo xtask check-doc-contracts --mode advisory",
-  "cargo xtask policy-report",
-  "cargo fmt --all -- --check",
-  "git diff --check",
-]
-
-[[work_item]]
-id = "remediation-guarded-execution-proof"
-status = "complete"
-proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
-plan = "plans/0.4.0/receipt-driven-remediation.md"
-issue = "104"
-linked_pr = "#352"
-commands = [
-  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_executes_reviewed_plan_with_fake_cargo",
-  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_halts_on_failed_yank",
-  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_redacts_event_reason",
-  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_requires_state_dir_plan",
-  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_rejects_registry_mismatch",
-  "cargo test -p shipper-core remediation --lib --locked",
-  "cargo xtask check-doc-contracts --mode advisory",
-  "cargo xtask check-file-policy --mode blocking-allowlist",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
   "git diff --check",
