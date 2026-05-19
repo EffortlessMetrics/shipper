@@ -1,22 +1,25 @@
 ---
 source: crates/shipper-cli/tests/e2e_expanded.rs
+assertion_line: 1706
 expression: trim_trailing_line_ws(&normalize_stderr(&stdout))
 ---
-Generate a receipt-driven remediation dry-run artifact.
+Generate or execute a receipt-driven remediation plan.
 
-Reads a prior `receipt.json`, targets a specific bad crate version, computes
-the affected reverse-topological yank order and publish-directional
-fix-forward suggestions, then writes `<state-dir>/remediation-plan.json` for
-operator review and agent consumption.
+In `--dry-run` mode, reads a prior `receipt.json`, targets a specific bad
+crate version, computes the affected reverse-topological yank order and
+publish-directional fix-forward suggestions, then writes
+`<state-dir>/remediation-plan.json` for operator review and agent consumption.
 
-This is planning only. It does NOT invoke `cargo yank`, edit manifests, or
-publish fix-forward successors.
+In `--execute-plan` mode, consumes that reviewed artifact and executes only the
+recorded containment yanks. It does NOT edit manifests or publish fix-forward
+successors.
 
 EXAMPLES:
     shipper remediate --dry-run --from-receipt .shipper/receipt.json --crate bad-crate --target-version 0.4.0 --reason "CVE-2026-0001"
+    shipper remediate --execute-plan .shipper/remediation-plan.json
 
 
-Usage: shipper-cli remediate [OPTIONS] --crate <NAME> --target-version <VERSION> --reason <REASON>
+Usage: shipper-cli remediate [OPTIONS]
 
 Options:
       --from-receipt <PATH>
@@ -50,6 +53,9 @@ Options:
 
       --dry-run
           Required for now: generate the remediation artifact without executing yanks, editing manifests, or publishing successors
+
+      --execute-plan <PATH>
+          Execute a reviewed remediation plan artifact. Runs only the recorded containment yanks and halts on the first failed yank
 
       --package <PACKAGES>
           Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members

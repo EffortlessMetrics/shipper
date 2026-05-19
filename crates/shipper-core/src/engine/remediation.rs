@@ -207,6 +207,60 @@ pub fn write_dry_run_artifact(state_dir: &Path, plan: &RemediationPlan) -> Resul
     Ok(path)
 }
 
+pub fn load_plan_from_path(path: &Path) -> Result<RemediationPlan> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("failed to open remediation plan {}", path.display()))?;
+    let plan: RemediationPlan = serde_json::from_reader(file)
+        .with_context(|| format!("failed to parse remediation plan {}", path.display()))?;
+    if plan.schema_version != REMEDIATION_PLAN_SCHEMA_VERSION {
+        bail!(
+            "unsupported remediation plan schema_version '{}'; expected '{}'",
+            plan.schema_version,
+            REMEDIATION_PLAN_SCHEMA_VERSION
+        );
+    }
+    validate_identifier("registry", &plan.registry)?;
+    validate_crate_name("target crate", &plan.target.crate_name)?;
+    validate_version("target version", &plan.target.version)?;
+    for (idx, step) in plan.yank_order.iter().enumerate() {
+        validate_crate_name(&format!("yank_order[{idx}].name"), &step.name)?;
+        validate_version(&format!("yank_order[{idx}].version"), &step.version)?;
+    }
+    Ok(plan)
+}
+
+fn validate_identifier(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        bail!("{field} must not be empty");
+    }
+    if value.starts_with('-')
+        || value
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+    {
+        bail!("{field} contains unsupported characters");
+    }
+    Ok(())
+}
+
+fn validate_crate_name(field: &str, value: &str) -> Result<()> {
+    validate_identifier(field, value)
+}
+
+fn validate_version(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        bail!("{field} must not be empty");
+    }
+    if value.starts_with('-')
+        || value
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '+'))
+    {
+        bail!("{field} contains unsupported characters");
+    }
+    Ok(())
+}
+
 pub fn render_text(plan: &RemediationPlan, artifact_path: &Path) -> String {
     let mut out = String::new();
     out.push_str("Remediation dry-run plan\n");
