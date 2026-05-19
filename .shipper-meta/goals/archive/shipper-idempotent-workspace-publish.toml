@@ -1,0 +1,78 @@
+id = "shipper-idempotent-workspace-publish"
+title = "Idempotent workspace publish proof"
+status = "complete"
+owner = "EffortlessMetrics"
+created = "2026-05-19"
+completed = "2026-05-19"
+
+objective = """
+Make Shipper's publish command a spec-addressable safe retry surface:
+publishing must be version-idempotent against registry truth, skipped-existing
+packages must be explicit, mixed existing/missing workspaces must remain safe,
+and JSON/receipt evidence must tell operators and agents whether rerun/resume
+is safe.
+"""
+
+end_state = [
+  "The active goal points to the accepted idempotent workspace publish spec and plan.",
+  "Focused tests prove all-existing and mixed existing/missing publish behavior.",
+  "Publish JSON and receipts expose package outcomes and artifact paths without overclaiming source-diff truth.",
+  "Support tiers promote idempotent workspace publish only after the proof commands exist.",
+]
+
+[[work_item]]
+id = "idempotent-source-of-truth"
+status = "complete"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
+plan = "plans/0.4.0/idempotent-workspace-publish.md"
+issue = "109"
+commands = [
+  "python -c \"import pathlib,tomllib; tomllib.loads(pathlib.Path('.shipper-meta/goals/active.toml').read_text()); print('active goal TOML parses')\"",
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask check-file-policy --mode blocking-allowlist",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "idempotent-publish-regression-suite"
+status = "complete"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
+plan = "plans/0.4.0/idempotent-workspace-publish.md"
+issue = "109"
+commands = [
+  "cargo test -p shipper-cli --test bdd_publish --locked",
+  "cargo test -p shipper-cli --test e2e_publish --locked",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "publish-rerun-posture-evidence"
+status = "complete"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
+plan = "plans/0.4.0/idempotent-workspace-publish.md"
+issue = "109"
+commands = [
+  "cargo test -p shipper-cli --test e2e_publish --locked",
+  "cargo xtask policy-report",
+]
+
+[[work_item]]
+id = "idempotent-support-tier-promotion"
+status = "complete"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
+plan = "plans/0.4.0/idempotent-workspace-publish.md"
+issue = "109"
+commands = [
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
