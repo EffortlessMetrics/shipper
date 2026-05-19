@@ -1,6 +1,6 @@
 id = "shipper-receipt-driven-remediation"
 title = "Receipt-driven remediation"
-status = "active"
+status = "complete"
 owner = "EffortlessMetrics"
 created = "2026-05-19"
 
@@ -15,7 +15,7 @@ end_state = [
   "The active goal points to the accepted remediation spec and plan.",
   "Existing remediation behavior is mapped to proof commands before support-tier promotion.",
   "Remediation JSON/artifact surfaces are either versioned or explicitly advisory.",
-  "Full mechanical remediation remains planned until dry-run artifacts and guarded execution are proven.",
+  "Dry-run artifacts and guarded execution are proven before any stronger remediation claim is promoted.",
 ]
 
 [[work_item]]
@@ -96,15 +96,17 @@ commands = [
 
 [[work_item]]
 id = "remediation-guarded-execution-proof"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
 plan = "plans/0.4.0/receipt-driven-remediation.md"
 issue = "104"
+linked_pr = "#352"
 commands = [
   "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_executes_reviewed_plan_with_fake_cargo",
   "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_halts_on_failed_yank",
   "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_redacts_event_reason",
+  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution",
   "cargo test -p shipper-core remediation --lib --locked",
   "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask check-file-policy --mode blocking-allowlist",
