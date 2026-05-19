@@ -128,7 +128,7 @@ claim.
 Linked spec: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Blocks: PR 4
 Blocked by: PR 2
-Status: active
+Status: landed in #347
 
 #### Goal
 
@@ -172,6 +172,7 @@ Demote JSON contract claims if the shape is not stable enough.
 Linked spec: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Blocks: PR 5
 Blocked by: PR 3
+Status: active
 
 #### Goal
 
