@@ -102,7 +102,7 @@ fn create_fake_cargo_proxy(bin_dir: &Path) {
     {
         fs::write(
             bin_dir.join("cargo.cmd"),
-            "@echo off\r\nif \"%1\"==\"publish\" (\r\n  if \"%SHIPPER_FAKE_PUBLISH_EXIT%\"==\"\" (exit /b 0) else (exit /b %SHIPPER_FAKE_PUBLISH_EXIT%)\r\n)\r\n\"%REAL_CARGO%\" %*\r\nexit /b %ERRORLEVEL%\r\n",
+            "@echo off\r\nif \"%1\"==\"publish\" (\r\n  if not \"%SHIPPER_FAKE_PUBLISH_LOG%\"==\"\" echo %*>>\"%SHIPPER_FAKE_PUBLISH_LOG%\"\r\n  if not \"%SHIPPER_FAKE_PUBLISH_STDERR%\"==\"\" echo %SHIPPER_FAKE_PUBLISH_STDERR% 1>&2\r\n  if \"%SHIPPER_FAKE_PUBLISH_EXIT%\"==\"\" (exit /b 0) else (exit /b %SHIPPER_FAKE_PUBLISH_EXIT%)\r\n)\r\n\"%REAL_CARGO%\" %*\r\nexit /b %ERRORLEVEL%\r\n",
         )
         .expect("write fake cargo");
     }
@@ -114,7 +114,7 @@ fn create_fake_cargo_proxy(bin_dir: &Path) {
         let path = bin_dir.join("cargo");
         fs::write(
             &path,
-            "#!/usr/bin/env sh\nif [ \"$1\" = \"publish\" ]; then\n  exit \"${SHIPPER_FAKE_PUBLISH_EXIT:-0}\"\nfi\n\"$REAL_CARGO\" \"$@\"\n",
+            "#!/usr/bin/env sh\nif [ \"$1\" = \"publish\" ]; then\n  if [ -n \"$SHIPPER_FAKE_PUBLISH_LOG\" ]; then\n    printf '%s\\n' \"$*\" >> \"$SHIPPER_FAKE_PUBLISH_LOG\"\n  fi\n  if [ -n \"$SHIPPER_FAKE_PUBLISH_STDERR\" ]; then\n    printf '%s\\n' \"$SHIPPER_FAKE_PUBLISH_STDERR\" >&2\n  fi\n  exit \"${SHIPPER_FAKE_PUBLISH_EXIT:-0}\"\nfi\n\"$REAL_CARGO\" \"$@\"\n",
         )
         .expect("write fake cargo");
         let mut perms = fs::metadata(&path).expect("meta").permissions();
@@ -197,6 +197,36 @@ fn setup_fake_cargo(td: &Path) -> (String, String, String) {
     fs::create_dir_all(&bin_dir).expect("mkdir");
     create_fake_cargo_proxy(&bin_dir);
     fake_cargo_env(&bin_dir)
+}
+
+fn read_publish_log(path: &Path) -> Vec<String> {
+    if !path.exists() {
+        return Vec::new();
+    }
+
+    fs::read_to_string(path)
+        .expect("read publish log")
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn command_package_state<'a>(packages: &'a [serde_json::Value], name: &str) -> &'a str {
+    packages
+        .iter()
+        .find(|package| package["name"].as_str() == Some(name))
+        .unwrap_or_else(|| panic!("expected command package report for {name}"))["state"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected command package state for {name}"))
+}
+
+fn receipt_package_state<'a>(packages: &'a [serde_json::Value], name: &str) -> &'a str {
+    packages
+        .iter()
+        .find(|package| package["name"].as_str() == Some(name))
+        .unwrap_or_else(|| panic!("expected receipt package for {name}"))["state"]["state"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected receipt package state for {name}"))
 }
 
 // ============================================================================
@@ -667,9 +697,9 @@ fn failed_publish_creates_state_for_resume() {
     create_single_crate_workspace(td.path());
     let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
 
-    // version-check 404 (not published); cargo publish will fail via exit code
-    // Provide enough requests for retries
-    let registry = spawn_registry(vec![404], 4);
+    // version-check 404 (not published), then registry confirms absence after
+    // a permanent cargo failure.
+    let registry = spawn_registry(vec![404, 404], 2);
     let state_dir = td.path().join(".shipper");
 
     shipper_cmd()
@@ -693,6 +723,10 @@ fn failed_publish_creates_state_for_resume() {
         .env("REAL_CARGO", &real_cargo)
         .env("SHIPPER_CARGO_BIN", &fake_cargo)
         .env("SHIPPER_FAKE_PUBLISH_EXIT", "1")
+        .env(
+            "SHIPPER_FAKE_PUBLISH_STDERR",
+            "error: not authorized to publish this crate",
+        )
         .assert()
         .failure();
 
@@ -731,13 +765,13 @@ fn failed_publish_creates_state_for_resume() {
 #[test]
 fn publish_when_already_published_skips_all() {
     let td = tempdir().expect("tempdir");
-    create_single_crate_workspace(td.path());
+    create_workspace(td.path());
     let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
 
-    // Registry returns 200 for version check (already published)
-    // Provide a couple extra requests in case readiness checks happen
-    let registry = spawn_registry(vec![200], 4);
+    // Registry returns 200 for each version check (already published).
+    let registry = spawn_registry(vec![200, 200, 200], 3);
     let state_dir = td.path().join(".shipper");
+    let publish_log = td.path().join("publish.log");
 
     let output = shipper_cmd()
         .arg("--manifest-path")
@@ -753,11 +787,14 @@ fn publish_when_already_published_skips_all() {
         .arg("1")
         .arg("--state-dir")
         .arg(&state_dir)
+        .arg("--format")
+        .arg("json")
         .arg("publish")
         .env("PATH", &new_path)
         .env("REAL_CARGO", &real_cargo)
         .env("SHIPPER_CARGO_BIN", &fake_cargo)
         .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+        .env("SHIPPER_FAKE_PUBLISH_LOG", &publish_log)
         .assert()
         .success()
         .get_output()
@@ -765,26 +802,192 @@ fn publish_when_already_published_skips_all() {
         .clone();
 
     let stdout = String::from_utf8(output).expect("utf8");
+    let report: serde_json::Value =
+        serde_json::from_str(&stdout).expect("publish stdout should be command JSON");
+    let report_packages = report["packages"].as_array().expect("report packages");
 
-    // Should indicate the package was skipped (already published)
+    assert_eq!(report_packages.len(), 3, "all packages should be reported");
+    for package in ["core", "utils", "app"] {
+        assert_eq!(
+            command_package_state(report_packages, package),
+            "skipped",
+            "{package} should be skipped in publish JSON"
+        );
+    }
+    assert!(
+        read_publish_log(&publish_log).is_empty(),
+        "cargo publish must not run when every version already exists"
+    );
+
     let receipt: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(state_dir.join("receipt.json")).expect("read receipt"),
     )
     .expect("parse");
     let packages = receipt["packages"].as_array().expect("packages");
-    assert_eq!(packages.len(), 1);
+    assert_eq!(packages.len(), 3, "all packages should be in receipt");
+    for package in ["core", "utils", "app"] {
+        assert_eq!(
+            receipt_package_state(packages, package),
+            "skipped",
+            "{package} should be skipped in receipt"
+        );
+    }
 
-    // The package should be skipped (already published) rather than published again
-    let pkg_state = packages[0]["state"]["state"].as_str().expect("state");
+    registry.join();
+}
+
+#[test]
+fn publish_mixed_existing_and_missing_publishes_missing_only() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
+
+    // core exists; utils and app are missing and become visible after publish.
+    let registry = spawn_registry(vec![200, 404, 200, 404, 200], 5);
+    let state_dir = td.path().join(".shipper");
+    let publish_log = td.path().join("publish.log");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("--verify-timeout")
+        .arg("0ms")
+        .arg("--verify-poll")
+        .arg("0ms")
+        .arg("--max-attempts")
+        .arg("1")
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--format")
+        .arg("json")
+        .arg("publish")
+        .env("PATH", &new_path)
+        .env("REAL_CARGO", &real_cargo)
+        .env("SHIPPER_CARGO_BIN", &fake_cargo)
+        .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+        .env("SHIPPER_FAKE_PUBLISH_LOG", &publish_log)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    let report: serde_json::Value =
+        serde_json::from_str(&stdout).expect("publish stdout should be command JSON");
+    let report_packages = report["packages"].as_array().expect("report packages");
+
+    assert_eq!(command_package_state(report_packages, "core"), "skipped");
+    assert_eq!(command_package_state(report_packages, "utils"), "published");
+    assert_eq!(command_package_state(report_packages, "app"), "published");
+
+    let publish_log = read_publish_log(&publish_log);
+    assert_eq!(
+        publish_log.len(),
+        2,
+        "only missing package versions should invoke cargo publish"
+    );
     assert!(
-        pkg_state == "skipped" || pkg_state == "published",
-        "already-published package should be skipped or marked published, got: {pkg_state}"
+        publish_log[0].contains("-p utils"),
+        "utils should publish after skipped core, log: {publish_log:?}"
+    );
+    assert!(
+        publish_log[1].contains("-p app"),
+        "app should publish after utils, log: {publish_log:?}"
+    );
+    assert!(
+        publish_log.iter().all(|line| !line.contains("-p core")),
+        "already-published core must not invoke cargo publish, log: {publish_log:?}"
     );
 
-    // stdout should mention the package was skipped or already published
+    let receipt: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(state_dir.join("receipt.json")).expect("read receipt"),
+    )
+    .expect("parse receipt");
+    let packages = receipt["packages"].as_array().expect("receipt packages");
+    assert_eq!(receipt_package_state(packages, "core"), "skipped");
+    assert_eq!(receipt_package_state(packages, "utils"), "published");
+    assert_eq!(receipt_package_state(packages, "app"), "published");
+
+    registry.join();
+}
+
+#[test]
+fn publish_mixed_existing_and_missing_failure_records_failed_package() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
+
+    // core exists; utils is missing, cargo publish fails, registry confirms absent.
+    let registry = spawn_registry(vec![200, 404, 404], 3);
+    let state_dir = td.path().join(".shipper");
+    let publish_log = td.path().join("publish.log");
+
+    shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("--verify-timeout")
+        .arg("0ms")
+        .arg("--verify-poll")
+        .arg("0ms")
+        .arg("--max-attempts")
+        .arg("1")
+        .arg("--base-delay")
+        .arg("0ms")
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("publish")
+        .env("PATH", &new_path)
+        .env("REAL_CARGO", &real_cargo)
+        .env("SHIPPER_CARGO_BIN", &fake_cargo)
+        .env("SHIPPER_FAKE_PUBLISH_EXIT", "1")
+        .env(
+            "SHIPPER_FAKE_PUBLISH_STDERR",
+            "error: not authorized to publish this crate",
+        )
+        .env("SHIPPER_FAKE_PUBLISH_LOG", &publish_log)
+        .assert()
+        .failure();
+
+    let publish_log = read_publish_log(&publish_log);
+    assert_eq!(
+        publish_log.len(),
+        1,
+        "failure should stop after first missing package publish attempt"
+    );
     assert!(
-        stdout.contains("Skipped") || stdout.contains("skipped") || stdout.contains("already"),
-        "output should indicate package was skipped or already published"
+        publish_log[0].contains("-p utils"),
+        "utils should be the failed publish attempt, log: {publish_log:?}"
+    );
+    assert!(
+        !publish_log[0].contains("-p core") && !publish_log[0].contains("-p app"),
+        "already-published and downstream packages must not be published, log: {publish_log:?}"
+    );
+
+    let state: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(state_dir.join("state.json")).expect("read state"),
+    )
+    .expect("parse state");
+    assert_eq!(
+        state["packages"]["core@0.1.0"]["state"]["state"].as_str(),
+        Some("skipped"),
+        "already-published core should be recorded as skipped"
+    );
+    assert_eq!(
+        state["packages"]["utils@0.1.0"]["state"]["state"].as_str(),
+        Some("failed"),
+        "failed missing package should be recorded as failed"
+    );
+    assert_eq!(
+        state["packages"]["app@0.1.0"]["state"]["state"].as_str(),
+        Some("pending"),
+        "downstream package should remain pending after upstream failure"
     );
 
     registry.join();
