@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-pub
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/release-operator-visibility-and-survive-proof.md
 Linked issues: #96; #105; #109
-Linked PRs: #338; #340; #342
+Linked PRs: #338; #340; #342; #360
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: no new policy exceptions
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
