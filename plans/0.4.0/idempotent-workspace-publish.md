@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md; docs/adr/SHIPPER-ADR-0002-registry-truth-over-cargo-output.md
 Linked plan: plans/0.4.0/release-readiness-proof.md
 Linked issues: #109
-Linked PRs: #339, #355, #356, #357, #358
+Linked PRs: #339, #355, #356, #357, #358, #359
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: no new policy exceptions
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -165,7 +165,7 @@ receipt authority confusingly.
 Linked spec: docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md
 Blocks:
 Blocked by: PR 2; PR 3 if needed
-Status: complete (#358 and follow-up status promotion)
+Status: complete (#358, #359)
 
 #### Goal
 

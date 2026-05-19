@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0003-registry-reconciliation.md; docs/spec
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md; docs/adr/SHIPPER-ADR-0002-registry-truth-over-cargo-output.md
 Linked plan: plans/0.4.0/idempotent-workspace-publish.md
 Linked issues: #109
-Linked PRs: #339, #355, #356, #357, #358
+Linked PRs: #339, #355, #356, #357, #358, #359
 Support-tier impact: publish contract + CI behavior surface
 Policy impact: none
 Proof commands: cargo test -p shipper-cli --test bdd_publish --locked; cargo test -p shipper-cli --test e2e_publish --locked; cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report
