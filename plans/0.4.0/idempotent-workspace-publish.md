@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md; docs/adr/SHIPPER-ADR-0002-registry-truth-over-cargo-output.md
 Linked plan: plans/0.4.0/release-readiness-proof.md
 Linked issues: #109
-Linked PRs: #339
+Linked PRs: #339, #355, #356, #357, #358
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: no new policy exceptions
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -39,7 +39,7 @@ change because Cargo registries enforce `name@version` uniqueness.
 Linked spec: docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md
 Blocks: PR 2
 Blocked by:
-Status: active
+Status: complete (#355)
 
 #### Goal
 
@@ -81,7 +81,7 @@ superseded before follow-up proof work depends on it.
 Linked spec: docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md
 Blocks: PR 3
 Blocked by: PR 1
-Status: ready
+Status: complete (#356)
 
 #### Goal
 
@@ -124,7 +124,7 @@ spec or weakens publish failure handling.
 Linked spec: docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md
 Blocks: PR 4
 Blocked by: PR 2
-Status: planned
+Status: complete (#357)
 
 #### Goal
 
@@ -165,7 +165,7 @@ receipt authority confusingly.
 Linked spec: docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md
 Blocks:
 Blocked by: PR 2; PR 3 if needed
-Status: planned
+Status: complete (#358 and follow-up status promotion)
 
 #### Goal
 

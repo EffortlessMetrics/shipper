@@ -1,6 +1,6 @@
 id = "shipper-idempotent-workspace-publish"
 title = "Idempotent workspace publish proof"
-status = "active"
+status = "complete"
 owner = "EffortlessMetrics"
 created = "2026-05-19"
 
@@ -21,7 +21,7 @@ end_state = [
 
 [[work_item]]
 id = "idempotent-source-of-truth"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
 plan = "plans/0.4.0/idempotent-workspace-publish.md"
@@ -37,7 +37,7 @@ commands = [
 
 [[work_item]]
 id = "idempotent-publish-regression-suite"
-status = "ready"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
 plan = "plans/0.4.0/idempotent-workspace-publish.md"
@@ -52,7 +52,7 @@ commands = [
 
 [[work_item]]
 id = "publish-rerun-posture-evidence"
-status = "planned"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
 plan = "plans/0.4.0/idempotent-workspace-publish.md"
@@ -64,7 +64,7 @@ commands = [
 
 [[work_item]]
 id = "idempotent-support-tier-promotion"
-status = "planned"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md"
 plan = "plans/0.4.0/idempotent-workspace-publish.md"
