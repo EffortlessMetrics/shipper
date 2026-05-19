@@ -113,14 +113,21 @@ These are proven today:
   fix_forward_json_format_emits_schema_version` proves `shipper fix-forward
   --format json` emits a command-owned `shipper.fix_forward.v1` envelope with
   top-level fix-forward plan fields plus `schema_version` and `command`.
+- `cargo test -p shipper-cli --test e2e_expanded --locked
+  remediate_dry_run_writes_remediation_plan_artifact` proves `shipper
+  remediate --dry-run` writes `.shipper/remediation-plan.json` as a
+  `shipper.remediation_plan.v1` artifact with source receipt, target
+  crate/version, affected packages, yank order, fix-forward suggestions, risk
+  notes, and command sequence. Operator-supplied remediation reason text is
+  deliberately omitted from the durable artifact and represented as a
+  placeholder in generated commands.
 
 These are not proven by this map and must not be promoted yet:
 
 - end-to-end CLI execution of `shipper yank`, `shipper yank --plan`,
-  or future `shipper remediate`
+  or non-dry-run `shipper remediate`
 - targeted `PackageYanked` event serialization or event-log tests
-- `.shipper/remediation-plan.json` artifact emission; the current
-  command-owned envelopes are stdout contracts only
+- guarded execution from `.shipper/remediation-plan.json`
 - guarded live yank execution beyond fake Cargo/unit-level proof
 
 ## Acceptance Examples
@@ -135,6 +142,9 @@ These are not proven by this map and must not be promoted yet:
   successor versions to create without editing manifests or publishing.
 - Given a direct `shipper yank --mark-compromised`, the matching receipt entry
   gains compromise metadata and the event log records `PackageYanked`.
+- Given a target crate/version and operator reason, `shipper remediate
+  --dry-run` writes `.shipper/remediation-plan.json`, points human output to
+  that artifact, and records no token values.
 
 ## Test Mapping
 
@@ -151,6 +161,7 @@ Expected proof:
 - `cargo test -p shipper-cli --test e2e_expanded --locked help_fix_forward_snapshot`
 - `cargo test -p shipper-cli --test e2e_expanded --locked plan_yank_json_format_emits_schema_version`
 - `cargo test -p shipper-cli --test e2e_expanded --locked fix_forward_json_format_emits_schema_version`
+- `cargo test -p shipper-cli --test e2e_expanded --locked remediate_dry_run_writes_remediation_plan_artifact`
 - `cargo xtask check-doc-contracts --mode advisory`
 - `cargo xtask policy-report`
 
@@ -188,7 +199,7 @@ Support-tier claims may move only when the named proof exists:
 
 ## Open Questions
 
-- Should `.shipper/remediation-plan.json` be produced by `plan-yank`,
-  `fix-forward`, or a future `remediate --dry-run` command?
+- Should future guarded execution read `.shipper/remediation-plan.json`
+  directly, or require an explicit reviewed-plan copy?
 - Should receipt history lookup be a separate command before guarded yank
   execution is promoted?

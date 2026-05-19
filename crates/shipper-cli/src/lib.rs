@@ -564,6 +564,51 @@ EXAMPLES:
         #[arg(long, value_name = "PATH")]
         from_receipt: Option<PathBuf>,
     },
+    /// Generate a receipt-driven remediation dry-run artifact.
+    ///
+    /// Reads a prior `receipt.json`, targets a specific bad crate version,
+    /// computes the affected reverse-topological yank order and
+    /// publish-directional fix-forward suggestions, then writes
+    /// `<state_dir>/remediation-plan.json` for operator review.
+    ///
+    /// **Dry-run only.** This command does NOT invoke `cargo yank`, edit
+    /// manifests, or publish fix-forward successors.
+    #[command(
+        name = "remediate",
+        long_about = "\
+Generate a receipt-driven remediation dry-run artifact.
+
+Reads a prior `receipt.json`, targets a specific bad crate version, computes
+the affected reverse-topological yank order and publish-directional
+fix-forward suggestions, then writes `<state-dir>/remediation-plan.json` for
+operator review and agent consumption.
+
+This is planning only. It does NOT invoke `cargo yank`, edit manifests, or
+publish fix-forward successors.
+
+EXAMPLES:
+    shipper remediate --dry-run --from-receipt .shipper/receipt.json --crate bad-crate --target-version 0.4.0 --reason \"CVE-2026-0001\"
+"
+    )]
+    Remediate {
+        /// Path to the receipt to derive the remediation plan from. Defaults
+        /// to `<state_dir>/receipt.json` when omitted.
+        #[arg(long, value_name = "PATH")]
+        from_receipt: Option<PathBuf>,
+        /// Bad crate name to contain and fix-forward.
+        #[arg(long = "crate", value_name = "NAME")]
+        crate_name: String,
+        /// Bad crate version in the source receipt.
+        #[arg(long = "target-version", value_name = "VERSION")]
+        target_version: String,
+        /// Operator-supplied reason recorded in the artifact and command list.
+        #[arg(long, value_name = "REASON")]
+        reason: String,
+        /// Required for now: generate the remediation artifact without
+        /// executing yanks, editing manifests, or publishing successors.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Configuration file management.
     #[command(subcommand)]
     Config(ConfigCommands),
@@ -1481,6 +1526,51 @@ pub fn run() -> Result<()> {
                 }
             }
         }
+        Commands::Remediate {
+            from_receipt,
+            crate_name,
+            target_version,
+            reason,
+            dry_run,
+        } => {
+            use shipper_core::engine::{plan_yank, remediation};
+            use shipper_core::runtime::execution::resolve_state_dir;
+
+            if !dry_run {
+                bail!("remediate currently supports planning only; rerun with --dry-run");
+            }
+
+            let state_dir = resolve_state_dir(&planned.workspace_root, &opts.state_dir);
+            let receipt_path = from_receipt
+                .unwrap_or_else(|| shipper_core::state::execution_state::receipt_path(&state_dir));
+            let receipt = plan_yank::load_receipt_from_path(&receipt_path).with_context(|| {
+                "remediate needs a readable receipt; default path is \
+                 <state_dir>/receipt.json. Pass --from-receipt <path> to \
+                 override."
+                    .to_string()
+            })?;
+
+            let plan = remediation::build_dry_run_plan(
+                &receipt,
+                &planned.plan.dependencies,
+                &receipt_path,
+                &crate_name,
+                &target_version,
+                &reason,
+            )?;
+            let artifact_path = remediation::write_dry_run_artifact(&state_dir, &plan)?;
+
+            match cli.format.as_str() {
+                "json" => {
+                    let out = serde_json::to_string_pretty(&plan)
+                        .context("failed to serialize remediation dry-run plan as JSON")?;
+                    println!("{out}");
+                }
+                _ => {
+                    println!("{}", remediation::render_text(&plan, &artifact_path));
+                }
+            }
+        }
         Commands::Clean { keep_receipt } => {
             run_clean(
                 &opts.state_dir,
@@ -1639,6 +1729,7 @@ fn command_name_for_hint(command: &Commands) -> &'static str {
         Commands::Yank { .. } => "yank",
         Commands::PlanYank { .. } => "plan-yank",
         Commands::FixForward { .. } => "fix-forward",
+        Commands::Remediate { .. } => "remediate",
         Commands::Config(_) => "config",
         Commands::Completion { .. } => "completion",
     }
