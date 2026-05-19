@@ -5,7 +5,7 @@ Owner: EffortlessMetrics
 Created: 2026-05-13
 Milestone: 0.4.0
 Linked proposal: docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md
-Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md; docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md; docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md
+Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md; docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md; docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md; docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Linked ADRs:
 Linked plan:
 Linked issues: #109, #195
@@ -61,6 +61,7 @@ make stronger claims than this file supports.
 | Release auth workflow proof artifact | stable/internal | GitHub Actions `Release` workflow run `26072938626` uploaded `shipper-rehearse-26072938626` with `.shipper/auth-evidence.json`; the artifact records `shipper.release_auth_evidence.v1`, `auth_action.outcome = "failure"`, `fallback.configured = true`, `fallback.used = true`, and `selected_token_source = "fallback_secret"` without token values; proves current fallback evidence only, not Trusted Publishing default | release/ci |
 | Long-lived token fallback warnings | advisory | `docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md`; `cargo test -p shipper-core run_preflight_warns_when_token_auth_overrides_oidc --lib`; `cargo test -p shipper-cli --test cli_e2e doctor_command_warns_when_token_fallback_is_configured`; warns when Cargo token auth wins while Trusted Publishing signals or fallback config are present | release/ci |
 | Trusted Publishing default | planned/advisory | `docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md`; `plans/0.4.0/release-auth-evidence-and-trusted-publishing.md`; promote only after release evidence proves the short-lived-token path is the normal path and token fallback state is explicit | release/ci |
+| Receipt-driven remediation | planned/advisory | `docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md`; `plans/0.4.0/receipt-driven-remediation.md`; current code includes `yank`, `plan-yank`, and `fix-forward` surfaces, but support-tier promotion waits for a proof-map PR that names exact tests, JSON/artifact status, and guarded-execution boundaries | engine/cli |
 
 ## Rules
 

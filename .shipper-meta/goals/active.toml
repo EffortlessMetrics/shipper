@@ -1,33 +1,32 @@
-id = "shipper-release-auth-evidence"
-title = "Release auth evidence and Trusted Publishing"
-status = "complete"
+id = "shipper-receipt-driven-remediation"
+title = "Receipt-driven remediation"
+status = "active"
 owner = "EffortlessMetrics"
-created = "2026-05-18"
+created = "2026-05-19"
 
 objective = """
-Make Shipper's release authentication posture evidence-backed: Doctor,
-preflight, publish/resume, events, receipts, release workflows, and support
-tiers should distinguish Trusted Publishing, token fallback, missing auth, and
-externally unproven crates.io registration without exposing token values.
+Make Shipper's Remediate pillar spec-addressable and evidence-backed:
+yank containment, reverse-topological yank planning, fix-forward planning,
+remediation artifacts, support-tier claims, and future guarded execution must
+link to proof instead of stale issue prose.
 """
 
 end_state = [
-  "The active goal points to the accepted auth evidence spec and plan.",
-  "Observed auth mode is visible in release evidence without token values or token-provenance overclaims.",
-  "Trusted Publishing workflow proof records whether short-lived token minting succeeded or fallback was used.",
-  "Support tiers distinguish advisory diagnostics from a proven Trusted Publishing default.",
+  "The active goal points to the accepted remediation spec and plan.",
+  "Existing remediation behavior is mapped to proof commands before support-tier promotion.",
+  "Remediation JSON/artifact surfaces are either versioned or explicitly advisory.",
+  "Full mechanical remediation remains planned until dry-run artifacts and guarded execution are proven.",
 ]
 
 [[work_item]]
-id = "auth-evidence-source-of-truth"
-status = "complete"
+id = "remediation-source-of-truth"
+status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
-plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
-issue = "105"
-linked_pr = "#338"
-completed = "2026-05-18"
+spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
+plan = "plans/0.4.0/receipt-driven-remediation.md"
+issue = "104"
 commands = [
+  "python -c \"import pathlib,tomllib; tomllib.loads(pathlib.Path('.shipper-meta/goals/active.toml').read_text()); print('active goal TOML parses')\"",
   "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask check-file-policy --mode blocking-allowlist",
   "cargo xtask policy-report",
@@ -36,54 +35,46 @@ commands = [
 ]
 
 [[work_item]]
-id = "auth-mode-release-evidence"
-status = "complete"
+id = "remediation-existing-proof-map"
+status = "ready"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
-plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
-issue = "105"
-linked_pr = "#340"
-completed = "2026-05-18"
+spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
+plan = "plans/0.4.0/receipt-driven-remediation.md"
+issue = "104"
 commands = [
-  "cargo test -p shipper-core run_preflight_warns_when_token_auth_overrides_oidc --lib --locked",
-  "cargo test -p shipper-core collect_auth_evidence --lib --locked",
-  "cargo test -p shipper-core run_publish_receipt_contains_evidence_after_success --lib --locked",
-  "cargo test -p shipper-core event_types_serialize_correctly --lib --locked",
-  "cargo test -p shipper-output-sanitizer --locked",
-  "cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_command_envelope_to_stdout --locked",
+  "cargo test -p shipper-core plan_yank --lib --locked",
+  "cargo test -p shipper-core fix_forward --lib --locked",
+  "cargo test -p shipper-core cargo_yank --lib --locked",
+  "cargo test -p shipper-cli --test e2e_expanded --locked",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
   "git diff --check",
 ]
 
 [[work_item]]
-id = "trusted-publishing-proof-artifact"
-status = "complete"
+id = "remediation-json-contract"
+status = "planned"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
-plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
-issue = "105"
-linked_pr = "#342"
-completed = "2026-05-19"
+spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
+plan = "plans/0.4.0/receipt-driven-remediation.md"
+issue = "104"
 commands = [
-  "Release workflow run 26072938626, artifact shipper-rehearse-26072938626, file .shipper/auth-evidence.json",
-  "cargo xtask check-workflow-surfaces --mode advisory",
-  "cargo xtask check-process-policy --mode advisory",
-  "cargo xtask check-network-policy --mode advisory",
+  "focused JSON output tests for the chosen remediation command surface",
+  "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
   "git diff --check",
 ]
 
 [[work_item]]
-id = "auth-support-tier-promotion"
-status = "complete"
+id = "remediation-dry-run-artifact"
+status = "planned"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
-spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
-plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
-issue = "105"
-completed = "2026-05-19"
+spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
+plan = "plans/0.4.0/receipt-driven-remediation.md"
+issue = "104"
 commands = [
-  "cargo xtask check-doc-contracts --mode advisory",
+  "focused CLI/integration tests for artifact generation",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
   "git diff --check",
