@@ -37,11 +37,12 @@ commands = [
 
 [[work_item]]
 id = "remediation-existing-proof-map"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
 plan = "plans/0.4.0/receipt-driven-remediation.md"
 issue = "104"
+linked_pr = "#345"
 commands = [
   "cargo test -p shipper-core plan_yank --lib --locked",
   "cargo test -p shipper-core fix_forward --lib --locked",
@@ -60,7 +61,7 @@ commands = [
 
 [[work_item]]
 id = "remediation-json-contract"
-status = "planned"
+status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
 plan = "plans/0.4.0/receipt-driven-remediation.md"

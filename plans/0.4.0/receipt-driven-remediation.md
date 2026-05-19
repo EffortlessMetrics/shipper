@@ -9,7 +9,7 @@ Linked specs: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
 Linked plan: plans/0.4.0/release-readiness-proof.md
 Linked issues: #98; #104; #109
-Linked PRs: #344
+Linked PRs: #344; #345
 Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: no new policy exceptions
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
@@ -77,7 +77,7 @@ lane is superseded before follow-up proof work depends on it.
 Linked spec: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Blocks: PR 3
 Blocked by: PR 1
-Status: active
+Status: landed in #345
 
 #### Goal
 
@@ -128,6 +128,7 @@ claim.
 Linked spec: docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Blocks: PR 4
 Blocked by: PR 2
+Status: active
 
 #### Goal
 
