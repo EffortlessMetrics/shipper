@@ -207,6 +207,21 @@ pub fn write_dry_run_artifact(state_dir: &Path, plan: &RemediationPlan) -> Resul
     Ok(path)
 }
 
+pub fn load_plan_from_path(path: &Path) -> Result<RemediationPlan> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("failed to open remediation plan {}", path.display()))?;
+    let plan: RemediationPlan = serde_json::from_reader(file)
+        .with_context(|| format!("failed to parse remediation plan {}", path.display()))?;
+    if plan.schema_version != REMEDIATION_PLAN_SCHEMA_VERSION {
+        bail!(
+            "unsupported remediation plan schema_version '{}'; expected '{}'",
+            plan.schema_version,
+            REMEDIATION_PLAN_SCHEMA_VERSION
+        );
+    }
+    Ok(plan)
+}
+
 pub fn render_text(plan: &RemediationPlan, artifact_path: &Path) -> String {
     let mut out = String::new();
     out.push_str("Remediation dry-run plan\n");

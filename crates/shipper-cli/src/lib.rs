@@ -564,50 +564,72 @@ EXAMPLES:
         #[arg(long, value_name = "PATH")]
         from_receipt: Option<PathBuf>,
     },
-    /// Generate a receipt-driven remediation dry-run artifact.
+    /// Generate or execute a receipt-driven remediation plan.
     ///
-    /// Reads a prior `receipt.json`, targets a specific bad crate version,
-    /// computes the affected reverse-topological yank order and
-    /// publish-directional fix-forward suggestions, then writes
-    /// `<state_dir>/remediation-plan.json` for operator review.
+    /// In `--dry-run` mode, reads a prior `receipt.json`, targets a
+    /// specific bad crate version, computes the affected reverse-topological
+    /// yank order and publish-directional fix-forward suggestions, then
+    /// writes `<state_dir>/remediation-plan.json` for operator review.
     ///
-    /// **Dry-run only.** This command does NOT invoke `cargo yank`, edit
-    /// manifests, or publish fix-forward successors.
+    /// In `--execute-plan` mode, reads a reviewed remediation plan and invokes
+    /// only the containment yanks in the recorded order. It does not edit
+    /// manifests or publish fix-forward successors.
     #[command(
         name = "remediate",
         long_about = "\
-Generate a receipt-driven remediation dry-run artifact.
+Generate or execute a receipt-driven remediation plan.
 
-Reads a prior `receipt.json`, targets a specific bad crate version, computes
-the affected reverse-topological yank order and publish-directional
-fix-forward suggestions, then writes `<state-dir>/remediation-plan.json` for
-operator review and agent consumption.
+In `--dry-run` mode, reads a prior `receipt.json`, targets a specific bad
+crate version, computes the affected reverse-topological yank order and
+publish-directional fix-forward suggestions, then writes
+`<state-dir>/remediation-plan.json` for operator review and agent consumption.
 
-This is planning only. It does NOT invoke `cargo yank`, edit manifests, or
-publish fix-forward successors.
+In `--execute-plan` mode, consumes that reviewed artifact and executes only the
+recorded containment yanks. It does NOT edit manifests or publish fix-forward
+successors.
 
 EXAMPLES:
     shipper remediate --dry-run --from-receipt .shipper/receipt.json --crate bad-crate --target-version 0.4.0 --reason \"CVE-2026-0001\"
+    shipper remediate --execute-plan .shipper/remediation-plan.json
 "
     )]
     Remediate {
         /// Path to the receipt to derive the remediation plan from. Defaults
         /// to `<state_dir>/receipt.json` when omitted.
-        #[arg(long, value_name = "PATH")]
+        #[arg(long, value_name = "PATH", conflicts_with = "execute_plan")]
         from_receipt: Option<PathBuf>,
         /// Bad crate name to contain and fix-forward.
-        #[arg(long = "crate", value_name = "NAME")]
-        crate_name: String,
+        #[arg(
+            long = "crate",
+            value_name = "NAME",
+            required_unless_present = "execute_plan",
+            conflicts_with = "execute_plan"
+        )]
+        crate_name: Option<String>,
         /// Bad crate version in the source receipt.
-        #[arg(long = "target-version", value_name = "VERSION")]
-        target_version: String,
+        #[arg(
+            long = "target-version",
+            value_name = "VERSION",
+            required_unless_present = "execute_plan",
+            conflicts_with = "execute_plan"
+        )]
+        target_version: Option<String>,
         /// Operator-supplied reason recorded in the artifact and command list.
-        #[arg(long, value_name = "REASON")]
-        reason: String,
+        #[arg(
+            long,
+            value_name = "REASON",
+            required_unless_present = "execute_plan",
+            conflicts_with = "execute_plan"
+        )]
+        reason: Option<String>,
         /// Required for now: generate the remediation artifact without
         /// executing yanks, editing manifests, or publishing successors.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "execute_plan")]
         dry_run: bool,
+        /// Execute a reviewed remediation plan artifact. Runs only the
+        /// recorded containment yanks and halts on the first failed yank.
+        #[arg(long = "execute-plan", value_name = "PATH")]
+        execute_plan: Option<PathBuf>,
     },
     /// Configuration file management.
     #[command(subcommand)]
@@ -1532,13 +1554,120 @@ pub fn run() -> Result<()> {
             target_version,
             reason,
             dry_run,
+            execute_plan,
         } => {
+            use shipper_core::cargo;
             use shipper_core::engine::{plan_yank, remediation};
             use shipper_core::runtime::execution::resolve_state_dir;
+            use shipper_core::state::events::{EventLog, events_path};
+
+            if let Some(plan_path) = execute_plan {
+                let plan = remediation::load_plan_from_path(&plan_path)?;
+                let state_dir = resolve_state_dir(&planned.workspace_root, &opts.state_dir);
+                let events_file = events_path(&state_dir);
+                let registry_name = opts
+                    .registries
+                    .first()
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| plan.registry.clone());
+
+                reporter.warn(&format!(
+                    "executing reviewed remediation plan: {} containment yanks for {}@{} (plan_id {})",
+                    plan.yank_order.len(),
+                    plan.target.crate_name,
+                    plan.target.version,
+                    plan.plan_id
+                ));
+                reporter.warn(
+                    "remediate --execute-plan runs yanks only; fix-forward suggestions remain planning output",
+                );
+
+                let mut succeeded = 0usize;
+                for (idx, step) in plan.yank_order.iter().enumerate() {
+                    let event_reason = remediation::REDACTED_OPERATOR_REASON.to_string();
+                    reporter.warn(&format!(
+                        "[{}/{}] yanking {}@{} from {}",
+                        idx + 1,
+                        plan.yank_order.len(),
+                        step.name,
+                        step.version,
+                        registry_name
+                    ));
+
+                    let out = cargo::cargo_yank(
+                        &planned.workspace_root,
+                        step.name.as_str(),
+                        step.version.as_str(),
+                        registry_name.as_str(),
+                        opts.output_lines,
+                        None,
+                    )?;
+
+                    let mut log = EventLog::new();
+                    log.record(PublishEvent {
+                        timestamp: chrono::Utc::now(),
+                        event_type: EventType::PackageYanked {
+                            crate_name: step.name.clone(),
+                            version: step.version.clone(),
+                            reason: event_reason,
+                            exit_code: out.exit_code,
+                        },
+                        package: format!("{}@{}", step.name, step.version),
+                    });
+                    if let Err(err) = log.write_to_file(&events_file) {
+                        reporter.warn(&format!(
+                            "failed to append PackageYanked event to {}: {err:#}",
+                            events_file.display()
+                        ));
+                    }
+
+                    if out.exit_code == 0 {
+                        succeeded += 1;
+                        reporter.info(&format!(
+                            "[{}/{}] yanked {}@{}",
+                            idx + 1,
+                            plan.yank_order.len(),
+                            step.name,
+                            step.version
+                        ));
+                    } else {
+                        reporter.error(&format!(
+                            "[{}/{}] cargo yank exited {} for {}@{}. stderr tail:\n{}",
+                            idx + 1,
+                            plan.yank_order.len(),
+                            out.exit_code,
+                            step.name,
+                            step.version,
+                            out.stderr_tail
+                        ));
+                        anyhow::bail!(
+                            "remediation plan failed at {}@{}; {succeeded}/{} containment yanks succeeded before halt",
+                            step.name,
+                            step.version,
+                            plan.yank_order.len()
+                        );
+                    }
+                }
+
+                reporter.info(&format!(
+                    "remediation containment complete: {succeeded}/{} yanks executed successfully",
+                    plan.yank_order.len()
+                ));
+                return Ok(());
+            }
 
             if !dry_run {
                 bail!("remediate currently supports planning only; rerun with --dry-run");
             }
+            let crate_name = crate_name.ok_or_else(|| {
+                anyhow::anyhow!("--crate is required when --execute-plan is not supplied")
+            })?;
+            let target_version = target_version.ok_or_else(|| {
+                anyhow::anyhow!("--target-version is required when --execute-plan is not supplied")
+            })?;
+            let reason = reason.ok_or_else(|| {
+                anyhow::anyhow!("--reason is required when --execute-plan is not supplied")
+            })?;
 
             let state_dir = resolve_state_dir(&planned.workspace_root, &opts.state_dir);
             let receipt_path = from_receipt

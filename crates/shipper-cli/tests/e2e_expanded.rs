@@ -2,7 +2,7 @@
 //! clean, completion, CI subcommands, error output, and snapshot stability.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 
 use assert_cmd::Command;
@@ -339,6 +339,104 @@ fn write_remediation_receipt(path: &Path) {
 }
 "#,
     );
+}
+
+fn write_fake_yank_cargo(path: &Path, fail_yanks: bool) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let fake = path.join("fake-cargo.cmd");
+        let yank_exit = if fail_yanks {
+            "echo fake yank failure for %~2 1>&2\r\n  exit /b 55"
+        } else {
+            "exit /b 0"
+        };
+        write_file(
+            &fake,
+            &format!(
+                r#"@echo off
+setlocal enabledelayedexpansion
+echo %*>>"%SHIPPER_FAKE_CARGO_LOG%"
+if "%~1"=="yank" (
+  {yank_exit}
+)
+echo unexpected cargo command %* 1>&2
+exit /b 64
+"#,
+            ),
+        );
+        fake
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fake = path.join("fake-cargo");
+        let yank_exit = if fail_yanks {
+            "printf '%s\\n' \"fake yank failure for $2\" >&2\n    exit 55"
+        } else {
+            "exit 0"
+        };
+        write_file(
+            &fake,
+            &format!(
+                r#"#!/usr/bin/env sh
+printf '%s\n' "$*" >> "$SHIPPER_FAKE_CARGO_LOG"
+if [ "$1" = "yank" ]; then
+  {yank_exit}
+fi
+printf '%s\n' "unexpected cargo command $*" >&2
+exit 64
+"#,
+            ),
+        );
+        let mut perms = fs::metadata(&fake).expect("meta").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake, perms).expect("chmod");
+        fake
+    }
+}
+
+fn write_remediation_dry_run_artifact(
+    root: &Path,
+    state_dir: &Path,
+    receipt_path: &Path,
+) -> PathBuf {
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(root.join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(state_dir)
+        .args([
+            "remediate",
+            "--dry-run",
+            "--from-receipt",
+            receipt_path.to_str().expect("utf8 path"),
+            "--crate",
+            "core-lib",
+            "--target-version",
+            "0.2.0",
+            "--reason",
+            "plain-text incident token secret123",
+        ])
+        .output()
+        .expect("failed to run remediation dry-run");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    state_dir.join("remediation-plan.json")
+}
+
+fn read_jsonl(path: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(path)
+        .expect("read jsonl")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("event JSON line parses"))
+        .collect()
 }
 
 /// Create a workspace with a publish = false crate mixed in.
@@ -1807,6 +1905,184 @@ fn remediate_dry_run_writes_remediation_plan_artifact() {
             .any(|note| note
                 .as_str()
                 .is_some_and(|text| text.contains("Dry-run only")))
+    );
+}
+
+#[test]
+fn remediate_guarded_execution_executes_reviewed_plan_with_fake_cargo() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+    let receipt_path = td.path().join("receipt.json");
+    let state_dir = td.path().join(".shipper");
+    write_remediation_receipt(&receipt_path);
+    let artifact = write_remediation_dry_run_artifact(td.path(), &state_dir, &receipt_path);
+    let fake_cargo = write_fake_yank_cargo(td.path(), false);
+    let fake_log = td.path().join("fake-cargo.log");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .args(["remediate", "--execute-plan"])
+        .arg(&artifact)
+        .env("SHIPPER_CARGO_BIN", &fake_cargo)
+        .env("SHIPPER_FAKE_CARGO_LOG", &fake_log)
+        .output()
+        .expect("failed to run remediation guarded execution");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = fs::read_to_string(&fake_log).expect("read fake cargo log");
+    assert!(
+        calls.contains("yank top-app") && calls.contains("--version=0.4.0"),
+        "top-app yank should run first: {calls}"
+    );
+    assert!(
+        calls.contains("yank core-lib") && calls.contains("--version=0.2.0"),
+        "core-lib yank should run: {calls}"
+    );
+    assert!(
+        calls.find("top-app").expect("top-app call")
+            < calls.find("core-lib").expect("core-lib call"),
+        "containment yanks should run dependents first: {calls}"
+    );
+
+    let events = read_jsonl(&state_dir.join("events.jsonl"));
+    assert_eq!(events.len(), 2, "expected one event per yank: {events:#?}");
+    assert_eq!(
+        events[0]
+            .pointer("/event_type/type")
+            .and_then(|v| v.as_str()),
+        Some("package_yanked")
+    );
+    assert_eq!(
+        events[0]
+            .pointer("/event_type/crate_name")
+            .and_then(|v| v.as_str()),
+        Some("top-app")
+    );
+    assert_eq!(
+        events[1]
+            .pointer("/event_type/crate_name")
+            .and_then(|v| v.as_str()),
+        Some("core-lib")
+    );
+    assert_eq!(
+        events[1]
+            .pointer("/event_type/exit_code")
+            .and_then(|v| v.as_i64()),
+        Some(0)
+    );
+}
+
+#[test]
+fn remediate_guarded_execution_halts_on_failed_yank() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+    let receipt_path = td.path().join("receipt.json");
+    let state_dir = td.path().join(".shipper");
+    write_remediation_receipt(&receipt_path);
+    let artifact = write_remediation_dry_run_artifact(td.path(), &state_dir, &receipt_path);
+    let fake_cargo = write_fake_yank_cargo(td.path(), true);
+    let fake_log = td.path().join("fake-cargo.log");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .args(["remediate", "--execute-plan"])
+        .arg(&artifact)
+        .env("SHIPPER_CARGO_BIN", &fake_cargo)
+        .env("SHIPPER_FAKE_CARGO_LOG", &fake_log)
+        .output()
+        .expect("failed to run remediation guarded execution");
+
+    assert!(
+        !output.status.success(),
+        "execution should fail on the first failed yank"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("remediation plan failed at top-app@0.4.0"),
+        "stderr should name failed step: {stderr}"
+    );
+    let calls = fs::read_to_string(&fake_log).expect("read fake cargo log");
+    assert!(
+        calls.contains("yank top-app") && calls.contains("--version=0.4.0"),
+        "first yank should be attempted: {calls}"
+    );
+    assert!(
+        !calls.contains("core-lib"),
+        "execution should halt before later yanks: {calls}"
+    );
+
+    let events = read_jsonl(&state_dir.join("events.jsonl"));
+    assert_eq!(events.len(), 1, "expected only the failed yank event");
+    assert_eq!(
+        events[0]
+            .pointer("/event_type/crate_name")
+            .and_then(|v| v.as_str()),
+        Some("top-app")
+    );
+    assert_eq!(
+        events[0]
+            .pointer("/event_type/exit_code")
+            .and_then(|v| v.as_i64()),
+        Some(55)
+    );
+}
+
+#[test]
+fn remediate_guarded_execution_redacts_event_reason() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+    let receipt_path = td.path().join("receipt.json");
+    let state_dir = td.path().join(".shipper");
+    write_remediation_receipt(&receipt_path);
+    let artifact = write_remediation_dry_run_artifact(td.path(), &state_dir, &receipt_path);
+    let raw = fs::read_to_string(&artifact).expect("read remediation artifact");
+    fs::write(
+        &artifact,
+        raw.replace(
+            "[OPERATOR_REASON_REDACTED]",
+            "operator secret token secret123",
+        ),
+    )
+    .expect("rewrite artifact");
+    let fake_cargo = write_fake_yank_cargo(td.path(), false);
+    let fake_log = td.path().join("fake-cargo.log");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .args(["remediate", "--execute-plan"])
+        .arg(&artifact)
+        .env("SHIPPER_CARGO_BIN", &fake_cargo)
+        .env("SHIPPER_FAKE_CARGO_LOG", &fake_log)
+        .output()
+        .expect("failed to run remediation guarded execution");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events_raw = fs::read_to_string(state_dir.join("events.jsonl")).expect("read events");
+    assert!(
+        !events_raw.contains("secret123"),
+        "event evidence should not persist reviewed-plan reason text"
+    );
+    assert!(
+        events_raw.contains("[OPERATOR_REASON_REDACTED]"),
+        "event evidence should carry the redacted reason placeholder"
     );
 }
 
