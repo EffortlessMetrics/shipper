@@ -61,11 +61,12 @@ commands = [
 
 [[work_item]]
 id = "remediation-json-contract"
-status = "active"
+status = "complete"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
 plan = "plans/0.4.0/receipt-driven-remediation.md"
 issue = "104"
+linked_pr = "#347"
 commands = [
   "cargo test -p shipper-cli --test e2e_expanded --locked plan_yank_json_format_emits_schema_version",
   "cargo test -p shipper-cli --test e2e_expanded --locked fix_forward_json_format_emits_schema_version",
@@ -77,13 +78,14 @@ commands = [
 
 [[work_item]]
 id = "remediation-dry-run-artifact"
-status = "planned"
+status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
 plan = "plans/0.4.0/receipt-driven-remediation.md"
 issue = "104"
 commands = [
-  "focused CLI/integration tests for artifact generation",
+  "focused CLI/integration tests for .shipper/remediation-plan.json artifact generation",
+  "cargo xtask check-doc-contracts --mode advisory",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
   "git diff --check",
