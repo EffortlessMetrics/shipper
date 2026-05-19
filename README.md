@@ -34,7 +34,7 @@ Shipper is the narrow tool for the middle: versions are already chosen, and you 
 - **Resumable execution**: persists state after each step so interrupted runs can continue without blind duplicate publish attempts.
 - **Ambiguous-result reconciliation**: checks registry truth before retrying after unclear Cargo outcomes.
 - **Evidence packet**: records state, events, receipts, and reconciliation artifacts for CI, operators, and future remediation.
-- **Bounded remediation**: yank planning and fix-forward planning are being promoted as proof-backed surfaces; full mechanical remediation remains bounded until guarded execution proof is stable.
+- **Bounded remediation**: yank planning, fix-forward planning, dry-run artifacts, and guarded fake-Cargo execution are proof-backed surfaces; live crates.io yank and fix-forward execution remain deliberately bounded.
 
 ## Install
 
@@ -90,7 +90,7 @@ A publish run leaves an evidence packet under `.shipper/`:
 | `receipt.json` | Final release receipt. |
 | `reconciliation.json` | Registry-truth evidence for ambiguous outcomes. |
 | `auth-evidence.json` | Workflow auth/fallback evidence when release workflow records it. |
-| `remediation-plan.json` | Future receipt-driven containment/fix-forward plan. |
+| `remediation-plan.json` | Receipt-driven containment/fix-forward plan from `shipper remediate --dry-run`. |
 
 ## Crate surface
 
