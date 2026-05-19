@@ -78,16 +78,36 @@ commands = [
 
 [[work_item]]
 id = "remediation-dry-run-artifact"
+status = "complete"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
+plan = "plans/0.4.0/receipt-driven-remediation.md"
+issue = "104"
+linked_pr = "#349"
+commands = [
+  "cargo test -p shipper-core remediation --lib --locked",
+  "cargo test -p shipper-cli --test e2e_expanded --locked help_remediate_snapshot",
+  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_dry_run_writes_remediation_plan_artifact",
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "remediation-guarded-execution-proof"
 status = "active"
 proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
 spec = "docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md"
 plan = "plans/0.4.0/receipt-driven-remediation.md"
 issue = "104"
 commands = [
+  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_executes_reviewed_plan_with_fake_cargo",
+  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_halts_on_failed_yank",
+  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_redacts_event_reason",
   "cargo test -p shipper-core remediation --lib --locked",
-  "cargo test -p shipper-cli --test e2e_expanded --locked help_remediate_snapshot",
-  "cargo test -p shipper-cli --test e2e_expanded --locked remediate_dry_run_writes_remediation_plan_artifact",
   "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask check-file-policy --mode blocking-allowlist",
   "cargo xtask policy-report",
   "cargo fmt --all -- --check",
   "git diff --check",
