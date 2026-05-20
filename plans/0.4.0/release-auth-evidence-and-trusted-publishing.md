@@ -255,6 +255,12 @@ publication, release tagging, and workflow credential changes.
 - The plan distinguishes the existing fallback proof artifact from the future
   default proof artifact.
 
+#### Result
+
+Complete in #360. The active goal now points to this release-auth spec and plan,
+the idempotent workspace publish goal is archived, and Trusted Publishing
+default remains planned/advisory until short-lived-token proof exists.
+
 #### Proof Commands
 
 - `python -c "import pathlib,tomllib; tomllib.loads(pathlib.Path('.shipper-meta/goals/active.toml').read_text()); print('active goal TOML parses')"`
@@ -297,6 +303,14 @@ configuration, or claiming crates.io registration from repo files alone.
 - The artifact names workflow, run ID, commit, environment, and limits.
 - Token values are omitted.
 - Any crates.io-side registration gap remains explicit.
+
+#### Current Blocker
+
+Blocked on external crates.io trusted-publisher registration evidence. The
+latest recorded release auth proof is workflow run `26072938626`, which uploaded
+`.shipper/auth-evidence.json` with `selected_token_source =
+"fallback_secret"` and the setup gap `No Trusted Publishing config found for
+repository EffortlessMetrics/shipper`.
 
 #### Proof Commands
 

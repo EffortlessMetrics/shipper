@@ -15,7 +15,7 @@ recorded containment yanks. It does NOT edit manifests or publish fix-forward
 successors.
 
 EXAMPLES:
-    shipper remediate --dry-run --from-receipt .shipper/receipt.json --crate bad-crate --target-version 0.4.0 --reason "CVE-2026-0001"
+    shipper remediate --dry-run --from-receipt .shipper/receipt.json --crate bad-crate --target-version [VERSION] --reason "CVE-2026-0001"
     shipper remediate --execute-plan .shipper/remediation-plan.json
 
 

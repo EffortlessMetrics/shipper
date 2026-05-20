@@ -20,7 +20,7 @@ exclude = ["fuzz"]
 resolver = "3"
 
 [workspace.package]
-version = "0.4.0-rc.1"
+version = "0.4.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -61,19 +61,19 @@ disallowed_fields = "deny"
 
 [workspace.dependencies]
 # Intra-workspace crates (path + version for publish-readiness).
-shipper = { path = "crates/shipper", version = "0.4.0-rc.1" }
-shipper-core = { path = "crates/shipper-core", version = "0.4.0-rc.1" }
-shipper-cli = { path = "crates/shipper-cli", version = "0.4.0-rc.1" }
-shipper-config = { path = "crates/shipper-config", version = "0.4.0-rc.1" }
-shipper-types = { path = "crates/shipper-types", version = "0.4.0-rc.1" }
-shipper-duration = { path = "crates/shipper-duration", version = "0.4.0-rc.1" }
-shipper-retry = { path = "crates/shipper-retry", version = "0.4.0-rc.1" }
-shipper-encrypt = { path = "crates/shipper-encrypt", version = "0.4.0-rc.1" }
-shipper-webhook = { path = "crates/shipper-webhook", version = "0.4.0-rc.1" }
-shipper-registry = { path = "crates/shipper-registry", version = "0.4.0-rc.1" }
-shipper-sparse-index = { path = "crates/shipper-sparse-index", version = "0.4.0-rc.1" }
-shipper-cargo-failure = { path = "crates/shipper-cargo-failure", version = "0.4.0-rc.1" }
-shipper-output-sanitizer = { path = "crates/shipper-output-sanitizer", version = "0.4.0-rc.1" }
+shipper = { path = "crates/shipper", version = "0.4.0" }
+shipper-core = { path = "crates/shipper-core", version = "0.4.0" }
+shipper-cli = { path = "crates/shipper-cli", version = "0.4.0" }
+shipper-config = { path = "crates/shipper-config", version = "0.4.0" }
+shipper-types = { path = "crates/shipper-types", version = "0.4.0" }
+shipper-duration = { path = "crates/shipper-duration", version = "0.4.0" }
+shipper-retry = { path = "crates/shipper-retry", version = "0.4.0" }
+shipper-encrypt = { path = "crates/shipper-encrypt", version = "0.4.0" }
+shipper-webhook = { path = "crates/shipper-webhook", version = "0.4.0" }
+shipper-registry = { path = "crates/shipper-registry", version = "0.4.0" }
+shipper-sparse-index = { path = "crates/shipper-sparse-index", version = "0.4.0" }
+shipper-cargo-failure = { path = "crates/shipper-cargo-failure", version = "0.4.0" }
+shipper-output-sanitizer = { path = "crates/shipper-output-sanitizer", version = "0.4.0" }
 
 # External crates.
 serde = { version = "1.0.228", features = ["derive"] }
