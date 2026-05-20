@@ -7,83 +7,144 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-05-19
+## [0.4.0] - 2026-05-20
 
-Stable release of the 0.4.0 release-closure line. This release makes Shipper a
-usable, evidence-backed publishing tool for Rust workspaces whose versions are
-already chosen: it plans the publish graph, proves what can be proven before
-publish, publishes missing `name@version` pairs in dependency order, reconciles
-ambiguous Cargo outcomes against registry truth, resumes from durable state, and
-leaves artifacts operators and agents can inspect.
+Stable release of Shipper's 0.4.0 release-closure line.
+
+Shipper is now an idempotent, evidence-backed publishing tool for Rust
+workspaces whose versions are already chosen. It plans the publish graph,
+proves what can be proven before publish, publishes missing `name@version`
+pairs in dependency order, skips versions already present on the registry,
+reconciles ambiguous Cargo outcomes against registry truth, resumes from
+durable state, and leaves artifacts that operators, CI systems, and agents can
+inspect.
 
 ### Added
 
 - **Idempotent workspace publish.** `shipper publish` now treats registry
   `name@version` truth as the safety boundary: already-published package
-  versions are skipped explicitly, mixed existing/missing workspaces publish the
-  missing versions, and publish JSON/receipts expose package outcomes and
-  artifact paths. Proof is captured in the idempotent publish spec, how-to, and
-  focused `bdd_publish` / `e2e_publish` suites.
-- **Versioned command evidence.** `shipper plan`, `preflight`, `status`,
-  `status --watch`, `doctor`, `publish`, and `resume` expose stable JSON
-  surfaces for CI, IDPs, and agent workflows. Publish and resume now emit
-  command-owned envelopes with package summaries, safety state, and evidence
-  artifact paths.
-- **Release black-box recorder hardening.** Publish state, append-only events,
-  receipts, reconciliation evidence, attempt history, wait/retry/readiness
-  scheduling events, status watch output, event following, finalization drift
-  checks, and state rebuild support are now proof-backed surfaces.
-- **Interruption proof.** In addition to synthetic resume coverage, the release
-  lane now has a live-runner interruption rehearsal artifact proving artifact
-  handoff and safe resume against fake Cargo and a mock registry.
-- **Auth evidence.** Release auth evidence records observed auth mode,
-  Trusted Publishing context, fallback configuration/use, and token-sanitized
-  receipt/event state. Trusted Publishing default remains deliberately
-  unpromoted until crates.io-side registration and short-lived-token release
-  proof exist.
-- **Bounded remediation surfaces.** Receipt-driven yank planning,
-  fix-forward planning, remediation dry-run artifacts, and guarded fake-Cargo
-  execution are available and proof-backed. Live crates.io yank execution and
-  fix-forward publication remain outside the promoted 0.4.0 claim.
-- **Source-of-truth stack.** Proposals, specs, ADRs, plans, active goals,
-  support tiers, doc-contract checks, and policy-report integration now form the
-  claim-to-proof map for release work.
+  versions are skipped explicitly, mixed existing/missing workspaces publish
+  only missing versions, and publish output records package states and artifact
+  paths.
+- **Decision-grade planning and preflight.** `shipper plan` and
+  `shipper preflight` now surface publish order, skipped packages, proof state,
+  proof gaps, registry pacing estimates, auth posture, and evidence paths so
+  operators can understand whether a release is safe before the irreversible
+  step.
+- **Versioned JSON evidence surfaces.** `plan`, `preflight`, `status`,
+  `status --watch`, `doctor`, `publish`, and `resume` expose stable
+  machine-readable output for CI, internal developer portals, and agent
+  workflows. `publish` and `resume` emit command-owned envelopes with package
+  summaries, safety state, artifact paths, and nested receipt evidence.
+- **Registry-truth reconciliation.** Ambiguous Cargo publish outcomes reconcile
+  against registry truth before retrying. Shipper distinguishes `Published`,
+  `NotPublished`, and `StillUnknown` outcomes and avoids blind duplicate publish
+  attempts.
+- **Registry-aware pacing.** Shipper models crates.io pacing, honors
+  Retry-After-style retry floors, and exposes preflight estimates for minimum
+  registry pacing time. Long waits are treated as explainable release state,
+  not silent CI hangs.
+- **Release black-box recorder.** Publish state, append-only events, receipts,
+  reconciliation evidence, attempt history, wait/retry/readiness scheduling
+  events, finalization drift checks, event following, and state rebuild support
+  are part of the evidence-backed release surface.
+- **Interruption and resume proof.** Shipper has both synthetic resume coverage
+  and live-runner interruption rehearsal evidence proving artifact handoff and
+  safe resume against fake Cargo and a mock registry.
+- **Release auth evidence.** Release workflow auth evidence records observed
+  Trusted Publishing context, token-mint outcome, fallback configuration/use,
+  selected token source, and token-sanitized receipt/event state. Token values
+  are intentionally omitted from durable artifacts.
+- **Receipt-driven remediation surfaces.** Shipper includes bounded
+  remediation primitives: yank planning, fix-forward planning, remediation
+  dry-run artifacts, and guarded fake-Cargo execution of reviewed remediation
+  plans.
+- **Source-of-truth and support-tier stack.** Proposals, specs, ADRs, plans,
+  active goals, support tiers, doc-contract checks, policy ledgers, and
+  policy-report output form the claim-to-proof map for release work.
 
 ### Changed
 
-- **README and crate docs now present Shipper as the install facade.** Most
-  users install `shipper`; `shipper-cli` is the CLI adapter surface and
-  `shipper-core` is the clap-free engine surface for embedders.
-- **Preflight and status outputs are more decision-grade.** Plan/preflight now
-  surface evidence paths, proof gaps, registry pacing estimates, and auth
-  posture more explicitly.
-- **Registry pacing is visible.** The crates.io profile, Retry-After floor, and
-  preflight pacing estimate make long waits understandable rather than silent.
+- **`shipper` is the install facade.** Most users install `shipper`; the
+  `shipper-cli` crate owns CLI adapter behavior, and `shipper-core` is the
+  clap-free engine/library surface for embedders.
+- **README and crate docs present Shipper as release-closure infrastructure.**
+  The docs emphasize idempotent workspace publish, evidence artifacts, safe
+  retry/resume, registry reconciliation, and bounded remediation rather than
+  generic release automation.
+- **Doctor output is more actionable.** `shipper doctor` emits
+  remediation-oriented findings with status, severity, evidence, next actions,
+  and documentation links for common operator blockers.
+- **Common CLI failures include next-action hints.** Plan/package selection,
+  manifest, auth, registry, dirty-git, state, ambiguous-publish, and rate-limit
+  paths point operators toward the next useful command instead of only
+  surfacing raw lower-level errors.
+- **Release workflow dogfoods the install facade.** The release workflow
+  installs Shipper through the supported facade path, records auth evidence,
+  runs plan/preflight/publish through Shipper, uploads `.shipper/` artifacts,
+  and verifies the full public crate surface.
 - **Policy rails are part of release readiness.** Package-surface checks,
   file/process/network policy, doc-contract checks, no-panic tracking, ripr
   advisory evidence, and release-readiness artifacts are integrated into the
-  0.4.0 release process.
+  release process.
 
 ### Fixed
 
-- Hardened schema-version parsing, output token redaction, and cargo-failure
-  token matching so evidence artifacts do not accept ambiguous schema tags, leak
-  token-shaped values, or classify failures from substring accidents.
-- Added common release-blocker hints and Doctor remediation output so operators
-  get next actions for dirty git state, auth gaps, registry failures, state
-  mismatches, ambiguous publish outcomes, and rate limits.
+- **Topological publish order.** Publish planning uses the workspace dependency
+  DAG so crates publish in dependency order instead of alphabetical or
+  manifest-discovery order.
+- **Schema-version parsing.** Schema tags are parsed strictly as
+  `shipper.<surface>.v<N>` so ambiguous or adversarial tags are rejected instead
+  of silently accepted.
+- **Output token redaction.** Evidence sanitization handles multiple token
+  shapes, preserves safe trailing context, avoids similarly named false
+  positives, and remains idempotent across repeated redaction passes.
+- **Cargo failure classification.** Retryable-pattern matching avoids substring
+  accidents such as matching `500`, `dns`, or `tls` inside unrelated words.
+- **Publish/resume finalization boundaries.** Publish helper refactors keep
+  terminal completion, webhook metrics, resume gating, and
+  uploaded/nonterminal states consistent across sequential and parallel paths.
+- **Release workflow crate verification.** Final crates.io verification covers
+  the full public crate surface, including `shipper-core`.
+
+### Security and evidence hardening
+
+- Token values are not stored in human output, JSON output, events, receipts,
+  workflow logs, policy reports, or remediation artifacts.
+- Operator-supplied remediation reason text is omitted from durable remediation
+  artifacts and represented by placeholders where needed.
+- Release auth evidence distinguishes Trusted Publishing, fallback secret, and
+  unknown/missing auth paths without claiming crates.io-side registration proof
+  from repo files alone.
+- Trusted Publishing remains a planned/advisory default until release evidence
+  proves the short-lived-token path is the normal path for the published crate
+  set.
+
+### Documentation
+
+- Added and updated docs for idempotent workspace publishing, GitHub Actions
+  usage, recovery from interruption, state/receipt inspection,
+  source-of-truth claims, JSON evidence contracts, auth evidence, and
+  receipt-driven remediation.
+- Added first-run and install guidance around `cargo install shipper`.
+- Updated support tiers so README/product claims cannot exceed proof commands
+  or artifacts.
 
 ### Carry-over
 
-- Trusted Publishing default remains planned/advisory until a release workflow
-  artifact proves the short-lived-token path is the normal path and fallback
-  state is explicit.
-- Live crates.io yank/fix-forward execution is not promoted beyond the bounded
-  proof surfaces above.
-- Receipt signing, SBOM, SLSA provenance, alternative registry profiles, broader
-  mutation routing, and deeper CI cost routing remain future work.
-- The stable 0.4.0 readiness proof must be refreshed after the version bump and
-  before tagging.
+- **Trusted Publishing default:** still planned/advisory until crates.io-side
+  registration and short-lived-token release proof exist for the full published
+  crate set.
+- **Live crates.io remediation execution:** not promoted beyond bounded
+  dry-run/fake-Cargo proof surfaces in this release.
+- **Signing and provenance:** receipt signing, SBOM generation, and SLSA-style
+  provenance remain future work.
+- **Alternative registry profiles:** crates.io is the proof-backed profile in
+  this release; additional registries remain follow-up work.
+- **Deeper CI routing and mutation expansion:** broader mutation coverage and
+  further CI cost routing remain future work.
+- **Release proof:** the stable 0.4.0 readiness proof must be refreshed after
+  this release-note polish and before tagging.
 
 ## [0.4.0-rc.1] - 2026-05-12
 
