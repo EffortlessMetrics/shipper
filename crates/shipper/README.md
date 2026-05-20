@@ -18,7 +18,7 @@ For reproducible 0.4.0 installs, pin the version:
 cargo install shipper --version 0.4.0 --locked
 ```
 
-This becomes the supported crates.io path after the `v0.4.0` publish completes.
+The public crates.io install path was smoke-tested after `v0.4.0` published.
 
 From a checkout, validate the same install facade with:
 

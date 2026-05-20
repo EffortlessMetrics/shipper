@@ -58,9 +58,9 @@ For a reproducible 0.4.0 install, pin the version:
 cargo install shipper --version 0.4.0 --locked
 ```
 
-This becomes the supported crates.io path after the `v0.4.0` publish completes.
-Until that proof exists, `docs/status/SUPPORT_TIERS.md` remains the source of
-truth for install-support status.
+The public crates.io install path was smoke-tested after `v0.4.0` published.
+`docs/status/SUPPORT_TIERS.md` remains the source of truth for install-support
+status.
 
 For local checkout validation before a release, use the same facade crate:
 
