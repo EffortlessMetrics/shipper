@@ -82,6 +82,16 @@ network_policy = "ci"
 created = "2026-05-18"
 review_after = "2026-08-18"
 
+[[workflow]]
+path = ".github/workflows/em-ci-routed-rust.yml"
+kind = "required_ci"
+owner = "release/ci"
+reason = "Initial shipper-swarm routed Rust small lane. Routes trusted same-repo work across CX43, CX33, CX53, then GitHub-hosted fallback; fork/untrusted PRs use GitHub-hosted only. Branch protection should require only the normalized Shipper Rust Small Result job after proof."
+process_policy = "ci"
+network_policy = "ci"
+created = "2026-05-20"
+review_after = "2026-08-20"
+
 # ─── Release workflow (high risk: secrets, Trusted Publishing, registry) ────
 
 [[workflow]]
