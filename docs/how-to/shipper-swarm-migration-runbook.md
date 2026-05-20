@@ -93,7 +93,15 @@ git checkout public/main -- .
 git add -A
 git commit -m "seed: import public shipper main for swarm repo"
 git push --force-with-lease origin seed/public-main:main
+
+git fetch origin main
+git switch main
+git reset --hard origin/main
+git branch -D seed/public-main
 ```
+
+The cleanup is intentional: after the seed push, local work should be on
+`main` tracking `origin/main`, not left on the temporary orphan seed branch.
 
 ## Phase 2 — Add initial routed Rust lane
 
@@ -223,8 +231,33 @@ Recommended cutover order:
 5. Open tiny same-repo PR to `shipper-swarm`.
 6. Confirm normalized result check success.
 7. Enable branch protection.
-8. Move swarm machines to `shipper-swarm`.
+8. Cut over runner access to `shipper-swarm`.
 9. Keep source repo as release authority until deliberate migration.
+
+Runner cutover depends on how the current machines are registered:
+
+- If runners are organization-scoped and controlled by a runner group, do not
+  reinstall them. Add `EffortlessMetrics/shipper-swarm` to the selected
+  repositories for the runner group and verify a routed job is picked up.
+- If runners are repository-scoped to `EffortlessMetrics/shipper`, stop the
+  runner service, deregister it from the source repo, register it against
+  `EffortlessMetrics/shipper-swarm`, and restart the service.
+
+For each self-hosted runner that should serve the swarm repo, keep the routing
+labels stable:
+
+```text
+self-hosted
+Linux
+X64
+em-ci
+rust-small
+trusted-pr
+cx43 | cx33 | cx53
+```
+
+After cutover, confirm each runner appears online and idle for
+`EffortlessMetrics/shipper-swarm` before enabling branch protection.
 
 Operator instruction to contributors:
 
@@ -266,4 +299,5 @@ After 3–5 clean PRs:
 - [ ] Open tiny same-repo PR.
 - [ ] Force fallback-path proof cases.
 - [ ] Enable branch protection requiring only normalized result.
-- [ ] Move machines to side-by-side `shipper-swarm` clones.
+- [ ] Cut runner access over to `shipper-swarm` and verify routed job pickup.
+- [ ] Move active development to side-by-side `shipper-swarm` clones.
