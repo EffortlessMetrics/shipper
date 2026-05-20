@@ -195,18 +195,22 @@ jobs:
   #       resolver.
   #   7.  Upload the final .shipper/ state as an artifact regardless of outcome.
   #
-  # Rate-limit handling for the first-publish train (12 brand-new crates):
-  #   crates.io allows a 5-crate burst, then 1 new crate per 10 minutes.
-  #   `shipper publish` handles this natively:
+  # Registry pacing:
+  #   Shipper uses its registry profile first, honors Retry-After floors when
+  #   Cargo surfaces them, and only then falls back to exponential retry.
+  #   First-publish pacing and existing-version pacing can differ; the
+  #   preflight step reports the estimated minimum registry wait for this
+  #   workspace before the publish train starts.
+  #
+  #   `shipper publish` handles pacing natively:
   #     - --policy safe enables post-publish readiness verification before the
   #       next crate starts, so rate-limit 429s surface as retryable backoff
   #       rather than cascade failures.
   #     - --max-attempts 12 + --max-delay 15m gives the retry loop enough
-  #       budget to ride through the 10-minute-between-new-crate limit.
+  #       budget to ride through crates.io pacing floors.
   #     - --verify-timeout 10m and --readiness-timeout 15m allow for sparse-
   #       index propagation.
-  #   If the runner's 6-hour job timeout is insufficient for the ~80 minute
-  #   train, the run can time out; in that case trigger the `resume`
+  #   If the runner times out mid-train, trigger the `resume`
   #   workflow_dispatch with this run's ID to pick up from .shipper/state.json.
   # ---------------------------------------------------------------------------
   publish-crates-io:
@@ -418,8 +422,9 @@ jobs:
             shipper-types
             shipper-registry
             shipper-config
-            shipper
+            shipper-core
             shipper-cli
+            shipper
           )
           for c in "${CRATES[@]}"; do
             echo "::group::cargo search $c"
