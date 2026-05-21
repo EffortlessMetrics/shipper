@@ -335,95 +335,29 @@ pub fn run_publish(
             PackageState::Ambiguous {
                 message: prior_reason,
             } => {
-                // Resume-path reconciliation (#99 follow-on). A prior run left
-                // this package in Ambiguous state (reconciliation inconclusive).
-                // Before doing ANY further work, reconcile against the
-                // registry so we never re-upload a crate whose prior upload
-                // may have actually succeeded.
-                reporter.warn(&format!(
-                    "{}@{}: resume found ambiguous state ({}); reconciling against registry",
-                    p.name, p.version, prior_reason
-                ));
-
-                let readiness_config = crate::types::ReadinessConfig {
-                    enabled: effects.readiness_enabled,
-                    ..opts.readiness.clone()
-                };
-
-                event_log.record(PublishEvent {
-                    timestamp: Utc::now(),
-                    event_type: EventType::PublishReconciling {
-                        method: readiness_config.method,
-                    },
-                    package: pkg_label.clone(),
-                });
-
-                let (outcome, _evidence) =
-                    sequential_reconcile(&reg, &p.name, &p.version, &readiness_config);
-
-                event_log.record(PublishEvent {
-                    timestamp: Utc::now(),
-                    event_type: EventType::PublishReconciled {
-                        outcome: outcome.clone(),
-                    },
-                    package: pkg_label.clone(),
-                });
-                event_log.write_to_file(&events_path)?;
-                event_log.clear();
-                write_reconciliation_report_best_effort(&state_dir, ws, &events_path, reporter);
-                let reconciliation_report_path = state::reconciliation_path(&state_dir);
-
-                match outcome {
-                    ReconciliationOutcome::Published { .. } => {
-                        update_state(&mut st, &state_dir, &key, PackageState::Published)?;
-                        reporter.info(&format!(
-                            "{}@{}: reconciliation outcome: Published; action: mark published and continue without republish (evidence: {})",
-                            p.name,
-                            p.version,
-                            reconciliation_report_path.display()
-                        ));
-                        continue;
-                    }
-                    ReconciliationOutcome::NotPublished { .. } => {
-                        // Clear the Ambiguous state — the registry confirms
-                        // no prior upload succeeded, so falling through to
-                        // the normal publish flow is safe.
-                        update_state(&mut st, &state_dir, &key, PackageState::Pending)?;
-                        reporter.info(&format!(
-                            "{}@{}: reconciliation outcome: NotPublished; action: retry under publish policy (evidence: {})",
-                            p.name,
-                            p.version,
-                            reconciliation_report_path.display()
-                        ));
-                        // fall through to normal flow
-                    }
-                    ReconciliationOutcome::StillUnknown { reason, .. } => {
-                        reporter.error(&format!(
-                            "{}@{}: reconciliation outcome: StillUnknown; action: stop before blind retry; operator action required (evidence: {}): {}",
-                            p.name,
-                            p.version,
-                            reconciliation_report_path.display(),
-                            reason
-                        ));
-                        webhook::maybe_send_event(
-                            &opts.webhook,
-                            WebhookEvent::PublishFailed {
-                                plan_id: ws.plan.plan_id.clone(),
-                                package_name: p.name.clone(),
-                                package_version: p.version.clone(),
-                                error_class: format!("{:?}", ErrorClass::Ambiguous),
-                                message: format!(
-                                    "resume reconciliation still inconclusive: {reason}"
-                                ),
-                            },
-                        );
-                        bail!(
-                            "{}@{}: resume reconciliation still inconclusive; operator action required. Prior reason: {}",
-                            p.name,
-                            p.version,
-                            reason
-                        );
-                    }
+                publish::ambiguous::resolve_ambiguous_resume_state(
+                    ws,
+                    opts,
+                    &reg,
+                    &state_dir,
+                    &events_path,
+                    &mut event_log,
+                    &mut st,
+                    &p.name,
+                    &p.version,
+                    &prior_reason,
+                    reporter,
+                )?;
+                if matches!(
+                    st.packages
+                        .get(&key)
+                        .context(
+                            "missing package progress in state after ambiguous reconciliation"
+                        )?
+                        .state,
+                    PackageState::Published
+                ) {
+                    continue;
                 }
             }
             _ => {}
