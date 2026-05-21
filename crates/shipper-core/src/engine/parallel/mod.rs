@@ -17,10 +17,9 @@ use anyhow::Result;
 use crate::plan::PlannedWorkspace;
 use crate::state::events;
 use shipper_registry::HttpRegistryClient as RegistryClient;
-use shipper_types::{
-    ExecutionState, PackageEvidence, PackageReceipt, PackageState, RuntimeOptions,
-};
+use shipper_types::{ExecutionState, PackageReceipt, RuntimeOptions};
 
+mod flow;
 mod policy;
 mod publish;
 mod readiness;
@@ -30,6 +29,10 @@ mod webhook;
 /// Re-exported for parallel publish wave planning.
 pub use crate::plan::chunking::chunk_by_max_concurrent;
 
+use flow::{
+    LevelResumeAction, collect_level_receipts_from_state, determine_level_resume_action,
+    init_send_reporter,
+};
 use publish::run_publish_level;
 use webhook::WebhookEvent;
 #[cfg(test)]
@@ -265,12 +268,7 @@ pub(crate) fn run_publish_parallel_inner(
     // Wrap state and reporter in Arc<Mutex<>> for thread safety
     let st_arc = Arc::new(Mutex::new(st.clone()));
 
-    let send_reporter = Arc::new(SendReporter {
-        infos: Mutex::new(Vec::new()),
-        warns: Mutex::new(Vec::new()),
-        errors: Mutex::new(Vec::new()),
-        retry_waits: Mutex::new(VecDeque::new()),
-    });
+    let send_reporter = Arc::new(init_send_reporter());
 
     let mut all_receipts: Vec<PackageReceipt> = Vec::new();
 
@@ -280,74 +278,31 @@ pub(crate) fn run_publish_parallel_inner(
     for level in &levels {
         // If we haven't reached the resume point, check if it's in this level
         if !reached_resume_point {
-            if level
-                .packages
-                .iter()
-                .any(|p| Some(&p.name) == opts.resume_from.as_ref())
-            {
-                reached_resume_point = true;
-            } else {
-                // Check if all packages in this level are already done in state
-                // If so, we can "skip" it silently (as already done).
-                // If NOT done, we skip it with a warning because of resume_from.
-                let mut level_done = true;
-                {
-                    let st_guard = st_arc.lock().unwrap();
-                    for p in &level.packages {
-                        let key = crate::runtime::execution::pkg_key(&p.name, &p.version);
-                        if let Some(progress) = st_guard.packages.get(&key) {
-                            if !matches!(
-                                progress.state,
-                                PackageState::Published | PackageState::Skipped { .. }
-                            ) {
-                                level_done = false;
-                                break;
-                            }
-                        } else {
-                            level_done = false;
-                            break;
-                        }
-                    }
-                }
-
-                if level_done {
+            match determine_level_resume_action(
+                &level.packages,
+                &st_arc,
+                opts.resume_from.as_deref(),
+            ) {
+                LevelResumeAction::ReachedResumePoint => reached_resume_point = true,
+                LevelResumeAction::SkipAlreadyComplete => {
                     reporter.info(&format!(
                         "Level {}: already complete (skipping)",
                         level.level
                     ));
-                } else {
+                    all_receipts
+                        .extend(collect_level_receipts_from_state(&level.packages, &st_arc));
+                    continue;
+                }
+                LevelResumeAction::SkipBeforeResumePoint(resume_point) => {
                     reporter.warn(&format!(
                         "Level {}: skipping (before resume point {})",
-                        level.level,
-                        opts.resume_from.as_ref().unwrap()
+                        level.level, resume_point
                     ));
+                    all_receipts
+                        .extend(collect_level_receipts_from_state(&level.packages, &st_arc));
+                    continue;
                 }
-
-                // Still need to "collect" receipts for these skipped packages so they appear in final receipt
-                for p in &level.packages {
-                    let key = crate::runtime::execution::pkg_key(&p.name, &p.version);
-                    let st_guard = st_arc.lock().unwrap();
-                    if let Some(progress) = st_guard.packages.get(&key) {
-                        all_receipts.push(PackageReceipt {
-                            name: p.name.clone(),
-                            version: p.version.clone(),
-                            attempts: progress.attempts,
-                            state: progress.state.clone(),
-                            started_at: chrono::Utc::now(),
-                            finished_at: chrono::Utc::now(),
-                            duration_ms: 0,
-                            evidence: PackageEvidence {
-                                attempts: vec![],
-                                readiness_checks: vec![],
-                            },
-                            compromised_at: None,
-                            compromised_by: None,
-                            superseded_by: None,
-                        });
-                    }
-                }
-                continue;
-            }
+            };
         }
 
         let level_receipts = run_publish_level(
