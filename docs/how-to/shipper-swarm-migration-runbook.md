@@ -25,7 +25,7 @@ This runbook defines the recommended migration path from `EffortlessMetrics/ship
 | Swarm repo | `EffortlessMetrics/shipper-swarm` |
 | Visibility | Public |
 | Default branch | `main` |
-| Merge model | Squash merge, auto-merge enabled, delete branches on merge |
+| Merge model | Squash merge only in swarm; sync back to `shipper` uses merge commits |
 | Required check | `Shipper Rust Small Result` only |
 | Release authority | Keep release/publish/signing in `shipper` initially |
 | CI routing | CX43 → CX33 → CX53 → GitHub-hosted |
@@ -64,7 +64,7 @@ Configure `EffortlessMetrics/shipper-swarm` with:
 - Default branch: `main`
 - Allow squash merge: yes
 - Allow merge commit: no
-- Allow rebase merge: optional/no
+- Allow rebase merge: no
 - Auto-merge: enabled
 - Delete branches on merge: enabled
 - Branch protection: **off initially**
@@ -85,6 +85,18 @@ Do **not** add yet:
 
 ### 3) Seed from `shipper/main`
 
+`shipper-swarm/main` must preserve `shipper/main` ancestry. Do not use an
+orphan snapshot seed. The swarm repo should become a branching continuation of
+the release-authority repo:
+
+```text
+shipper/main:
+A---B---C---D
+
+shipper-swarm/main:
+A---B---C---D---S1---S2
+```
+
 ```bash
 git clone git@github.com:EffortlessMetrics/shipper-swarm.git
 cd shipper-swarm
@@ -93,22 +105,35 @@ git remote add public git@github.com:EffortlessMetrics/shipper.git
 git fetch public --prune --tags
 git fetch origin --prune
 
-git switch --orphan seed/public-main
-git rm -rf . 2>/dev/null || true
-git checkout public/main -- .
-
-git add -A
-git commit -m "seed: import public shipper main for swarm repo"
-git push --force-with-lease origin seed/public-main:main
+git switch -C main public/main
+git push --force-with-lease origin main
 
 git fetch origin main
 git switch main
 git reset --hard origin/main
-git branch -D seed/public-main
 ```
 
-The cleanup is intentional: after the seed push, local work should be on
-`main` tracking `origin/main`, not left on the temporary orphan seed branch.
+After seeding, verify that `shipper/main` is an ancestor of
+`shipper-swarm/main`:
+
+```bash
+git merge-base --is-ancestor public/main origin/main
+git rev-list --left-right --count public/main...origin/main
+```
+
+Expected result:
+
+```text
+0 N
+```
+
+where `N` is the number of swarm-only commits after the seed point.
+
+After a later non-squash sync from `shipper-swarm` to `shipper`, the source
+repo will contain a merge commit that is not yet on `shipper-swarm/main`. Pause
+normal swarm PR merges and fast-forward `shipper-swarm/main` to `shipper/main`
+before continuing development. That restores the `0 N` ancestry shape without
+using orphan snapshots or squashing the sync commit.
 
 ## Phase 2 — Add initial routed Rust lane
 

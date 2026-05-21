@@ -9,6 +9,7 @@ owners.
 | Layer | Owns | Does not own |
 |---|---|---|
 | Support tiers | claim -> proof map | detailed implementation |
+| Swarm operation | development/release repository split | release execution |
 
 Support-tier documents should answer:
 
@@ -24,6 +25,11 @@ Support-tier documents should answer:
 - README and product docs must not exceed the support-tier map.
 - Policy ledgers explain exceptions and enforcement state behind internal
   claims.
+
+## Documents
+
+- [Support tiers](SUPPORT_TIERS.md)
+- [Shipper swarm operation](SWARM_OPERATION.md)
 
 ## Rules
 

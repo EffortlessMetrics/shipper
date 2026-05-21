@@ -31,6 +31,14 @@ evidence until that authority is explicitly moved.
 Do not add crates.io publish tokens, release signing secrets, or release
 workflow credentials to `shipper-swarm`.
 
+The operating policy is documented in
+[docs/status/SWARM_OPERATION.md](docs/status/SWARM_OPERATION.md):
+
+- PRs into `shipper-swarm/main` are squash-merged.
+- Promotion from `shipper-swarm/main` back to `shipper/main` uses a merge
+  commit, never squash or rebase.
+- `shipper-swarm/main` must remain a continuation of `shipper/main` history.
+
 1. Fork the development repository
 2. Clone your fork:
    ```bash
@@ -78,7 +86,9 @@ cargo run --package shipper -- plan --help
 
 ### Before You Start
 
-- Check existing [issues](https://github.com/effortlessmetrics/shipper/issues) for related work
+- Check existing [issues](https://github.com/effortlessmetrics/shipper/issues)
+  for related work. Issue tracking remains in the release-authority repo until
+  it is explicitly moved.
 - For significant changes, open an issue first to discuss the approach
 - Keep changes focused and atomic
 
@@ -180,13 +190,14 @@ cargo test --package shipper
 - **Required gate**: `shipper-swarm/main` requires `Shipper Rust Small Result`;
   do not require route-specific implementation jobs directly because only one
   route runs per attempt.
+- **Merge method**: use squash merge for normal `shipper-swarm` PRs.
 
 ### Review Process
 
 1. All PRs require at least one approval
 2. CI must pass (tests, clippy, fmt)
 3. Address review feedback promptly
-4. Squash commits before merge (if requested)
+4. Squash-merge into `shipper-swarm/main`
 
 ---
 
@@ -236,7 +247,11 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 
 ## Questions?
 
-- Open a [discussion](https://github.com/effortlessmetrics/shipper/discussions) for questions
-- Open an [issue](https://github.com/effortlessmetrics/shipper/issues) for bugs or features
+- Open a [discussion](https://github.com/effortlessmetrics/shipper/discussions)
+  for questions. Discussions remain in the release-authority repo until
+  explicitly moved.
+- Open an [issue](https://github.com/effortlessmetrics/shipper/issues) for bugs
+  or features. Issues remain in the release-authority repo until explicitly
+  moved.
 
 Thank you for contributing!

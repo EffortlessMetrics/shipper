@@ -73,4 +73,6 @@ The following live at the repo root because they carry repo-wide authority:
 
 Internal inventories and upkeep docs for contributor and assistant context.
 
+- [Status docs](status/README.md) - support tiers and swarm operation policy
+
 - [Crate local-doc coverage](reference/crate-coverage.md) — maintenance matrix for crate `README.md`, `CLAUDE.md`, and `AGENTS.md` files
