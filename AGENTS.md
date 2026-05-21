@@ -28,6 +28,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [**docs/product.md**](docs/product.md), [**docs/structure.md**](docs/structure.md), [**docs/tech.md**](docs/tech.md) — steering docs.
 - [**docs/INVARIANTS.md**](docs/INVARIANTS.md) — events-as-truth contract.
 - [**docs/status/SWARM_OPERATION.md**](docs/status/SWARM_OPERATION.md) — active-development repo, merge policy, and sync policy.
+- [**docs/status/SWARM_SYNC.md**](docs/status/SWARM_SYNC.md) — release-authority repo sync policy imported from `shipper`.
 
 ## Useful command entry points
 

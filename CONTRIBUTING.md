@@ -38,6 +38,8 @@ The operating policy is documented in
 - Promotion from `shipper-swarm/main` back to `shipper/main` uses a merge
   commit, never squash or rebase.
 - `shipper-swarm/main` must remain a continuation of `shipper/main` history.
+- Source-repo sync and credential rules are mirrored in
+  [docs/status/SWARM_SYNC.md](docs/status/SWARM_SYNC.md).
 
 1. Fork the development repository
 2. Clone your fork:
@@ -191,13 +193,16 @@ cargo test --package shipper
   do not require route-specific implementation jobs directly because only one
   route runs per attempt.
 - **Merge method**: use squash merge for normal `shipper-swarm` PRs.
+  Source-backfill PRs that merge release-authority commits from `shipper/main`
+  are the exception and must use merge commits.
 
 ### Review Process
 
 1. All PRs require at least one approval
 2. CI must pass (tests, clippy, fmt)
 3. Address review feedback promptly
-4. Squash-merge into `shipper-swarm/main`
+4. Squash-merge normal development PRs into `shipper-swarm/main`; merge
+   source-backfill PRs with a merge commit
 
 ---
 

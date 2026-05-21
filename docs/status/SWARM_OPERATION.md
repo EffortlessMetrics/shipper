@@ -47,10 +47,15 @@ is:
 where `N` is the number of swarm-only commits not yet synced back to
 `shipper`.
 
-Immediately after a sync PR lands in `shipper`, `shipper/main` contains a
-merge commit that may not yet exist in `shipper-swarm/main`. During that short
-window the count can be `1 0`. Fast-forward `shipper-swarm/main` to
+Immediately after a true swarm-sync PR lands in `shipper`, `shipper/main`
+contains a merge commit that may not yet exist in `shipper-swarm/main`. During
+that short window the count can be `1 0`. Fast-forward `shipper-swarm/main` to
 `shipper/main` before reopening normal swarm development.
+
+If a release-authority PR lands directly in `shipper` while `shipper-swarm` is
+already ahead, do not fast-forward swarm to source because that would discard
+swarm development commits. Merge `shipper/main` back into `shipper-swarm/main`
+with the source-backfill process below.
 
 ## Merge Policy
 
@@ -74,7 +79,7 @@ git push -u origin sync/shipper-swarm-YYYY-MM-DD
 Open the sync PR in `EffortlessMetrics/shipper` and merge it with a merge
 commit.
 
-After the sync PR lands, backfill the release-authority merge commit into
+After a swarm-sync PR lands, backfill the release-authority merge commit into
 `shipper-swarm` with a fast-forward update from the `shipper` checkout:
 
 ```bash
@@ -88,8 +93,29 @@ git push swarm origin/main:main
 This update is not a normal swarm development PR. It preserves the source
 merge commit so the next swarm development commit again starts from
 `shipper/main` ancestry. Keep normal swarm PR merges paused until the ancestry
-check returns `0 N` again. If the merge-base command fails, stop; do not force
-push or squash the sync commit.
+check returns `0 N` again. If the merge-base command fails, use the
+source-backfill path instead; do not force push or squash the sync commit.
+
+## Source-Backfill Exception
+
+Release-authority PRs may land directly in `shipper` for release evidence,
+credentials, signing, or repository policy. When that happens while
+`shipper-swarm` has unsynced development commits, backfill the source commit
+into swarm with a merge commit:
+
+```bash
+git fetch origin --prune
+git fetch public --prune --tags
+
+git switch -c backfill/shipper-source-YYYY-MM-DD origin/main
+git merge --no-ff public/main -m "merge: backfill shipper release-authority changes"
+git push -u origin backfill/shipper-source-YYYY-MM-DD
+```
+
+Open the backfill PR in `EffortlessMetrics/shipper-swarm`. This is not a normal
+development PR: merge it with a merge commit so `shipper/main` becomes an
+ancestor of `shipper-swarm/main` again. Temporarily allowing merge commits for
+that PR is acceptable; restore squash-only settings immediately afterward.
 
 ## CI and Branch Protection
 
