@@ -143,6 +143,30 @@ fn normalize_stderr(raw: &str) -> String {
     redact_version_metadata(&normalized)
 }
 
+fn normalize_tempdir_paths(raw: &str, tempdir: &Path) -> String {
+    let native = tempdir.to_string_lossy();
+    let slash_path = native.replace('\\', "/");
+    let mut normalized = raw
+        .replace(native.as_ref(), "<TMPDIR>")
+        .replace(&slash_path, "<TMPDIR>");
+
+    if let Some(without_mnt_prefix) = slash_path.strip_prefix("/mnt/") {
+        normalized = normalized.replace(without_mnt_prefix, "<TMPDIR>");
+    }
+
+    normalized
+}
+
+#[test]
+fn normalize_tempdir_paths_handles_mnt_stripped_cargo_diagnostics() {
+    let raw = "--> ci-scratch/tmp/run/.tmp123/Cargo.toml:1:6";
+
+    assert_eq!(
+        normalize_tempdir_paths(raw, Path::new("/mnt/ci-scratch/tmp/run/.tmp123")),
+        "--> <TMPDIR>/Cargo.toml:1:6"
+    );
+}
+
 fn normalize_status_help(raw: &str) -> String {
     trim_trailing_line_whitespace(&normalize_stderr(raw))
 }
@@ -3336,11 +3360,7 @@ fn publish_invalid_manifest_content_snapshot() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_snapshot!(
         "publish_invalid_manifest_content",
-        normalize_stderr(
-            &stderr
-                .replace(td.path().to_str().unwrap(), "<TMPDIR>")
-                .replace(&td.path().to_str().unwrap().replace('\\', "/"), "<TMPDIR>",),
-        )
+        normalize_stderr(&normalize_tempdir_paths(&stderr, td.path()))
     );
 }
 
@@ -3543,11 +3563,10 @@ fn resume_wrong_plan_id_snapshot() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_snapshot!(
         "resume_wrong_plan_id",
-        normalize_output(&normalize_stderr(
-            &stderr
-                .replace(td.path().to_str().unwrap(), "<TMPDIR>")
-                .replace(&td.path().to_str().unwrap().replace('\\', "/"), "<TMPDIR>")
-        ))
+        normalize_output(&normalize_stderr(&normalize_tempdir_paths(
+            &stderr,
+            td.path()
+        )))
     );
 }
 
@@ -3573,11 +3592,10 @@ fn resume_minimal_json_state_snapshot() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_snapshot!(
         "resume_minimal_json_state",
-        normalize_output(&normalize_stderr(
-            &stderr
-                .replace(td.path().to_str().unwrap(), "<TMPDIR>")
-                .replace(&td.path().to_str().unwrap().replace('\\', "/"), "<TMPDIR>")
-        ))
+        normalize_output(&normalize_stderr(&normalize_tempdir_paths(
+            &stderr,
+            td.path()
+        )))
     );
 }
 

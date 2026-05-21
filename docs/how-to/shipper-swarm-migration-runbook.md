@@ -28,7 +28,7 @@ This runbook defines the recommended migration path from `EffortlessMetrics/ship
 | Merge model | Squash merge only in swarm; sync back to `shipper` uses merge commits |
 | Required check | `Shipper Rust Small Result` only |
 | Release authority | Keep release/publish/signing in `shipper` initially |
-| CI routing | CX43 → CX33 → CX53 → GitHub-hosted |
+| CI routing | CPX42 → CX43 → CX53 → GitHub-hosted |
 | Fork PR policy | Never run public fork PRs on self-hosted |
 
 ## Why start as small/medium lane
@@ -39,13 +39,13 @@ Primary route:
 
 ```text
 shipper rust-small:
+  CPX42 if idle
   CX43 if idle
-  CX33 if idle
   CX53 if idle
   GitHub-hosted otherwise
 ```
 
-Fallback if CX33 proves constrained in real runs:
+Fallback if CPX42 proves constrained in real runs:
 
 ```text
 shipper rust-small:
@@ -148,8 +148,8 @@ First normalized required check:
 Do **not** directly require conditional implementation jobs:
 
 - `Route Shipper Rust Small`
+- `Shipper Rust Small on CPX42`
 - `Shipper Rust Small on CX43`
-- `Shipper Rust Small on CX33`
 - `Shipper Rust Small on CX53`
 - `Shipper Rust Small on GitHub Hosted`
 
@@ -178,8 +178,8 @@ Avoid for first gate:
 
 Emit one of:
 
+- `cpx42`
 - `cx43`
-- `cx33`
 - `cx53`
 - `github`
 
@@ -189,15 +189,15 @@ Emit one of:
 repo=shipper-swarm
 workflow=em-ci-routed-rust
 run_id=${{ github.run_id }}
-router_target=cx43|cx33|cx53|github
-router_reason=cx43_idle|cx33_idle|cx53_idle|no_idle_runner|runner_api_failed|untrusted_pr
+router_target=cpx42|cx43|cx53|github
+router_reason=cpx42_idle|cx43_idle|cx53_idle|no_idle_runner|runner_token_missing|runner_token_unauthorized|runner_token_forbidden|runner_api_failed|parse_failed|fork_pr
 ```
 
 ### Routing policy
 
 - Trusted same-repo PR or `workflow_dispatch`:
+  - CPX42 if idle
   - CX43 if idle
-  - CX33 if idle
   - CX53 if idle
   - GitHub-hosted fallback
 - Fork PR:
@@ -237,8 +237,8 @@ Run this sequence:
 1. PR that adds routed workflow passes.
 2. `workflow_dispatch` on `shipper-swarm/main` passes.
 3. Tiny same-repo PR passes.
-4. Force CX43 route once.
-5. Force CX33 route once (if present).
+4. Force CPX42 route once.
+5. Force CX43 route once.
 6. Force CX53 overflow once.
 7. Saturate self-hosted and verify GitHub fallback.
 8. Verify cleanup + disk reports healthy.
@@ -285,7 +285,7 @@ X64
 em-ci
 rust-small
 trusted-pr
-cx43 | cx33 | cx53
+cpx42 | cx43 | cx53
 ```
 
 After cutover, confirm each runner appears online and idle for
@@ -307,7 +307,7 @@ After 3–5 clean PRs:
 
 | Lane | Route | Purpose |
 |---|---|---|
-| `Shipper Rust Small Result` | CX43 → CX33 → CX53 → GitHub | Required base gate |
+| `Shipper Rust Small Result` | CPX42 → CX43 → CX53 → GitHub | Required base gate |
 | `Shipper Integration Result` | CX53 → CX43 → GitHub | Fake registry, receipts, resume/reconcile |
 | `Shipper Coverage Lite` | GitHub-hosted or manual CX53 | Non-required initially |
 | `Shipper Fuzz Smoke` | GitHub-hosted or manual CX53 | Non-required initially |
@@ -323,7 +323,7 @@ After 3–5 clean PRs:
 - [x] Do **not** add crates.io/release/signing secrets.
 - [x] Seed `shipper-swarm/main` from `shipper/main`.
 - [x] Add `.github/workflows/em-ci-routed-rust.yml`.
-- [x] Route small lane CX43 → CX33 → CX53 → GitHub.
+- [x] Route small lane CPX42 → CX43 → CX53 → GitHub.
 - [x] Guard self-hosted jobs to trusted same-repo work only.
 - [x] Include GitHub-hosted fallback.
 - [x] Add normalized `Shipper Rust Small Result` job.
@@ -338,8 +338,10 @@ Proof notes:
 
 - PR #2 added the routed Rust small lane.
 - PR #3 proved same-repo PR flow through the normalized result check.
-- Forced `workflow_dispatch` proof runs covered `cx43`, `cx33`, `cx53`, and
+- Earlier forced `workflow_dispatch` proof runs covered `cx43`, `cx33`, `cx53`, and
   GitHub-hosted fallback.
+- CPX42-first routing requires a fresh CPX42 proof run before treating CPX42 as
+  the preferred healthy route.
 - Saturation proof occupied all self-hosted routes and verified auto-routing to
   GitHub-hosted with `router_reason=no_idle_runner`.
 - Branch protection for `main` requires only `Shipper Rust Small Result`.
