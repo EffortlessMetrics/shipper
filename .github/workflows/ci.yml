@@ -444,6 +444,10 @@ jobs:
 
   release-build:
     name: Release Build
+    # Keep release-profile compile proof available on main and manual dispatch,
+    # but out of the default PR and nightly critical paths. Tag-time release
+    # binaries are built by release.yml.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     needs: [lint, test]
     steps:

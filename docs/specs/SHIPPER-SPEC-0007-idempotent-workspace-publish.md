@@ -82,14 +82,13 @@ For `shipper publish --format json`, the command envelope must carry:
 - A stable schema version (`shipper.publish.v1`).
 - Per-package `packages[].state` values that distinguish published, skipped,
   failed, ambiguous, uploaded, and pending outcomes.
+- A top-level `safe_to_rerun` boolean. It is true only when the command-owned
+  package summary has no pending, uploaded, failed, or ambiguous packages; the
+  detailed evidence remains the package states, receipt, and reconciliation
+  artifact.
 - Artifact paths for `.shipper/state.json`, `.shipper/events.jsonl`, and
   `.shipper/receipt.json` (plus reconciliation artifact when present).
 - A nested receipt that remains the detailed package-outcome authority.
-
-`shipper.publish.v1` does not currently expose a top-level `safe_to_rerun`
-field. A future additive field may make rerun posture easier to consume, but
-this stable contract is based on package states, receipt evidence, and
-reconciliation outcomes that already exist.
 
 ## 5) Relationship to release-plz and Cargo
 

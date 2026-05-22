@@ -355,6 +355,11 @@ fn publish_json_format_writes_command_envelope_to_stdout() {
         "publish JSON should carry a command-owned schema version"
     );
     assert_eq!(report["command"].as_str(), Some("publish"));
+    assert_eq!(
+        report["safe_to_rerun"].as_bool(),
+        Some(true),
+        "completed publish envelope should expose safe rerun posture"
+    );
     assert_eq!(report["registry"].as_str(), Some("crates-io"));
     assert!(report["plan_id"].is_string(), "plan_id should be present");
     assert_eq!(report["published"].as_u64(), Some(1));

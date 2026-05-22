@@ -45,7 +45,7 @@ Every workflow under `.github/workflows/` and the lane each one occupies. The au
 | `bdd` | every PR | ~3 min | Publish and resume BDD scenarios plus the synthetic interruption-resume rehearsal (`e2e_rehearse`) that proves persisted state/events let `shipper resume` complete without duplicate publishes. |
 | `fuzz-smoke` | every PR except `schedule` | ~10 min | Six fuzz targets at low-energy: parser, encrypt, sanitizer, plan, state, events. |
 | `cross-platform` | every PR | ~2 min per leg | Multi-target builds: Linux x86_64/aarch64, Windows MSVC, macOS x86_64/aarch64. |
-| `release-build` | every PR | ~2 min | Release-profile build (LTO + strip) catches release-only mis-compiles before tag time. |
+| `release-build` | `push` / `workflow_dispatch` only | ~2 min | Release-profile build (LTO + strip) remains available on main and manual runs; tag-time binaries are built by `release.yml`. |
 
 **Recent observed PR wall-clock:** 24–28 min (CI runs from this rollout). Critical path is `test` on macOS plus `fuzz-smoke`; everything else fits inside that window.
 
@@ -181,8 +181,7 @@ These crates receive the most rigorous mutation coverage because they handle rea
 
 Concrete follow-up candidates if/when CI wall-clock becomes a real bottleneck:
 
-1. **Move `release-build` to a release-only lane.** It currently runs on every PR but the artifact is only consumed by `release.yml`. Saves ~2 min, no coverage loss.
-2. **Gate `fuzz-smoke` on touched paths.** Already PR-time today; could be path-filtered (`crates/**`) so docs-only PRs skip the 10 min.
-3. **Split `cross-platform` so only Linux (x86_64 + aarch64) is every-PR**, deferring Windows/macOS to labeled+nightly. Trades wall-clock for platform-signal latency; only worth it if Windows/macOS regressions become rare.
+1. **Gate `fuzz-smoke` on touched paths.** Already PR-time today; could be path-filtered (`crates/**`) so docs-only PRs skip the 10 min.
+2. **Split `cross-platform` so only Linux (x86_64 + aarch64) is every-PR**, deferring Windows/macOS to labeled+nightly. Trades wall-clock for platform-signal latency; only worth it if Windows/macOS regressions become rare.
 
 None of these land in #189 — they want their own scoping.

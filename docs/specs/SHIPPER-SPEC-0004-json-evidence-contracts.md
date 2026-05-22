@@ -71,7 +71,8 @@ or CI under the compatibility rules above:
 | `.shipper/remediation-plan.json` from `shipper remediate --dry-run` | `shipper.remediation_plan.v1` | `cargo test -p shipper-cli --test e2e_expanded --locked remediate_dry_run_writes_remediation_plan_artifact` |
 
 The publish and resume JSON rows are command-owned envelopes with nested
-receipt evidence, package summaries, and artifact paths.
+receipt evidence, package summaries, safe rerun/resume posture where exposed,
+and artifact paths.
 The remediation command rows are command-owned envelopes with top-level
 planning fields plus `schema_version` and `command`. The remediation artifact
 row is durable dry-run evidence only; neither surface implies guarded live

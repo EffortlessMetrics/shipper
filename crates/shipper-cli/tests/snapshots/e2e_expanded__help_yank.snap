@@ -146,15 +146,15 @@ Options:
       --rehearsal-registry <REHEARSAL_REGISTRY>
           Name of a registry (from `[[registries]]` in `.shipper.toml`) to rehearse the publish against before live dispatch.
           
-          See issue #97. Plumbed through today; phase-2 execution (actual publish to the rehearsal registry + install/smoke checks + live dispatch gate) lands in a follow-on PR.
+          Runs the rehearsal publish flow against the alternate registry and enables the live-publish rehearsal gate when configured.
 
       --skip-rehearsal
           Skip rehearsal even if `.shipper.toml` enables it.
           
-          Use with caution — rehearsal (once fully implemented under #97) is the proof boundary between "we built it" and "we verified it actually resolves from a registry." Bypassing it should be rare.
+          Use with caution — rehearsal is the proof boundary between "we built it" and "we verified it actually resolves from a registry." Bypassing it should be rare.
 
       --smoke-install <CRATE>
-          Crate name to smoke-install after a successful rehearsal (#97 PR 4).
+          Crate name to smoke-install after a successful rehearsal.
           
           Runs `cargo install --registry <rehearsal> <CRATE>` against the rehearsal registry to prove the crate actually resolves and installs end-to-end — the scenario that workspace-path dependencies defeat and that killed the rc.1 first-publish.
           

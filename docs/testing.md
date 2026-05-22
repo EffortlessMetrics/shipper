@@ -419,7 +419,7 @@ and every pull request. The pipeline includes:
 | **Coverage** | ubuntu | `cargo llvm-cov` → Codecov |
 | **Fuzz smoke** | ubuntu (PRs) | Each target for 60 seconds |
 | **Cross-platform** | matrix | Build for x86_64/aarch64 on Linux, Windows, macOS |
-| **Release build** | ubuntu | `cargo build --release` |
+| **Release build** | ubuntu on main/dispatch | `cargo build --release` |
 
 Additional scheduled workflows:
 

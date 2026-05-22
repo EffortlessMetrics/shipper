@@ -82,14 +82,21 @@ What this does:
      visibility endpoint — same `version_exists` check the live
      path uses, so if the real publish would fail visibility the
      rehearsal fails first.
-3. Emits per-step events to `<state_dir>/events.jsonl`:
+3. If `--smoke-install <crate>` is set, runs
+   `cargo install --registry rehearsal <crate>` after the rehearsal
+   publish succeeds. This is opt-in because the target crate must have
+   a binary target.
+4. Emits per-step events to `<state_dir>/events.jsonl`:
    - `RehearsalStarted { registry, plan_id, package_count }`
    - `RehearsalPackagePublished { name, version, duration_ms }`
      per success
+   - `RehearsalSmokeCheckStarted { name, version, registry }` and
+     `RehearsalSmokeCheckSucceeded { name, version, duration_ms }`
+     when smoke-install is enabled and succeeds
    - `RehearsalPackageFailed { name, version, class, message }`
      per failure (stops the loop)
    - `RehearsalComplete { passed, registry, plan_id, summary }`
-4. Writes a sidecar `<state_dir>/rehearsal.json` — the hard gate
+5. Writes a sidecar `<state_dir>/rehearsal.json` — the hard gate
    consults this file later.
 
 Exit status is non-zero on rehearsal failure, so CI lanes that wrap
@@ -219,16 +226,18 @@ The hard gate fires when a rehearsal registry is configured but
 `rehearsal.json` is missing. Either run `shipper rehearse` first, or
 pass `--skip-rehearsal` to bypass (not recommended).
 
-## What rehearsal does NOT cover (yet)
+## What rehearsal does NOT cover automatically
 
-- **Install-smoke.** The current rehearsal publishes + verifies
-  visibility. It does not yet run `cargo install --registry rehearsal
-  <crate>` on the workspace's top crate to prove end-to-end
-  resolution. That's the next follow-on under #97.
+- **Install-smoke for every crate.** Rehearsal can run an opt-in
+  `cargo install --registry rehearsal <crate>` check with
+  `--smoke-install <crate>`, but it only applies to the named crate and
+  that crate must expose a binary target. Library-only crates cannot be
+  installed directly.
 - **Consumer-workspace build.** A tiny fixture consumer crate that
   depends on the rehearsal-registry version and runs `cargo build`
   would catch `workspace-path → registry-path` resolution bugs the
-  publish-only rehearsal misses. Also follow-on.
+  publish and install-smoke checks can still miss. This remains
+  follow-on work.
 
 ## See also
 

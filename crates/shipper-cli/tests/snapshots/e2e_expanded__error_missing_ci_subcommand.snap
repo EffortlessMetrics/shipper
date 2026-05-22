@@ -95,7 +95,7 @@ Options:
       --skip-rehearsal
           Skip rehearsal even if `.shipper.toml` enables it
       --smoke-install <CRATE>
-          Crate name to smoke-install after a successful rehearsal (#97 PR 4)
+          Crate name to smoke-install after a successful rehearsal
       --format <FORMAT>
           Output format: text (default) or json [default: text] [possible values: text, json]
       --verbose
