@@ -43,9 +43,9 @@ This direction is load-bearing:
 
 - `shipper` is the supported install facade. Its binary forwards to
   `shipper_cli::run()`, and its library re-exports a curated subset of
-  `shipper-core` for callers that prefer the product name. While Shipper is
-  prerelease-only on crates.io, registry installs need an explicit `--version`;
-  local checkout install smoke uses `cargo install --path crates/shipper --locked`.
+  `shipper-core` for callers that prefer the product name. Public registry
+  installs use `cargo install shipper --locked`; local checkout install smoke
+  uses `cargo install --path crates/shipper --locked`.
 - `shipper-cli` owns command parsing, help text, progress rendering, snapshots,
   and human/JSON output. It maps user intent to `shipper-core`.
 - `shipper-core` owns release behavior: plan, preflight, publish, resume,

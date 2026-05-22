@@ -54,7 +54,7 @@ shipper (install face)
        -> shipper-core (engine; stable embedding surface)
 ```
 
-- Users install the `shipper` facade package; it carries the `shipper` binary, which forwards to `shipper_cli::run()`. While Shipper is prerelease-only on crates.io, registry installs need an explicit `--version`; local checkout install smoke uses `cargo install --path crates/shipper --locked`.
+- Users install the `shipper` facade package; it carries the `shipper` binary, which forwards to `shipper_cli::run()`. Public registry installs use `cargo install shipper --locked`; local checkout install smoke uses `cargo install --path crates/shipper --locked`.
 - Embedders add `shipper-core` to their `Cargo.toml` — no `clap`, no `indicatif`, no progress rendering pulled into their dep graph.
 - The `shipper` library surface re-exports a curated subset of `shipper-core` (`engine`, `plan`, `types`, `config`, `state`, `store`) for drivers that prefer the product name. Engine internals reach through `shipper-core` directly.
 

@@ -33,7 +33,7 @@ The canonical case: you're publishing a brand-new crate to crates.io for the fir
 
 Preflight correctly refuses to claim `Proven` in this case — it would be lying. The crate doesn't exist yet; ownership is literally unverifiable until after the first publish. But nothing is *wrong*; the dry-run passed, the registry is reachable, the version is available. So the honest answer is `NotProven`.
 
-On the v0.3.0-rc.1 first publish of 12 new Shipper crates, preflight correctly reported `finishability=not_proven` for every one, and the publish train completed successfully.
+On the v0.3.0-rc.1 first publish of 12 new Shipper crates, preflight correctly reported `finishability=not_proven` for every one, and the publish train completed successfully. The 0.4.0 line keeps that posture: unknowns are explicit, not papered over as proof.
 
 ## What to do when you see `not_proven`
 
@@ -54,7 +54,7 @@ Run `shipper preflight --format json` and inspect the per-package detail. Each `
 
 We considered it — rename `not_proven` to `provisional_new_crate` when the only unverified check is ownership on a crate that doesn't exist yet — but that's a product-wording change that can happen anytime. The *state* is correct.
 
-A future upgrade path exists via the rehearsal registry ([#97](https://github.com/EffortlessMetrics/shipper/issues/97)): publishing the exact packaged artifacts to an alternate registry first, then resolving + installing from that registry, would let preflight promote many `NotProven` cases to `Proven`. That's the next tier of proof; until it lands, first-publish `NotProven` is epistemically honest and operationally fine.
+The upgrade path is the rehearsal registry ([#97](https://github.com/EffortlessMetrics/shipper/issues/97)): publishing the exact packaged artifacts to an alternate registry first, then resolving + installing from that registry, lets Shipper prove more than local dry-run alone. That does not make crates.io first-publish ownership or production visibility magically knowable before the irreversible publish, so first-publish `NotProven` remains epistemically honest and operationally fine.
 
 ## The short version
 
