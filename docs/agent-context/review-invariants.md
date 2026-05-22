@@ -9,7 +9,7 @@ This file captures invariants for both human and Droid review of shipper PRs. Th
 - **Three-crate product shape.** Behavior work lives in `shipper-core`. CLI work (clap derive, help text, progress rendering) lives in `shipper-cli`. The `shipper` crate is an install façade plus curated re-export; it changes rarely.
 - **Events are authoritative.** `events.jsonl` is the source of truth for what happened. `state.json` is a projection. `receipt.json` is a summary derived at end-of-run. When the three disagree, events win — and a drift is a bug.
 - **Tokens are opaque strings, never logged.** Token resolution follows `CARGO_REGISTRY_TOKEN` → `CARGO_REGISTRIES_<NAME>_TOKEN` → `$CARGO_HOME/credentials.toml`. The `shipper-output-sanitizer` crate sanitizes cargo and shell output before persistence or logging.
-- **`Reconcile` is the largest open safety gap.** Ambiguous `cargo publish` outcomes should reconcile against the registry, not blind-retry. Reviews of publish-path code should check the retry classification and the ambiguity handling.
+- **Registry-truth reconciliation is stable and must not regress.** Ambiguous `cargo publish` outcomes reconcile against registry truth before Shipper retries or resumes. Reviews of publish-path code should check retry classification, `Published` / `NotPublished` / `StillUnknown` handling, and safe-stop behavior instead of treating ambiguity as a blind retry path.
 
 ## CI invariants
 

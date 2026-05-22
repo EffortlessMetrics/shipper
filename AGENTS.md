@@ -109,7 +109,7 @@ In `state.json`, package status is at `.packages[].state.state`, not `.packages[
 
 [**MISSION.md**](MISSION.md) is the north star — mission, vision, audience, and the nine convictions that produce every design decision. Read it before scoping non-trivial work.
 
-Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is what Cargo still doesn't do, organized as nine competencies: **Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics**. See [ROADMAP.md](ROADMAP.md) and master tracking issue [#109](https://github.com/EffortlessMetrics/shipper/issues/109). The biggest open gap is **Reconcile** ([#102](https://github.com/EffortlessMetrics/shipper/issues/102) / [#99](https://github.com/EffortlessMetrics/shipper/issues/99)): when `cargo publish` exits ambiguously, Shipper currently blind-retries instead of reconciling against the registry.
+Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is what Cargo still doesn't do, organized as nine competencies: **Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics**. See [ROADMAP.md](ROADMAP.md) and master tracking issue [#109](https://github.com/EffortlessMetrics/shipper/issues/109). **Reconcile is now stable:** ambiguous `cargo publish` outcomes must reconcile against registry truth and stop on `StillUnknown` instead of blind-retrying. The current open proof lane is Trusted Publishing default evidence; keep fallback/default claims bounded by `.shipper-meta/goals/active.toml` and [docs/status/SUPPORT_TIERS.md](docs/status/SUPPORT_TIERS.md).
 
 ## Conventions
 
