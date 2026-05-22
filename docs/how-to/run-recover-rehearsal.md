@@ -1,16 +1,17 @@
 # How-to: Run the Recover rehearsal
 
-Goal: prove, end-to-end against real crates.io, that Shipper's `resume`
-path actually works under a real workflow interruption. This is the
-operator side of [#90](https://github.com/EffortlessMetrics/shipper/issues/90).
+Goal: prove that Shipper's `resume` path works under a real workflow
+interruption, without confusing safe runner-artifact proof with destructive
+crates.io rehearsal. This is the operator side of
+[#90](https://github.com/EffortlessMetrics/shipper/issues/90).
 
 Synthetic coverage lives in
 `crates/shipper-cli/tests/e2e_rehearse.rs`, which exercises the same
 invariants (state/events/skip/idempotency) against a mock registry and
-fake cargo. That test runs on every CI commit; the procedure here runs
-**once per release-candidate line** and is what catches bugs the mock
-can't reach (crates.io rate-limit behavior, sparse-index propagation,
-artifact upload on killed runners, etc.).
+fake cargo. That test runs on every CI commit. The safe runner-artifact
+workflow below is the default live-runner proof. The crates.io rehearsal is a
+release-authority exercise for the rare case where a release line explicitly
+needs real-registry interruption proof.
 
 ## Safe runner-artifact rehearsal
 
@@ -53,18 +54,19 @@ The workflow passes only if:
 - `events.jsonl` has no state/event drift and records one
   `PackagePublished` event per crate.
 
-This is the safe proof for artifact upload/download and runner handoff. It does
-not replace the crates.io rehearsal when a release candidate needs real
-registry behavior proof.
+This is the safe proof for artifact upload/download and runner handoff. The
+0.4.0 support tier cites run `26051581056` as the stable/internal live-runner
+interruption proof. This safe rehearsal does not publish to crates.io and does
+not prove live crates.io rate-limit or sparse-index behavior.
 
 ## Prerequisites
 
 - Admin access to <https://github.com/EffortlessMetrics/shipper>.
-- `CARGO_REGISTRY_TOKEN` with publish scope for all 12 crates already
+- `CARGO_REGISTRY_TOKEN` with publish scope for all 13 public crates already
   configured (or Trusted Publishing registration complete — see
   [run-in-github-actions.md](run-in-github-actions.md)).
 - A throwaway version suffix that has not been used. Convention:
-  `v0.3.0-test-resume-<YYYYMMDD>`.
+  `v<next-version>-test-resume-<YYYYMMDD>`.
 
 ## The rehearsal
 
@@ -75,8 +77,8 @@ On a clean `origin/main`:
 ```bash
 git fetch origin
 git checkout origin/main
-git tag -a v0.3.0-test-resume-$(date +%Y%m%d) -m "recover rehearsal"
-git push origin v0.3.0-test-resume-$(date +%Y%m%d)
+git tag -a v<next-version>-test-resume-$(date +%Y%m%d) -m "recover rehearsal"
+git push origin v<next-version>-test-resume-$(date +%Y%m%d)
 ```
 
 > **Do NOT** use a real RC version. Yanking is containment, not undo —
@@ -165,7 +167,7 @@ The resume run should:
 - Log `already published (skipping)` for each crate that was Published
   in the downloaded state.
 - Run `cargo publish` **only** for the remaining packages.
-- Produce a final `shipper-state-final` artifact with all 12 packages
+- Produce a final `shipper-state-final` artifact with all 13 public packages
   showing `state: "published"`.
 
 Download the resume's artifact and spot-check:
@@ -230,8 +232,9 @@ release line the rehearsal was cut from until the regression is fixed
 
 ## When to re-run
 
-- Before cutting **every** new release-candidate minor (`v0.3.0-rc.N`,
-  `v0.4.0-rc.N`, ...).
+- Before a release line that explicitly requires real crates.io interruption
+  proof. Prefer the safe runner-artifact rehearsal unless release policy calls
+  for destructive real-registry proof.
 - After any change to `crates/shipper-core/src/engine/`,
   `crates/shipper-core/src/state/`, or `crates/shipper-core/src/runtime/`
   that touches persistence, resumption, or reconciliation.
