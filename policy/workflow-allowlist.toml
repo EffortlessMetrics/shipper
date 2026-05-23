@@ -101,6 +101,7 @@ owner = "release/ci"
 reason = "Primary release workflow. Dogfoods shipper itself: cargo build, shipper plan/preflight/publish/resume, crates.io Trusted Publishing via OIDC, binary artifact build + upload, gh release create. Jobs are repository-guarded so the synced workflow is inert in EffortlessMetrics/shipper-swarm; release authority remains EffortlessMetrics/shipper."
 process_policy = "release"
 network_policy = "release"
+required_repository_guard = "EffortlessMetrics/shipper"
 created = "2026-05-11"
 review_after = "2026-08-11"
 
