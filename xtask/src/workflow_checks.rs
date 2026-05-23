@@ -550,14 +550,83 @@ fn workflow_job_blocks(yaml_text: &str) -> Vec<(String, String)> {
 }
 
 fn block_has_repository_guard(block: &str, required_repository: &str) -> bool {
+    let Some(expression) = job_level_if_expression(block) else {
+        return false;
+    };
     let single_quoted = format!("github.repository == '{required_repository}'");
     let double_quoted = format!("github.repository == \"{required_repository}\"");
-    block.lines().any(|line| {
+    expression.contains(&single_quoted) || expression.contains(&double_quoted)
+}
+
+fn job_level_if_expression(block: &str) -> Option<String> {
+    let lines: Vec<&str> = block.lines().collect();
+    let job_indent = lines.iter().find_map(|line| {
         let without_comment = strip_yaml_inline_comment(line);
         let trimmed = without_comment.trim_start();
-        trimmed.starts_with("if:")
-            && (trimmed.contains(&single_quoted) || trimmed.contains(&double_quoted))
-    })
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            None
+        } else {
+            Some(without_comment.len() - trimmed.len())
+        }
+    })?;
+    let field_indent = job_indent + 2;
+
+    let mut index = 0usize;
+    while index < lines.len() {
+        let without_comment = strip_yaml_inline_comment(lines[index]);
+        let trimmed = without_comment.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            index += 1;
+            continue;
+        }
+
+        let indent = without_comment.len() - trimmed.len();
+        if indent == field_indent && trimmed.starts_with("if:") {
+            let value = trimmed.trim_start_matches("if:").trim();
+            if is_yaml_block_scalar(value) || value.is_empty() {
+                return Some(collect_yaml_continuation_expression(
+                    &lines,
+                    index + 1,
+                    field_indent,
+                ));
+            }
+            return Some(value.to_string());
+        }
+
+        index += 1;
+    }
+
+    None
+}
+
+fn is_yaml_block_scalar(value: &str) -> bool {
+    matches!(value.chars().next(), Some('|' | '>'))
+}
+
+fn collect_yaml_continuation_expression(
+    lines: &[&str],
+    start: usize,
+    parent_indent: usize,
+) -> String {
+    let mut expression = String::new();
+
+    for line in &lines[start..] {
+        let without_comment = strip_yaml_inline_comment(line);
+        let trimmed = without_comment.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let indent = without_comment.len() - trimmed.len();
+        if indent <= parent_indent {
+            break;
+        }
+
+        expression.push_str(trimmed);
+        expression.push(' ');
+    }
+
+    expression
 }
 
 fn strip_yaml_inline_comment(line: &str) -> &str {
@@ -1146,6 +1215,64 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: cargo xtask policy-report
+"#;
+
+        let missing = workflow_jobs_missing_repository_guard(yaml, "EffortlessMetrics/shipper");
+
+        assert_eq!(missing, vec!["publish"]);
+    }
+
+    #[test]
+    fn repository_guard_scanner_accepts_multiline_job_if() {
+        let yaml = r#"
+name: Release
+
+jobs:
+  publish:
+    if: >
+      github.repository == 'EffortlessMetrics/shipper'
+      && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo publish
+"#;
+
+        let missing = workflow_jobs_missing_repository_guard(yaml, "EffortlessMetrics/shipper");
+
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn repository_guard_scanner_ignores_multiline_comment_bypass() {
+        let yaml = r#"
+name: Release
+
+jobs:
+  publish:
+    if: >
+      github.repository == 'EffortlessMetrics/shipper-swarm'
+      # github.repository == 'EffortlessMetrics/shipper'
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo publish
+"#;
+
+        let missing = workflow_jobs_missing_repository_guard(yaml, "EffortlessMetrics/shipper");
+
+        assert_eq!(missing, vec!["publish"]);
+    }
+
+    #[test]
+    fn repository_guard_scanner_ignores_step_level_if() {
+        let yaml = r#"
+name: Release
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - if: github.repository == 'EffortlessMetrics/shipper'
+        run: cargo publish
 "#;
 
         let missing = workflow_jobs_missing_repository_guard(yaml, "EffortlessMetrics/shipper");
