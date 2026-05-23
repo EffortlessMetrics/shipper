@@ -8,6 +8,10 @@ One-page cheat sheet. For the full contract see [INVARIANTS.md](../INVARIANTS.md
 
 When they disagree, events win. `state.json` and `receipt.json` are projections/summaries derived from events. An end-of-run consistency check emits `StateEventDriftDetected` if drift is found.
 
+That authority order applies to execution state. Other `.shipper/` artifacts
+answer narrower questions: auth posture, reconciliation evidence, remediation
+planning, or captured plan/preflight output.
+
 ## Per-file summary
 
 | File | Authority | Purpose | When written | Format |
@@ -16,6 +20,17 @@ When they disagree, events win. `state.json` and `receipt.json` are projections/
 | `state.json` | Projection | Serialized `ExecutionState` for fast resume | Per package state change | JSON |
 | `receipt.json` | Summary | End-of-run audit artifact with evidence | Once, at run completion | JSON |
 | `lock` | — | Concurrent-publish guard | Held during the run | Small text file |
+
+Additional evidence artifacts may appear when the related command or workflow
+runs:
+
+| File | Authority | Purpose | When written | Format |
+|---|---|---|---|---|
+| `auth-evidence.json` | Auth evidence | Observed Trusted Publishing/fallback context without token values | Release workflow auth setup | JSON |
+| `reconciliation.json` | Ambiguity evidence | Registry-truth evidence for ambiguous publish outcomes | When ambiguous cargo output is reconciled | JSON |
+| `remediation-plan.json` | Remediation plan | Dry-run containment and fix-forward plan derived from a receipt | `shipper remediate --dry-run` | JSON |
+| `plan.txt` | Captured output | Plan JSON captured for workflow artifacts | Release workflow plan stage | Text containing JSON |
+| `preflight_workspace_verify.txt` | Captured output | ANSI-stripped Cargo workspace dry-run output | Preflight workspace verification | Text |
 
 ## Which file for which question?
 
@@ -26,6 +41,9 @@ When they disagree, events win. `state.json` and `receipt.json` are projections/
 | Did the whole release succeed, and what's the audit trail? | `receipt.json` |
 | What would `shipper resume` skip? | `state.json` (packages with `state.state == "published"`) |
 | What's the truth when they disagree? | `events.jsonl` |
+| Which auth path was observed? | `auth-evidence.json` |
+| How did Shipper resolve ambiguity? | `events.jsonl`; `reconciliation.json` if present |
+| What would remediation do? | `remediation-plan.json` |
 
 ## Key field paths
 
@@ -117,15 +135,6 @@ jq -c 'select(.event_type.type == "publish_reconciled") | .event_type' .shipper/
 # Drift (should be empty on a healthy run)
 jq -c 'select(.event_type.type == "state_event_drift_detected")' .shipper/events.jsonl
 ```
-
-## Sidecar files
-
-Depending on what ran, `.shipper/` may also contain:
-
-| File | Produced by | Contents |
-|---|---|---|
-| `preflight_workspace_verify.txt` | Preflight, when workspace dry-run ran | Full ANSI-stripped cargo output ([#92](https://github.com/EffortlessMetrics/shipper/issues/92)) |
-| `plan.txt` | `shipper plan --format json` (with tee) | Plan JSON for artifact inspection |
 
 ## See also
 

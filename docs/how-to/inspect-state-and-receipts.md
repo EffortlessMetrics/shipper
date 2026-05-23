@@ -1,6 +1,9 @@
 # How to inspect Shipper state, events, and receipts
 
-After a Shipper run, three files in `.shipper/` tell the story. Different questions → different file.
+After a Shipper run, the core execution files in `.shipper/` tell the
+release story, and optional evidence artifacts answer narrower questions such
+as auth posture, ambiguity reconciliation, or remediation planning. Different
+questions → different file.
 
 ## Which file for which question?
 
@@ -9,6 +12,9 @@ After a Shipper run, three files in `.shipper/` tell the story. Different questi
 | Exactly what happened, and when? | `events.jsonl` | `shipper inspect-events` |
 | What's the current state (for resume)? | `state.json` | `cat .shipper/state.json` |
 | What was the final outcome + evidence? | `receipt.json` | `shipper inspect-receipt` |
+| Which auth path was observed? | `auth-evidence.json` | `jq '.' .shipper/auth-evidence.json` |
+| How was an ambiguous publish reconciled? | `events.jsonl` / `reconciliation.json` | `jq -c 'select(.event_type.type == "publish_reconciled")' .shipper/events.jsonl` |
+| What would remediation do? | `remediation-plan.json` | `jq '.' .shipper/remediation-plan.json` |
 
 **Authority order:** events are truth, state is a projection, receipt is a summary. When they disagree, events win. See [INVARIANTS.md](../INVARIANTS.md).
 
@@ -77,6 +83,22 @@ shipper inspect-receipt --format json | jq '.'
 ```
 
 The receipt is the audit artifact. Keep it. It includes `plan_id`, per-package outcomes, captured evidence (stdout/stderr tails + exit codes), git context, and an environment fingerprint.
+
+## Reading auxiliary evidence
+
+Some workflows produce additional files next to the core event/state/receipt
+set:
+
+- `auth-evidence.json` records observed Trusted Publishing and fallback-token
+  posture without storing token values.
+- `reconciliation.json`, when present, records registry-truth evidence for an
+  ambiguous Cargo outcome. `events.jsonl` still carries the authoritative
+  `publish_reconciling` and `publish_reconciled` events.
+- `remediation-plan.json` records the dry-run containment and fix-forward plan
+  from `shipper remediate --dry-run`; it is a plan, not evidence that yanks or
+  fix-forward publishes already ran.
+- `plan.txt` and `preflight_workspace_verify.txt` are workflow-captured output
+  files used for release evidence and triage.
 
 ## Verifying consistency
 
