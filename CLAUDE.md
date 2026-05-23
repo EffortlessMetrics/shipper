@@ -2,6 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository role
+
+`EffortlessMetrics/shipper-swarm` is the active development repository.
+`EffortlessMetrics/shipper` remains the release authority for crates.io
+publishing, release evidence, tags, and signing credentials until that
+authority is explicitly moved.
+
+Normal PRs into `shipper-swarm/main` are squash-merged. Syncs from
+`shipper-swarm/main` back to `shipper/main` use merge commits and must not be
+squashed or rebased. See
+[docs/status/SWARM_OPERATION.md](docs/status/SWARM_OPERATION.md).
+
+Do not add crates.io publish tokens, release signing secrets, or release
+workflow credentials to `shipper-swarm`.
+
 ## Orientation
 
 - [**MISSION.md**](MISSION.md) — north star: mission, vision, audience, beliefs. Read before scoping non-trivial work.
@@ -10,6 +25,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [**docs/explanation/why-shipper.md**](docs/explanation/why-shipper.md) — the *why*, distilled.
 - [**docs/product.md**](docs/product.md), [**docs/structure.md**](docs/structure.md), [**docs/tech.md**](docs/tech.md) — steering docs.
 - [**docs/INVARIANTS.md**](docs/INVARIANTS.md) — events-as-truth contract.
+- [**docs/status/SWARM_OPERATION.md**](docs/status/SWARM_OPERATION.md) — active-development repo, merge policy, and sync policy.
+- [**docs/status/SWARM_SYNC.md**](docs/status/SWARM_SYNC.md) — release-authority repo sync policy imported from `shipper`.
 
 ## Build & Test Commands
 
@@ -90,7 +107,7 @@ In `state.json`, package status is at `.packages[].state.state`, not `.packages[
 
 [**MISSION.md**](MISSION.md) is the north star — mission, vision, audience, and the nine convictions that produce every design decision. Read it before scoping non-trivial work.
 
-Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is what Cargo still doesn't do, organized as nine competencies: **Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics**. See [ROADMAP.md](ROADMAP.md) and master tracking issue [#109](https://github.com/EffortlessMetrics/shipper/issues/109). The biggest open gap is **Reconcile** ([#102](https://github.com/EffortlessMetrics/shipper/issues/102) / [#99](https://github.com/EffortlessMetrics/shipper/issues/99)): when `cargo publish` exits ambiguously, Shipper currently blind-retries instead of reconciling against the registry.
+Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is what Cargo still doesn't do, organized as nine competencies: **Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics**. See [ROADMAP.md](ROADMAP.md) and master tracking issue [#109](https://github.com/EffortlessMetrics/shipper/issues/109). **Reconcile is now stable:** ambiguous `cargo publish` outcomes reconcile against registry truth and stop on `StillUnknown` instead of blind-retrying. The current active proof lane is Trusted Publishing default evidence; keep fallback/default claims bounded by `.shipper-meta/goals/active.toml` and [docs/status/SUPPORT_TIERS.md](docs/status/SUPPORT_TIERS.md).
 
 ## Conventions
 
