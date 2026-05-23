@@ -147,3 +147,16 @@ Do not add these to `shipper-swarm`:
 
 Release credentials stay in `EffortlessMetrics/shipper` until release
 authority is deliberately migrated.
+
+The release workflow may exist in `shipper-swarm` because the two repositories
+share history and sync commits. Any release-authority workflow job that can
+publish crates, mint release tokens, create GitHub Releases, or upload release
+artifacts must be guarded with:
+
+```text
+github.repository == 'EffortlessMetrics/shipper'
+```
+
+That guard keeps tag and manual workflow runs inert in `shipper-swarm` while
+preserving the same workflow file for merge-commit syncs back to the release
+authority repository.
