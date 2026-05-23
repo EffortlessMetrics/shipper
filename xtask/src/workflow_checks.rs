@@ -59,6 +59,7 @@ struct RawWorkflowEntry {
     reason: Option<String>,
     process_policy: Option<String>,
     network_policy: Option<String>,
+    required_repository_guard: Option<String>,
     created: Option<String>,
     review_after: Option<String>,
     expires: Option<String>,
@@ -100,6 +101,7 @@ struct WorkflowSummary {
     stale: usize,
     unused: usize,
     invalid_policy_refs: usize,
+    repository_guard_violations: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,6 +112,7 @@ struct WorkflowFindings {
     stale: Vec<StaleEntry>,
     unused: Vec<String>,
     invalid_policy_refs: Vec<InvalidPolicyRef>,
+    repository_guard_violations: Vec<RepositoryGuardViolation>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,6 +141,14 @@ struct InvalidPolicyRef {
     policy_kind: &'static str, // "process_policy" | "network_policy"
     named: String,
     available: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RepositoryGuardViolation {
+    workflow: String,
+    required_repository: String,
+    job: String,
+    reason: String,
 }
 
 pub fn check_workflow_surfaces(mode: Mode) -> Result<()> {
@@ -259,6 +270,8 @@ pub fn check_workflow_surfaces(mode: Mode) -> Result<()> {
         }
     }
 
+    let repository_guard_violations = repository_guard_violations(&workspace_root, &entries);
+
     let findings = WorkflowFindings {
         unreceipted,
         missing_fields,
@@ -266,6 +279,7 @@ pub fn check_workflow_surfaces(mode: Mode) -> Result<()> {
         stale,
         unused,
         invalid_policy_refs,
+        repository_guard_violations,
     };
 
     let _ = dependabot_entries; // tracked-but-skipped; kept for future per-kind audits.
@@ -279,6 +293,7 @@ pub fn check_workflow_surfaces(mode: Mode) -> Result<()> {
         stale: findings.stale.len(),
         unused: findings.unused.len(),
         invalid_policy_refs: findings.invalid_policy_refs.len(),
+        repository_guard_violations: findings.repository_guard_violations.len(),
     };
 
     let report = WorkflowReport {
@@ -291,7 +306,7 @@ pub fn check_workflow_surfaces(mode: Mode) -> Result<()> {
 
     write_workflow_report(&workspace_root, &report)?;
     println!(
-        "{} ({}): workflows={} entries={} unreceipted={} missing_fields={} expired={} stale={} unused={} invalid_refs={}",
+        "{} ({}): workflows={} entries={} unreceipted={} missing_fields={} expired={} stale={} unused={} invalid_refs={} repository_guard_violations={}",
         report.tool,
         report.mode,
         report.summary.tracked_workflow_files,
@@ -302,6 +317,7 @@ pub fn check_workflow_surfaces(mode: Mode) -> Result<()> {
         report.summary.stale,
         report.summary.unused,
         report.summary.invalid_policy_refs,
+        report.summary.repository_guard_violations,
     );
 
     let blocking = workflow_blocking_count(mode, &report.findings);
@@ -342,7 +358,8 @@ fn workflow_blocking_count(mode: Mode, f: &WorkflowFindings) -> usize {
     let mut n = f.unreceipted.len()
         + f.missing_fields.len()
         + f.expired.len()
-        + f.invalid_policy_refs.len();
+        + f.invalid_policy_refs.len()
+        + f.repository_guard_violations.len();
     if matches!(mode, Mode::BlockingStrict) {
         n += f.unused.len() + f.stale.len();
     }
@@ -386,6 +403,10 @@ fn render_workflow_md(r: &WorkflowReport) -> String {
         "- Invalid policy refs: {}\n\n",
         r.summary.invalid_policy_refs
     ));
+    out.push_str(&format!(
+        "- Repository guard violations: {}\n\n",
+        r.summary.repository_guard_violations
+    ));
     list_strings(&mut out, "Unreceipted workflows", &r.findings.unreceipted);
     for m in &r.findings.missing_fields {
         out.push_str(&format!(
@@ -403,7 +424,139 @@ fn render_workflow_md(r: &WorkflowReport) -> String {
             ipr.available.join(", ")
         ));
     }
+    for guard in &r.findings.repository_guard_violations {
+        out.push_str(&format!(
+            "- REPOSITORY GUARD: `{}` job `{}` must be guarded to `{}` ({})\n",
+            guard.workflow, guard.job, guard.required_repository, guard.reason
+        ));
+    }
     out
+}
+
+fn repository_guard_violations(
+    workspace_root: &Path,
+    entries: &[RawWorkflowEntry],
+) -> Vec<RepositoryGuardViolation> {
+    let mut violations = Vec::new();
+
+    for entry in entries {
+        let path = entry.path.clone().unwrap_or_default();
+        let required_repository = match entry.required_repository_guard.as_ref() {
+            Some(repo) => repo.clone(),
+            None if entry.kind.as_deref() == Some("release") => {
+                violations.push(RepositoryGuardViolation {
+                    workflow: path,
+                    required_repository: "EffortlessMetrics/shipper".to_string(),
+                    job: "<allowlist>".to_string(),
+                    reason: "release workflow is missing required_repository_guard in workflow allowlist"
+                        .to_string(),
+                });
+                continue;
+            }
+            None => continue,
+        };
+
+        let content = read_workflow_content(workspace_root, &path).unwrap_or_default();
+        let unguarded_jobs = workflow_jobs_missing_repository_guard(&content, &required_repository);
+        if unguarded_jobs.is_empty() {
+            continue;
+        }
+        for job in unguarded_jobs {
+            violations.push(RepositoryGuardViolation {
+                workflow: path.clone(),
+                required_repository: required_repository.clone(),
+                job,
+                reason:
+                    "job-level if does not contain the required github.repository equality guard"
+                        .to_string(),
+            });
+        }
+    }
+
+    violations
+}
+
+fn workflow_jobs_missing_repository_guard(
+    yaml_text: &str,
+    required_repository: &str,
+) -> Vec<String> {
+    workflow_job_blocks(yaml_text)
+        .into_iter()
+        .filter_map(|(job, block)| {
+            if block_has_repository_guard(&block, required_repository) {
+                None
+            } else {
+                Some(job)
+            }
+        })
+        .collect()
+}
+
+fn workflow_job_blocks(yaml_text: &str) -> Vec<(String, String)> {
+    let mut jobs = Vec::new();
+    let mut in_jobs = false;
+    let mut jobs_indent = 0usize;
+    let mut current_job: Option<String> = None;
+    let mut current_block = String::new();
+
+    for line in yaml_text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            if current_job.is_some() {
+                current_block.push_str(line);
+                current_block.push('\n');
+            }
+            continue;
+        }
+
+        let indent = line.len() - trimmed.len();
+        if !in_jobs {
+            if trimmed == "jobs:" {
+                in_jobs = true;
+                jobs_indent = indent;
+            }
+            continue;
+        }
+
+        if indent <= jobs_indent {
+            break;
+        }
+
+        let is_job_key = indent == jobs_indent + 2
+            && trimmed.ends_with(':')
+            && !trimmed.starts_with('-')
+            && !trimmed.contains(' ');
+        if is_job_key {
+            if let Some(job) = current_job.take() {
+                jobs.push((job, std::mem::take(&mut current_block)));
+            }
+            current_job = Some(trimmed.trim_end_matches(':').to_string());
+            current_block.push_str(line);
+            current_block.push('\n');
+            continue;
+        }
+
+        if current_job.is_some() {
+            current_block.push_str(line);
+            current_block.push('\n');
+        }
+    }
+
+    if let Some(job) = current_job {
+        jobs.push((job, current_block));
+    }
+
+    jobs
+}
+
+fn block_has_repository_guard(block: &str, required_repository: &str) -> bool {
+    let single_quoted = format!("github.repository == '{required_repository}'");
+    let double_quoted = format!("github.repository == \"{required_repository}\"");
+    block.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("if:")
+            && (trimmed.contains(&single_quoted) || trimmed.contains(&double_quoted))
+    })
 }
 
 // ─── check-process-policy ───────────────────────────────────────────────────
@@ -893,4 +1046,59 @@ fn today_iso() -> String {
         .date_naive()
         .format("%Y-%m-%d")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_guard_scanner_accepts_guarded_jobs() {
+        let yaml = r#"
+name: Release
+
+jobs:
+  publish:
+    if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo publish
+  rehearse:
+    if: github.repository == "EffortlessMetrics/shipper" && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo xtask policy-report
+"#;
+
+        let missing = workflow_jobs_missing_repository_guard(yaml, "EffortlessMetrics/shipper");
+
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn repository_guard_scanner_reports_unguarded_jobs() {
+        let yaml = r#"
+name: Release
+
+jobs:
+  publish:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo publish
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release create
+  rehearse:
+    if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo xtask policy-report
+"#;
+
+        let missing = workflow_jobs_missing_repository_guard(yaml, "EffortlessMetrics/shipper");
+
+        assert_eq!(missing, vec!["publish", "create-release"]);
+    }
 }
