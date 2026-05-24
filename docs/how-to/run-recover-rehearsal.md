@@ -243,8 +243,9 @@ release line the rehearsal was cut from until the regression is fixed
 
 The synthetic test at `crates/shipper-cli/tests/e2e_rehearse.rs` runs
 on every CI commit and acts as a cheap pre-flight, but it's not a
-substitute for this procedure — the real kill happens on a real runner
-with a real registry.
+substitute for this procedure. The safe rehearsal proves a real runner
+handoff with fake Cargo and a mock registry; the destructive crates.io
+path is the only rehearsal here that touches a real registry.
 
 ## See also
 
