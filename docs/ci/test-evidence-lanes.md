@@ -15,7 +15,8 @@ Release: publish / readiness / security proof must be clean to ship
 
 ## Workflow Inventory
 
-Every workflow under `.github/workflows/` and the lane each one occupies. The audit dates from the #189 docs pass.
+Every workflow under `.github/workflows/` and the lane each one occupies. Keep
+this inventory aligned when workflows are added, removed, or retargeted.
 
 | Workflow | Trigger | Lane | Required for merge? |
 |---|---|---|---|
@@ -27,6 +28,7 @@ Every workflow under `.github/workflows/` and the lane each one occupies. The au
 | `droid.yml` | `issues` + `pull_request` (command-triggered) | Advisory (trusted-actor guard) | Advisory |
 | `droid-security-scan.yml` | `schedule` + `workflow_dispatch` | Scheduled (Mon 08:00 UTC) | Advisory |
 | `fuzz.yml` | `schedule` + `workflow_dispatch` | Nightly | Advisory |
+| `live-runner-interruption-rehearsal.yml` | `workflow_dispatch` + path-scoped `pull_request` | Safe runner-artifact interruption/resume proof | Advisory/manual; required when triggered |
 | `mutation.yml` | `schedule` + `workflow_dispatch` + `pull_request` (label-gated) | Weekly + label-gated PR | Advisory |
 | `release.yml` | `push` (tags `v*.*.*`) + `workflow_dispatch` | Tag-triggered | Required (when triggered) |
 | `ripr.yml` | `pull_request` + `workflow_dispatch` | Advisory (`continue-on-error: true`) | Advisory |
