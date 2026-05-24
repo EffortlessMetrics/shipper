@@ -231,9 +231,7 @@ Concrete follow-up candidates:
 
 1. Add an explicit `full-ci` label or manual dispatch recipe for PRs that need
    full matrix proof before merge.
-2. Record forced CX43, CX53, and explicit `shipper-swarm` GitHub-hosted
-   fallback proof IDs after the #72 routing change. Current CPX42 same-repo
-   proof and source release-authority tiny fallback proof are recorded in
-   `docs/status/SWARM_OPERATION.md` and `docs/status/SUPPORT_TIERS.md`.
+2. Repeat forced route proof and refresh the proof ledger whenever route order,
+   runner labels, fallback policy, or the normalized-result contract changes.
 3. Revisit whether `architecture-guard.yml` should remain separately required
    once the routed Rust-small lane is proven stable under the new settings.

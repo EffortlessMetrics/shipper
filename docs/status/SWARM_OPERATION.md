@@ -135,14 +135,17 @@ Current routed Rust-small proof:
   attempt.
 - Current same-repo CPX42 routing passed on PR #73 with `Routed Rust Small`
   run `26350902300`; the CPX42 implementation job and normalized
-  `Shipper Rust Small Result` both succeeded.
+  `Shipper Rust Small Result` both succeeded. The post-backfill `main` run
+  `26354268990` also passed through CPX42 and the normalized result.
+- Forced route proof under the current routing rules passed for CX43 with
+  workflow-dispatch run `26355258014`, for CX53 with workflow-dispatch run
+  `26356173639`, and for explicit `shipper-swarm` GitHub-hosted fallback with
+  workflow-dispatch run `26357093195`.
 - Source release-authority sync PRs take the intentional GitHub-hosted tiny
   fallback because `EffortlessMetrics/shipper` remains the release authority
   and does not carry the swarm runner-routing secret. Source PR #388 passed
-  with run `26351871995`, and source PR #389 passed with run `26353082714`.
-- Forced CX43, CX53, and explicit `shipper-swarm` GitHub-hosted fallback proof
-  under the current routing rules remain follow-up evidence. Do not promote
-  route-specific coverage beyond the runs recorded here.
+  with run `26351871995`, source PR #389 passed with run `26353082714`, and
+  source PR #390 passed with run `26354158302`.
 
 ## Credential Boundary
 
