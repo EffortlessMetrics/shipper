@@ -36,7 +36,8 @@ Every workflow under `.github/workflows/` and the lane each one occupies. The au
 `em-ci-routed-rust.yml` is the required PR workflow. Branch protection requires
 only the normalized `Shipper Rust Small Result` check.
 
-Trusted same-repo PRs route through self-hosted runners in this order:
+In `EffortlessMetrics/shipper-swarm`, trusted same-repo PRs route through
+self-hosted runners in this order:
 
 ```text
 CPX42 -> CX43 -> CX53
@@ -44,9 +45,14 @@ CPX42 -> CX43 -> CX53
 
 Fork or explicitly allowed fallback paths use the GitHub-hosted tiny fallback.
 Silent fallback is blocked: if self-hosted routing is unavailable for a trusted
-same-repo PR, the normalized result fails unless an operator has explicitly
-applied `allow-github-hosted` or `ci-budget-ack`, or forced the `github` route
-through `workflow_dispatch`.
+same-repo PR in `shipper-swarm`, the normalized result fails unless an operator
+has explicitly applied `allow-github-hosted` or `ci-budget-ack`, or forced the
+`github` route through `workflow_dispatch`.
+
+In `EffortlessMetrics/shipper`, the same workflow intentionally takes the
+GitHub-hosted tiny fallback. The source repository remains the release authority
+and does not carry the swarm runner-routing secret; source sync and
+release-authority PRs should not depend on `shipper-swarm` self-hosted routing.
 
 The self-hosted Rust-small lane proves:
 

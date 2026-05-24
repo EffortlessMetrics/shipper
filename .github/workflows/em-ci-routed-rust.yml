@@ -130,6 +130,10 @@ jobs:
               print(f"trusted={str(trusted).lower()}")
               print(f"router_error={str(reason in {'runner_token_unauthorized','runner_token_forbidden','runner_api_failed','parse_failed'}).lower()}")
 
+          if repo == "EffortlessMetrics/shipper":
+              set_output("github", "release_authority_repo", True)
+              sys.exit(0)
+
           if not trusted:
               set_output("github", "fork_pr", True)
               sys.exit(0)
