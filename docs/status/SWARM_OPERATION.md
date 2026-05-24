@@ -136,7 +136,10 @@ Current routed Rust-small proof:
 - Current same-repo CPX42 routing passed on PR #73 with `Routed Rust Small`
   run `26350902300`; the CPX42 implementation job and normalized
   `Shipper Rust Small Result` both succeeded. The post-backfill `main` run
-  `26354268990` also passed through CPX42 and the normalized result.
+  `26354268990` also passed through CPX42 and the normalized result. Fresh
+  same-repo CPX42 proof passed on PR #91 with `Routed Rust Small` run
+  `26373257574`; the post-merge `main` run `26373573745` also passed through
+  CPX42 and the normalized result.
 - Forced route proof before the 100% self-hosted sweep passed for `CX43` with
   `workflow_dispatch` run `26355258014` and for `CX53` with
   `workflow_dispatch` run `26356173639`.
