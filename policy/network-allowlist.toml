@@ -56,7 +56,7 @@ allowed_endpoints = [
   "win.rustup.rs",
 ]
 owner = "release/ci"
-reason = "Release workflow contacts crates.io for Trusted Publishing (token.actions.githubusercontent.com for the OIDC exchange + crates.io / index.crates.io / static.crates.io for the publish + visibility verification), GitHub for artifact uploads and release creation, and the standard rustup/toolchain endpoints."
+reason = "Release workflow contacts token.actions.githubusercontent.com for the Trusted Publishing OIDC attempt, crates.io / index.crates.io / static.crates.io for publish and visibility verification, GitHub for artifact uploads and release creation, and the standard rustup/toolchain endpoints. Trusted Publishing default remains unpromoted until release evidence proves the short-lived-token path."
 created = "2026-05-11"
 review_after = "2026-08-11"
 

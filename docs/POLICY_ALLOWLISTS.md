@@ -89,7 +89,7 @@ reason = "Project documentation."
 ```toml
 [[workflow]]
 path = ".github/workflows/release.yml"
-reason = "Primary release workflow using Trusted Publishing."
+reason = "Primary release workflow. Attempts Trusted Publishing, records auth evidence, and uses the configured fallback secret until Trusted Publishing default proof exists."
 process_policy = "release"
 network_policy = "release"
 ```

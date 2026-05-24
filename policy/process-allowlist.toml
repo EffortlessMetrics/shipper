@@ -45,9 +45,10 @@ review_after = "2026-08-11"
 
 # ─── release ────────────────────────────────────────────────────────────────
 #
-# Release workflow: builds shipper, runs it as a CLI, publishes via Trusted
-# Publishing, produces signed/checksummed binary artifacts, creates the GitHub
-# release.
+# Release workflow: builds shipper, runs it as a CLI, attempts Trusted
+# Publishing, records auth evidence, uses the configured fallback secret until
+# Trusted Publishing default proof exists, produces signed/checksummed binary
+# artifacts, and creates the GitHub release.
 
 [[profile]]
 name = "release"
@@ -62,7 +63,7 @@ allowed_processes = [
   "mkdir",
 ]
 owner = "release/ci"
-reason = "Release workflow dogfoods shipper itself, installs the supported facade path with `cargo install --path crates/shipper --locked`, packages release binaries (tar + sha256sum), and creates the GitHub release with gh. Trusted Publishing supplies registry credentials via OIDC."
+reason = "Release workflow dogfoods shipper itself, installs the supported facade path with `cargo install --path crates/shipper --locked`, packages release binaries (tar + sha256sum), creates the GitHub release with gh, attempts Trusted Publishing via OIDC, records auth evidence, and uses the configured fallback secret until Trusted Publishing default proof exists."
 created = "2026-05-11"
 review_after = "2026-08-11"
 
