@@ -3,11 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
   schedule:
     # Nightly quick fuzz and elevated property tests
-    - cron: '0 3 * * *'
+    - cron: '0 3 * * 0'
 
 concurrency:
   group: ci-${{ github.ref }}

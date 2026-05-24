@@ -5,8 +5,9 @@ This document maps the test evidence strategy for `shipper`: which lanes run whe
 ## Doctrine
 
 ```
-PRs:     ripr (advisory) + every-PR gates + targeted mutation when risk warrants it
-Nightly: deeper fuzz / proptest / weekly mutation lanes
+PRs:     routed Rust-small required gate + ripr (advisory) + targeted mutation when risk warrants it
+Main:    broad full-CI evidence after merge
+Weekly:  deeper fuzz / proptest / mutation lanes
 Release: publish / readiness / security proof must be clean to ship
 ```
 
@@ -18,8 +19,9 @@ Every workflow under `.github/workflows/` and the lane each one occupies. The au
 
 | Workflow | Trigger | Lane | Required for merge? |
 |---|---|---|---|
-| `architecture-guard.yml` | `push` + `pull_request` | Every PR | Required |
-| `ci.yml` | `push` + `pull_request` + `workflow_dispatch` + `schedule` | Every PR (most jobs) + nightly heavy proptest | Required (per-job, see below) |
+| `architecture-guard.yml` | `push` + `pull_request` | Every PR | Advisory in swarm branch protection |
+| `em-ci-routed-rust.yml` | `push` + `pull_request` + `merge_group` + `workflow_dispatch` | Required PR gate | Required via `Shipper Rust Small Result` |
+| `ci.yml` | `push` + `workflow_dispatch` + weekly `schedule` | Main/manual full-CI evidence + weekly heavy proptest | Required when triggered; not the default PR gate |
 | `coverage.yml` | `push` (main) + `pull_request` + `workflow_dispatch` | Advisory / labeled | Advisory |
 | `droid-review.yml` | `pull_request` | Advisory (same-repo + bot guard) | Advisory |
 | `droid.yml` | `issues` + `pull_request` (command-triggered) | Advisory (trusted-actor guard) | Advisory |
@@ -29,25 +31,71 @@ Every workflow under `.github/workflows/` and the lane each one occupies. The au
 | `release.yml` | `push` (tags `v*.*.*`) + `workflow_dispatch` | Tag-triggered | Required (when triggered) |
 | `ripr.yml` | `pull_request` + `workflow_dispatch` | Advisory (`continue-on-error: true`) | Advisory |
 
-## `ci.yml` — Per-Job Lane Map
+## Required PR Gate
 
-`ci.yml` is the load-bearing PR workflow. Every entry below is implicit required-for-merge unless the `Predicate` column carries a gate.
+`em-ci-routed-rust.yml` is the required PR workflow. Branch protection requires
+only the normalized `Shipper Rust Small Result` check.
+
+In `EffortlessMetrics/shipper-swarm`, trusted same-repo PRs route through
+self-hosted runners in this order:
+
+```text
+CPX42 -> CX43 -> CX53
+```
+
+Fork or explicitly allowed fallback paths use the GitHub-hosted tiny fallback.
+Silent fallback is blocked: if self-hosted routing is unavailable for a trusted
+same-repo PR or merge-queue run in `shipper-swarm`, the normalized result fails
+unless an operator has explicitly applied `allow-github-hosted` or
+`ci-budget-ack`, or forced the `github` route through `workflow_dispatch`.
+
+In `EffortlessMetrics/shipper`, the same workflow intentionally takes the
+GitHub-hosted tiny fallback. The source repository remains the release authority
+and does not carry the swarm runner-routing secret; source sync and
+release-authority PRs should not depend on `shipper-swarm` self-hosted routing.
+
+The self-hosted Rust-small lane proves:
+
+```bash
+cargo check --workspace --locked --all-targets
+cargo nextest run --workspace --locked --all-targets --all-features --profile ci
+cargo test --workspace --locked --doc
+cargo run -p shipper -- --help
+cargo run -p shipper -- plan --help
+cargo run -p shipper -- preflight --help
+```
+
+The GitHub-hosted tiny fallback intentionally proves less:
+
+```bash
+cargo check --workspace --locked --all-targets
+cargo run -p shipper -- --help
+cargo run -p shipper -- plan --help
+```
+
+## `ci.yml` — Full-CI Lane Map
+
+`ci.yml` is the broad full-CI workflow. It no longer runs on every PR. It runs
+on pushes to `main`, manual `workflow_dispatch`, and the weekly schedule. Every
+entry below is required when `ci.yml` is triggered unless the `Predicate`
+column carries a gate.
 
 | Job | Predicate | Wall clock | What it proves |
 |---|---|---|---|
-| `lint` | every PR | ~1 min | `cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings`. |
-| `policy` | every PR | ~1 min | All seven xtask policy checks in `--mode blocking-allowlist`, plus `policy-report`. See `docs/policy/NON_RUST_ROLLOUT.md`. |
-| `test` (nextest, 3-OS matrix) | every PR | ~17 min (longest leg) | Unit and integration tests pass on Ubuntu, Windows, macOS. Doc-tests run alongside. |
+| `lint` | `push` / `workflow_dispatch` / `schedule` | ~1 min | `cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings`. |
+| `policy` | `push` / `workflow_dispatch` / `schedule` | ~1 min | All seven xtask policy checks in `--mode blocking-allowlist`, plus `policy-report`. See `docs/policy/NON_RUST_ROLLOUT.md`. |
+| `test` (nextest, 3-OS matrix) | `push` / `workflow_dispatch` / `schedule` | ~17 min (longest leg) | Unit and integration tests pass on Ubuntu, Windows, macOS. Doc-tests run alongside. |
 | `crypto-proptests-heavy` | `schedule` / `push` / `workflow_dispatch` only | ~20 min | Full-strength `proptest` for `shipper-encrypt` round-trips. **Not** on PR — too slow. |
-| `msrv` | every PR | ~1 min | `cargo check --workspace` on the declared MSRV (1.95). |
-| `security` | every PR | ~1 min | `cargo audit` against the current advisory database. |
-| `docs` | every PR | ~1 min | `cargo doc --workspace --no-deps` clean under `-D warnings` (catches `rustdoc::invalid-html-tags` and friends). |
-| `bdd` | every PR | ~3 min | Publish and resume BDD scenarios plus the synthetic interruption-resume rehearsal (`e2e_rehearse`) that proves persisted state/events let `shipper resume` complete without duplicate publishes. |
-| `fuzz-smoke` | every PR except `schedule` | ~10 min | Six fuzz targets at low-energy: parser, encrypt, sanitizer, plan, state, events. |
-| `cross-platform` | every PR | ~2 min per leg | Multi-target builds: Linux x86_64/aarch64, Windows MSVC, macOS x86_64/aarch64. |
+| `msrv` | `push` / `workflow_dispatch` / `schedule` | ~1 min | `cargo check --workspace` on the declared MSRV (1.95). |
+| `security` | `push` / `workflow_dispatch` / `schedule` | ~1 min | `cargo audit` against the current advisory database. |
+| `docs` | `push` / `workflow_dispatch` / `schedule` | ~1 min | `cargo doc --workspace --no-deps` clean under `-D warnings` (catches `rustdoc::invalid-html-tags` and friends). |
+| `bdd` | `push` / `workflow_dispatch` / `schedule` | ~3 min | Publish and resume BDD scenarios plus the synthetic interruption-resume rehearsal (`e2e_rehearse`) that proves persisted state/events let `shipper resume` complete without duplicate publishes. |
+| `fuzz-smoke` | `push` / `workflow_dispatch` | ~10 min | Five fuzz targets at low energy: load state, resolve token, schema version, release levels, and output redaction. |
+| `cross-platform` | `push` / `workflow_dispatch` / `schedule` | ~2 min per leg | Multi-target builds: Linux x86_64/aarch64, Windows MSVC, macOS x86_64/aarch64. |
 | `release-build` | `push` / `workflow_dispatch` only | ~2 min | Release-profile build (LTO + strip) remains available on main and manual runs; tag-time binaries are built by `release.yml`. |
 
-**Recent observed PR wall-clock:** 24–28 min (CI runs from this rollout). Critical path is `test` on macOS plus `fuzz-smoke`; everything else fits inside that window.
+Broad full-CI remains part of the evidence story, but it is not the merge gate
+for ordinary PRs. The required PR signal is the routed result above.
 
 ## Policy Gates (xtask-Enforced, Inside `ci.yml`'s `policy` Job)
 
@@ -70,6 +118,7 @@ The `policy` job runs each check in blocking-allowlist mode and uploads `target/
 | Job | Workflow | Trigger | What it proves |
 |---|---|---|---|
 | `coverage` | `coverage.yml` | `push` to main, dispatch, `coverage` or `full-ci` label on PR | Codecov line/branch coverage. |
+| `rust-small` | `em-ci-routed-rust.yml` | PRs, merge groups, pushes to main, dispatch | Required Rust-small PR gate with self-hosted routing and explicit fallback control. |
 | `ripr-pilot` | `ripr.yml` | PRs touching `crates/**`, `xtask/**`, `Cargo.{toml,lock}`, `ripr.toml`, `policy/ripr-suppressions.toml`, `.github/workflows/ripr.yml`. `continue-on-error: true`. | Static mutation-exposure analysis: does the diff appear exposed to a meaningful test oracle? |
 | `mutants-pr` | `mutation.yml` | PRs labeled `mutation` or `full-ci` | Runtime mutation backstop scoped to the PR's changed files via `cargo xtask mutants-pr --changed`. Blocking when it runs. |
 | `droid-review` | `droid-review.yml` | Same-repo PRs (incl. `dependabot[bot]`). | Automated code review via Factory Droid (BYOK MiniMax M2.7). Advisory comments, no merge gate. |
@@ -127,7 +176,7 @@ A maintainer should apply the label when:
 
 The live recover rehearsal remains a manual release-candidate procedure because
 it intentionally publishes throwaway crates.io versions and then yanks them.
-The every-PR CI proof is the synthetic side: `ci.yml` runs
+The full-CI proof is the synthetic side: `ci.yml` runs
 `cargo test -p shipper-cli --test e2e_rehearse -- --nocapture`, which exercises
 a real `shipper publish` interruption/resume sequence against fake Cargo and a
 mock registry, then checks `state.json`, append-only `events.jsonl`, skipped
@@ -139,14 +188,15 @@ A complete evidence picture for a release requires all of the following:
 
 | Evidence | Source |
 |---|---|
-| Tests pass on all platforms | `ci.yml` `test` matrix (Ubuntu, Windows, macOS) |
-| Multi-target builds compile | `ci.yml` `cross-platform` matrix (5 targets) |
-| No known vulnerabilities | `ci.yml` `security` (`cargo audit`) |
+| Required PR gate | `em-ci-routed-rust.yml` `Shipper Rust Small Result` |
+| Tests pass on all platforms | `ci.yml` `test` matrix (Ubuntu, Windows, macOS) on main/manual/weekly runs |
+| Multi-target builds compile | `ci.yml` `cross-platform` matrix (5 targets) on main/manual/weekly runs |
+| No known vulnerabilities | `ci.yml` `security` (`cargo audit`) on main/manual/weekly runs |
 | No architectural drift | `architecture-guard.yml` |
-| Format clean | `ci.yml` `lint` (`cargo fmt --check`) |
-| Clippy clean | `ci.yml` `lint` (`cargo clippy -- -D warnings`) |
+| Format clean | `ci.yml` `lint` on main/manual/weekly runs |
+| Clippy clean | `ci.yml` `lint` (`cargo clippy -- -D warnings`) on main/manual/weekly runs |
 | MSRV verified | `ci.yml` `msrv` + `release.yml` `msrv-gate` |
-| BDD scenarios pass | `ci.yml` `bdd` |
+| BDD scenarios pass | `ci.yml` `bdd` on main/manual/weekly runs |
 | No panic-family debt added | `release.yml` `policy-gate` (`no-panic check --mode blocking`) |
 | Policy gates green | `ci.yml` `policy` (every xtask check in blocking-allowlist) |
 | Static exposure signal | `ripr.yml` `ripr-pilot` (advisory) |
@@ -171,17 +221,17 @@ These crates receive the most rigorous mutation coverage because they handle rea
 | `shipper-cli` | CLI dispatch, output |
 | `shipper` | Install façade |
 
-## Routing Changes Deferred to Follow-Up PRs
+## Routing Follow-Ups
 
-#189 was filed with a richer lane-routing proposal (e.g. moving `cross-platform` from every-PR to labeled+nightly to drop ~10 min off the default PR wall-clock). That work is deferred. The reasoning:
+The current swarm posture optimizes for a reliable required PR signal first:
+`Shipper Rust Small Result`. Broad full-CI still runs after merge on `main`, on
+manual dispatch, and on the weekly schedule.
 
-- **Current PR wall-clock is ~24–28 min** — close to the original 25-min target without aggressive routing.
-- **Coverage cost.** Shipper has Windows-specific code paths (path handling, process spawning, line endings). Moving Windows/macOS/aarch64 builds to nightly means platform regressions surface a day later instead of inside the PR. That's a real loss for a release-pipeline product, not a free speedup.
-- **Policy posture.** Adding labels to opt INTO coverage (mutation, full-ci) is fine — the cost is opt-in. Removing coverage from the default lane is harder to undo: contributors stop expecting platform signal, regressions accumulate, then "fixing" the lanes becomes a multi-PR cleanup.
+Concrete follow-up candidates:
 
-Concrete follow-up candidates if/when CI wall-clock becomes a real bottleneck:
-
-1. **Gate `fuzz-smoke` on touched paths.** Already PR-time today; could be path-filtered (`crates/**`) so docs-only PRs skip the 10 min.
-2. **Split `cross-platform` so only Linux (x86_64 + aarch64) is every-PR**, deferring Windows/macOS to labeled+nightly. Trades wall-clock for platform-signal latency; only worth it if Windows/macOS regressions become rare.
-
-None of these land in #189 — they want their own scoping.
+1. Add an explicit `full-ci` label or manual dispatch recipe for PRs that need
+   full matrix proof before merge.
+2. Record routed proof IDs for CPX42, CX43, CX53, and explicit GitHub-hosted
+   fallback after the #72 routing change.
+3. Revisit whether `architecture-guard.yml` should remain separately required
+   once the routed Rust-small lane is proven stable under the new settings.
