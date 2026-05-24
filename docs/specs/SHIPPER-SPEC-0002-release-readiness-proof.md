@@ -119,9 +119,14 @@ candidate.
 
 The `0.4.0 release readiness proof` support-tier entry may move from
 `planned until #195` to `stable` only after `docs/release/0.4.0-readiness.md`
-exists and records the required evidence. Registry reconciliation and real
-interruption-resume claims remain planned until their own specs, tests, and
-artifacts exist.
+exists and records the required evidence.
+
+Release-readiness proof does not by itself promote adjacent release-closure
+claims. Registry reconciliation and interruption-resume support-tier rows must
+name their own specs, tests, and artifacts. Current proof lives in
+`docs/status/SUPPORT_TIERS.md`: ambiguous publish reconciliation is stable, and
+resume under live runner interruption is stable/internal against fake
+Cargo/mock registry proof surfaces.
 
 ## Open Questions
 
