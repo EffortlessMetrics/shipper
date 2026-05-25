@@ -91,11 +91,15 @@ The advisory checker validates:
 - linked files when non-empty
 - `.shipper-meta/goals/active.toml` TOML parsing
 - active work item references to existing specs and plans
+- `docs/ci/test-evidence-lanes.md` workflow inventory coverage for every
+  tracked `.github/workflows/*.yml` file, with stale inventory entries rejected
 
 ## CI Proof
 
-CI runs doc-contract checks in advisory mode and uploads reports. Blocking mode
-should come only after the reports have burned in.
+CI runs doc-contract checks in advisory mode and uploads reports. The report
+summarizes document, active-goal, and workflow-inventory coverage so agents can
+see which source-of-truth surfaces were checked. Blocking mode should come only
+after the reports have burned in.
 
 ## Promotion Rule
 

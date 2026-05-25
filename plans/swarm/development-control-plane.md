@@ -54,7 +54,10 @@ that failure as the next queue item before starting unrelated work.
 
 Keep `.shipper-meta/goals/active.toml`, `docs/status/SWARM_OPERATION.md`,
 `docs/status/SWARM_SYNC.md`, `docs/ci/test-evidence-lanes.md`, and
-`docs/status/SUPPORT_TIERS.md` aligned with the actual repo state.
+`docs/status/SUPPORT_TIERS.md` aligned with the actual repo state. The
+doc-contract checker now verifies that the workflow inventory in
+`docs/ci/test-evidence-lanes.md` covers every tracked
+`.github/workflows/*.yml` file and rejects stale inventory entries.
 
 ## Not In Scope
 
