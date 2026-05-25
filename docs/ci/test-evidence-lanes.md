@@ -24,7 +24,7 @@ this inventory aligned when workflows are added, removed, or retargeted.
 | `em-ci-routed-rust.yml` | `push` + `pull_request` + `merge_group` + `workflow_dispatch` | Required PR gate | Required via `Shipper Rust Small Result` |
 | `ci.yml` | `push` + `workflow_dispatch` + weekly `schedule` | Main/manual full-CI evidence + weekly heavy proptest | Required when triggered; not the default PR gate |
 | `coverage.yml` | `push` (main) + `pull_request` + `workflow_dispatch` | Advisory / labeled | Advisory |
-| `droid-review.yml` | `pull_request` | Advisory (same-repo + bot guard) | Advisory |
+| `droid-review.yml` | `pull_request` | Advisory (same-repo + bot guard + generated security-report branch skip) | Advisory |
 | `droid.yml` | `issues` + `pull_request` (command-triggered) | Advisory (trusted-actor guard) | Advisory |
 | `droid-security-scan.yml` | `schedule` + `workflow_dispatch` | Scheduled (Mon 08:00 UTC) | Advisory |
 | `fuzz.yml` | `schedule` + `workflow_dispatch` | Nightly | Advisory |
@@ -160,7 +160,7 @@ The `policy` job runs each check in blocking-allowlist mode and uploads `target/
 | `rust-small` | `em-ci-routed-rust.yml` | PRs, merge groups, pushes to main, dispatch | Required Rust-small PR gate with self-hosted routing and explicit fallback control. |
 | `ripr-pilot` | `ripr.yml` | PRs touching `crates/**`, `xtask/**`, `Cargo.{toml,lock}`, `ripr.toml`, `policy/ripr-suppressions.toml`, `.github/workflows/ripr.yml`. `continue-on-error: true`. | Static mutation-exposure analysis: does the diff appear exposed to a meaningful test oracle? |
 | `mutants-pr` | `mutation.yml` | PRs labeled `mutation` or `full-ci` | Runtime mutation backstop scoped to the PR's changed files via `cargo xtask mutants-pr --changed`. Blocking when it runs. |
-| `droid-review` | `droid-review.yml` | Same-repo PRs (incl. `dependabot[bot]`). | Automated code review via Factory Droid (BYOK MiniMax M2.7). Advisory comments, no merge gate. |
+| `droid-review` | `droid-review.yml` | Same-repo PRs (incl. `dependabot[bot]`; excluding generated `droid/security-report-*` branches). | Automated code review via Factory Droid (BYOK MiniMax M2.7). Advisory comments, no merge gate. |
 | `droid` | `droid.yml` | `@droid` mentions on issues / PRs by `OWNER`/`MEMBER`/`COLLABORATOR`. | On-demand Droid actions: review, refactor, explain. |
 
 ## Scheduled
