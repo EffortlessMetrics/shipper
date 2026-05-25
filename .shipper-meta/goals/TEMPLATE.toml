@@ -7,6 +7,10 @@ created = "YYYY-MM-DD"
 objective = """
 """
 
+# Required when top-level status = "blocked".
+blocked_by = []
+next_action = ""
+
 end_state = []
 
 [[work_item]]

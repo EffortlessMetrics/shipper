@@ -138,7 +138,19 @@ fn normalize_stderr(raw: &str) -> String {
         // first's prefix and we lose the `-cli` suffix.
         .replace("shipper-cli.exe", "shipper-cli")
         .replace("shipper.exe", "shipper")
-        .replace(env!("CARGO_PKG_VERSION"), "[VERSION]");
+        .replace(env!("CARGO_PKG_VERSION"), "[VERSION]")
+        .replace(
+            "fatal: not a git repository (or any parent up to mount point /)",
+            "fatal: not a git repository (or any of the parent directories): .git",
+        )
+        .replace(
+            "\n    Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).",
+            "",
+        )
+        .replace(
+            "\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).",
+            "",
+        );
 
     redact_version_metadata(&normalized)
 }
@@ -164,6 +176,16 @@ fn normalize_tempdir_paths_handles_mnt_stripped_cargo_diagnostics() {
     assert_eq!(
         normalize_tempdir_paths(raw, Path::new("/mnt/ci-scratch/tmp/run/.tmp123")),
         "--> <TMPDIR>/Cargo.toml:1:6"
+    );
+}
+
+#[test]
+fn normalize_stderr_collapses_git_filesystem_boundary_message() {
+    let raw = "git status failed: git status failed: fatal: not a git repository (or any parent up to mount point /)\n    Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n";
+
+    assert_eq!(
+        normalize_stderr(raw),
+        "git status failed: git status failed: fatal: not a git repository (or any of the parent directories): .git\n"
     );
 }
 

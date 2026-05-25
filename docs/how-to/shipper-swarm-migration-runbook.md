@@ -13,7 +13,7 @@ This runbook defines the recommended migration path from `EffortlessMetrics/ship
 
 - **Source of truth during migration:** `EffortlessMetrics/shipper` remains the release authority until explicitly moved.
 - **Swarm repo shape:** create **public** `EffortlessMetrics/shipper-swarm` with default branch `main`.
-- **Trust boundary:** self-hosted runners execute only trusted same-repo PRs (or `workflow_dispatch`); fork PRs go to GitHub-hosted only.
+- **Trust boundary:** self-hosted runners execute only trusted same-repo PRs (or `workflow_dispatch`); fork PRs are denied by the normalized result unless a future policy PR restores a GitHub-hosted emergency path.
 - **Gate style:** branch protection should require only a **normalized result check** after proof sequence passes.
 - **Credential boundary:** do not place publish/signing credentials in `shipper-swarm` during initial migration.
 
@@ -28,8 +28,8 @@ This runbook defines the recommended migration path from `EffortlessMetrics/ship
 | Merge model | Squash merge only in swarm; sync back to `shipper` uses merge commits |
 | Required check | `Shipper Rust Small Result` only |
 | Release authority | Keep release/publish/signing in `shipper` initially |
-| CI routing | CPX42 → CX43 → CX53 → GitHub-hosted |
-| Fork PR policy | Never run public fork PRs on self-hosted |
+| CI routing | CPX42 → CX43 → CX53 → self-hosted tiny fallback |
+| Fork PR policy | Never run public fork PRs on self-hosted; deny by normalized result |
 
 ## Why start as small/medium lane
 
@@ -42,7 +42,7 @@ shipper rust-small:
   CPX42 if idle
   CX43 if idle
   CX53 if idle
-  GitHub-hosted otherwise
+  self-hosted tiny fallback otherwise
 ```
 
 Fallback if CPX42 proves constrained in real runs:
@@ -51,7 +51,7 @@ Fallback if CPX42 proves constrained in real runs:
 shipper rust-small:
   CX43 if idle
   CX53 if idle
-  GitHub-hosted otherwise
+  self-hosted tiny fallback otherwise
 ```
 
 ## Phase 1 — Create and seed `shipper-swarm`
@@ -151,7 +151,11 @@ Do **not** directly require conditional implementation jobs:
 - `Shipper Rust Small on CPX42`
 - `Shipper Rust Small on CX43`
 - `Shipper Rust Small on CX53`
-- `Shipper Rust Small on GitHub Hosted`
+- `Shipper Rust Tiny Fallback`
+
+Current `shipper-swarm` policy runs the fallback lane on self-hosted capacity.
+Do not sync that 100% self-hosted policy into `EffortlessMetrics/shipper`
+without a separate release-authority decision.
 
 ### Initial lane commands
 
@@ -199,9 +203,9 @@ router_reason=cpx42_idle|cx43_idle|cx53_idle|no_idle_runner|runner_token_missing
   - CPX42 if idle
   - CX43 if idle
   - CX53 if idle
-  - GitHub-hosted fallback
+  - self-hosted tiny fallback
 - Fork PR:
-  - GitHub-hosted only
+  - denied by normalized result; do not run fork code on self-hosted runners
 - Release/publish/signing:
   - stays on source repo initially
 
@@ -240,7 +244,7 @@ Run this sequence:
 4. Force CPX42 route once.
 5. Force CX43 route once.
 6. Force CX53 overflow once.
-7. Saturate self-hosted and verify GitHub fallback.
+7. Saturate primary self-hosted routes and verify the self-hosted tiny fallback.
 8. Verify cleanup + disk reports healthy.
 
 Expected result behavior:
@@ -307,11 +311,11 @@ After 3–5 clean PRs:
 
 | Lane | Route | Purpose |
 |---|---|---|
-| `Shipper Rust Small Result` | CPX42 → CX43 → CX53 → GitHub | Required base gate |
-| `Shipper Integration Result` | CX53 → CX43 → GitHub | Fake registry, receipts, resume/reconcile |
-| `Shipper Coverage Lite` | GitHub-hosted or manual CX53 | Non-required initially |
-| `Shipper Fuzz Smoke` | GitHub-hosted or manual CX53 | Non-required initially |
-| `Shipper Release Dry Run` | GitHub-hosted/manual only | No publish credentials |
+| `Shipper Rust Small Result` | CPX42 → CX43 → CX53 → self-hosted tiny fallback | Required base gate |
+| `Shipper Integration Result` | CX53 → CX43 → self-hosted tiny fallback | Fake registry, receipts, resume/reconcile |
+| `Shipper Coverage Lite` | Self-hosted/manual | Non-required initially |
+| `Shipper Fuzz Smoke` | Self-hosted/manual | Non-required initially |
+| `Shipper Release Dry Run` | Source repo/manual only | No publish credentials in swarm |
 | Real release/publish | Keep on `shipper` initially | Deliberate later migration |
 
 ## Immediate checklist
@@ -323,9 +327,9 @@ After 3–5 clean PRs:
 - [x] Do **not** add crates.io/release/signing secrets.
 - [x] Seed `shipper-swarm/main` from `shipper/main`.
 - [x] Add `.github/workflows/em-ci-routed-rust.yml`.
-- [x] Route small lane CPX42 → CX43 → CX53 → GitHub.
+- [x] Route small lane CPX42 → CX43 → CX53 → self-hosted tiny fallback.
 - [x] Guard self-hosted jobs to trusted same-repo work only.
-- [x] Include GitHub-hosted fallback.
+- [x] Include a tiny fallback lane. Current policy routes it to self-hosted capacity.
 - [x] Add normalized `Shipper Rust Small Result` job.
 - [x] Run `workflow_dispatch` on `main`.
 - [x] Open tiny same-repo PR.
@@ -338,15 +342,16 @@ Proof notes:
 
 - PR #2 added the routed Rust small lane.
 - PR #3 proved same-repo PR flow through the normalized result check.
-- Earlier forced `workflow_dispatch` proof runs covered `cx43`, `cx33`, `cx53`, and
-  GitHub-hosted fallback.
+- Earlier forced `workflow_dispatch` proof runs covered `cx43`, `cpx42`, `cx53`, and
+  the pre-100%-self-hosted GitHub-hosted fallback.
 - PR #31 moved the route to CPX42-first and proved the selected CPX42 lane with
   `Routed Rust Small` run `26244152934`; `Shipper Rust Small on CPX42` and the
   normalized `Shipper Rust Small Result` both passed.
 - PR #22 and PR #17 repeated CPX42 proof on normal same-repo refactor PRs with
   `Routed Rust Small` runs `26252949412` and `26256205458`.
-- PR #24 proved the GitHub-hosted fallback implementation lane with `Routed Rust
-  Small` run `26247605774`.
-- Saturation proof occupied all self-hosted routes and verified auto-routing to
-  GitHub-hosted with `router_reason=no_idle_runner`.
+- PR #24 proved the pre-100%-self-hosted GitHub-hosted fallback implementation
+  lane with `Routed Rust Small` run `26247605774`.
+- Earlier saturation proof occupied all self-hosted routes and verified
+  auto-routing to GitHub-hosted with `router_reason=no_idle_runner`. Current
+  policy no longer treats that as a swarm fallback target.
 - Branch protection for `main` requires only `Shipper Rust Small Result`.

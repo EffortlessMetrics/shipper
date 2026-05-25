@@ -37,7 +37,7 @@ permissions:
 jobs:
   route:
     name: Route Shipper Rust Small
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 5
     outputs:
       target: ${{ steps.pick.outputs.target }}
@@ -135,7 +135,7 @@ jobs:
               sys.exit(0)
 
           if not trusted:
-              set_output("github", "fork_pr", True)
+              set_output("github", "fork_pr", False)
               sys.exit(0)
 
           if force_route == "github":
@@ -192,7 +192,7 @@ jobs:
                       set_output(target, f"{target}_idle")
                       sys.exit(0)
 
-          set_output("github", "no_idle_runner", fallback_allowed)
+          set_output("github", "no_idle_runner", True)
           PY
 
   rust_small_cx43:
@@ -352,10 +352,10 @@ jobs:
           cargo run -p shipper -- preflight --help
 
   rust_small_github:
-    name: Shipper Rust Tiny Fallback on GitHub Hosted
+    name: Shipper Rust Tiny Fallback (routed to self-hosted)
     needs: [route]
     if: needs.route.outputs.target == 'github' && needs.route.outputs.fallback_allowed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6.0.2
@@ -380,7 +380,7 @@ jobs:
       - rust_small_cx53
       - rust_small_github
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 5
     steps:
       - name: Normalize routed result
@@ -426,9 +426,12 @@ jobs:
               print("Route job did not emit a known target.")
               sys.exit(1)
 
-          hard_fail_reasons = {"runner_token_missing", "runner_token_unauthorized", "runner_token_forbidden", "runner_api_failed", "parse_failed", "no_idle_runner"}
-          if target == "github" and reason in hard_fail_reasons and not fallback_allowed:
-              print("Self-hosted routing unavailable and GitHub-hosted fallback was not explicitly allowed.")
+          hard_fail_reasons = {"fork_pr", "runner_token_missing", "runner_token_unauthorized", "runner_token_forbidden", "runner_api_failed", "parse_failed"}
+          if target == "github" and reason in hard_fail_reasons:
+              if reason == "fork_pr":
+                  print("Fork PRs cannot run repository code on self-hosted runners.")
+              else:
+                  print("Self-hosted routing failed before a trustworthy fallback decision.")
               sys.exit(1)
 
           failures = []

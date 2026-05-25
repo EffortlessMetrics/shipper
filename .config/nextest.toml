@@ -8,8 +8,9 @@ fail-fast = false
 # Retries for flaky tests
 retries = { count = 2, backoff = "exponential", delay = "1s" }
 
-# JUnit output for CI reporting
-junit = { path = "target/nextest/ci/junit.xml" }
+# JUnit output for CI reporting. The path is relative to the profile's
+# nextest output directory, which is `target/nextest/ci` for this profile.
+junit = { path = "junit.xml" }
 
 # Timeout for individual tests
 test-threads = "num-cpus"

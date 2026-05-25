@@ -29,7 +29,7 @@ permissions:
 jobs:
   fuzz:
     name: Fuzz (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     # Only run on main branch for scheduled runs
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     strategy:
@@ -120,7 +120,7 @@ jobs:
 
   fuzz-summary:
     name: Fuzz Summary
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [fuzz]
     if: always()
     steps:

@@ -5,7 +5,7 @@
 //! style documentation.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use predicates::str::contains;
@@ -78,6 +78,46 @@ core = { path = "../core" }
 
 fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
+}
+
+fn create_fake_cargo_with_stderr(bin_dir: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let path = bin_dir.join("cargo.cmd");
+        fs::write(
+            &path,
+            "@echo off\r\n\
+             if \"%1\"==\"publish\" (\r\n\
+               echo %SHIPPER_FAKE_STDERR% 1>&2\r\n\
+               if \"%SHIPPER_FAKE_PUBLISH_EXIT%\"==\"\" (exit /b 1) else (exit /b %SHIPPER_FAKE_PUBLISH_EXIT%)\r\n\
+             )\r\n\
+             \"%REAL_CARGO%\" %*\r\n\
+             exit /b %ERRORLEVEL%\r\n",
+        )
+        .expect("write fake cargo");
+        path
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = bin_dir.join("cargo");
+        fs::write(
+            &path,
+            "#!/usr/bin/env sh\n\
+             if [ \"$1\" = \"publish\" ]; then\n\
+               echo \"$SHIPPER_FAKE_STDERR\" >&2\n\
+               exit \"${SHIPPER_FAKE_PUBLISH_EXIT:-1}\"\n\
+             fi\n\
+             \"$REAL_CARGO\" \"$@\"\n",
+        )
+        .expect("write fake cargo");
+        let mut perms = fs::metadata(&path).expect("meta").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms).expect("chmod");
+        path
+    }
 }
 
 // ============================================================================
@@ -278,6 +318,10 @@ mod resume_skips_completed {
         // Given: A multi-crate workspace where core is already published in state
         let td = tempdir().expect("tempdir");
         create_multi_crate_workspace(td.path());
+        let bin_dir = td.path().join("fake-bin");
+        fs::create_dir_all(&bin_dir).expect("mkdir fake cargo dir");
+        let fake_cargo = create_fake_cargo_with_stderr(&bin_dir);
+        let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
 
         // Use the library directly to get the deterministic plan_id
         let spec = shipper_core::types::ReleaseSpec {
@@ -334,6 +378,10 @@ mod resume_skips_completed {
             .arg(&state_dir)
             .arg("--allow-dirty")
             .arg("resume")
+            .env("REAL_CARGO", real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "1")
+            .env("SHIPPER_FAKE_STDERR", "error: 401 unauthorized")
             .output()
             .expect("resume");
 

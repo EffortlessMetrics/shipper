@@ -38,7 +38,7 @@ permissions:
 jobs:
   ripr-pilot:
     name: ripr pilot (advisory)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     # Belt-and-braces: even if ripr exits non-zero, the workflow itself
     # succeeds. Findings live in the uploaded artifact, not the status.
     continue-on-error: true

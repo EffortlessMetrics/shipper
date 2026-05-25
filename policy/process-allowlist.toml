@@ -82,9 +82,11 @@ allowed_processes = [
   "bun",
   "mkdir",
   "cat",
+  "chmod",
+  "git",
   "jq",
 ]
 owner = "release/ci"
-reason = "Droid workflows write the BYOK settings file (mkdir, cat heredoc), fetch the Factory CLI (curl --proto =https | sh), and invoke the safe Droid action wrapper which uses bun for its prepare.ts entrypoint."
+reason = "Droid workflows write the BYOK settings file (mkdir, cat heredoc), fetch the Factory CLI (curl --proto =https | sh), provide a constrained gh pr checkout shim on self-hosted runners (chmod + git fetch/checkout), and invoke the safe Droid action wrapper which uses bun for its prepare.ts entrypoint."
 created = "2026-05-11"
 review_after = "2026-08-11"
