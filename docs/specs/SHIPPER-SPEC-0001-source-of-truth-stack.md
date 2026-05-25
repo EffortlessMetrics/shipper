@@ -92,6 +92,8 @@ The advisory checker validates:
 - `.shipper-meta/goals/active.toml` TOML parsing
 - active goal required top-level metadata, end-state entries, and valid
   top-level/work-item statuses
+- active goal work-item `id`/`status` fields and proof-command coverage for
+  `ready`, `active`, and `planned` work
 - active work item references to existing specs and plans
 - `docs/ci/test-evidence-lanes.md` workflow inventory coverage for every
   tracked `.github/workflows/*.yml` file, with stale inventory entries rejected

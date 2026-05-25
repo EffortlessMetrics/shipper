@@ -752,6 +752,17 @@ fn valid_active_goal_status(status: &str) -> bool {
 
 fn check_active_goal_work_item_contract(item: &WorkItem, findings: &mut Vec<Finding>) {
     let id = active_goal_work_item_id(item);
+    for (field, value) in [("id", item.id.as_str()), ("status", item.status.as_str())] {
+        if value.trim().is_empty() {
+            findings.push(Finding {
+                path: ACTIVE_GOAL_REL.to_string(),
+                code: "active_goal_work_item_missing_field",
+                message: format!("work_item `{id}` missing required field `{field}`"),
+                blocking: true,
+            });
+        }
+    }
+
     if !item.status.trim().is_empty() && !valid_active_goal_work_item_status(&item.status) {
         findings.push(Finding {
             path: ACTIVE_GOAL_REL.to_string(),
@@ -779,6 +790,17 @@ fn check_active_goal_work_item_contract(item: &WorkItem, findings: &mut Vec<Find
                     blocking: true,
                 });
             }
+        }
+        "ready" | "active" if !has_non_empty_value(&item.commands) => {
+            findings.push(Finding {
+                path: ACTIVE_GOAL_REL.to_string(),
+                code: "active_goal_work_item_without_proof_commands",
+                message: format!(
+                    "work_item `{id}` is {} but does not define proof commands",
+                    item.status
+                ),
+                blocking: true,
+            });
         }
         "planned" if !has_non_empty_value(&item.commands) => {
             findings.push(Finding {
@@ -1241,6 +1263,42 @@ Proof commands: cargo xtask policy-report
     }
 
     #[test]
+    fn active_goal_work_items_require_id_and_status() {
+        let item = WorkItem {
+            id: String::new(),
+            status: String::new(),
+            proposal: String::new(),
+            spec: String::new(),
+            plan: String::new(),
+            blocked_by: Vec::new(),
+            next_action: String::new(),
+            commands: Vec::new(),
+        };
+
+        let mut findings = Vec::new();
+        check_active_goal_work_item_contract(&item, &mut findings);
+
+        let codes_and_messages = findings
+            .iter()
+            .map(|finding| (finding.code, finding.message.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            codes_and_messages,
+            vec![
+                (
+                    "active_goal_work_item_missing_field",
+                    "work_item `<missing id>` missing required field `id`"
+                ),
+                (
+                    "active_goal_work_item_missing_field",
+                    "work_item `<missing id>` missing required field `status`"
+                )
+            ]
+        );
+    }
+
+    #[test]
     fn active_goal_work_items_reject_unknown_statuses() {
         let item = WorkItem {
             id: "release-auth".to_string(),
@@ -1262,6 +1320,35 @@ Proof commands: cargo xtask policy-report
             findings[0].message,
             "work_item `release-auth` has invalid status `done`"
         );
+    }
+
+    #[test]
+    fn ready_and_active_work_items_require_proof_commands() {
+        for status in ["ready", "active"] {
+            let item = WorkItem {
+                id: format!("{status}-work"),
+                status: status.to_string(),
+                proposal: String::new(),
+                spec: String::new(),
+                plan: String::new(),
+                blocked_by: Vec::new(),
+                next_action: String::new(),
+                commands: Vec::new(),
+            };
+
+            let mut findings = Vec::new();
+            check_active_goal_work_item_contract(&item, &mut findings);
+
+            assert_eq!(findings.len(), 1);
+            assert_eq!(
+                findings[0].code,
+                "active_goal_work_item_without_proof_commands"
+            );
+            assert_eq!(
+                findings[0].message,
+                format!("work_item `{status}-work` is {status} but does not define proof commands")
+            );
+        }
     }
 
     #[test]

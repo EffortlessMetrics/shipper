@@ -59,8 +59,9 @@ doc-contract checker now verifies that the workflow inventory in
 `docs/ci/test-evidence-lanes.md` covers every tracked
 `.github/workflows/*.yml` file and rejects stale inventory entries. It also
 verifies that `.shipper-meta/goals/active.toml` has required handoff metadata,
-valid goal/work-item statuses, linked work-item artifacts, and explicit blocked
-or planned proof state. For support tiers, it verifies that
+valid goal/work-item statuses, work-item `id`/`status` fields, linked work-item
+artifacts, and explicit blocked, ready, active, or planned proof state. For
+support tiers, it verifies that
 `docs/status/SUPPORT_TIERS.md` exists, has required metadata headers, uses a
 valid status, links only to existing proposal, spec, ADR, and plan files, and
 defines every Claim Map tier in the Tier Model.

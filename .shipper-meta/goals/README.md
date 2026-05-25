@@ -75,9 +75,10 @@ Rules:
 - Do not infer missing linked artifacts during implementation; create or fix
   them in a separate PR.
 - Top-level goal `status` must be `active`, `blocked`, or `complete`.
+- Every work item must set `id` and `status`.
 - Work item `status` must be `ready`, `active`, `planned`, `blocked`, or
   `complete`.
 - `blocked` work items must name `blocked_by` evidence and a concrete
   `next_action`.
-- `planned` work items must keep proof commands attached so future promotion
-  work has an explicit validation path.
+- `ready`, `active`, and `planned` work items must keep proof commands attached
+  so current and future work has an explicit validation path.
