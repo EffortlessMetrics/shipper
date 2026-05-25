@@ -117,6 +117,29 @@ development PR: merge it with a merge commit so `shipper/main` becomes an
 ancestor of `shipper-swarm/main` again. Temporarily allowing merge commits for
 that PR is acceptable; restore squash-only settings immediately afterward.
 
+## Queue Stewardship
+
+Treat every open `shipper-swarm` PR as part of the active development queue:
+inspect the intended slice, read CI and review output, fix real findings,
+validate honestly, squash-merge when clean, and delete the branch when safe.
+Keep overlapping work closed or explicitly deferred before opening another PR
+for the same surface.
+
+Dependabot maintenance belongs in `shipper-swarm` first. If the same dependency
+bump opens in `EffortlessMetrics/shipper`, close the source-repo PR as duplicate
+maintenance work and let the accepted swarm commit flow back through the normal
+non-squash source sync.
+
+Dependabot's first bot-authored run can fail before evaluation if the router or
+Droid cannot read selected repository secrets. That is a trust-bootstrap
+condition, not permission to broaden bot secret access. Use the maintainer
+refresh procedure in
+[`docs/ci/test-evidence-lanes.md`](../ci/test-evidence-lanes.md) and
+[`docs/how-to/shipper-swarm-migration-runbook.md`](../how-to/shipper-swarm-migration-runbook.md):
+inspect the diff, run focused validation, push a maintainer-authored refresh or
+trusted same-repo branch, and require the normal `Shipper Rust Small Result`
+plus advisory review before merge.
+
 ## CI and Branch Protection
 
 `shipper-swarm/main` requires only the normalized result check:
