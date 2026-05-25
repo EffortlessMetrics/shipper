@@ -156,14 +156,14 @@ Current routed Rust-small proof:
 - Branch protection requires only `Shipper Rust Small Result`; do not require
   route-specific implementation jobs because exactly one route should run per
   attempt.
-- Current same-repo `CPX42` routing proof passed on PR #106 with
-  `Routed Rust Small` run `26391695208`; the `CPX42` implementation job and
+- Current same-repo `CPX42` routing proof passed on PR #117 with
+  `Routed Rust Small` run `26413038913`; the `CPX42` implementation job and
   normalized `Shipper Rust Small Result` both succeeded.
 - Forced route proof before the 100% self-hosted sweep passed for `CX43` with
   `workflow_dispatch` run `26355258014` and for `CX53` with
   `workflow_dispatch` run `26356173639`.
 - Current self-hosted fallback proof passed on post-merge `main` run
-  `26392242080`; `Shipper Rust Tiny Fallback (routed to self-hosted)` and the
+  `26413498807`; `Shipper Rust Tiny Fallback (routed to self-hosted)` and the
   normalized `Shipper Rust Small Result` both succeeded.
 - Current `shipper-swarm` policy routes all workflow jobs, including the tiny
   fallback lane, to self-hosted runners. Do not sync that policy to
