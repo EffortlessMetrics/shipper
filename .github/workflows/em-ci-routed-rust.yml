@@ -202,7 +202,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, em-ci, rust-small, trusted-pr, cx43]
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -251,7 +251,7 @@ jobs:
       TMPDIR: /mnt/ci-scratch/tmp/${{ github.run_id }}-${{ github.run_attempt }}
       CARGO_TARGET_DIR: /mnt/ci-scratch/shipper/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
         with:
           fetch-depth: 1
 
@@ -316,7 +316,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, em-ci, rust-small, trusted-pr, cx53]
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -358,7 +358,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

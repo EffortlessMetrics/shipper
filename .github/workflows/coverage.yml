@@ -45,7 +45,7 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'coverage') ||
       contains(github.event.pull_request.labels.*.name, 'full-ci')
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
