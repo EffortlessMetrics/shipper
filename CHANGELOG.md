@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Post-0.4.0 release cleanup. Resolves carry-over items flagged in the
+0.4.0 readiness evidence packet and CHANGELOG.
+
+### Fixed
+
+- **`engine/parallel` mutex poison posture.** All production `.lock().unwrap()`
+  sites in `engine/parallel/` (40 sites across `publish.rs` and `mod.rs`) now
+  handle poison gracefully instead of panicking: `Result`-returning sites
+  propagate a typed `anyhow::Error` via `let-else`/`map_err`; the `SendReporter`
+  methods (which can't return `Result`) recover the guard via
+  `unwrap_or_else(|e| e.into_inner())`. The no-panic baseline drops from 20 → 8
+  entries. Closes the carry-over from the 0.4.0 readiness doc.
+- **Cleanliness test isolation flake.** `ensure_git_clean_new_phrasing` now
+  carries `#[serial]`, bringing it into the same serialization group as the
+  engine integration tests that share the `SHIPPER_GIT_BIN` environment
+  variable.
+
+### Changed
+
+- **`duration_suboptimal_units` clippy lint activated.** All 223 workspace
+  sites rewritten to their optimal `Duration` unit via `cargo clippy --fix`
+  (behavior-preserving exact aliases), and the lint moved from `[[planned]]` →
+  `[[active]]` in `policy/clippy-lints.toml`. Closes the last planned lint from
+  the #191 Clippy ratchet rollout and the 0.4.0 readiness carry-over.
+
 ## [0.4.0] - 2026-05-20
 
 Stable release of Shipper's 0.4.0 release-closure line.
