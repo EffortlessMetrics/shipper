@@ -42,6 +42,17 @@ pub(super) struct PackagePublishResult {
     pub(super) result: anyhow::Result<PackageReceipt>,
 }
 
+/// Build a poison failure for `publish_package`. The `PackagePublishResult`
+/// return shape (not `Result`) means the `let-else` arms at each lock site
+/// can't use `?`; this helper keeps them to one line and guarantees every
+/// poison site reports the same message shape.
+fn poisoned_lock(resource: &str) -> PackagePublishResult {
+    PackagePublishResult {
+        result: Err(anyhow::anyhow!(
+            "{resource} lock poisoned during parallel publish"
+        )),
+    }
+}
 fn record_attempt_detail(
     st: &Arc<Mutex<ExecutionState>>,
     state_dir: &Path,
@@ -244,7 +255,9 @@ pub(super) fn publish_package(
 
     // Record package started event
     {
-        let mut log = event_log.lock().unwrap();
+        let Ok(mut log) = event_log.lock() else {
+            return poisoned_lock("event log");
+        };
         log.record(PublishEvent {
             timestamp: started_at,
             event_type: EventType::PackageStarted {
@@ -268,14 +281,18 @@ pub(super) fn publish_package(
             reason: "already published".to_string(),
         };
         {
-            let mut state = st.lock().unwrap();
+            let Ok(mut state) = st.lock() else {
+                return poisoned_lock("execution state");
+            };
             update_state_locked(&mut state, &key, skipped.clone());
             let _ = state::save_state(state_dir, &state);
         }
 
         // Event: PackageSkipped
         {
-            let mut log = event_log.lock().unwrap();
+            let Ok(mut log) = event_log.lock() else {
+                return poisoned_lock("event log");
+            };
             log.record(PublishEvent {
                 timestamp: Utc::now(),
                 event_type: EventType::PackageSkipped {
@@ -317,7 +334,9 @@ pub(super) fn publish_package(
 
     // Check if resuming from Uploaded state (cargo publish succeeded previously)
     {
-        let state = st.lock().unwrap();
+        let Ok(state) = st.lock() else {
+            return poisoned_lock("execution state");
+        };
         if let Some(pr) = state.packages.get(&key)
             && matches!(pr.state, PackageState::Uploaded)
         {
@@ -337,7 +356,9 @@ pub(super) fn publish_package(
     // BEFORE entering the retry loop so we never re-upload a crate whose
     // prior upload may have actually succeeded.
     let ambiguous_prior: Option<String> = {
-        let state = st.lock().unwrap();
+        let Ok(state) = st.lock() else {
+            return poisoned_lock("execution state");
+        };
         state.packages.get(&key).and_then(|pr| {
             if let PackageState::Ambiguous { message } = &pr.state {
                 Some(message.clone())
@@ -353,7 +374,9 @@ pub(super) fn publish_package(
             p.name, p.version, prior_reason
         ));
         {
-            let mut log = event_log.lock().unwrap();
+            let Ok(mut log) = event_log.lock() else {
+                return poisoned_lock("event log");
+            };
             log.record(PublishEvent {
                 timestamp: Utc::now(),
                 event_type: EventType::PublishReconciling {
@@ -367,7 +390,9 @@ pub(super) fn publish_package(
             reconcile_ambiguous_upload(reg, &p.name, &p.version, &readiness_config);
 
         {
-            let mut log = event_log.lock().unwrap();
+            let Ok(mut log) = event_log.lock() else {
+                return poisoned_lock("event log");
+            };
             log.record(PublishEvent {
                 timestamp: Utc::now(),
                 event_type: EventType::PublishReconciled {
@@ -384,7 +409,9 @@ pub(super) fn publish_package(
         match outcome {
             ReconciliationOutcome::Published { .. } => {
                 {
-                    let mut state = st.lock().unwrap();
+                    let Ok(mut state) = st.lock() else {
+                        return poisoned_lock("execution state");
+                    };
                     update_state_locked(&mut state, &key, PackageState::Published);
                     let _ = state::save_state(state_dir, &state);
                 }
@@ -415,7 +442,9 @@ pub(super) fn publish_package(
             }
             ReconciliationOutcome::NotPublished { .. } => {
                 {
-                    let mut state = st.lock().unwrap();
+                    let Ok(mut state) = st.lock() else {
+                        return poisoned_lock("execution state");
+                    };
                     update_state_locked(&mut state, &key, PackageState::Pending);
                     let _ = state::save_state(state_dir, &state);
                 }
@@ -471,7 +500,9 @@ pub(super) fn publish_package(
     while attempt < opts.max_attempts {
         attempt += 1;
         {
-            let mut state = st.lock().unwrap();
+            let Ok(mut state) = st.lock() else {
+                return poisoned_lock("execution state");
+            };
             if let Some(pr) = state.packages.get_mut(&key) {
                 pr.attempts = attempt;
                 pr.last_updated_at = Utc::now();
@@ -493,7 +524,9 @@ pub(super) fn publish_package(
             // Event: PackageAttempted
             let attempt_started_at = Utc::now();
             {
-                let mut log = event_log.lock().unwrap();
+                let Ok(mut log) = event_log.lock() else {
+                    return poisoned_lock("event log");
+                };
                 log.record(PublishEvent {
                     timestamp: attempt_started_at,
                     event_type: EventType::PackageAttempted {
@@ -537,7 +570,9 @@ pub(super) fn publish_package(
 
             // Event: PackageOutput
             {
-                let mut log = event_log.lock().unwrap();
+                let Ok(mut log) = event_log.lock() else {
+                    return poisoned_lock("event log");
+                };
                 log.record(PublishEvent {
                     timestamp: Utc::now(),
                     event_type: EventType::PackageOutput {
@@ -571,7 +606,9 @@ pub(super) fn publish_package(
                 cargo_succeeded = true;
                 // Persist Uploaded state so resume skips cargo publish
                 {
-                    let mut state = st.lock().unwrap();
+                    let Ok(mut state) = st.lock() else {
+                        return poisoned_lock("execution state");
+                    };
                     update_state_locked(&mut state, &key, PackageState::Uploaded);
                     let _ = state::save_state(state_dir, &state);
                 }
@@ -607,7 +644,9 @@ pub(super) fn publish_package(
                         return PackagePublishResult { result: Err(e) };
                     }
                     {
-                        let mut state = st.lock().unwrap();
+                        let Ok(mut state) = st.lock() else {
+                            return poisoned_lock("execution state");
+                        };
                         update_state_locked(&mut state, &key, PackageState::Published);
                         let _ = state::save_state(state_dir, &state);
                     }
@@ -617,7 +656,9 @@ pub(super) fn publish_package(
 
                 // Event: PackageFailed
                 {
-                    let mut log = event_log.lock().unwrap();
+                    let Ok(mut log) = event_log.lock() else {
+                        return poisoned_lock("event log");
+                    };
                     log.record(PublishEvent {
                         timestamp: Utc::now(),
                         event_type: EventType::PackageFailed {
@@ -632,7 +673,9 @@ pub(super) fn publish_package(
                 // truth first so we don't risk a duplicate upload. See #99.
                 if class == ErrorClass::Ambiguous {
                     {
-                        let mut log = event_log.lock().unwrap();
+                        let Ok(mut log) = event_log.lock() else {
+                            return poisoned_lock("event log");
+                        };
                         log.record(PublishEvent {
                             timestamp: Utc::now(),
                             event_type: EventType::PublishReconciling {
@@ -650,7 +693,9 @@ pub(super) fn publish_package(
                         reconcile_ambiguous_upload(reg, &p.name, &p.version, &readiness_config);
 
                     {
-                        let mut log = event_log.lock().unwrap();
+                        let Ok(mut log) = event_log.lock() else {
+                            return poisoned_lock("event log");
+                        };
                         log.record(PublishEvent {
                             timestamp: Utc::now(),
                             event_type: EventType::PublishReconciled {
@@ -678,12 +723,16 @@ pub(super) fn publish_package(
                                 reconciliation_report_path.display()
                             ));
                             {
-                                let mut state = st.lock().unwrap();
+                                let Ok(mut state) = st.lock() else {
+                                    return poisoned_lock("execution state");
+                                };
                                 update_state_locked(&mut state, &key, PackageState::Published);
                                 let _ = state::save_state(state_dir, &state);
                             }
                             {
-                                let mut log = event_log.lock().unwrap();
+                                let Ok(mut log) = event_log.lock() else {
+                                    return poisoned_lock("event log");
+                                };
                                 log.record(PublishEvent {
                                     timestamp: Utc::now(),
                                     event_type: EventType::PackagePublished {
@@ -696,7 +745,7 @@ pub(super) fn publish_package(
                             }
 
                             // Preserve reconciliation evidence in the receipt.
-                            // Do NOT emit PublishSucceeded webhook here — the
+                            // Do NOT emit PublishSucceeded webhook here Ã¢â‚¬â€ the
                             // end-of-function success path (below) handles that.
                             readiness_evidence = reconcile_evidence;
                             last_err = None;
@@ -724,12 +773,16 @@ pub(super) fn publish_package(
                                 message: reason.clone(),
                             };
                             {
-                                let mut state = st.lock().unwrap();
+                                let Ok(mut state) = st.lock() else {
+                                    return poisoned_lock("execution state");
+                                };
                                 update_state_locked(&mut state, &key, ambiguous_state);
                                 let _ = state::save_state(state_dir, &state);
                             }
                             {
-                                let mut log = event_log.lock().unwrap();
+                                let Ok(mut log) = event_log.lock() else {
+                                    return poisoned_lock("event log");
+                                };
                                 let _ = log.write_to_file(events_path);
                                 log.clear();
                             }
@@ -776,12 +829,16 @@ pub(super) fn publish_package(
                             message: msg.clone(),
                         };
                         {
-                            let mut state = st.lock().unwrap();
+                            let Ok(mut state) = st.lock() else {
+                                return poisoned_lock("execution state");
+                            };
                             update_state_locked(&mut state, &key, failed);
                             let _ = state::save_state(state_dir, &state);
                         }
                         {
-                            let mut log = event_log.lock().unwrap();
+                            let Ok(mut log) = event_log.lock() else {
+                                return poisoned_lock("event log");
+                            };
                             let _ = log.write_to_file(events_path);
                             log.clear();
                         }
@@ -809,7 +866,7 @@ pub(super) fn publish_package(
                     }
                     ErrorClass::Retryable | ErrorClass::Ambiguous => {
                         // Ambiguous can only reach here if reconciliation
-                        // returned NotPublished — registry confirms no
+                        // returned NotPublished Ã¢â‚¬â€ registry confirms no
                         // duplicate-upload risk, so cargo retry is safe.
                         // Only query crate_exists when the error looks like
                         // a rate limit (saves a registry round-trip for
@@ -927,7 +984,9 @@ pub(super) fn publish_package(
                         return PackagePublishResult { result: Err(e) };
                     }
                     {
-                        let mut state = st.lock().unwrap();
+                        let Ok(mut state) = st.lock() else {
+                            return poisoned_lock("execution state");
+                        };
                         update_state_locked(&mut state, &key, PackageState::Published);
                         let _ = state::save_state(state_dir, &state);
                     }
@@ -935,7 +994,9 @@ pub(super) fn publish_package(
 
                     // Event: PackagePublished
                     {
-                        let mut log = event_log.lock().unwrap();
+                        let Ok(mut log) = event_log.lock() else {
+                            return poisoned_lock("event log");
+                        };
                         log.record(PublishEvent {
                             timestamp: Utc::now(),
                             event_type: EventType::PackagePublished {
@@ -1040,7 +1101,9 @@ pub(super) fn publish_package(
         if matches!(current_state, Some(PackageState::Uploaded)) {
             if reg.version_exists(&p.name, &p.version).unwrap_or(false) {
                 {
-                    let mut state = st.lock().unwrap();
+                    let Ok(mut state) = st.lock() else {
+                        return poisoned_lock("execution state");
+                    };
                     update_state_locked(&mut state, &key, PackageState::Published);
                     let _ = state::save_state(state_dir, &state);
                 }
@@ -1071,7 +1134,9 @@ pub(super) fn publish_package(
         // Final chance: maybe it eventually showed up.
         if reg.version_exists(&p.name, &p.version).unwrap_or(false) {
             {
-                let mut state = st.lock().unwrap();
+                let Ok(mut state) = st.lock() else {
+                    return poisoned_lock("execution state");
+                };
                 update_state_locked(&mut state, &key, PackageState::Published);
                 let _ = state::save_state(state_dir, &state);
             }
@@ -1117,14 +1182,18 @@ pub(super) fn publish_package(
                 message: msg.clone(),
             };
             {
-                let mut state = st.lock().unwrap();
+                let Ok(mut state) = st.lock() else {
+                    return poisoned_lock("execution state");
+                };
                 update_state_locked(&mut state, &key, failed);
                 let _ = state::save_state(state_dir, &state);
             }
 
             // Event: PackageFailed (final)
             {
-                let mut log = event_log.lock().unwrap();
+                let Ok(mut log) = event_log.lock() else {
+                    return poisoned_lock("event log");
+                };
                 log.record(PublishEvent {
                     timestamp: Utc::now(),
                     event_type: EventType::PackageFailed {

@@ -129,17 +129,33 @@ pub(super) struct SendReporter {
     retry_waits: Mutex<VecDeque<RetryWaitNotice>>,
 }
 
+// The `Reporter` trait returns `()`/`Vec`, not `Result`, so poison cannot
+// propagate as a typed error. A poisoned reporter mutex means a publish
+// thread panicked mid-push; recovering the guard (possibly with a partial
+// buffer) and continuing is safer than panicking the orchestrator, which
+// would lose in-flight publish state. The authoritative record is
+// `events.jsonl`, not this in-memory buffer. See `flow.rs` for the typed
+// sites that CAN propagate poison as an error.
 impl SendReporter {
     pub(super) fn info(&self, msg: &str) {
-        self.infos.lock().unwrap().push(msg.to_string());
+        self.infos
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(msg.to_string());
     }
 
     pub(super) fn warn(&self, msg: &str) {
-        self.warns.lock().unwrap().push(msg.to_string());
+        self.warns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(msg.to_string());
     }
 
     pub(super) fn error(&self, msg: &str) {
-        self.errors.lock().unwrap().push(msg.to_string());
+        self.errors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(msg.to_string());
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -153,33 +169,40 @@ impl SendReporter {
         reason: shipper_types::ErrorClass,
         message: &str,
     ) {
-        self.retry_waits.lock().unwrap().push_back(RetryWaitNotice {
-            pkg_name: pkg_name.to_string(),
-            pkg_version: pkg_version.to_string(),
-            attempt,
-            max_attempts,
-            delay,
-            reason,
-            message: message.to_string(),
-            started_at: Instant::now(),
-        });
+        self.retry_waits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(RetryWaitNotice {
+                pkg_name: pkg_name.to_string(),
+                pkg_version: pkg_version.to_string(),
+                attempt,
+                max_attempts,
+                delay,
+                reason,
+                message: message.to_string(),
+                started_at: Instant::now(),
+            });
         thread::sleep(delay);
     }
 
     fn drain_infos(&self) -> Vec<String> {
-        std::mem::take(&mut *self.infos.lock().unwrap())
+        std::mem::take(&mut *self.infos.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     fn drain_warns(&self) -> Vec<String> {
-        std::mem::take(&mut *self.warns.lock().unwrap())
+        std::mem::take(&mut *self.warns.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     fn drain_errors(&self) -> Vec<String> {
-        std::mem::take(&mut *self.errors.lock().unwrap())
+        std::mem::take(&mut *self.errors.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     fn drain_retry_waits(&self) -> Vec<RetryWaitNotice> {
-        self.retry_waits.lock().unwrap().drain(..).collect()
+        self.retry_waits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect()
     }
 }
 
@@ -324,7 +347,9 @@ pub(crate) fn run_publish_parallel_inner(
     replay_buffered_messages(reporter, send_reporter.as_ref());
 
     // Copy updated state back
-    let updated_st = st_arc.lock().unwrap();
+    let updated_st = st_arc
+        .lock()
+        .map_err(|_| anyhow::anyhow!("execution state lock poisoned while copying final state"))?;
     *st = updated_st.clone();
 
     Ok(all_receipts)
