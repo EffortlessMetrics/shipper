@@ -269,20 +269,30 @@ pub fn migrate_receipt(path: &Path) -> Result<Receipt> {
 
 /// Migrate v1 receipt to v2
 fn migrate_v1_to_v2(mut receipt: serde_json::Value) -> Result<Receipt> {
+    let obj = receipt
+        .as_object_mut()
+        .context("receipt root is not an object during v1->v2 migration")?;
+
     // Add git_context: None if not present
-    if receipt.get("git_context").is_none() {
-        receipt["git_context"] = serde_json::Value::Null;
+    if !obj.contains_key("git_context") {
+        obj.insert("git_context".to_string(), serde_json::Value::Null);
     }
 
     // Add environment: default EnvironmentFingerprint if not present
-    if receipt.get("environment").is_none() {
+    if !obj.contains_key("environment") {
         let environment = collect_environment_fingerprint();
-        receipt["environment"] = serde_json::to_value(environment)
-            .context("failed to serialize environment fingerprint")?;
+        obj.insert(
+            "environment".to_string(),
+            serde_json::to_value(environment)
+                .context("failed to serialize environment fingerprint")?,
+        );
     }
 
     // Update receipt_version to v2
-    receipt["receipt_version"] = serde_json::Value::String(CURRENT_RECEIPT_VERSION.to_string());
+    obj.insert(
+        "receipt_version".to_string(),
+        serde_json::Value::String(CURRENT_RECEIPT_VERSION.to_string()),
+    );
 
     // Deserialize as Receipt
     serde_json::from_value(receipt).context("failed to deserialize migrated receipt")

@@ -4,88 +4,11 @@
   "generated_on": "2026-06-16",
   "note": "Machine-generated. Run `cargo xtask no-panic baseline` to regenerate. See docs/NO_PANIC_POLICY.md for semantics.",
   "counts": {
-    "total_call_sites": 10,
-    "total_entries": 8,
+    "total_call_sites": 0,
+    "total_entries": 0,
     "files_scanned": 92,
-    "files_with_findings": 34,
-    "by_family": {
-      "expect": 4,
-      "index": 3,
-      "unwrap": 3
-    }
+    "files_with_findings": 30,
+    "by_family": {}
   },
-  "entries": [
-    {
-      "path": "crates/shipper-core/src/engine/parallel/publish.rs",
-      "family": "unwrap",
-      "selector_kind": "method_call",
-      "selector_callee": "unwrap",
-      "snippet": "attempts: st",
-      "count": 2,
-      "first_line": 1256
-    },
-    {
-      "path": "crates/shipper-core/src/engine/parallel/publish.rs",
-      "family": "unwrap",
-      "selector_kind": "method_call",
-      "selector_callee": "unwrap",
-      "snippet": "let current_state = st",
-      "count": 1,
-      "first_line": 1184
-    },
-    {
-      "path": "crates/shipper-core/src/plan/assembly.rs",
-      "family": "expect",
-      "selector_kind": "method_call",
-      "selector_callee": "expect",
-      "snippet": "let pkg = pkg_map.get(id).expect(\"pkg exists\");",
-      "count": 2,
-      "first_line": 14
-    },
-    {
-      "path": "crates/shipper-core/src/plan/graph.rs",
-      "family": "expect",
-      "selector_kind": "method_call",
-      "selector_callee": "expect",
-      "snippet": "let d = indegree",
-      "count": 1,
-      "first_line": 200
-    },
-    {
-      "path": "crates/shipper-core/src/plan/graph.rs",
-      "family": "expect",
-      "selector_kind": "method_call",
-      "selector_callee": "expect",
-      "snippet": "let dep_id = dep_ids",
-      "count": 1,
-      "first_line": 101
-    },
-    {
-      "path": "crates/shipper-core/src/state/execution_state/mod.rs",
-      "family": "index",
-      "selector_kind": "syntax",
-      "selector_callee": "[]",
-      "snippet": "receipt[\"environment\"] = serde_json::to_value(environment)",
-      "count": 1,
-      "first_line": 280
-    },
-    {
-      "path": "crates/shipper-core/src/state/execution_state/mod.rs",
-      "family": "index",
-      "selector_kind": "syntax",
-      "selector_callee": "[]",
-      "snippet": "receipt[\"git_context\"] = serde_json::Value::Null;",
-      "count": 1,
-      "first_line": 274
-    },
-    {
-      "path": "crates/shipper-core/src/state/execution_state/mod.rs",
-      "family": "index",
-      "selector_kind": "syntax",
-      "selector_callee": "[]",
-      "snippet": "receipt[\"receipt_version\"] = serde_json::Value::String(CURRENT_RECEIPT_VERSION.to_string());",
-      "count": 1,
-      "first_line": 285
-    }
-  ]
+  "entries": []
 }
