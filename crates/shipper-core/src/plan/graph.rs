@@ -98,10 +98,9 @@ pub(super) fn validate_publishable_dependencies(
         if !included.contains(id) {
             continue;
         }
-        let dep_id = dep_ids
-            .iter()
-            .next()
-            .expect("non_publishable_workspace_deps entries are non-empty by construction");
+        let Some(dep_id) = dep_ids.iter().next() else {
+            bail!("non_publishable_workspace_deps entry for '{id}' has no dependency target");
+        };
         let pkg_name = pkg_map
             .get(id)
             .map(|p| p.name.as_str())
@@ -140,7 +139,7 @@ pub(super) fn topo_sort(
             &mut indegree,
             &mut ready,
             pkg_map,
-        );
+        )?;
     }
 
     if out.len() != included.len() {
@@ -191,21 +190,22 @@ fn relax_dependents(
     indegree: &mut BTreeMap<PackageId, usize>,
     ready: &mut BTreeSet<(String, PackageId)>,
     pkg_map: &BTreeMap<PackageId, &cargo_metadata::Package>,
-) {
+) -> Result<()> {
     if let Some(deps) = dependents_of.get(id) {
         for dep in deps {
             if !included.contains(dep) {
                 continue;
             }
-            let d = indegree
-                .get_mut(dep)
-                .expect("included package must have indegree");
+            let d = indegree.get_mut(dep).ok_or_else(|| {
+                anyhow::anyhow!("included package '{dep}' missing from indegree map")
+            })?;
             *d = d.saturating_sub(1);
             if *d == 0 {
                 ready.insert((package_name(pkg_map, dep), dep.clone()));
             }
         }
     }
+    Ok(())
 }
 
 fn package_name(pkg_map: &BTreeMap<PackageId, &cargo_metadata::Package>, id: &PackageId) -> String {

@@ -34,8 +34,8 @@ pub(super) fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     validate_publishable_dependencies(&included, &graph, &pkg_map)?;
 
     let order = topo_sort(&included, &graph.deps_of, &graph.dependents_of, &pkg_map)?;
-    let packages = planned_packages(&order, &pkg_map);
-    let dependencies = dependency_map(&order, &included, &graph.deps_of, &pkg_map);
+    let packages = planned_packages(&order, &pkg_map)?;
+    let dependencies = dependency_map(&order, &included, &graph.deps_of, &pkg_map)?;
     let plan_id = compute_plan_id(&spec.registry.api_base, &packages);
 
     Ok(PlannedWorkspace {

@@ -745,7 +745,7 @@ pub(super) fn publish_package(
                             }
 
                             // Preserve reconciliation evidence in the receipt.
-                            // Do NOT emit PublishSucceeded webhook here Ã¢â‚¬â€ the
+                            // Do NOT emit PublishSucceeded webhook here ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
                             // end-of-function success path (below) handles that.
                             readiness_evidence = reconcile_evidence;
                             last_err = None;
@@ -866,7 +866,7 @@ pub(super) fn publish_package(
                     }
                     ErrorClass::Retryable | ErrorClass::Ambiguous => {
                         // Ambiguous can only reach here if reconciliation
-                        // returned NotPublished Ã¢â‚¬â€ registry confirms no
+                        // returned NotPublished ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â registry confirms no
                         // duplicate-upload risk, so cargo retry is safe.
                         // Only query crate_exists when the error looks like
                         // a rate limit (saves a registry round-trip for
@@ -1092,12 +1092,10 @@ pub(super) fn publish_package(
 
     // If package is still Uploaded (loop didn't run or readiness never checked), force a final check
     if last_err.is_none() {
-        let current_state = st
-            .lock()
-            .unwrap()
-            .packages
-            .get(&key)
-            .map(|p| p.state.clone());
+        let Ok(state) = st.lock() else {
+            return poisoned_lock("execution state");
+        };
+        let current_state = state.packages.get(&key).map(|p| p.state.clone());
         if matches!(current_state, Some(PackageState::Uploaded)) {
             if reg.version_exists(&p.name, &p.version).unwrap_or(false) {
                 {
@@ -1156,12 +1154,12 @@ pub(super) fn publish_package(
                 result: Ok(PackageReceipt {
                     name: p.name.clone(),
                     version: p.version.clone(),
-                    attempts: st
-                        .lock()
-                        .unwrap()
-                        .packages
-                        .get(&key)
-                        .map_or(0, |p| p.attempts),
+                    attempts: {
+                        let Ok(st) = st.lock() else {
+                            return poisoned_lock("execution state");
+                        };
+                        st.packages.get(&key).map_or(0, |p| p.attempts)
+                    },
                     state: PackageState::Published,
                     started_at,
                     finished_at,
@@ -1239,12 +1237,12 @@ pub(super) fn publish_package(
         result: Ok(PackageReceipt {
             name: p.name.clone(),
             version: p.version.clone(),
-            attempts: st
-                .lock()
-                .unwrap()
-                .packages
-                .get(&key)
-                .map_or(0, |p| p.attempts),
+            attempts: {
+                let Ok(st) = st.lock() else {
+                    return poisoned_lock("execution state");
+                };
+                st.packages.get(&key).map_or(0, |p| p.attempts)
+            },
             state: PackageState::Published,
             started_at,
             finished_at,
