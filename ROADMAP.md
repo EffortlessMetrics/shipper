@@ -29,18 +29,18 @@ The five pillars cover the safety story. Four more competencies — narrate, har
 | # | Competency | Definition | Status | Issue |
 |---|---|---|---|---|
 | 1 | **Prove** | Establish before the irreversible step that the publish can succeed | Partial | [#100](https://github.com/EffortlessMetrics/shipper/issues/100) |
-| 2 | **Survive** | Recover from interruption without losing or duplicating work | Partial | [#101](https://github.com/EffortlessMetrics/shipper/issues/101) |
+| 2 | **Survive** | Recover from interruption without losing or duplicating work | Implemented | [#101](https://github.com/EffortlessMetrics/shipper/issues/101) |
 | 3 | **Reconcile** | Close ambiguous outcomes against registry truth | Implemented | [#102](https://github.com/EffortlessMetrics/shipper/issues/102) |
-| 4 | **Narrate** | Tell the operator what's happening live, not just after the fact | Partial | [#103](https://github.com/EffortlessMetrics/shipper/issues/103) |
+| 4 | **Narrate** | Tell the operator what's happening live, not just after the fact | Implemented | [#103](https://github.com/EffortlessMetrics/shipper/issues/103) |
 | 5 | **Remediate** | Mechanically recover from bad partial outcomes (yank, fix-forward) | Bounded | [#104](https://github.com/EffortlessMetrics/shipper/issues/104) |
-| 6 | **Harden** | Default to safe auth posture; minimize long-lived secret blast radius | Partial | [#105](https://github.com/EffortlessMetrics/shipper/issues/105) |
+| 6 | **Harden** | Default to safe auth posture; minimize long-lived secret blast radius | Partial (blocked externally) | [#105](https://github.com/EffortlessMetrics/shipper/issues/105) |
 | 7 | **Profile** | Encode what we know about each registry (rate limits, regimes) | Partial | [#106](https://github.com/EffortlessMetrics/shipper/issues/106) |
 | 8 | **Integrate** | Consumable from IDP platforms and CI orchestration tooling | Partial | [#107](https://github.com/EffortlessMetrics/shipper/issues/107) |
 | 9 | **Ergonomics** | First-impression friction is low; defaults are sensible | Partial | [#108](https://github.com/EffortlessMetrics/shipper/issues/108) |
 
 **Master tracking issue: [#109](https://github.com/EffortlessMetrics/shipper/issues/109)**
 
-The biggest single gap used to be **#3 Reconcile**: when `cargo publish` returns ambiguously (it uploads first, then polls the index, and the poll can time out without affecting the upload), Shipper could retry blindly. Shipper now reconciles ambiguous outcomes against registry truth before retry; remaining safety work is concentrated in registry-aware pacing, live interruption proof, and remediation.
+The biggest single gap used to be **#3 Reconcile**: when `cargo publish` returns ambiguously (it uploads first, then polls the index, and the poll can time out without affecting the upload), Shipper could retry blindly. Shipper now reconciles ambiguous outcomes against registry truth before retry. As of 0.4.0, **#2 Survive** (interruption recovery, events-as-truth drift detection, state-rebuild-from-events) and **#4 Narrate** (retry/backoff visibility, `status --watch`, `inspect-events --follow`, attempt history) are also implemented. Remaining safety work is concentrated in registry-aware pacing (#106 Profile) and Trusted Publishing default proof (#105 Harden, blocked on external crates.io registration).
 
 ## Design principles
 
@@ -66,11 +66,11 @@ All release behavior lives in `crates/shipper-core`. `crates/shipper-cli` parses
 Sequencing follows the master roadmap ([#109](https://github.com/EffortlessMetrics/shipper/issues/109)).
 
 ### Now — after v0.4.0
-1. **[#105](https://github.com/EffortlessMetrics/shipper/issues/105) Harden** — keep Trusted Publishing default planned/advisory until release evidence proves the short-lived-token path for the full crate set. Current 0.4.0 evidence records explicit fallback-secret use.
-2. **[#103](https://github.com/EffortlessMetrics/shipper/issues/103) Narrate** — continue improving live wait/retry/readiness visibility and status/watch surfaces so long registry waits never look hung.
-3. **[#101](https://github.com/EffortlessMetrics/shipper/issues/101) Survive** — turn events/state/receipt consistency and state rebuild into boring operator recovery surfaces, building on the synthetic and live-runner fake-Cargo proofs.
-4. **[#107](https://github.com/EffortlessMetrics/shipper/issues/107) Integrate** — make the stable JSON envelopes, receipts, and `.shipper/` packet easy for CI, IDPs, and agents to consume.
-5. **[#104](https://github.com/EffortlessMetrics/shipper/issues/104) Remediate** — promote only the proof-backed remediation surfaces: dry-run artifacts and guarded fake-Cargo execution today; live crates.io yank/fix-forward execution only after deliberate evidence.
+1. **[#105](https://github.com/EffortlessMetrics/shipper/issues/105) Harden** — keep Trusted Publishing default planned/advisory until release evidence proves the short-lived-token path for the full crate set. Current 0.4.0 evidence records explicit fallback-secret use. **Blocked externally** on crates.io trusted-publisher registration.
+2. **[#107](https://github.com/EffortlessMetrics/shipper/issues/107) Integrate** — make the stable JSON envelopes, receipts, and `.shipper/` packet easy for CI, IDPs, and agents to consume.
+3. **[#104](https://github.com/EffortlessMetrics/shipper/issues/104) Remediate** — promote only the proof-backed remediation surfaces: dry-run artifacts and guarded fake-Cargo execution today; live crates.io yank/fix-forward execution only after deliberate evidence.
+
+**Recently completed:** #101 Survive (interruption recovery, drift detection, state rebuild) and #103 Narrate (retry visibility, watch/follow modes, attempt history) shipped during the 0.4.0 cycle.
 
 ### Next
 6. **[#100](https://github.com/EffortlessMetrics/shipper/issues/100) Prove tier 2** — keep strengthening alternate-registry rehearsal and smoke-install proof as an explicit tier above local dry-run.
