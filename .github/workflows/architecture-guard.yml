@@ -17,7 +17,7 @@ jobs:
     name: forbid upward layer imports
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
 
       # Architecture rules per docs/decrating-plan.md §4.2 R3:
       # - engine -> may import plan, state, runtime, ops
