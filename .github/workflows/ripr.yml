@@ -43,7 +43,7 @@ jobs:
     # succeeds. Findings live in the uploaded artifact, not the status.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           # Full history so ripr can compute the diff against the PR base.
           fetch-depth: 0

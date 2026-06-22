@@ -17,7 +17,7 @@ jobs:
     name: Interrupt and upload .shipper
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -53,7 +53,7 @@ jobs:
     runs-on: self-hosted
     needs: interrupt
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
