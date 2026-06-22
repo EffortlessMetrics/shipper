@@ -90,11 +90,23 @@ The advisory checker validates:
 - valid status values
 - linked files when non-empty
 - `.shipper-meta/goals/active.toml` TOML parsing
+- active goal required top-level metadata, end-state entries, and valid
+  top-level/work-item statuses
+- top-level blocked-goal evidence and next-action fields
+- active goal work-item `id`/`status` fields and proof-command coverage for
+  `ready`, `active`, and `planned` work
 - active work item references to existing specs and plans
+- `docs/ci/test-evidence-lanes.md` workflow inventory coverage for every
+  tracked `.github/workflows/*.yml` file, with stale inventory entries rejected
+- `docs/status/SUPPORT_TIERS.md` presence, required metadata headers, valid
+  status, linked proposal/spec/ADR/plan file references, and Claim Map tier
+  values against the Tier Model
 
 ## CI Proof
 
-CI runs doc-contract checks in advisory mode and uploads reports. Blocking mode
+CI runs doc-contract checks in advisory mode and uploads reports. The report
+summarizes document, active-goal, workflow-inventory, and support-tier coverage
+so agents can see which source-of-truth surfaces were checked. Blocking mode
 should come only after the reports have burned in.
 
 ## Promotion Rule

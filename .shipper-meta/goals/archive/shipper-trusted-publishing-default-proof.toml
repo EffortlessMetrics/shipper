@@ -1,0 +1,75 @@
+id = "shipper-trusted-publishing-default-proof"
+title = "Trusted Publishing default proof"
+status = "blocked"
+owner = "EffortlessMetrics"
+created = "2026-05-19"
+
+objective = """
+Make Shipper's Trusted Publishing default claim proof-backed instead of
+aspirational: release evidence must prove whether the short-lived-token path is
+available, whether fallback was used, which external crates.io registration gap
+remains, and why support tiers should or should not promote the default claim.
+"""
+
+blocked_by = [
+  "External crates.io trusted-publisher registration is not proven for EffortlessMetrics/shipper; final 0.4.0 Release workflow run 26141754574 selected fallback_secret and recorded fallback configured/used with token values omitted.",
+]
+next_action = "After crates.io trusted-publisher registration is configured, run a release auth rehearsal and record `.shipper/auth-evidence.json` proving selected_token_source = \"trusted_publishing\" before promoting the default claim."
+
+end_state = [
+  "The active goal points to the accepted release-auth evidence spec and plan.",
+  "The completed idempotent workspace publish goal is archived.",
+  "The release-auth plan separates existing fallback proof from future Trusted Publishing default proof.",
+  "Support tiers keep Trusted Publishing default planned/advisory until short-lived-token proof exists.",
+  "Any external crates.io registration blocker is recorded as evidence, not hidden prose.",
+]
+
+[[work_item]]
+id = "trusted-publishing-default-source-of-truth"
+status = "complete"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
+plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
+issue = "105"
+commands = [
+  "python -c \"import pathlib,tomllib; tomllib.loads(pathlib.Path('.shipper-meta/goals/active.toml').read_text()); print('active goal TOML parses')\"",
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask check-file-policy --mode blocking-allowlist",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "trusted-publishing-registration-proof"
+status = "blocked"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
+plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
+issue = "105"
+blocked_by = [
+  "External crates.io trusted-publisher registration is not proven for EffortlessMetrics/shipper; final 0.4.0 Release workflow run 26141754574 recorded selected_token_source = \"fallback_secret\", fallback.configured = true, fallback.used = true, auth_action.outcome = \"failure\", and no token values in .shipper/auth-evidence.json.",
+]
+next_action = "After crates.io trusted-publisher registration is configured, run a release auth rehearsal and record the resulting `.shipper/auth-evidence.json` artifact."
+commands = [
+  "release auth rehearsal or release-readiness workflow artifact proving selected_token_source = trusted_publishing",
+  "cargo xtask check-workflow-surfaces --mode advisory",
+  "cargo xtask check-process-policy --mode advisory",
+  "cargo xtask check-network-policy --mode advisory",
+  "cargo xtask policy-report",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "trusted-publishing-default-promotion"
+status = "planned"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md"
+plan = "plans/0.4.0/release-auth-evidence-and-trusted-publishing.md"
+issue = "105"
+commands = [
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask policy-report",
+  "cargo fmt --all -- --check",
+  "git diff --check",
+]

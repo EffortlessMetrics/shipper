@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   droid-security-scan:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     env:
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
@@ -52,11 +52,18 @@ jobs:
           }
           JSON
 
+      - name: Install Bun for Droid action
+        id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.2.11
+
       - name: Run Droid scheduled security scan
         uses: EffortlessMetrics/droid-action-safe@7c1377ccbacddc95560d1570547a5baa51de01ec
         with:
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
           upload_debug_artifacts: false
+          path_to_bun_executable: ${{ steps.setup-bun.outputs.bun-path }}
           security_scan_schedule: true
           security_scan_days: 7
           security_model: "custom:MiniMax-M2.7-0"

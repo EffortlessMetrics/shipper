@@ -58,7 +58,7 @@ jobs:
   build-binaries:
     name: Build ${{ matrix.target }}
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
-    runs-on: ${{ matrix.os }}
+    runs-on: self-hosted
     strategy:
       fail-fast: false
       matrix:
@@ -124,7 +124,7 @@ jobs:
   msrv-gate:
     name: MSRV gate (1.95)
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v6.0.2
       - name: Install Rust (MSRV)
@@ -154,7 +154,7 @@ jobs:
   policy-gate:
     name: Policy gate (no-panic + invariants)
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: dtolnay/rust-toolchain@stable
@@ -222,7 +222,7 @@ jobs:
   publish-crates-io:
     name: Publish to crates.io (via shipper)
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [msrv-gate, policy-gate]
     environment: release
     timeout-minutes: 180
@@ -455,7 +455,7 @@ jobs:
   create-release:
     name: Create GitHub Release
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [build-binaries, publish-crates-io]
     steps:
       - uses: actions/checkout@v6.0.2
@@ -502,7 +502,7 @@ jobs:
   release-rehearse:
     name: Release rehearse (plan + preflight dry-run)
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'rehearse'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     # Bind to the `release` environment so the OIDC token minted here is
     # scoped identically to the production `publish-crates-io` job's.
     # Without this, rehearsal would validate only the mint *mechanism*
@@ -652,7 +652,7 @@ jobs:
   release-resume:
     name: Release resume
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'resume'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     environment: release
     timeout-minutes: 180
     steps:

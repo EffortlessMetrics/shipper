@@ -42,7 +42,7 @@ jobs:
         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
       )
 
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     env:
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
@@ -59,6 +59,32 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
+
+      - name: Provide constrained gh shim for Droid PR checkout
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/gh" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          if [[ "${1:-}" != "pr" || "${2:-}" != "checkout" ]]; then
+            echo "This constrained gh shim only supports: gh pr checkout <number>" >&2
+            exit 127
+          fi
+
+          pr_number="${3:-}"
+          if [[ -z "$pr_number" || "$pr_number" == *[!0-9]* ]]; then
+            echo "PR number must be numeric" >&2
+            exit 2
+          fi
+
+          git fetch --no-tags --prune --depth=1 origin \
+            "+refs/pull/${pr_number}/head:refs/remotes/droid-pr-${pr_number}"
+          git checkout --force "refs/remotes/droid-pr-${pr_number}"
+          SH
+          chmod +x "$RUNNER_TEMP/bin/gh"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Configure MiniMax BYOK for Factory Droid
         shell: bash
@@ -83,11 +109,18 @@ jobs:
           }
           JSON
 
+      - name: Install Bun for Droid action
+        id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.2.11
+
       - name: Run Droid Exec with MiniMax M2.7 BYOK
         uses: EffortlessMetrics/droid-action-safe@7c1377ccbacddc95560d1570547a5baa51de01ec
         with:
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
           upload_debug_artifacts: false
+          path_to_bun_executable: ${{ steps.setup-bun.outputs.bun-path }}
 
           review_depth: shallow
           review_model: "custom:MiniMax-M2.7-0"

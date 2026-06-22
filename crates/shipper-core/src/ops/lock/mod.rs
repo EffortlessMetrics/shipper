@@ -835,9 +835,8 @@ mod tests {
         };
         fs::write(&lp, serde_json::to_string(&old_info).expect("ser")).expect("write");
 
-        let lock =
-            LockFile::acquire_with_timeout(td.path(), Some(&root), Duration::from_hours(1))
-                .expect("acquire stale with root");
+        let lock = LockFile::acquire_with_timeout(td.path(), Some(&root), Duration::from_hours(1))
+            .expect("acquire stale with root");
         let info = LockFile::read_lock_info(td.path(), Some(&root)).expect("read");
         assert_eq!(info.pid, std::process::id());
         drop(lock);

@@ -131,6 +131,67 @@ fn doctor_help() {
 }
 
 #[test]
+fn first_run_help_omits_release_execution_controls() {
+    let help_cases: &[&[&str]] = &[&["--help"], &["plan", "--help"], &["doctor", "--help"]];
+
+    for args in help_cases {
+        let output = shipper_cmd().args(*args).output().expect("failed to run");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        for hidden in [
+            "--allow-dirty",
+            "--max-attempts",
+            "--force",
+            "--force-resume",
+            "--webhook-secret",
+            "--smoke-install",
+        ] {
+            assert!(
+                !stdout.contains(hidden),
+                "{hidden} should not appear in {:?} help:\n{stdout}",
+                args
+            );
+        }
+    }
+}
+
+#[test]
+fn publish_help_keeps_release_execution_controls() {
+    let output = shipper_cmd()
+        .args(["publish", "--help"])
+        .output()
+        .expect("failed to run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    for visible in [
+        "--allow-dirty",
+        "--max-attempts",
+        "--force-resume",
+        "--webhook-secret",
+        "--smoke-install",
+    ] {
+        assert!(
+            stdout.contains(visible),
+            "{visible} should remain visible in publish help:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn hidden_release_controls_remain_parseable_for_compatibility() {
+    for args in [
+        &["--allow-dirty", "plan", "--help"][..],
+        &["plan", "--allow-dirty", "--help"][..],
+    ] {
+        let output = shipper_cmd().args(args).output().expect("failed to run");
+        assert!(
+            output.status.success(),
+            "{args:?} should remain accepted for compatibility"
+        );
+    }
+}
+
+#[test]
 fn config_help() {
     let output = shipper_cmd()
         .args(["config", "--help"])

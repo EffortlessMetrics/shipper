@@ -1018,10 +1018,7 @@ per_package_timeout = "1h"
         let config: ShipperConfig = toml::from_str(toml).unwrap();
         assert!(config.parallel.enabled);
         assert_eq!(config.parallel.max_concurrent, 8);
-        assert_eq!(
-            config.parallel.per_package_timeout,
-            Duration::from_hours(1)
-        );
+        assert_eq!(config.parallel.per_package_timeout, Duration::from_hours(1));
     }
 
     #[test]
@@ -1051,10 +1048,7 @@ enabled = true
         let config: ShipperConfig = toml::from_str(toml).unwrap();
         assert!(config.parallel.enabled);
         assert_eq!(config.parallel.max_concurrent, 4);
-        assert_eq!(
-            config.parallel.per_package_timeout,
-            Duration::from_mins(30)
-        );
+        assert_eq!(config.parallel.per_package_timeout, Duration::from_mins(30));
     }
 
     #[test]
@@ -2048,10 +2042,7 @@ per_package_timeout = "2h"
             let config: ShipperConfig = toml::from_str(toml).unwrap();
             assert!(config.parallel.enabled);
             assert_eq!(config.parallel.max_concurrent, 16);
-            assert_eq!(
-                config.parallel.per_package_timeout,
-                Duration::from_hours(2)
-            );
+            assert_eq!(config.parallel.per_package_timeout, Duration::from_hours(2));
             assert!(config.validate().is_ok());
         }
 

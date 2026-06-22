@@ -17,6 +17,7 @@ Before any smoke test:
 2. Confirm `Droid Auto Review` starts. The workflow should be visible in the PR checks list.
 3. Open the job log. Confirm:
    - the `Configure MiniMax BYOK for Factory Droid` step ran;
+   - the `Install Bun for Droid action` step ran before the Droid action step;
    - `MINIMAX_API_KEY` appears as `***` (masked), not expanded;
    - the Droid action initializes with `custom:MiniMax-M2.7-0`.
 4. Confirm the review output is not a naked `LGTM`.
@@ -27,7 +28,8 @@ Before any smoke test:
    - residual risk;
    - validation signal with `Observed:`, `Reported:`, `Not verified:` lines.
 6. Confirm `[skip-review]` in a PR title prevents the workflow from running.
-7. Confirm a fork PR (if one is available) does not run the auto-review workflow with secrets.
+7. Confirm a branch named `droid/security-report-<date>` does not run the auto-review workflow.
+8. Confirm a fork PR (if one is available) does not run the auto-review workflow with secrets.
 
 ## 2. Manual review
 
@@ -79,6 +81,10 @@ Expected:
 
 The scheduled trigger (`cron: "0 8 * * 1"`, Monday 08:00 UTC) does not need to be smoke-tested manually; it is exercised on its natural schedule.
 
+If the scan opens a `droid/security-report-<date>` PR, triage the generated
+report directly. That PR is intentionally excluded from Droid Auto Review so
+the bot allowlist can stay limited to Dependabot.
+
 ## 5. Artifact and log hygiene
 
 After any Droid run:
@@ -90,8 +96,9 @@ After any Droid run:
    - no `Authorization: Bearer ...` header lines;
    - no contents of `$HOME/.factory/settings.local.json` with the key expanded;
    - no raw prompt files leaked into the log.
+4. Confirm the Droid action step does not emit an `oven-sh/setup-bun` Node20 deprecation annotation.
 
-If any of those appear, treat it as a security incident and open a tracking issue. Do not redact in place; rotate `MINIMAX_API_KEY` and `FACTORY_API_KEY` first.
+If any secret, authorization header, settings file, or raw prompt content appears, treat it as a security incident and open a tracking issue. Do not redact in place; rotate `MINIMAX_API_KEY` and `FACTORY_API_KEY` first.
 
 ## 6. Failure modes to watch for
 
@@ -100,4 +107,5 @@ If any of those appear, treat it as a security incident and open a tracking issu
 - `model not found` — verify `review_model` and `security_model` are both `custom:MiniMax-M2.7-0` and that the `customModels` block in `settings.local.json` matches.
 - Auto-review running on a fork PR — verify the same-repo guard `github.event.pull_request.head.repo.full_name == github.repository` is present and not commented out.
 - Manual `@droid` running for a non-trusted actor — verify the `author_association` guard on every event branch in `droid.yml`.
+- Node20 deprecation warnings from Droid's internal Bun setup — verify the workflow's pinned `Install Bun for Droid action` step still has `id: setup-bun`, still produces `steps.setup-bun.outputs.bun-path`, and the Droid action step still passes that path via `path_to_bun_executable`.
 - `cancel-in-progress: true` accidentally introduced — should be `false` so active reviews are not interrupted by new pushes.

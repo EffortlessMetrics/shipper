@@ -843,10 +843,7 @@ base_path = "artifacts/"
         assert!(config.flags.strict_ownership);
         assert!(config.parallel.enabled);
         assert_eq!(config.parallel.max_concurrent, 6);
-        assert_eq!(
-            config.parallel.per_package_timeout,
-            Duration::from_mins(45)
-        );
+        assert_eq!(config.parallel.per_package_timeout, Duration::from_mins(45));
         let reg = config.registry.as_ref().unwrap();
         assert_eq!(reg.name, "my-reg");
         assert_eq!(reg.api_base, "https://my-reg.example.com");

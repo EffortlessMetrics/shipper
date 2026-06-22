@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{Command, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::Shell;
 use serde::Serialize;
 
@@ -272,6 +272,78 @@ struct Cli {
 
     #[command(subcommand)]
     cmd: Option<Commands>,
+}
+
+// Keep this list in sync with advanced release-execution fields on `Cli`.
+// These flags remain parseable everywhere for compatibility, but first-run
+// help surfaces should not make `shipper`, `shipper plan`, or `shipper doctor`
+// look like publish/resume control panels.
+const ADVANCED_RELEASE_ARG_IDS: &[&str] = &[
+    "output_lines",
+    "allow_dirty",
+    "skip_ownership_check",
+    "strict_ownership",
+    "no_verify",
+    "max_attempts",
+    "base_delay",
+    "max_delay",
+    "retry_strategy",
+    "retry_jitter",
+    "verify_timeout",
+    "verify_poll",
+    "readiness_method",
+    "readiness_timeout",
+    "readiness_poll",
+    "no_readiness",
+    "force_resume",
+    "force",
+    "lock_timeout",
+    "policy",
+    "verify_mode",
+    "parallel",
+    "max_concurrent",
+    "per_package_timeout",
+    "webhook_url",
+    "webhook_secret",
+    "encrypt",
+    "encrypt_passphrase",
+    "registries",
+    "all_registries",
+    "resume_from",
+    "rehearsal_registry",
+    "skip_rehearsal",
+    "rehearsal_smoke_install",
+];
+
+const FIRST_RUN_HELP_SUBCOMMANDS: &[&str] = &["plan", "doctor"];
+const DOCTOR_HELP_HIDDEN_ARG_IDS: &[&str] = &["verbose"];
+
+fn cli_command() -> Command {
+    let mut command = Cli::command();
+    command.build();
+
+    let mut command = hide_args_from_help(command, ADVANCED_RELEASE_ARG_IDS);
+    for subcommand in FIRST_RUN_HELP_SUBCOMMANDS {
+        command = command.mut_subcommand(*subcommand, |subcommand_args| {
+            let subcommand_args = hide_args_from_help(subcommand_args, ADVANCED_RELEASE_ARG_IDS);
+            if *subcommand == "doctor" {
+                hide_args_from_help(subcommand_args, DOCTOR_HELP_HIDDEN_ARG_IDS)
+            } else {
+                subcommand_args
+            }
+        });
+    }
+    command
+}
+
+fn hide_args_from_help(command: Command, hidden_ids: &[&str]) -> Command {
+    command.mut_args(|arg| {
+        if hidden_ids.contains(&arg.get_id().as_str()) {
+            arg.hide(true)
+        } else {
+            arg
+        }
+    })
 }
 
 #[derive(Subcommand, Debug)]
@@ -781,7 +853,12 @@ impl Reporter for CliReporter {
 /// are three-line `fn main() { shipper_cli::run() }` wrappers over
 /// this function.
 pub fn run() -> Result<std::process::ExitCode> {
-    let cli = Cli::parse();
+    // Build via cli_command() then from_arg_matches (swarm#108: scope first-run
+    // help flags) so the manual Command can carry long_help-only arg scoping
+    // that derive-only Cli::parse() cannot express. Return ExitCode (PR #417:
+    // exit-code vocabulary) so the process can exit 2 on PartialFailure.
+    let matches = cli_command().get_matches();
+    let cli = Cli::from_arg_matches(&matches)?;
 
     if cli.version {
         print_version(cli.verbose);
@@ -801,7 +878,7 @@ pub fn run() -> Result<std::process::ExitCode> {
     }
 
     if cli.cmd.is_none() {
-        Cli::command()
+        cli_command()
             .error(
                 clap::error::ErrorKind::MissingSubcommand,
                 "'shipper' requires a subcommand but one was not provided",

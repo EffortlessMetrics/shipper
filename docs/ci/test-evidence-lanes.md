@@ -15,7 +15,8 @@ Release: publish / readiness / security proof must be clean to ship
 
 ## Workflow Inventory
 
-Every workflow under `.github/workflows/` and the lane each one occupies. The audit dates from the #189 docs pass.
+Every workflow under `.github/workflows/` and the lane each one occupies. Keep
+this inventory aligned when workflows are added, removed, or retargeted.
 
 | Workflow | Trigger | Lane | Required for merge? |
 |---|---|---|---|
@@ -23,10 +24,11 @@ Every workflow under `.github/workflows/` and the lane each one occupies. The au
 | `em-ci-routed-rust.yml` | `push` + `pull_request` + `merge_group` + `workflow_dispatch` | Required PR gate | Required via `Shipper Rust Small Result` |
 | `ci.yml` | `push` + `workflow_dispatch` + weekly `schedule` | Main/manual full-CI evidence + weekly heavy proptest | Required when triggered; not the default PR gate |
 | `coverage.yml` | `push` (main) + `pull_request` + `workflow_dispatch` | Advisory / labeled | Advisory |
-| `droid-review.yml` | `pull_request` | Advisory (same-repo + bot guard) | Advisory |
+| `droid-review.yml` | `pull_request` | Advisory (same-repo + bot guard + generated security-report branch skip) | Advisory |
 | `droid.yml` | `issues` + `pull_request` (command-triggered) | Advisory (trusted-actor guard) | Advisory |
 | `droid-security-scan.yml` | `schedule` + `workflow_dispatch` | Scheduled (Mon 08:00 UTC) | Advisory |
 | `fuzz.yml` | `schedule` + `workflow_dispatch` | Nightly | Advisory |
+| `live-runner-interruption-rehearsal.yml` | `workflow_dispatch` + path-scoped `pull_request` | Safe runner-artifact interruption/resume proof | Advisory/manual; required when triggered |
 | `mutation.yml` | `schedule` + `workflow_dispatch` + `pull_request` (label-gated) | Weekly + label-gated PR | Advisory |
 | `release.yml` | `push` (tags `v*.*.*`) + `workflow_dispatch` | Tag-triggered | Required (when triggered) |
 | `ripr.yml` | `pull_request` + `workflow_dispatch` | Advisory (`continue-on-error: true`) | Advisory |
@@ -43,16 +45,38 @@ self-hosted runners in this order:
 CPX42 -> CX43 -> CX53
 ```
 
-Fork or explicitly allowed fallback paths use the GitHub-hosted tiny fallback.
-Silent fallback is blocked: if self-hosted routing is unavailable for a trusted
-same-repo PR or merge-queue run in `shipper-swarm`, the normalized result fails
-unless an operator has explicitly applied `allow-github-hosted` or
-`ci-budget-ack`, or forced the `github` route through `workflow_dispatch`.
+Fallback paths use the tiny self-hosted fallback lane. Silent GitHub-hosted
+fallback is blocked: `shipper-swarm` workflow jobs run on self-hosted capacity,
+including the fallback route, unless a future policy PR explicitly restores a
+GitHub-hosted emergency path.
 
-In `EffortlessMetrics/shipper`, the same workflow intentionally takes the
-GitHub-hosted tiny fallback. The source repository remains the release authority
-and does not carry the swarm runner-routing secret; source sync and
-release-authority PRs should not depend on `shipper-swarm` self-hosted routing.
+Public fork PRs are denied by the normalized result instead of running
+repository code on self-hosted runners. A maintainer can move trusted work onto
+a same-repo branch when it needs the swarm gate.
+
+Dependabot PRs are same-repo dependency maintenance, but their first
+bot-authored runs may not receive the selected repository secrets used by the
+router or Droid. Treat a `runner_token_missing` routed result or
+`FACTORY_API_KEY` Droid setup failure on a Dependabot PR as a trust-bootstrap
+condition, not as proof that the dependency bump is broken. The maintainer flow
+is:
+
+```text
+1. Inspect the dependency diff and confirm it is narrow.
+2. Run focused local validation such as `cargo check --workspace --locked`.
+3. Add a maintainer-authored refresh commit or recreate the bump on a trusted
+   same-repo branch.
+4. Require the normal `Shipper Rust Small Result`, Droid review, and any
+   focused dependency validation before merge.
+```
+
+This is not a fallback-policy exception. Do not add release credentials, crates.io
+tokens, signing secrets, or broad bot secret access to make dependency PRs pass.
+
+Do not infer release-authority behavior from this swarm routing policy.
+`EffortlessMetrics/shipper` remains the release authority, and the broad
+`shipper-swarm` self-hosted sweep must not be synced there until release
+runner, binary-build, and credential boundaries are explicitly decided.
 
 The self-hosted Rust-small lane proves:
 
@@ -65,7 +89,7 @@ cargo run -p shipper -- plan --help
 cargo run -p shipper -- preflight --help
 ```
 
-The GitHub-hosted tiny fallback intentionally proves less:
+The tiny fallback intentionally proves less:
 
 ```bash
 cargo check --workspace --locked --all-targets
@@ -84,18 +108,52 @@ column carries a gate.
 |---|---|---|---|
 | `lint` | `push` / `workflow_dispatch` / `schedule` | ~1 min | `cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings`. |
 | `policy` | `push` / `workflow_dispatch` / `schedule` | ~1 min | All seven xtask policy checks in `--mode blocking-allowlist`, plus `policy-report`. See `docs/policy/NON_RUST_ROLLOUT.md`. |
-| `test` (nextest, 3-OS matrix) | `push` / `workflow_dispatch` / `schedule` | ~17 min (longest leg) | Unit and integration tests pass on Ubuntu, Windows, macOS. Doc-tests run alongside. |
-| `crypto-proptests-heavy` | `schedule` / `push` / `workflow_dispatch` only | ~20 min | Full-strength `proptest` for `shipper-encrypt` round-trips. **Not** on PR — too slow. |
+| `test` (nextest) | `push` / `workflow_dispatch` / `schedule` | ~17 min | Unit and integration tests pass on the self-hosted runner pool. Doc-tests run alongside. |
+| `crypto-proptests-heavy` | `push` / `workflow_dispatch` / `schedule` | ~60 min (90-minute budget) | Full-strength `proptest` for `shipper-encrypt` round-trips. **Not** on PR — too slow. |
 | `msrv` | `push` / `workflow_dispatch` / `schedule` | ~1 min | `cargo check --workspace` on the declared MSRV (1.95). |
 | `security` | `push` / `workflow_dispatch` / `schedule` | ~1 min | `cargo audit` against the current advisory database. |
 | `docs` | `push` / `workflow_dispatch` / `schedule` | ~1 min | `cargo doc --workspace --no-deps` clean under `-D warnings` (catches `rustdoc::invalid-html-tags` and friends). |
 | `bdd` | `push` / `workflow_dispatch` / `schedule` | ~3 min | Publish and resume BDD scenarios plus the synthetic interruption-resume rehearsal (`e2e_rehearse`) that proves persisted state/events let `shipper resume` complete without duplicate publishes. |
 | `fuzz-smoke` | `push` / `workflow_dispatch` | ~10 min | Five fuzz targets at low energy: load state, resolve token, schema version, release levels, and output redaction. |
-| `cross-platform` | `push` / `workflow_dispatch` / `schedule` | ~2 min per leg | Multi-target builds: Linux x86_64/aarch64, Windows MSVC, macOS x86_64/aarch64. |
+| `cross-platform` | `push` / `workflow_dispatch` / `schedule` | ~2 min | Native Linux target check for x86_64 on self-hosted runners. aarch64 requires a cross C toolchain in the runner image and is not part of the current default swarm CI proof. Windows/macOS release assets stay a release-authority concern. |
 | `release-build` | `push` / `workflow_dispatch` only | ~2 min | Release-profile build (LTO + strip) remains available on main and manual runs; tag-time binaries are built by `release.yml`. |
 
 Broad full-CI remains part of the evidence story, but it is not the merge gate
 for ordinary PRs. The required PR signal is the routed result above.
+
+## Manual Full-CI Proof for a PR
+
+Most PRs should merge on `Shipper Rust Small Result` plus focused local or
+review evidence. Use extra full-CI proof when a PR touches release-critical
+behavior, runner policy, workflow routing, broad state/event/receipt contracts,
+or another surface where post-merge discovery would be too expensive.
+
+For same-repo branches, run the full lane before merge with:
+
+```text
+Actions -> CI -> Run workflow -> branch: <pr-branch>
+```
+
+That manual dispatch runs `ci.yml` on the selected branch. It exercises the
+broad self-hosted evidence set, including nextest, doc tests, policy, BDD,
+fuzz smoke, heavy crypto proptests, native Linux target check, and release
+build. It does not publish crates or move release authority into
+`shipper-swarm`.
+
+For PR-time advisory evidence, a maintainer can also apply labels:
+
+| Label | Effect |
+|---|---|
+| `coverage` | Runs `coverage.yml` on the PR. |
+| `mutation` | Runs the label-gated `mutants-pr` job on changed production Rust files. |
+| `full-ci` | Runs both PR coverage and label-gated mutation. It does not trigger `ci.yml`; use manual workflow dispatch for the broad full-CI lane. |
+
+Do not run same-repo self-hosted full-CI proof on untrusted fork code. Move the
+work onto a trusted same-repo branch first, or rely on the fork-safe normalized
+result behavior until a maintainer has reviewed the code.
+
+When manual full-CI proof is used as merge evidence, record the workflow run ID
+in the PR so future queue stewards can audit what was proven.
 
 ## Policy Gates (xtask-Enforced, Inside `ci.yml`'s `policy` Job)
 
@@ -121,7 +179,7 @@ The `policy` job runs each check in blocking-allowlist mode and uploads `target/
 | `rust-small` | `em-ci-routed-rust.yml` | PRs, merge groups, pushes to main, dispatch | Required Rust-small PR gate with self-hosted routing and explicit fallback control. |
 | `ripr-pilot` | `ripr.yml` | PRs touching `crates/**`, `xtask/**`, `Cargo.{toml,lock}`, `ripr.toml`, `policy/ripr-suppressions.toml`, `.github/workflows/ripr.yml`. `continue-on-error: true`. | Static mutation-exposure analysis: does the diff appear exposed to a meaningful test oracle? |
 | `mutants-pr` | `mutation.yml` | PRs labeled `mutation` or `full-ci` | Runtime mutation backstop scoped to the PR's changed files via `cargo xtask mutants-pr --changed`. Blocking when it runs. |
-| `droid-review` | `droid-review.yml` | Same-repo PRs (incl. `dependabot[bot]`). | Automated code review via Factory Droid (BYOK MiniMax M2.7). Advisory comments, no merge gate. |
+| `droid-review` | `droid-review.yml` | Same-repo PRs (incl. `dependabot[bot]`; excluding generated `droid/security-report-*` branches). | Automated code review via Factory Droid (BYOK MiniMax M2.7). Advisory comments, no merge gate. |
 | `droid` | `droid.yml` | `@droid` mentions on issues / PRs by `OWNER`/`MEMBER`/`COLLABORATOR`. | On-demand Droid actions: review, refactor, explain. |
 
 ## Scheduled
@@ -129,7 +187,7 @@ The `policy` job runs each check in blocking-allowlist mode and uploads `target/
 | Job | Schedule | What it proves |
 |---|---|---|
 | `fuzz` matrix (6 targets) | `fuzz.yml` — daily | Extended fuzz energy beyond the PR smoke pass. |
-| `crypto-proptests-heavy` | `ci.yml` — on `push`/`schedule`/`workflow_dispatch` | Full-strength `proptest` for `shipper-encrypt`. |
+| `crypto-proptests-heavy` | `ci.yml` — on `push` / `workflow_dispatch` / `schedule` | Full-strength `proptest` for `shipper-encrypt` round-trips (90-minute budget). |
 | `mutants-weekly` | `mutation.yml` — Sunday 04:00 UTC | Mutation score across `shipper-duration` / `shipper-types` / `shipper-config`. Expanding to full trust-critical surface is a future rollout step (60-minute budget today). |
 | `droid-security-scan` | `droid-security-scan.yml` — Monday 08:00 UTC | Factory Droid security scan, 7-day window, medium threshold, critical blocking. |
 
@@ -189,8 +247,8 @@ A complete evidence picture for a release requires all of the following:
 | Evidence | Source |
 |---|---|
 | Required PR gate | `em-ci-routed-rust.yml` `Shipper Rust Small Result` |
-| Tests pass on all platforms | `ci.yml` `test` matrix (Ubuntu, Windows, macOS) on main/manual/weekly runs |
-| Multi-target builds compile | `ci.yml` `cross-platform` matrix (5 targets) on main/manual/weekly runs |
+| Workspace tests pass | `ci.yml` `test` lane on the self-hosted runner pool for main/manual/weekly runs |
+| Native Linux target check compiles | `ci.yml` `cross-platform` lane for x86_64 Linux on main/manual/weekly runs |
 | No known vulnerabilities | `ci.yml` `security` (`cargo audit`) on main/manual/weekly runs |
 | No architectural drift | `architecture-guard.yml` |
 | Format clean | `ci.yml` `lint` on main/manual/weekly runs |
@@ -229,9 +287,13 @@ manual dispatch, and on the weekly schedule.
 
 Concrete follow-up candidates:
 
-1. Add an explicit `full-ci` label or manual dispatch recipe for PRs that need
-   full matrix proof before merge.
-2. Repeat forced route proof and refresh the proof ledger whenever route order,
+1. Repeat forced route proof and refresh the proof ledger whenever route order,
    runner labels, fallback policy, or the normalized-result contract changes.
-3. Revisit whether `architecture-guard.yml` should remain separately required
-   once the routed Rust-small lane is proven stable under the new settings.
+
+Resolved follow-up:
+
+- `architecture-guard.yml` remains advisory in `shipper-swarm` branch
+  protection. On 2026-05-25, `gh api
+  repos/EffortlessMetrics/shipper-swarm/branches/main/protection/required_status_checks`
+  returned only `Shipper Rust Small Result`. The architecture guard still runs
+  as PR/push evidence, but it is not a separate required status check.

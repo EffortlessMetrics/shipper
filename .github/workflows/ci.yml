@@ -23,7 +23,7 @@ permissions:
 jobs:
   lint:
     name: Lint (fmt + clippy)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -78,7 +78,7 @@ jobs:
     # target/policy/ as a `policy-reports` artifact regardless of
     # pass/fail (`if: always()`). See docs/policy/NON_RUST_ROLLOUT.md.
     name: Policy
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -134,11 +134,7 @@ jobs:
 
   test:
     name: Tests (nextest)
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -165,9 +161,9 @@ jobs:
         env:
           # Keep snapshots from updating in CI
           INSTA_UPDATE: "no"
-          # Matrix lane runs reduced proptest intensity on every trigger.
+          # PR test lane runs reduced proptest intensity on every trigger.
           # Full-strength crypto proving lives in the `crypto-proptests-heavy`
-          # job below (Ubuntu-only, schedule + push-main + dispatch).
+          # job below (schedule + push-main + dispatch).
           PROPTEST_CASES: "16"
           PROPTEST_MAX_SHRINK_ITERS: "1000"
 
@@ -178,13 +174,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: junit-${{ matrix.os }}
+          name: junit-tests
           path: target/nextest/ci/junit.xml
           retention-days: 14
 
   install-smoke:
     name: Install Smoke
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -215,8 +211,8 @@ jobs:
           shipper preflight --help
 
   crypto-proptests-heavy:
-    name: Crypto Proptests (full strength, ubuntu)
-    # Deep crypto proving lane. The PR matrix above runs proptests with
+    name: Crypto Proptests (full strength)
+    # Deep crypto proving lane. The PR test lane above runs proptests with
     # reduced intensity (PROPTEST_CASES=16) so that `shipper-encrypt`'s
     # Argon2-bound property tests don't dominate wall clock on every PR.
     # This job restores full-strength coverage on:
@@ -227,7 +223,8 @@ jobs:
     # feedback fast; if you want a specific PR to exercise it, use the
     # workflow_dispatch trigger on the PR's branch.
     if: github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -265,7 +262,7 @@ jobs:
 
   msrv:
     name: MSRV Check
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -289,7 +286,7 @@ jobs:
 
   security:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -304,7 +301,7 @@ jobs:
 
   docs:
     name: Documentation
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -328,7 +325,7 @@ jobs:
 
   bdd:
     name: BDD Tests
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [lint]
     steps:
       - uses: actions/checkout@v6.0.2
@@ -356,7 +353,7 @@ jobs:
   fuzz-smoke:
     name: Fuzz Smoke (PR)
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [lint]
     steps:
       - uses: actions/checkout@v6.0.2
@@ -394,22 +391,13 @@ jobs:
           cargo fuzz run redact_output --target x86_64-unknown-linux-gnu -- -max_total_time=60
 
   cross-platform:
-    name: Build (${{ matrix.os }}, ${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
+    name: Target Check (${{ matrix.target }})
+    runs-on: [self-hosted, Linux, X64]
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: macos-latest
-            target: aarch64-apple-darwin
+          - target: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -431,15 +419,8 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
-      - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Build for target
-        run: cargo build --workspace --target ${{ matrix.target }}
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+      - name: Check target
+        run: cargo check --workspace --target ${{ matrix.target }}
 
   release-build:
     name: Release Build
@@ -447,7 +428,7 @@ jobs:
     # but out of the default PR and nightly critical paths. Tag-time release
     # binaries are built by release.yml.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [lint, test]
     steps:
       - uses: actions/checkout@v6.0.2

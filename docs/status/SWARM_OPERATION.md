@@ -117,6 +117,29 @@ development PR: merge it with a merge commit so `shipper/main` becomes an
 ancestor of `shipper-swarm/main` again. Temporarily allowing merge commits for
 that PR is acceptable; restore squash-only settings immediately afterward.
 
+## Queue Stewardship
+
+Treat every open `shipper-swarm` PR as part of the active development queue:
+inspect the intended slice, read CI and review output, fix real findings,
+validate honestly, squash-merge when clean, and delete the branch when safe.
+Keep overlapping work closed or explicitly deferred before opening another PR
+for the same surface.
+
+Dependabot maintenance belongs in `shipper-swarm` first. If the same dependency
+bump opens in `EffortlessMetrics/shipper`, close the source-repo PR as duplicate
+maintenance work and let the accepted swarm commit flow back through the normal
+non-squash source sync.
+
+Dependabot's first bot-authored run can fail before evaluation if the router or
+Droid cannot read selected repository secrets. That is a trust-bootstrap
+condition, not permission to broaden bot secret access. Use the maintainer
+refresh procedure in
+[`docs/ci/test-evidence-lanes.md`](../ci/test-evidence-lanes.md) and
+[`docs/how-to/shipper-swarm-migration-runbook.md`](../how-to/shipper-swarm-migration-runbook.md):
+inspect the diff, run focused validation, push a maintainer-authored refresh or
+trusted same-repo branch, and require the normal `Shipper Rust Small Result`
+plus advisory review before merge.
+
 ## CI and Branch Protection
 
 `shipper-swarm/main` requires only the normalized result check:
@@ -133,19 +156,19 @@ Current routed Rust-small proof:
 - Branch protection requires only `Shipper Rust Small Result`; do not require
   route-specific implementation jobs because exactly one route should run per
   attempt.
-- Current same-repo CPX42 routing passed on PR #73 with `Routed Rust Small`
-  run `26350902300`; the CPX42 implementation job and normalized
-  `Shipper Rust Small Result` both succeeded. The post-backfill `main` run
-  `26354268990` also passed through CPX42 and the normalized result.
-- Forced route proof under the current routing rules passed for `CX43` with
-  `workflow_dispatch` run `26355258014`, for `CX53` with `workflow_dispatch`
-  run `26356173639`, and for explicit `shipper-swarm` GitHub-hosted fallback
-  with `workflow_dispatch` run `26357093195`.
-- Source release-authority sync PRs take the intentional GitHub-hosted tiny
-  fallback because `EffortlessMetrics/shipper` remains the release authority
-  and does not carry the swarm runner-routing secret. Source PR #388 passed
-  with run `26351871995`, source PR #389 passed with run `26353082714`, and
-  source PR #390 passed with run `26354158302`.
+- Current same-repo `CPX42` routing proof passed on PR #117 with
+  `Routed Rust Small` run `26413038913`; the `CPX42` implementation job and
+  normalized `Shipper Rust Small Result` both succeeded.
+- Forced route proof before the 100% self-hosted sweep passed for `CX43` with
+  `workflow_dispatch` run `26355258014` and for `CX53` with
+  `workflow_dispatch` run `26356173639`.
+- Current self-hosted fallback proof passed on post-merge `main` run
+  `26413498807`; `Shipper Rust Tiny Fallback (routed to self-hosted)` and the
+  normalized `Shipper Rust Small Result` both succeeded.
+- Current `shipper-swarm` policy routes all workflow jobs, including the tiny
+  fallback lane, to self-hosted runners. Do not sync that policy to
+  `EffortlessMetrics/shipper` until the release-authority runner and
+  credential boundaries are explicitly decided.
 
 ## Credential Boundary
 

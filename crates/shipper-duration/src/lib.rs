@@ -403,10 +403,7 @@ mod edge_case_tests {
 
     #[test]
     fn parse_combined_no_spaces() {
-        assert_eq!(
-            parse_duration("1h30m").unwrap(),
-            Duration::from_mins(90)
-        );
+        assert_eq!(parse_duration("1h30m").unwrap(), Duration::from_mins(90));
         assert_eq!(
             parse_duration("2m30s").unwrap(),
             Duration::from_secs(2 * 60 + 30)

@@ -34,7 +34,7 @@ jobs:
   mutants-weekly:
     name: Mutation Testing (weekly)
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6.0.2
@@ -90,7 +90,7 @@ jobs:
         contains(github.event.pull_request.labels.*.name, 'mutation') ||
         contains(github.event.pull_request.labels.*.name, 'full-ci')
       )
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6.0.2
