@@ -33,7 +33,7 @@ fn error_class_rank(error_class: &Option<ErrorClass>) -> u8 {
     }
 }
 
-fn sort_attempt_history_by_fields(history: &mut Vec<AttemptDetail>) {
+fn sort_attempt_history_by_fields(history: &mut [AttemptDetail]) {
     history.sort_by_key(|entry| {
         (
             entry.package.clone(),
@@ -591,7 +591,7 @@ fn test_publish_package_publishes_successfully() {
                 persisted
                     .all_events()
                     .iter()
-                    .any(|event| matches!(event.event_type, EventType::PackageUploaded { .. }))
+                    .any(|event| matches!(event.event_type, EventType::PackageUploaded))
             );
         },
     );
@@ -6292,10 +6292,10 @@ fn mode_parity_seed_state(ws: &PlannedWorkspace, scenario: ModeParityScenario) -
     }
 }
 
-fn mode_parity_cargo_env<'a>(
+fn mode_parity_cargo_env(
     scenario: ModeParityScenario,
-    cargo_bin: &'a str,
-) -> Vec<(&'static str, Option<&'a str>)> {
+    cargo_bin: &str,
+) -> Vec<(&'static str, Option<&str>)> {
     match scenario {
         ModeParityScenario::CleanPublish | ModeParityScenario::AlreadyPublishedInState => vec![
             ("SHIPPER_CARGO_BIN", Some(cargo_bin)),

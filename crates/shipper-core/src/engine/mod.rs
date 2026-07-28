@@ -96,8 +96,8 @@ fn init_registry_client(registry: Registry, state_dir: &Path) -> Result<Registry
 ///
 /// This is the backward-compatible read-only entry point for embedders.
 /// Call [`run_preflight_in_place`] if you want preflight to stamp the detected
-/// [`PublishRegime`] onto each `PlannedPackage` for a subsequent publish in
-/// the same process.
+/// [`crate::types::PublishRegime`] onto each `PlannedPackage` for a subsequent
+/// publish in the same process.
 ///
 /// This function performs various pre-publish checks to catch issues early:
 /// - Git cleanliness (if `allow_dirty` is false)
@@ -143,8 +143,8 @@ pub fn run_preflight(
 /// Run preflight checks for a planned workspace and stamp regime metadata.
 ///
 /// Takes `&mut PlannedWorkspace` so preflight can stamp the detected
-/// [`PublishRegime`] onto each `PlannedPackage` once it has queried the
-/// registry (#106 PR 1). The mutation is additive: the new `regime`
+/// [`crate::types::PublishRegime`] onto each `PlannedPackage` once it has
+/// queried the registry (#106 PR 1). The mutation is additive: the new `regime`
 /// field defaults to `None` and is skipped in serialization when unset,
 /// so older readers of `state.json` / plan files stay compatible.
 pub fn run_preflight_in_place(
@@ -4279,7 +4279,7 @@ mod tests {
                 events
                     .all_events()
                     .iter()
-                    .any(|event| matches!(event.event_type, EventType::PackageUploaded { .. }))
+                    .any(|event| matches!(event.event_type, EventType::PackageUploaded))
             );
             assert!(
                 events
