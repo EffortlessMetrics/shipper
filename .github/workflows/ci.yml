@@ -27,7 +27,7 @@ jobs:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -84,7 +84,7 @@ jobs:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -142,7 +142,7 @@ jobs:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -190,7 +190,7 @@ jobs:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -236,7 +236,7 @@ jobs:
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -276,7 +276,7 @@ jobs:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust (MSRV)
         uses: dtolnay/rust-toolchain@stable
@@ -302,7 +302,7 @@ jobs:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -328,7 +328,7 @@ jobs:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -355,7 +355,7 @@ jobs:
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     needs: [lint]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
@@ -385,7 +385,7 @@ jobs:
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     needs: [lint]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
@@ -430,7 +430,7 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -464,7 +464,7 @@ jobs:
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     needs: [lint, test]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

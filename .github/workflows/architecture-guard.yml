@@ -20,7 +20,7 @@ jobs:
       group: em-ci-nano
       labels: [self-hosted, linux, x64, em-ci, cx23, ci-nano, trusted-pr]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: check runner routing policy
         run: scripts/ci/no-bare-self-hosted.sh
