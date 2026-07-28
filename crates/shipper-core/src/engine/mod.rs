@@ -3165,7 +3165,10 @@ mod tests {
 
         let mut reporter = CollectingReporter::default();
         let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
-        assert!(receipt.packages.is_empty());
+        // Shared terminal gate records already-complete packages in the receipt.
+        assert_eq!(receipt.packages.len(), 1);
+        assert_eq!(receipt.packages[0].name, "demo");
+        assert!(matches!(receipt.packages[0].state, PackageState::Published));
         assert!(
             reporter
                 .warns
@@ -3216,7 +3219,9 @@ mod tests {
         let opts = default_opts(PathBuf::from(".shipper"));
         let mut reporter = CollectingReporter::default();
         let receipt = run_resume(&ws, &opts, &mut reporter).expect("resume");
-        assert!(receipt.packages.is_empty());
+        // Already-terminal packages are included via the shared terminal gate.
+        assert_eq!(receipt.packages.len(), 1);
+        assert!(matches!(receipt.packages[0].state, PackageState::Published));
     }
 
     // Preflight-specific tests
@@ -4804,7 +4809,8 @@ mod tests {
 
         let mut reporter = CollectingReporter::default();
         let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
-        assert!(receipt.packages.is_empty());
+        assert_eq!(receipt.packages.len(), 1);
+        assert!(matches!(receipt.packages[0].state, PackageState::Published));
     }
 
     #[test]
@@ -6130,10 +6136,20 @@ mod tests {
                         .any(|i| i.contains("alpha") && i.contains("already complete"))
                 );
 
-                // beta should be published
-                assert_eq!(receipt.packages.len(), 1);
-                assert_eq!(receipt.packages[0].name, "beta");
-                assert!(matches!(receipt.packages[0].state, PackageState::Published));
+                // alpha (already terminal) + beta (published this run)
+                assert_eq!(receipt.packages.len(), 2);
+                let beta = receipt
+                    .packages
+                    .iter()
+                    .find(|p| p.name == "beta")
+                    .expect("beta receipt");
+                assert!(matches!(beta.state, PackageState::Published));
+                let alpha = receipt
+                    .packages
+                    .iter()
+                    .find(|p| p.name == "alpha")
+                    .expect("alpha receipt");
+                assert!(matches!(alpha.state, PackageState::Published));
 
                 // cargo publish should only have been called for beta
                 let log = fs::read_to_string(&args_log).unwrap_or_default();
@@ -6749,12 +6765,24 @@ mod tests {
 
         let mut reporter = CollectingReporter::default();
         let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
-        assert!(receipt.packages.is_empty()); // already complete
+        // Terminal gate (#153) produces a resume-skip receipt for the already-
+        // complete package rather than omitting it from the receipt list.
+        assert_eq!(receipt.packages.len(), 1);
+        assert_eq!(receipt.packages[0].name, "demo");
+        assert!(matches!(receipt.packages[0].state, PackageState::Published));
         assert!(
             reporter
                 .warns
                 .iter()
                 .any(|w| w.contains("forcing resume with mismatched plan_id"))
+        );
+        assert!(
+            reporter
+                .infos
+                .iter()
+                .any(|i| i.contains("already complete") && i.contains("demo")),
+            "expected already-complete narration, got: {:?}",
+            reporter.infos
         );
     }
 

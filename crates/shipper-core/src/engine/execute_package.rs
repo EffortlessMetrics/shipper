@@ -17,7 +17,7 @@ use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
 use crate::runtime::execution::{
     backoff_delay, classify_cargo_failure, pkg_key, registry_aware_backoff, retry_after_delay,
-    retry_next_attempt_at,
+    retry_next_attempt_at, short_state,
 };
 use crate::state::events;
 use crate::state::execution_state as state;
@@ -105,6 +105,10 @@ pub(crate) fn run_sequential_scheduler(
                     crate::engine::publish::resume::ResumeGate::Skip
                 )
             {
+                // resume_from scheduling gate: packages before the resume
+                // point never enter the executor. Terminal packages still
+                // emit a trusted resume-skip event so events.jsonl remains
+                // legible; non-terminal packages are silent scheduler skips.
                 if matches!(
                     progress.state,
                     PackageState::Published | PackageState::Skipped { .. }
@@ -122,24 +126,9 @@ pub(crate) fn run_sequential_scheduler(
                 continue;
             }
 
-            if matches!(
-                progress.state,
-                PackageState::Published | PackageState::Skipped { .. }
-            ) {
-                let mut log = event_log_arc
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("event log lock poisoned before terminal skip"))?;
-                crate::engine::publish::resume::record_terminal_resume_skip(
-                    package,
-                    &progress,
-                    &format!("{}@{}", package.name, package.version),
-                    events_path,
-                    &mut log,
-                    reporter,
-                )?;
-                continue;
-            }
-
+            // Already-terminal packages (Published / Skipped) are handled
+            // inside publish_package_with_timeout so sequential and parallel
+            // share the same resume-skip event + receipt shape (#153).
             let result = publish_package_with_timeout(
                 package,
                 ws,
@@ -610,6 +599,75 @@ pub(crate) fn publish_package_with_timeout(
     let started_at = Utc::now();
     let start_instant = Instant::now();
 
+    // Shared terminal gate (#153): packages already Published/Skipped in
+    // state are trusted as complete by both sequential and parallel. Emit a
+    // resume-skip event without PackageStarted / cargo work so events.jsonl
+    // remains auditable and finalization's trusted-resume-skip allowance
+    // continues to apply (state stays terminal; rebuild projects Skipped).
+    let progress = {
+        let Ok(state) = st.lock() else {
+            return poisoned_lock("execution state");
+        };
+        match state.packages.get(&key) {
+            Some(progress) => progress.clone(),
+            None => {
+                return PackagePublishResult {
+                    result: Err(anyhow::anyhow!("missing package progress in state")),
+                };
+            }
+        }
+    };
+
+    if matches!(
+        progress.state,
+        PackageState::Published | PackageState::Skipped { .. }
+    ) {
+        let short = short_state(&progress.state);
+        reporter.info(&format!(
+            "{}@{}: already complete ({})",
+            p.name, p.version, short
+        ));
+
+        {
+            let Ok(mut log) = event_log.lock() else {
+                return poisoned_lock("event log");
+            };
+            if let Err(err) = crate::engine::publish::resume::record_terminal_resume_skip_event(
+                &progress,
+                &pkg_label,
+                events_path,
+                &mut log,
+            ) {
+                return PackagePublishResult {
+                    result: Err(anyhow::anyhow!(
+                        "{}@{}: failed to write package-skip event: {err}",
+                        p.name,
+                        p.version
+                    )),
+                };
+            }
+        }
+
+        return PackagePublishResult {
+            result: Ok(PackageReceipt {
+                name: p.name.clone(),
+                version: p.version.clone(),
+                attempts: progress.attempts,
+                state: progress.state.clone(),
+                started_at,
+                finished_at: Utc::now(),
+                duration_ms: start_instant.elapsed().as_millis(),
+                evidence: PackageEvidence {
+                    attempts: vec![],
+                    readiness_checks: vec![],
+                },
+                compromised_at: None,
+                compromised_by: None,
+                superseded_by: None,
+            }),
+        };
+    }
+
     // Record package started event
     {
         let Ok(mut log) = event_log.lock() else {
@@ -636,17 +694,6 @@ pub(crate) fn publish_package_with_timeout(
     }
 
     let (mut attempt, was_uploaded, ambiguous_prior, was_pending_initially) = {
-        let Ok(state) = st.lock() else {
-            return poisoned_lock("execution state");
-        };
-        let progress = if let Some(progress) = state.packages.get(&key) {
-            progress.clone()
-        } else {
-            return PackagePublishResult {
-                result: Err(anyhow::anyhow!("missing package progress in state")),
-            };
-        };
-
         let was_uploaded = matches!(progress.state, PackageState::Uploaded);
         let was_pending_initially =
             !was_uploaded && matches!(&progress.state, PackageState::Pending);

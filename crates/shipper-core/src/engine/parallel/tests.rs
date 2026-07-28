@@ -17,6 +17,7 @@ use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
 use crate::runtime::execution::{pkg_key, update_state_locked};
 use crate::state::events;
+use crate::state::rebuild::{StateRebuildOptions, rebuild_state_from_events};
 use shipper_types::{
     AttemptDetail, ErrorClass, EventType, ExecutionState, PackageEvidence, PackageProgress,
     PackageReceipt, PackageState, PlannedPackage, PublishLevel, ReadinessConfig, Registry,
@@ -6185,4 +6186,374 @@ fn publish_package_final_chance_success_emits_package_published_event() {
         },
     );
     server.join();
+}
+
+// ---------------------------------------------------------------------------
+// #153 mode-parity corpus harness
+//
+// Table-driven scenarios executed in BOTH sequential and parallel modes.
+// Asserts package state + attempts parity, and that rebuild_state_from_events
+// projects package states consistent with persisted state (with the trusted
+// resume-skip allowance for already-terminal packages).
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug)]
+enum ModeParityScenario {
+    CleanPublish,
+    PermanentFailure,
+    AlreadyPublishedInState,
+    StillUnknownResume,
+}
+
+#[derive(Debug)]
+struct ModeParityCase {
+    name: &'static str,
+    scenario: ModeParityScenario,
+}
+
+const MODE_PARITY_CORPUS: &[ModeParityCase] = &[
+    ModeParityCase {
+        name: "clean_publish",
+        scenario: ModeParityScenario::CleanPublish,
+    },
+    ModeParityCase {
+        name: "permanent_failure",
+        scenario: ModeParityScenario::PermanentFailure,
+    },
+    ModeParityCase {
+        name: "already_published_in_state",
+        scenario: ModeParityScenario::AlreadyPublishedInState,
+    },
+    ModeParityCase {
+        name: "still_unknown_resume",
+        scenario: ModeParityScenario::StillUnknownResume,
+    },
+];
+
+#[derive(Debug)]
+struct ModeRunOutcome {
+    ok: bool,
+    state: ExecutionState,
+    events_path: PathBuf,
+    state_dir: PathBuf,
+}
+
+fn mode_parity_routes(
+    scenario: ModeParityScenario,
+) -> (BTreeMap<String, Vec<(u16, String)>>, usize) {
+    match scenario {
+        ModeParityScenario::CleanPublish => (
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(404, "{}".to_string()), (200, "{}".to_string())],
+            )]),
+            2,
+        ),
+        ModeParityScenario::PermanentFailure => (
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(404, "{}".to_string()), (404, "{}".to_string())],
+            )]),
+            2,
+        ),
+        ModeParityScenario::AlreadyPublishedInState => (
+            // Terminal gate must not consult the registry for already-complete
+            // packages; zero expected requests keeps the mock from hanging.
+            BTreeMap::new(),
+            0,
+        ),
+        ModeParityScenario::StillUnknownResume => (
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                // Resume-path reconcile with readiness disabled → single query.
+                vec![(500, "{}".to_string())],
+            )]),
+            1,
+        ),
+    }
+}
+
+fn mode_parity_seed_state(ws: &PlannedWorkspace, scenario: ModeParityScenario) -> ExecutionState {
+    match scenario {
+        ModeParityScenario::CleanPublish | ModeParityScenario::PermanentFailure => {
+            init_state_for_workspace(ws)
+        }
+        ModeParityScenario::AlreadyPublishedInState => {
+            init_state_with_checkpoint(ws, &pkg_key("demo", "0.1.0"), PackageState::Published, 1)
+        }
+        ModeParityScenario::StillUnknownResume => init_state_with_checkpoint(
+            ws,
+            &pkg_key("demo", "0.1.0"),
+            PackageState::Ambiguous {
+                message: "prior reconciliation inconclusive".to_string(),
+            },
+            1,
+        ),
+    }
+}
+
+fn mode_parity_cargo_env<'a>(
+    scenario: ModeParityScenario,
+    cargo_bin: &'a str,
+) -> Vec<(&'static str, Option<&'a str>)> {
+    match scenario {
+        ModeParityScenario::CleanPublish | ModeParityScenario::AlreadyPublishedInState => vec![
+            ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
+            ("SHIPPER_CARGO_EXIT", Some("0")),
+            ("SHIPPER_CARGO_STDERR", Some("")),
+            ("SHIPPER_CARGO_STDOUT", Some("")),
+        ],
+        ModeParityScenario::PermanentFailure => vec![
+            ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
+            ("SHIPPER_CARGO_EXIT", Some("1")),
+            ("SHIPPER_CARGO_STDERR", Some("permission denied")),
+            ("SHIPPER_CARGO_STDOUT", Some("")),
+        ],
+        ModeParityScenario::StillUnknownResume => vec![
+            ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
+            ("SHIPPER_CARGO_EXIT", Some("0")),
+            ("SHIPPER_CARGO_STDERR", Some("")),
+            ("SHIPPER_CARGO_STDOUT", Some("")),
+        ],
+    }
+}
+
+fn run_mode_parity_case(
+    scenario: ModeParityScenario,
+    parallel: bool,
+    workspace_root: &Path,
+    cargo_bin: &str,
+) -> ModeRunOutcome {
+    let (routes, expected_requests) = mode_parity_routes(scenario);
+    let server = if expected_requests == 0 {
+        None
+    } else {
+        Some(spawn_registry_server(routes, expected_requests))
+    };
+    let api_base = server
+        .as_ref()
+        .map(|s| s.base_url.clone())
+        .unwrap_or_else(|| "http://127.0.0.1:9".to_string());
+
+    let label = if parallel { "par" } else { "seq" };
+    let state_dir = workspace_root.join(format!(".shipper-{label}"));
+    fs::create_dir_all(&state_dir).expect("mkdir state dir");
+
+    let ws = planned_workspace(workspace_root, api_base);
+    let reg = test_registry_client(&ws);
+    let mut opts = default_opts(state_dir.clone());
+    opts.parallel.enabled = parallel;
+    opts.readiness.enabled = false;
+    opts.max_attempts = 1;
+
+    let mut state = mode_parity_seed_state(&ws, scenario);
+    let events_path = events::events_path(&state_dir);
+    let mut event_log = events::EventLog::new();
+    let mut reporter = CollectingReporter::default();
+
+    let env = mode_parity_cargo_env(scenario, cargo_bin);
+    let ok = temp_env::with_vars(env, || {
+        if parallel {
+            run_publish_parallel(&ws, &opts, &mut state, &state_dir, &reg, &mut reporter).is_ok()
+        } else {
+            crate::engine::execute_package::run_sequential_scheduler(
+                &ws,
+                &opts,
+                &mut state,
+                &state_dir,
+                &reg,
+                &mut event_log,
+                &events_path,
+                &mut reporter,
+            )
+            .is_ok()
+        }
+    });
+
+    if let Some(server) = server {
+        server.join();
+    }
+
+    ModeRunOutcome {
+        ok,
+        state,
+        events_path,
+        state_dir,
+    }
+}
+
+fn assert_mode_parity_rebuild(outcome: &ModeRunOutcome, scenario: ModeParityScenario, mode: &str) {
+    assert!(
+        outcome.events_path.exists(),
+        "{mode}: expected events.jsonl for scenario {scenario:?} (ok={})",
+        outcome.ok
+    );
+
+    let rebuilt = rebuild_state_from_events(
+        &outcome.events_path,
+        StateRebuildOptions::new(outcome.state.registry.clone())
+            .with_fallback_plan_id(&outcome.state.plan_id),
+    )
+    .unwrap_or_else(|e| panic!("{mode}: rebuild_state_from_events failed: {e}"));
+
+    let trusted_skips: std::collections::BTreeSet<String> =
+        events::EventLog::read_from_file(&outcome.events_path)
+            .expect("read events for trusted skips")
+            .all_events()
+            .iter()
+            .filter_map(|event| match &event.event_type {
+                EventType::PackageSkipped { reason }
+                    if reason.starts_with("resume: state already ") =>
+                {
+                    Some(event.package.clone())
+                }
+                _ => None,
+            })
+            .collect();
+
+    for (key, progress) in &outcome.state.packages {
+        match rebuilt.packages.get(key) {
+            Some(event_progress) if event_progress.state == progress.state => {}
+            Some(event_progress)
+                if matches!(
+                    (&progress.state, &event_progress.state),
+                    (PackageState::Published, PackageState::Skipped { .. })
+                        | (PackageState::Skipped { .. }, PackageState::Skipped { .. })
+                ) && trusted_skips.contains(key) => {}
+            Some(event_progress) => panic!(
+                "{mode}: rebuild drift for {key}: state={:?} rebuild={:?}",
+                progress.state, event_progress.state
+            ),
+            None if matches!(progress.state, PackageState::Pending) => {}
+            None => panic!("{mode}: rebuild missing {key} (state={:?})", progress.state),
+        }
+    }
+
+    // Attempt history length is stable across rebuild for these scenarios
+    // (no in-flight attempt bookkeeping that rebuild cannot represent).
+    assert_eq!(
+        outcome.state.attempt_history.len(),
+        rebuilt.attempt_history.len(),
+        "{mode}: attempt_history length must match rebuild (state={} rebuild={})",
+        outcome.state.attempt_history.len(),
+        rebuilt.attempt_history.len()
+    );
+
+    // Silence unused field warning for state_dir in future corpus extensions.
+    let _ = &outcome.state_dir;
+}
+
+fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &ModeRunOutcome) {
+    assert_eq!(
+        seq.ok, par.ok,
+        "{}: success/failure parity (seq.ok={} par.ok={})",
+        case.name, seq.ok, par.ok
+    );
+
+    assert_eq!(
+        seq.state.packages.len(),
+        par.state.packages.len(),
+        "{}: package count",
+        case.name
+    );
+
+    for (key, seq_pkg) in &seq.state.packages {
+        let par_pkg = par
+            .state
+            .packages
+            .get(key)
+            .unwrap_or_else(|| panic!("{}: parallel missing {key}", case.name));
+        assert_eq!(
+            seq_pkg.state, par_pkg.state,
+            "{}: package state for {key}",
+            case.name
+        );
+        assert_eq!(
+            seq_pkg.attempts, par_pkg.attempts,
+            "{}: package attempts for {key}",
+            case.name
+        );
+    }
+
+    match case.scenario {
+        ModeParityScenario::CleanPublish => {
+            assert!(seq.ok, "{}: clean publish should succeed", case.name);
+            let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
+            assert!(
+                matches!(pkg.state, PackageState::Published),
+                "{}: expected Published, got {:?}",
+                case.name,
+                pkg.state
+            );
+        }
+        ModeParityScenario::PermanentFailure => {
+            assert!(!seq.ok, "{}: permanent failure should err", case.name);
+            let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
+            assert!(
+                matches!(
+                    pkg.state,
+                    PackageState::Failed {
+                        class: ErrorClass::Permanent,
+                        ..
+                    }
+                ),
+                "{}: expected Failed/Permanent, got {:?}",
+                case.name,
+                pkg.state
+            );
+        }
+        ModeParityScenario::AlreadyPublishedInState => {
+            assert!(seq.ok, "{}: terminal gate should succeed", case.name);
+            let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
+            assert!(
+                matches!(pkg.state, PackageState::Published),
+                "{}: state must remain Published, got {:?}",
+                case.name,
+                pkg.state
+            );
+            // Both modes must emit the trusted resume-skip event.
+            for (mode, path) in [("seq", &seq.events_path), ("par", &par.events_path)] {
+                let raw = fs::read_to_string(path)
+                    .unwrap_or_else(|e| panic!("{} {mode}: read events: {e}", case.name));
+                assert!(
+                    raw.contains("resume: state already")
+                        && (raw.contains("package_skipped") || raw.contains("PackageSkipped")),
+                    "{} {mode}: expected resume terminal-skip event, events:\n{raw}",
+                    case.name
+                );
+            }
+        }
+        ModeParityScenario::StillUnknownResume => {
+            assert!(!seq.ok, "{}: StillUnknown should err", case.name);
+            let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
+            assert!(
+                matches!(pkg.state, PackageState::Ambiguous { .. }),
+                "{}: expected Ambiguous after StillUnknown, got {:?}",
+                case.name,
+                pkg.state
+            );
+        }
+    }
+
+    assert_mode_parity_rebuild(seq, case.scenario, &format!("{}:seq", case.name));
+    assert_mode_parity_rebuild(par, case.scenario, &format!("{}:par", case.name));
+}
+
+#[test]
+#[serial]
+fn mode_parity_corpus_sequential_matches_parallel() {
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+    let cargo_bin = fake_cargo_path(&bin);
+    let cargo_bin = cargo_bin.to_str().expect("utf8");
+
+    for case in MODE_PARITY_CORPUS {
+        let case_root = td.path().join(case.name);
+        fs::create_dir_all(&case_root).expect("case root");
+
+        let seq = run_mode_parity_case(case.scenario, false, &case_root, cargo_bin);
+        let par = run_mode_parity_case(case.scenario, true, &case_root, cargo_bin);
+        assert_mode_parity_pair(case, &seq, &par);
+    }
 }
