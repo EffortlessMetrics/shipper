@@ -51,7 +51,7 @@ event logs.
 Attempt details are appended to `state.json` through the same event-first
 transition boundary as the matching terminal, reconciliation, or retry event.
 This prevents a scheduler from independently persisting the attempt timeline
-and package state. The current event vocabulary does not yet replay the full
-`AttemptDetail` record during state rebuild; detailed timeline replay remains
-an explicit follow-up rather than an unearned claim of complete event
-equivalence.
+and package state. State rebuild now projects all event-vocabulary-carrying
+attempt metadata into `attempt_history`, including retry backoff timestamps.
+Remaining edge cases are only where an event cannot describe the same detail
+that a runtime-only attempt transition could infer locally.

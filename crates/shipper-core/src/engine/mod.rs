@@ -2530,6 +2530,232 @@ mod tests {
 
     #[test]
     #[serial]
+    fn run_publish_sequential_webhooks_send_started_and_completed_once() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
+        let webhook_url = format!("http://{}", webhook_server.server_addr());
+        let webhook_received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let webhook_received_clone = Arc::clone(&webhook_received);
+        let webhook_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let webhook_done_clone = std::sync::Arc::clone(&webhook_done);
+
+        let webhook_handle = std::thread::spawn(move || {
+            while !webhook_done_clone.load(std::sync::atomic::Ordering::Acquire) {
+                if let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_millis(100)) {
+                    let mut body = Vec::new();
+                    let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+                    webhook_received_clone
+                        .lock()
+                        .expect("webhook lock")
+                        .push(String::from_utf8_lossy(&body).to_string());
+                    req.respond(Response::from_string("ok")).expect("respond");
+                    if webhook_received_clone.lock().expect("webhook lock").len() >= 2 {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([
+            ("SHIPPER_CARGO_STDOUT", Some("cargo publish".to_string())),
+            ("SHIPPER_CARGO_STDERR", Some(String::new())),
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+        ]);
+        temp_env::with_vars(env_vars, || {
+            let registry_server = spawn_registry_server(
+                std::collections::BTreeMap::from([(
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                )]),
+                1,
+            );
+            let ws = planned_workspace(td.path(), registry_server.base_url.clone());
+            let state_dir = td.path().join(".shipper");
+            let mut opts = default_opts(state_dir.clone());
+            opts.parallel.enabled = false;
+            opts.webhook = crate::webhook::WebhookConfig {
+                url: webhook_url.clone(),
+                ..Default::default()
+            };
+
+            let mut reporter = CollectingReporter::default();
+            let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
+            assert_eq!(receipt.packages.len(), 1);
+            let event_log =
+                events::EventLog::read_from_file(&events::events_path(&state_dir)).expect("events");
+            assert!(
+                event_log
+                    .all_events()
+                    .iter()
+                    .any(|event| matches!(event.event_type, EventType::ExecutionFinished { .. })),
+                "execution did not finish"
+            );
+
+            std::thread::sleep(Duration::from_secs(2));
+            webhook_done.store(true, std::sync::atomic::Ordering::Release);
+            webhook_handle.join().expect("webhook thread");
+            registry_server.join();
+        });
+
+        let received = webhook_received.lock().unwrap();
+        let mut started_count = 0usize;
+        let mut completed_count = 0usize;
+        for payload in received.iter() {
+            let parsed: serde_json::Value =
+                serde_json::from_str(payload).expect("webhook payload should be JSON");
+
+            let legacy_event = parsed
+                .get("extra")
+                .and_then(|extra| extra.get("legacy"))
+                .and_then(|legacy| legacy.get("event"))
+                .and_then(|event| event.as_str());
+            let legacy_event = legacy_event.or_else(|| {
+                parsed
+                    .get("legacy")
+                    .and_then(|legacy| legacy.get("event"))
+                    .and_then(|event| event.as_str())
+            });
+            if matches!(legacy_event, Some("publish_started")) {
+                started_count += 1;
+            }
+            if matches!(legacy_event, Some("publish_completed")) {
+                completed_count += 1;
+            }
+        }
+        assert_eq!(
+            received.len(),
+            2,
+            "expected started and completed webhook events; got {received:?}"
+        );
+        assert_eq!(
+            started_count, 1,
+            "expected exactly one started webhook; got {started_count} started and {completed_count} completed; payloads: {received:?}"
+        );
+        assert_eq!(
+            completed_count, 1,
+            "expected exactly one completed webhook; got {started_count} started and {completed_count} completed; payloads: {received:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn run_publish_parallel_webhooks_send_started_and_completed_once() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
+        let webhook_url = format!("http://{}", webhook_server.server_addr());
+        let webhook_received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let webhook_received_clone = Arc::clone(&webhook_received);
+        let webhook_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let webhook_done_clone = std::sync::Arc::clone(&webhook_done);
+
+        let webhook_handle = std::thread::spawn(move || {
+            while !webhook_done_clone.load(std::sync::atomic::Ordering::Acquire) {
+                if let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_millis(100)) {
+                    let mut body = Vec::new();
+                    let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+                    webhook_received_clone
+                        .lock()
+                        .expect("webhook lock")
+                        .push(String::from_utf8_lossy(&body).to_string());
+                    req.respond(Response::from_string("ok")).expect("respond");
+                    if webhook_received_clone.lock().expect("webhook lock").len() >= 2 {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([
+            ("SHIPPER_CARGO_STDOUT", Some("cargo publish".to_string())),
+            ("SHIPPER_CARGO_STDERR", Some(String::new())),
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+        ]);
+        temp_env::with_vars(env_vars, || {
+            let registry_server = spawn_registry_server(
+                std::collections::BTreeMap::from([(
+                    "/api/v1/crates/demo/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                )]),
+                1,
+            );
+            let ws = planned_workspace(td.path(), registry_server.base_url.clone());
+            let state_dir = td.path().join(".shipper");
+            let mut opts = default_opts(state_dir.clone());
+            opts.parallel.enabled = true;
+            opts.webhook = crate::webhook::WebhookConfig {
+                url: webhook_url.clone(),
+                ..Default::default()
+            };
+
+            let mut reporter = CollectingReporter::default();
+            let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
+            assert_eq!(receipt.packages.len(), 1);
+            let event_log =
+                events::EventLog::read_from_file(&events::events_path(&state_dir)).expect("events");
+            assert!(
+                event_log
+                    .all_events()
+                    .iter()
+                    .any(|event| matches!(event.event_type, EventType::ExecutionFinished { .. })),
+                "execution did not finish"
+            );
+
+            std::thread::sleep(Duration::from_secs(2));
+            webhook_done.store(true, std::sync::atomic::Ordering::Release);
+            webhook_handle.join().expect("webhook thread");
+            registry_server.join();
+        });
+
+        let received = webhook_received.lock().unwrap();
+        let mut started_count = 0usize;
+        let mut completed_count = 0usize;
+        for payload in received.iter() {
+            let parsed: serde_json::Value =
+                serde_json::from_str(payload).expect("webhook payload should be JSON");
+
+            let legacy_event = parsed
+                .get("extra")
+                .and_then(|extra| extra.get("legacy"))
+                .and_then(|legacy| legacy.get("event"))
+                .and_then(|event| event.as_str());
+            let legacy_event = legacy_event.or_else(|| {
+                parsed
+                    .get("legacy")
+                    .and_then(|legacy| legacy.get("event"))
+                    .and_then(|event| event.as_str())
+            });
+            if matches!(legacy_event, Some("publish_started")) {
+                started_count += 1;
+            }
+            if matches!(legacy_event, Some("publish_completed")) {
+                completed_count += 1;
+            }
+        }
+        assert_eq!(
+            received.len(),
+            2,
+            "expected started and completed webhook events; got {received:?}"
+        );
+        assert_eq!(
+            started_count, 1,
+            "expected exactly one started webhook; got {started_count} started and {completed_count} completed; payloads: {received:?}"
+        );
+        assert_eq!(
+            completed_count, 1,
+            "expected exactly one completed webhook; got {started_count} started and {completed_count} completed; payloads: {received:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn run_publish_adds_missing_package_entries_to_existing_state() {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");

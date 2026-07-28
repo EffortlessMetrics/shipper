@@ -17,7 +17,6 @@ use crate::types::{
     AuthEvidence, EnvironmentFingerprint, EventType, ExecutionState, GitContext, PackageProgress,
     PackageState, PublishEvent, RuntimeOptions,
 };
-use crate::webhook::{self, WebhookEvent};
 
 pub(in crate::engine) struct PublishBootstrap {
     pub(in crate::engine) state_dir: PathBuf,
@@ -143,7 +142,7 @@ fn load_or_initialize_state(
 
 fn record_execution_start(
     ws: &PlannedWorkspace,
-    opts: &RuntimeOptions,
+    _opts: &RuntimeOptions,
     events_path: &Path,
     event_log: &mut events::EventLog,
     run_started: DateTime<Utc>,
@@ -154,15 +153,6 @@ fn record_execution_start(
         event_type: EventType::ExecutionStarted,
         package: "all".to_string(),
     });
-
-    webhook::maybe_send_event(
-        &opts.webhook,
-        WebhookEvent::PublishStarted {
-            plan_id: ws.plan.plan_id.clone(),
-            package_count: ws.plan.packages.len(),
-            registry: ws.plan.registry.name.clone(),
-        },
-    );
 
     event_log.record(PublishEvent {
         timestamp: run_started,

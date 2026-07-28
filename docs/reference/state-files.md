@@ -73,6 +73,19 @@ Common event types:
   "state_version": "...",
   "plan_id": "23ff8f85...",
   "registry": {"name": "crates-io", "api_base": "https://crates.io"},
+  "attempt_history": [
+    {
+      "package": "shipper-types",
+      "version": "0.3.0-rc.1",
+      "attempt": 1,
+      "max_attempts": 3,
+      "started_at": "...",
+      "ended_at": "...",
+      "error_class": "retryable",
+      "next_attempt_at": "...",
+      "redacted_message": "rate limited"
+    }
+  ],
   "packages": {
     "shipper-types@0.3.0-rc.1": {
       "name": "shipper-types",
@@ -86,6 +99,15 @@ Common event types:
 ```
 
 **Field path caveat**: package state lives at `.packages[].state.state` (nested), **not** `.packages[].status`. Common misread.
+
+`attempt_history` is the per-attempt projection replayed from `events.jsonl` and is used by diagnostics and recovery workflows after interruption.
+
+Per-attempt recovery fields are under `.attempt_history[]`, keyed by:
+
+- `package`, `version`
+- `attempt`, `max_attempts`
+- `started_at`, `ended_at`
+- `error_class`, `next_attempt_at`, `redacted_message`
 
 ### `receipt.json`
 

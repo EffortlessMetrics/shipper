@@ -1640,6 +1640,8 @@ pub enum EventType {
     PackageAttempted {
         attempt: u32,
         command: String,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        max_attempts: u32,
     },
     PackageOutput {
         stdout_tail: String,
@@ -1830,6 +1832,11 @@ pub enum EventType {
     PreflightComplete {
         finishability: Finishability,
     },
+}
+
+#[inline]
+const fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 /// The result of a publish execution.
@@ -4045,6 +4052,7 @@ mod tests {
                     event_type: EventType::PackageAttempted {
                         attempt: 1,
                         command: "cargo publish -p my-crate".to_string(),
+                        max_attempts: 1,
                     },
                     package: "my-crate@1.0.0".to_string(),
                 },
@@ -4917,7 +4925,11 @@ mod tests {
                     2 => EventType::ExecutionFinished { result: ExecutionResult::Success },
                     3 => EventType::PackageStarted { name: "a".to_string(), version: "1.0.0".to_string() },
                     4 => EventType::PackageUploaded,
-                    5 => EventType::PackageAttempted { attempt: 1, command: "cargo publish".to_string() },
+                    5 => EventType::PackageAttempted {
+                        attempt: 1,
+                        command: "cargo publish".to_string(),
+                        max_attempts: 1,
+                    },
                     6 => EventType::PackageOutput { stdout_tail: "ok".to_string(), stderr_tail: "".to_string() },
                     7 => EventType::PackagePublished { duration_ms: 100 },
                     8 => EventType::PackageFailed { class: ErrorClass::Retryable, message: "err".to_string() },
@@ -5732,7 +5744,11 @@ mod tests {
                     2 => EventType::ExecutionFinished { result: ExecutionResult::Success },
                     3 => EventType::PackageStarted { name: msg.clone(), version: "1.0.0".to_string() },
                     4 => EventType::PackageUploaded,
-                    5 => EventType::PackageAttempted { attempt: 1, command: msg.clone() },
+                    5 => EventType::PackageAttempted {
+                        attempt: 1,
+                        command: msg.clone(),
+                        max_attempts: 1,
+                    },
                     6 => EventType::PackageOutput { stdout_tail: msg.clone(), stderr_tail: String::new() },
                     7 => EventType::PackagePublished { duration_ms: 100 },
                     8 => EventType::PackageFailed { class: ErrorClass::Retryable, message: msg.clone() },

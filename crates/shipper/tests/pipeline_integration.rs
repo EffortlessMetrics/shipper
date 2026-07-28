@@ -542,6 +542,7 @@ fn event_log_complete_pipeline_with_all_phases() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 1,
+            max_attempts: 1,
             command: "cargo publish -p core".to_string(),
         },
         package: "core@0.1.0".to_string(),
@@ -1644,6 +1645,7 @@ fn event_log_timestamps_are_non_decreasing() {
         },
         EventType::PackageAttempted {
             attempt: 1,
+            max_attempts: 1,
             command: "cargo publish -p alpha".to_string(),
         },
         EventType::PackagePublished { duration_ms: 100 },

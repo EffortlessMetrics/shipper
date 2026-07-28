@@ -2488,6 +2488,140 @@ fn test_webhook_events_sent_on_publish() {
     assert!(received[0].contains("PublishStarted") || received[0].contains("publish_started"));
 }
 
+#[test]
+#[serial]
+fn test_webhook_failure_is_non_blocking_and_mode_parity_holds() {
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+
+    let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
+    let webhook_url = format!("http://{}", webhook_server.server_addr());
+    let webhook_received = Arc::new(Mutex::new(Vec::<String>::new()));
+    let webhook_received_clone = Arc::clone(&webhook_received);
+    let webhook_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let webhook_done_clone = std::sync::Arc::clone(&webhook_done);
+
+    let webhook_handle = std::thread::spawn(move || {
+        let mut total = 0usize;
+        while !webhook_done_clone.load(std::sync::atomic::Ordering::Acquire) {
+            if let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_millis(100)) {
+                let mut body = Vec::new();
+                let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+                let text = String::from_utf8_lossy(&body).to_string();
+                webhook_received_clone.lock().unwrap().push(text);
+                total = total.saturating_add(1);
+                req.respond(Response::from_string("down").with_status_code(StatusCode(503)))
+                    .expect("respond");
+                if total >= 8 {
+                    break;
+                }
+            }
+        }
+    });
+
+    let registry_server = spawn_registry_server(
+        BTreeMap::from([(
+            "/api/v1/crates/demo/0.1.0".to_string(),
+            vec![
+                (404, "{}".to_string()),
+                (200, "{}".to_string()),
+                (404, "{}".to_string()),
+                (200, "{}".to_string()),
+            ],
+        )]),
+        4,
+    );
+
+    let ws_seq = planned_workspace(td.path(), registry_server.base_url.clone());
+    let reg_seq = test_registry_client(&ws_seq);
+    let state_dir_seq = td.path().join(".shipper-seq");
+    fs::create_dir_all(&state_dir_seq).expect("mkdir");
+    let mut opts_seq = default_opts(state_dir_seq.clone());
+    opts_seq.webhook = shipper_webhook::WebhookConfig {
+        url: webhook_url.clone(),
+        ..Default::default()
+    };
+    opts_seq.readiness.enabled = false;
+    let seq_events_path = events::events_path(&state_dir_seq);
+    let mut seq_event_log = events::EventLog::new();
+    let mut seq_state =
+        init_state_for_package(&ws_seq.plan.plan_id, &ws_seq.plan.registry, "demo", "0.1.0");
+    let mut seq_reporter = CollectingReporter::default();
+
+    let ws_par = planned_workspace(td.path(), registry_server.base_url.clone());
+    let reg_par = test_registry_client(&ws_par);
+    let state_dir_par = td.path().join(".shipper-par");
+    fs::create_dir_all(&state_dir_par).expect("mkdir");
+    let mut opts_par = default_opts(state_dir_par.clone());
+    opts_par.webhook = shipper_webhook::WebhookConfig {
+        url: webhook_url,
+        ..Default::default()
+    };
+    opts_par.readiness.enabled = false;
+    let mut par_state =
+        init_state_for_package(&ws_par.plan.plan_id, &ws_par.plan.registry, "demo", "0.1.0");
+    let mut par_reporter = CollectingReporter::default();
+
+    temp_env::with_var(
+        "SHIPPER_CARGO_BIN",
+        Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+        || {
+            let seq_receipts = crate::engine::execute_package::run_sequential_scheduler(
+                &ws_seq,
+                &opts_seq,
+                &mut seq_state,
+                &state_dir_seq,
+                &reg_seq,
+                &mut seq_event_log,
+                &seq_events_path,
+                &mut seq_reporter,
+            )
+            .expect("sequential publish");
+
+            temp_env::with_var("SHIPPER_CARGO_EXIT", Some("0"), || {
+                let par_receipts = run_publish_parallel(
+                    &ws_par,
+                    &opts_par,
+                    &mut par_state,
+                    &state_dir_par,
+                    &reg_par,
+                    &mut par_reporter,
+                )
+                .expect("parallel publish");
+
+                assert_eq!(
+                    seq_receipts.len(),
+                    par_receipts.len(),
+                    "receipt counts should match"
+                );
+                assert_eq!(seq_state.packages.len(), par_state.packages.len());
+
+                let seq_pkg = seq_state
+                    .packages
+                    .get("demo@0.1.0")
+                    .expect("sequential package");
+                let par_pkg = par_state
+                    .packages
+                    .get("demo@0.1.0")
+                    .expect("parallel package");
+                assert_eq!(seq_pkg.state, par_pkg.state);
+                assert_eq!(seq_pkg.attempts, par_pkg.attempts);
+            });
+        },
+    );
+
+    webhook_done.store(true, std::sync::atomic::Ordering::Release);
+    registry_server.join();
+    webhook_handle.join().expect("webhook thread");
+
+    let received = webhook_received.lock().unwrap();
+    assert!(
+        received.len() >= 2,
+        "expected webhook delivery attempts despite webhook failures"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Resume from specific level (resume_from option)
 // ---------------------------------------------------------------------------
@@ -3798,6 +3932,14 @@ fn test_error_in_first_level_prevents_all_subsequent() {
 
             assert!(result.is_err(), "publish should fail");
 
+            let a_key = pkg_key("a", "1.0.0");
+            let a_progress = st.packages.get(&a_key).expect("a");
+            assert!(
+                matches!(a_progress.state, PackageState::Failed { .. }),
+                "a should be marked Failed, got {:?}",
+                a_progress.state
+            );
+
             // Both "b" and "c" should remain Pending
             for name in ["b", "c"] {
                 let key = pkg_key(name, "1.0.0");
@@ -3809,6 +3951,328 @@ fn test_error_in_first_level_prevents_all_subsequent() {
                     progress.state
                 );
             }
+        },
+    );
+    server.join();
+}
+
+#[test]
+#[serial]
+fn test_error_in_second_level_preserves_first_level_success_state() {
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+
+    // Level 0 publishes as already existing in registry, so it is marked Skipped.
+    // Level 1 depends on level 0 and fails, proving the first level result is still
+    // synchronized back on the failure return path.
+    let server = spawn_registry_server(
+        BTreeMap::from([
+            (
+                "/api/v1/crates/base/1.0.0".to_string(),
+                vec![(200, "{}".to_string())],
+            ),
+            (
+                "/api/v1/crates/dependent/1.0.0".to_string(),
+                vec![(404, "{}".to_string())],
+            ),
+        ]),
+        2,
+    );
+
+    let ws = PlannedWorkspace {
+        workspace_root: td.path().to_path_buf(),
+        plan: ReleasePlan {
+            plan_version: "1".to_string(),
+            plan_id: "plan-halt-second-level".to_string(),
+            created_at: Utc::now(),
+            registry: Registry {
+                name: "crates-io".to_string(),
+                api_base: server.base_url.clone(),
+                index_base: None,
+            },
+            packages: vec![
+                PlannedPackage {
+                    name: "base".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: td.path().join("base").join("Cargo.toml"),
+                    regime: None,
+                },
+                PlannedPackage {
+                    name: "dependent".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: td.path().join("dependent").join("Cargo.toml"),
+                    regime: None,
+                },
+            ],
+            dependencies: BTreeMap::from([("dependent".to_string(), vec!["base".to_string()])]),
+        },
+        skipped: vec![],
+    };
+
+    let reg = test_registry_client(&ws);
+    let state_dir = td.path().join(".shipper");
+    let mut opts = default_opts(state_dir.clone());
+    opts.max_attempts = 1;
+
+    let mut packages = BTreeMap::new();
+    for p in &ws.plan.packages {
+        packages.insert(
+            pkg_key(&p.name, &p.version),
+            PackageProgress {
+                name: p.name.clone(),
+                version: p.version.clone(),
+                attempts: 0,
+                state: PackageState::Pending,
+                last_updated_at: Utc::now(),
+            },
+        );
+    }
+    let mut st = ExecutionState {
+        state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
+        plan_id: ws.plan.plan_id.clone(),
+        registry: ws.plan.registry.clone(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        attempt_history: Vec::new(),
+        packages,
+    };
+    let mut reporter = CollectingReporter::default();
+
+    temp_env::with_vars(
+        [
+            (
+                "SHIPPER_CARGO_BIN",
+                Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            ),
+            ("SHIPPER_CARGO_EXIT", Some("1")),
+            ("SHIPPER_CARGO_STDERR", Some("transient publish failure")),
+        ],
+        || {
+            let result = run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter);
+
+            assert!(result.is_err(), "publish should fail");
+
+            let base_key = pkg_key("base", "1.0.0");
+            let base_progress = st.packages.get(&base_key).expect("base");
+            assert!(
+                matches!(base_progress.state, PackageState::Skipped { .. }),
+                "base should be marked Skipped, got {:?}",
+                base_progress.state
+            );
+
+            let dependent_key = pkg_key("dependent", "1.0.0");
+            let dependent_progress = st.packages.get(&dependent_key).expect("dependent");
+            assert!(
+                matches!(dependent_progress.state, PackageState::Failed { .. }),
+                "dependent should be marked Failed, got {:?}",
+                dependent_progress.state
+            );
+            assert_eq!(
+                dependent_progress.attempts, 1,
+                "expected one failed publish attempt"
+            );
+        },
+    );
+    server.join();
+}
+
+#[test]
+#[serial]
+fn test_error_in_level_replays_buffered_messages_to_host() {
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+
+    // A single level failure should still flush buffered reporter messages before
+    // returning; previously this path returned early and dropped per-level logs.
+    let server = spawn_registry_server(
+        BTreeMap::from([(
+            "/api/v1/crates/base/1.0.0".to_string(),
+            vec![(404, "{}".to_string()), (404, "{}".to_string())],
+        )]),
+        2,
+    );
+
+    let ws = PlannedWorkspace {
+        workspace_root: td.path().to_path_buf(),
+        plan: ReleasePlan {
+            plan_version: "1".to_string(),
+            plan_id: "plan-halt-level-message".to_string(),
+            created_at: Utc::now(),
+            registry: Registry {
+                name: "crates-io".to_string(),
+                api_base: server.base_url.clone(),
+                index_base: None,
+            },
+            packages: vec![PlannedPackage {
+                name: "base".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: td.path().join("base").join("Cargo.toml"),
+                regime: None,
+            }],
+            dependencies: BTreeMap::new(),
+        },
+        skipped: vec![],
+    };
+
+    let reg = test_registry_client(&ws);
+    let state_dir = td.path().join(".shipper");
+    let mut opts = default_opts(state_dir.clone());
+    opts.max_attempts = 1;
+
+    let mut st = init_state_for_package(&ws.plan.plan_id, &ws.plan.registry, "base", "1.0.0");
+    let mut reporter = CollectingReporter::default();
+
+    temp_env::with_vars(
+        [
+            (
+                "SHIPPER_CARGO_BIN",
+                Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            ),
+            ("SHIPPER_CARGO_EXIT", Some("1")),
+            ("SHIPPER_CARGO_STDERR", Some("permission denied")),
+        ],
+        || {
+            let result = run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter);
+
+            assert!(result.is_err(), "level should fail");
+
+            assert!(
+                reporter
+                    .infos
+                    .iter()
+                    .any(|msg| msg.contains("Level 0: publishing")),
+                "level message should be replayed to host reporter"
+            );
+            assert!(
+                reporter
+                    .errors
+                    .iter()
+                    .chain(reporter.warns.iter())
+                    .any(|msg| msg.contains("base")),
+                "level messages should be replayed to host reporter"
+            );
+
+            let progress = st
+                .packages
+                .get("base@1.0.0")
+                .expect("base should remain tracked");
+            assert!(
+                matches!(progress.state, PackageState::Failed { .. }),
+                "base should be failed, got {:?}",
+                progress.state
+            );
+        },
+    );
+    server.join();
+}
+
+#[test]
+#[serial]
+fn test_error_in_level_replays_retryable_messages_to_host() {
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+
+    // A retryable failure path should still surface retry notices and buffered
+    // messages before the outer failure return. This guards against dropping
+    // operator logs on multi-attempt transient paths.
+    let server = spawn_registry_server(
+        BTreeMap::from([(
+            "/api/v1/crates/base/1.0.0".to_string(),
+            vec![
+                (404, "{}".to_string()),
+                (404, "{}".to_string()),
+                (404, "{}".to_string()),
+                (404, "{}".to_string()),
+            ],
+        )]),
+        4,
+    );
+
+    let ws = PlannedWorkspace {
+        workspace_root: td.path().to_path_buf(),
+        plan: ReleasePlan {
+            plan_version: "1".to_string(),
+            plan_id: "plan-halt-level-retry-message".to_string(),
+            created_at: Utc::now(),
+            registry: Registry {
+                name: "crates-io".to_string(),
+                api_base: server.base_url.clone(),
+                index_base: None,
+            },
+            packages: vec![PlannedPackage {
+                name: "base".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: td.path().join("base").join("Cargo.toml"),
+                regime: None,
+            }],
+            dependencies: BTreeMap::new(),
+        },
+        skipped: vec![],
+    };
+
+    let reg = test_registry_client(&ws);
+    let state_dir = td.path().join(".shipper");
+    let mut opts = default_opts(state_dir.clone());
+    opts.max_attempts = 2;
+    opts.readiness.enabled = false;
+
+    let mut st = init_state_for_package(&ws.plan.plan_id, &ws.plan.registry, "base", "1.0.0");
+    let mut reporter = CollectingReporter::default();
+
+    temp_env::with_vars(
+        [
+            (
+                "SHIPPER_CARGO_BIN",
+                Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            ),
+            ("SHIPPER_CARGO_EXIT", Some("1")),
+            ("SHIPPER_CARGO_STDERR", Some("HTTP 503 service unavailable")),
+        ],
+        || {
+            let result = run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter);
+
+            assert!(result.is_err(), "level should fail after retry exhaustion");
+
+            assert!(
+                reporter
+                    .infos
+                    .iter()
+                    .any(|msg| msg.contains("Level 0: publishing")),
+                "level message should be replayed to host reporter"
+            );
+            assert!(
+                reporter
+                    .warns
+                    .iter()
+                    .any(|msg| msg.contains("next attempt")),
+                "retry wait should be replayed to host reporter"
+            );
+            assert!(
+                reporter
+                    .errors
+                    .iter()
+                    .chain(reporter.warns.iter())
+                    .any(|msg| msg.contains("Retryable") || msg.contains("transient")),
+                "failure context should be replayed to host reporter"
+            );
+
+            let progress = st
+                .packages
+                .get("base@1.0.0")
+                .expect("base should remain tracked");
+            match &progress.state {
+                PackageState::Failed { class, .. } => assert_eq!(
+                    *class,
+                    ErrorClass::Retryable,
+                    "expected retryable failure class, got {:?}",
+                    class
+                ),
+                other => panic!("expected failed state, got {:?}", other),
+            }
+            assert_eq!(progress.attempts, 2, "expected two publish attempts");
         },
     );
     server.join();

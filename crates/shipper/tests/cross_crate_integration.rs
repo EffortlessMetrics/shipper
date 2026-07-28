@@ -480,6 +480,7 @@ fn event_log_simulated_publish_lifecycle() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 1,
+            max_attempts: 1,
             command: "cargo publish -p core".to_string(),
         },
         package: "core@0.1.0".to_string(),
@@ -544,6 +545,7 @@ fn event_log_simulated_publish_lifecycle() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 2,
+            max_attempts: 2,
             command: "cargo publish -p app".to_string(),
         },
         package: "app@0.1.0".to_string(),
@@ -1294,6 +1296,7 @@ fn event_log_full_publish_flow_deep_chain() {
             timestamp: Utc::now(),
             event_type: EventType::PackageAttempted {
                 attempt: *attempt_count,
+                max_attempts: *attempt_count,
                 command: format!("cargo publish -p {name}"),
             },
             package: format!("{name}@0.1.0"),
@@ -1326,6 +1329,7 @@ fn event_log_full_publish_flow_deep_chain() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 2,
+            max_attempts: 2,
             command: "cargo publish -p c".to_string(),
         },
         package: "c@0.1.0".to_string(),

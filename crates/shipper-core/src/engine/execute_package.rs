@@ -61,6 +61,17 @@ pub(crate) fn run_sequential_scheduler(
         bail!("resume package not found in plan: {resume_from}");
     }
 
+    // Schedulers own PublishStarted so bootstrap stays mode-agnostic and
+    // parallel does not double-notify when entered through run_publish.
+    maybe_send_event(
+        &opts.webhook,
+        WebhookEvent::PublishStarted {
+            plan_id: ws.plan.plan_id.clone(),
+            package_count: ws.plan.packages.len(),
+            registry: ws.plan.registry.name.clone(),
+        },
+    );
+
     let st_arc = Arc::new(Mutex::new(st.clone()));
     let event_log_arc = Arc::new(Mutex::new(std::mem::replace(
         event_log,
@@ -1023,6 +1034,7 @@ pub(crate) fn publish_package_with_timeout(
                     event_type: EventType::PackageAttempted {
                         attempt,
                         command: command.clone(),
+                        max_attempts: opts.max_attempts,
                     },
                     package: pkg_label.clone(),
                 },
@@ -1087,13 +1099,14 @@ pub(crate) fn publish_package_with_timeout(
             }
 
             if out.exit_code == 0 && !out.timed_out {
+                let completion_timestamp = Utc::now();
                 let attempt_detail = AttemptDetail {
                     package: p.name.clone(),
                     version: p.version.clone(),
                     attempt,
                     max_attempts: opts.max_attempts,
                     started_at: attempt_started_at,
-                    ended_at: attempt_ended_at,
+                    ended_at: completion_timestamp,
                     error_class: None,
                     next_attempt_at: None,
                     redacted_message: None,
@@ -1111,7 +1124,7 @@ pub(crate) fn publish_package_with_timeout(
                     &key,
                     PackageState::Uploaded,
                     PublishEvent {
-                        timestamp: Utc::now(),
+                        timestamp: completion_timestamp,
                         event_type: EventType::PackageUploaded,
                         package: pkg_label.clone(),
                     },
@@ -1122,6 +1135,7 @@ pub(crate) fn publish_package_with_timeout(
             } else {
                 let failure_output = format!("{}\n{}", out.stderr_tail, out.stdout_tail);
                 let (class, msg) = classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
+                let completion_timestamp = Utc::now();
                 last_err = Some((class.clone(), msg.clone()));
                 let mut attempt_detail = AttemptDetail {
                     package: p.name.clone(),
@@ -1129,7 +1143,7 @@ pub(crate) fn publish_package_with_timeout(
                     attempt,
                     max_attempts: opts.max_attempts,
                     started_at: attempt_started_at,
-                    ended_at: attempt_ended_at,
+                    ended_at: completion_timestamp,
                     error_class: Some(class.clone()),
                     next_attempt_at: None,
                     redacted_message: Some(msg.clone()),
@@ -1141,7 +1155,7 @@ pub(crate) fn publish_package_with_timeout(
                         return poisoned_lock("event log");
                     };
                     log.record(PublishEvent {
-                        timestamp: Utc::now(),
+                        timestamp: completion_timestamp,
                         event_type: EventType::PackageFailed {
                             class: class.clone(),
                             message: msg.clone(),

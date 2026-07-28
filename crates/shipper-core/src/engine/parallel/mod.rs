@@ -363,7 +363,13 @@ pub(crate) fn run_publish_parallel_inner(
             &events_path,
             reporter,
             &send_reporter,
-        )?;
+        );
+        if let Err(err) = level_receipts {
+            replay_buffered_messages(reporter, send_reporter.as_ref());
+            synchronize_parallel_state(st, &st_arc)?;
+            return Err(err);
+        }
+        let level_receipts = level_receipts?;
         all_receipts.extend(level_receipts);
         replay_buffered_messages(reporter, send_reporter.as_ref());
     }
@@ -377,6 +383,20 @@ pub(crate) fn run_publish_parallel_inner(
     *st = updated_st.clone();
 
     Ok(all_receipts)
+}
+
+fn synchronize_parallel_state(
+    state: &mut ExecutionState,
+    state_arc: &Arc<Mutex<ExecutionState>>,
+) -> anyhow::Result<()> {
+    let updated_state = state_arc
+        .lock()
+        .map_err(|_| {
+            anyhow::anyhow!("execution state lock poisoned while synchronizing parallel state")
+        })?
+        .clone();
+    *state = updated_state;
+    Ok(())
 }
 
 #[cfg(test)]

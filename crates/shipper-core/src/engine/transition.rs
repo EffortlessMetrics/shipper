@@ -334,6 +334,7 @@ mod tests {
             event_type: EventType::PackageAttempted {
                 attempt,
                 command: "cargo publish -p demo".to_string(),
+                max_attempts: attempt,
             },
             package: "demo@1.0.0".to_string(),
         }

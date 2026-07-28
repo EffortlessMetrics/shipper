@@ -454,6 +454,7 @@ fn event_types_serialize_correctly() {
             event_type: EventType::PackageAttempted {
                 attempt: 1,
                 command: "cargo publish".to_string(),
+                max_attempts: 1,
             },
             package: "test@1.0.0".to_string(),
         },
@@ -963,6 +964,7 @@ fn snapshot_event_log_roundtrip_yaml() {
             EventType::PackageAttempted {
                 attempt: 1,
                 command: "cargo publish -p alpha".to_string(),
+                max_attempts: 1,
             },
             "alpha@0.1.0",
         ),
@@ -1374,13 +1376,16 @@ fn roundtrip_package_attempted_preserves_all_fields() {
         EventType::PackageAttempted {
             attempt: 3,
             command: "cargo publish -p foo --no-verify".to_string(),
+            max_attempts: 3,
         },
         "foo@1.0.0",
     );
     let json = serde_json::to_string(&event).expect("serialize");
     let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
     match &parsed.event_type {
-        EventType::PackageAttempted { attempt, command } => {
+        EventType::PackageAttempted {
+            attempt, command, ..
+        } => {
             assert_eq!(*attempt, 3);
             assert_eq!(command, "cargo publish -p foo --no-verify");
         }
@@ -1755,6 +1760,7 @@ fn snapshot_package_attempted_debug() {
         EventType::PackageAttempted {
             attempt: 2,
             command: "cargo publish -p core-lib".to_string(),
+            max_attempts: 2,
         },
         "core-lib@0.1.0",
     );
@@ -2002,6 +2008,7 @@ fn snapshot_full_publish_lifecycle_debug() {
             EventType::PackageAttempted {
                 attempt: 1,
                 command: "cargo publish -p core".to_string(),
+                max_attempts: 1,
             },
             "core@0.1.0",
         ),
@@ -2151,6 +2158,7 @@ fn events_for_package_with_mixed_event_types() {
         EventType::PackageAttempted {
             attempt: 1,
             command: "cargo publish -p multi".to_string(),
+            max_attempts: 1,
         },
         pkg,
     ));

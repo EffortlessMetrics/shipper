@@ -91,8 +91,13 @@ fn arb_event_type() -> impl Strategy<Value = EventType> {
         arb_auth_evidence().prop_map(|evidence| EventType::AuthEvidenceRecorded { evidence }),
         (".*", ".*").prop_map(|(name, version)| EventType::PackageStarted { name, version }),
         Just(EventType::PackageUploaded),
-        (1..100u32, ".*")
-            .prop_map(|(attempt, command)| EventType::PackageAttempted { attempt, command }),
+        (1..100u32, ".*", 1..100u32).prop_map(|(attempt, command, max_attempts)| {
+            EventType::PackageAttempted {
+                attempt,
+                command,
+                max_attempts,
+            }
+        }),
         (".*", ".*").prop_map(|(stdout_tail, stderr_tail)| EventType::PackageOutput {
             stdout_tail,
             stderr_tail,

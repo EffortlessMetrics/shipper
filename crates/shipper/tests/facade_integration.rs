@@ -546,6 +546,7 @@ fn event_emission_full_lifecycle_with_preflight() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 1,
+            max_attempts: 1,
             command: "cargo publish -p base".to_string(),
         },
         package: "base@0.2.0".to_string(),
@@ -600,6 +601,7 @@ fn event_emission_full_lifecycle_with_preflight() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 2,
+            max_attempts: 2,
             command: "cargo publish -p mid".to_string(),
         },
         package: "mid@0.2.0".to_string(),
@@ -623,6 +625,7 @@ fn event_emission_full_lifecycle_with_preflight() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 1,
+            max_attempts: 1,
             command: "cargo publish -p top".to_string(),
         },
         package: "top@0.2.0".to_string(),
@@ -2044,6 +2047,7 @@ fn event_log_jsonl_file_has_correct_structure() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 1,
+            max_attempts: 1,
             command: "cargo publish -p alpha".to_string(),
         },
         package: "alpha@1.0.0".to_string(),
@@ -2345,6 +2349,7 @@ fn event_log_per_package_filtering_correct() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 2,
+            max_attempts: 2,
             command: "cargo publish -p beta".to_string(),
         },
         package: "beta@2.0.0".to_string(),
