@@ -53,10 +53,10 @@ workspace = true
 [dev-dependencies]
 console = "0.16.3"
 assert_cmd = "2"
-insta = "1"
+insta = { workspace = true }
 predicates = "3"
 proptest = { workspace = true }
-serial_test = "3"
+serial_test = { workspace = true }
 tempfile = "3"
 tiny_http = "0.12"
 temp-env = "0.3"

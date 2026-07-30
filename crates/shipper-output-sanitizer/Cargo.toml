@@ -13,8 +13,7 @@ categories = ["development-tools", "authentication", "web-programming"]
 [dependencies]
 
 [dev-dependencies]
-proptest.workspace = true
+proptest = { workspace = true }
 insta = { workspace = true }
-
 [lints]
 workspace = true

@@ -608,6 +608,14 @@ impl ShipperConfig {
             bail!("{} in file: {}", e, path.display());
         }
 
+        // Validate configuration values (output, retry, lock, readiness,
+        // parallel, registries). Without this, an invalid config (e.g.
+        // output.lines = 0) loads silently and only fails deep in the
+        // publish path.
+        config
+            .validate()
+            .with_context(|| format!("invalid configuration in file: {}", path.display()))?;
+
         Ok(config)
     }
 
