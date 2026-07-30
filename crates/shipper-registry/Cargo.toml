@@ -22,7 +22,7 @@ shipper-types.workspace = true
 
 [dev-dependencies]
 insta = { workspace = true }
-proptest.workspace = true
+proptest = { workspace = true }
 tempfile = "3"
 tiny_http = "0.12"
 

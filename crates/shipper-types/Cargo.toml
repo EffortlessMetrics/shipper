@@ -22,8 +22,7 @@ shipper-duration.workspace = true
 
 [dev-dependencies]
 serde_json = "1.0"
-proptest = "1.10.0"
-insta = { version = "1", features = ["yaml"] }
-
+proptest = { workspace = true }
+insta = { workspace = true }
 [lints]
 workspace = true

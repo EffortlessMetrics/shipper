@@ -11,8 +11,7 @@ keywords = ["cargo", "publish", "retry", "errors"]
 categories = ["development-tools"]
 
 [dev-dependencies]
-proptest.workspace = true
+proptest = { workspace = true }
 insta = { workspace = true }
-
 [lints]
 workspace = true
