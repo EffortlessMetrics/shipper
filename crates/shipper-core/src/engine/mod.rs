@@ -16,6 +16,10 @@ use crate::runtime::execution::backoff_delay;
 #[cfg(test)]
 use crate::runtime::execution::short_state;
 #[cfg(test)]
+#[expect(
+    deprecated,
+    reason = "legacy compatibility coverage for quarantined state-only helper"
+)]
 use crate::runtime::execution::update_state;
 use crate::runtime::execution::{classify_cargo_failure, pkg_key, resolve_state_dir};
 use crate::state::events;
@@ -4955,6 +4959,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "legacy compatibility coverage for quarantined state-only helper"
+    )]
     fn update_state_transitions_correctly() {
         let td = tempdir().expect("tempdir");
         let state_dir = td.path().join(".shipper");
@@ -4988,6 +4996,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "legacy compatibility coverage for quarantined state-only helper"
+    )]
     fn update_state_to_failed() {
         let td = tempdir().expect("tempdir");
         let state_dir = td.path().join(".shipper");
@@ -5013,6 +5025,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "legacy compatibility coverage for quarantined state-only helper"
+    )]
     fn update_state_to_skipped() {
         let td = tempdir().expect("tempdir");
         let state_dir = td.path().join(".shipper");
@@ -5431,6 +5447,10 @@ mod tests {
     // â”€â”€ State persistence: Uploaded vs Published transitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "legacy compatibility coverage for quarantined state-only helper"
+    )]
     fn state_transition_pending_to_uploaded_persists() {
         let td = tempdir().expect("tempdir");
         let state_dir = td.path().join(".shipper");
@@ -5458,6 +5478,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "legacy compatibility coverage for quarantined state-only helper"
+    )]
     fn state_transition_uploaded_to_published_persists() {
         let td = tempdir().expect("tempdir");
         let state_dir = td.path().join(".shipper");
@@ -5480,6 +5504,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "legacy compatibility coverage for quarantined state-only helper"
+    )]
     fn state_transition_pending_to_failed_persists() {
         let td = tempdir().expect("tempdir");
         let state_dir = td.path().join(".shipper");
@@ -5507,6 +5535,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "legacy compatibility coverage for quarantined state-only helper"
+    )]
     fn state_updated_at_advances_on_transition() {
         let td = tempdir().expect("tempdir");
         let state_dir = td.path().join(".shipper");
@@ -6592,6 +6624,10 @@ mod tests {
 
     // 15. State file persists across transitions with correct version
     #[test]
+    #[expect(
+        deprecated,
+        reason = "legacy compatibility coverage for quarantined state-only helper"
+    )]
     fn sm_state_version_preserved_through_transitions() {
         let td = tempdir().expect("tempdir");
         let state_dir = td.path().join(".shipper");
@@ -6696,6 +6732,10 @@ mod tests {
 
     // 17. Snapshot: state after partial failure
     #[test]
+    #[expect(
+        deprecated,
+        reason = "legacy compatibility coverage for quarantined state-only helper"
+    )]
     fn sm_snapshot_state_partial_failure() {
         let td = tempdir().expect("tempdir");
         let state_dir = td.path().join(".shipper");
@@ -6860,6 +6900,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "legacy compatibility coverage for quarantined state-only helper"
+    )]
     fn snapshot_state_after_transitions() {
         let td = tempdir().expect("tempdir");
         let mut ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
@@ -6968,6 +7012,7 @@ mod tests {
         proptest! {
             /// update_state always persists new_state to disk
             #[test]
+            #[expect(deprecated, reason = "legacy compatibility coverage for quarantined state-only helper")]
             fn update_state_always_persists(new_state in arb_package_state()) {
                 let td = tempdir().expect("tempdir");
                 let state_dir = td.path().join(".shipper");
