@@ -2,7 +2,7 @@
 source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: normalize_stderr(&stdout)
 ---
-Generate a fix-forward supersession plan from a compromised receipt (#98 PR 3).
+Generate a fix-forward supersession plan from a compromised receipt.
 
 Reads a prior `receipt.json`, finds packages whose receipt entry carries a `compromised_at` marker (populated by `shipper yank ... --mark-compromised`), and prints an ordered list of successor versions to publish. Dependencies go first (opposite of plan-yank) so downstream consumers can upgrade to a clean chain on `cargo update`.
 

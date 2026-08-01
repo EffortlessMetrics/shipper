@@ -264,3 +264,247 @@ mod workspace_health {
         registry.join();
     }
 }
+
+// ============================================================================
+// Feature: Doctor Command - Runs Without A Loadable Workspace
+// ============================================================================
+
+mod without_workspace {
+    use super::*;
+
+    // Scenario: Doctor still diagnoses the environment from a directory that
+    // has no Cargo.toml at all.
+    #[test]
+    fn given_no_manifest_when_running_doctor_then_reports_environment_and_flags_missing_plan() {
+        // Given: A directory with no workspace manifest
+        let td = tempdir().expect("tempdir");
+        fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+        let registry = spawn_registry(1);
+
+        // When: We run shipper doctor against it
+        let mut cmd = shipper_cmd();
+        cmd.arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("doctor")
+            .env("CARGO_HOME", td.path().join("cargo-home"))
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN");
+
+        // Then: It succeeds, the environment checks still run, and the missing
+        // plan is reported as a finding rather than as a fatal error.
+        cmd.assert()
+            .success()
+            .stdout(contains("Shipper Doctor - Diagnostics Report"))
+            .stdout(contains("no publish plan"))
+            .stdout(contains("workspace-plan-unavailable"))
+            .stdout(contains("registry_reachable: true"))
+            .stdout(contains("Diagnostics complete."));
+
+        registry.join();
+    }
+
+    // Scenario: The JSON envelope carries the same signal for CI consumers.
+    #[test]
+    fn given_no_manifest_when_running_doctor_json_then_envelope_marks_workspace_unavailable() {
+        // Given: A directory with no workspace manifest
+        let td = tempdir().expect("tempdir");
+        fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+        let registry = spawn_registry(1);
+
+        // When: We ask for the machine-readable report
+        let mut cmd = shipper_cmd();
+        cmd.arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--format")
+            .arg("json")
+            .arg("doctor")
+            .env("CARGO_HOME", td.path().join("cargo-home"))
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN");
+
+        let output = cmd.assert().success().get_output().stdout.clone();
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&output).expect("doctor JSON envelope parses");
+
+        // Then: The schema is unchanged and the envelope names the missing
+        // plan. Both live at envelope level, not inside a per-registry
+        // report — see the multi-registry scenario below for why.
+        assert_eq!(parsed["schema_version"], "shipper.doctor.v1");
+        assert!(
+            parsed["workspace_unavailable"].is_string(),
+            "expected workspace_unavailable reason, got {parsed}"
+        );
+        let finding_ids: Vec<&str> = parsed["workspace_findings"]
+            .as_array()
+            .expect("workspace_findings array")
+            .iter()
+            .filter_map(|finding| finding["id"].as_str())
+            .collect();
+        assert_eq!(finding_ids, vec!["workspace-plan-unavailable"]);
+
+        registry.join();
+    }
+
+    // Scenario: with several registries, the workspace condition is still
+    // reported exactly once. It describes the run, not any registry, so a
+    // consumer counting blockers must not see it multiplied by N.
+    #[test]
+    fn given_multiple_registries_when_running_doctor_json_then_workspace_finding_is_not_repeated() {
+        // Given: A directory with no workspace manifest and two registries
+        let td = tempdir().expect("tempdir");
+        fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+        let registry = spawn_registry(2);
+        write_file(
+            &td.path().join(".shipper.toml"),
+            &format!(
+                r#"
+[[registries.registries]]
+name = "alpha"
+api_base = "{base}"
+
+[[registries.registries]]
+name = "beta"
+api_base = "{base}"
+"#,
+                base = registry.base_url
+            ),
+        );
+
+        // When: We ask for diagnostics against both
+        let mut cmd = shipper_cmd();
+        cmd.arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--all-registries")
+            .arg("--format")
+            .arg("json")
+            .arg("doctor")
+            .env("CARGO_HOME", td.path().join("cargo-home"))
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN");
+
+        let output = cmd.assert().success().get_output().stdout.clone();
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&output).expect("doctor JSON envelope parses");
+
+        // Then: Two registry reports, one workspace finding.
+        assert_eq!(
+            parsed["reports"].as_array().expect("reports array").len(),
+            2
+        );
+        assert_eq!(
+            parsed["workspace_findings"]
+                .as_array()
+                .expect("workspace_findings array")
+                .len(),
+            1
+        );
+        for report in parsed["reports"].as_array().expect("reports array") {
+            assert!(
+                report["workspace_unavailable"].is_null(),
+                "per-registry reports must not repeat the run-level condition: {report}"
+            );
+            let ids: Vec<&str> = report["findings"]
+                .as_array()
+                .expect("findings array")
+                .iter()
+                .filter_map(|finding| finding["id"].as_str())
+                .collect();
+            assert!(
+                !ids.contains(&"workspace-plan-unavailable"),
+                "workspace finding leaked into a registry report: {ids:?}"
+            );
+        }
+
+        registry.join();
+    }
+
+    // Scenario: the text path applies the same rule as the JSON envelope —
+    // the workspace header repeats per registry block (each block is read on
+    // its own) but the finding is listed once, so the findings list stays a
+    // list of distinct problems.
+    #[test]
+    fn given_multiple_registries_when_running_doctor_text_then_finding_listed_once() {
+        // Given: A directory with no workspace manifest and two registries
+        let td = tempdir().expect("tempdir");
+        fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+
+        let registry = spawn_registry(2);
+        write_file(
+            &td.path().join(".shipper.toml"),
+            &format!(
+                r#"
+[[registries.registries]]
+name = "alpha"
+api_base = "{base}"
+
+[[registries.registries]]
+name = "beta"
+api_base = "{base}"
+"#,
+                base = registry.base_url
+            ),
+        );
+
+        // When: We run text diagnostics against both
+        let mut cmd = shipper_cmd();
+        cmd.arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--all-registries")
+            .arg("doctor")
+            .env("CARGO_HOME", td.path().join("cargo-home"))
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN");
+
+        let output = cmd.assert().success().get_output().stdout.clone();
+        let stdout = String::from_utf8_lossy(&output);
+
+        // Then: Two diagnostic blocks, each noting the missing plan in its
+        // header, but exactly one `workspace-plan-unavailable` finding.
+        assert_eq!(
+            stdout
+                .matches("Shipper Doctor - Diagnostics Report")
+                .count(),
+            2,
+            "expected one diagnostics block per registry:\n{stdout}"
+        );
+        assert_eq!(
+            stdout.matches("(no publish plan").count(),
+            2,
+            "each block's header should carry the workspace note:\n{stdout}"
+        );
+        assert_eq!(
+            stdout.matches("workspace-plan-unavailable").count(),
+            1,
+            "the finding itself must be listed once:\n{stdout}"
+        );
+
+        registry.join();
+    }
+
+    // Scenario: `shipper ci` prints a static snippet, so it must not need a
+    // workspace either.
+    #[test]
+    fn given_no_manifest_when_printing_ci_snippet_then_it_still_prints() {
+        // Given: A directory with no workspace manifest
+        let td = tempdir().expect("tempdir");
+
+        // When: We ask for the GitHub Actions snippet
+        let mut cmd = shipper_cmd();
+        cmd.arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("ci")
+            .arg("github-actions");
+
+        // Then: The snippet is printed
+        cmd.assert()
+            .success()
+            .stdout(contains("GitHub Actions workflow snippet"));
+    }
+}

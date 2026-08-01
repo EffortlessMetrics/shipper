@@ -31,7 +31,7 @@ Options:
           Example: `"CVE-2026-0001 disclosed; containing while patch released"`.
 
       --mark-compromised
-          Also mark the crate's existing receipt entry as compromised (#98 PR 3). Ignored in `--plan` mode (plan execution already carries per-entry reasons from the planning step)
+          Also mark the crate's existing receipt entry as compromised. Ignored in `--plan` mode (plan execution already carries per-entry reasons from the planning step)
 
       --registry <REGISTRY>
           Cargo registry name (default: crates-io)
@@ -40,7 +40,7 @@ Options:
           Registry API base URL (default: <https://crates.io>)
 
       --plan <PATH>
-          **Plan execution mode** (#98 PR 5). Path to a yank plan JSON file (the `--format json` output of `shipper plan-yank`). Walks the plan's entries in order, invoking `cargo yank` for each. Mutually exclusive with `--crate` / `--version` / `--reason`
+          **Plan execution mode.** Path to a yank plan JSON file (the `--format json` output of `shipper plan-yank`). Walks the plan's entries in order, invoking `cargo yank` for each. Mutually exclusive with `--crate` / `--version` / `--reason`
 
       --package <PACKAGES>
           Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members

@@ -252,6 +252,29 @@ fn no_subcommand_shows_error() {
     assert_snapshot!("no_subcommand_error", normalize_output(&stderr));
 }
 
+/// A bare `shipper` must name the happy path and keep clap's usage exit
+/// code — it is the first thing a new operator sees.
+#[test]
+fn no_subcommand_guides_to_first_commands_and_exits_two() {
+    let output = shipper_cmd().output().expect("failed to run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(2), "stderr was: {stderr}");
+    assert!(output.stdout.is_empty(), "guidance must not pollute stdout");
+    for expected in [
+        "shipper doctor",
+        "shipper plan",
+        "shipper preflight",
+        "shipper publish",
+        "Usage: shipper [OPTIONS] <COMMAND>",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "first-run guidance missing {expected:?}; got:\n{stderr}"
+        );
+    }
+}
+
 #[test]
 fn unknown_subcommand_shows_error() {
     let output = shipper_cmd()
