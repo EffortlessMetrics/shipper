@@ -231,7 +231,7 @@ mod tests {
             let encryption = EncryptionConfig {
                 enabled: true,
                 passphrase: if use_secret { Some("secret-pass".to_string()) } else { None },
-                ..EncryptionConfig::default()
+                env_var: None,
             };
 
             let registries = (0..registry_count)
@@ -913,7 +913,7 @@ mod tests {
                 encryption: EncryptionConfig {
                     enabled: false,
                     passphrase: None,
-                    ..EncryptionConfig::default()
+                    env_var: None,
                 },
                 registries: vec![],
                 resume_from: None,
