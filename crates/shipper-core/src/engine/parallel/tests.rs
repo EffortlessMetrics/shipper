@@ -6200,6 +6200,7 @@ fn publish_package_final_chance_success_emits_package_published_event() {
 #[derive(Clone, Copy, Debug)]
 enum ModeParityScenario {
     CleanPublish,
+    ReadinessTimeoutThenVisible,
     PermanentFailure,
     AlreadyPublishedInState,
     StillUnknownResume,
@@ -6216,6 +6217,10 @@ const MODE_PARITY_CORPUS: &[ModeParityCase] = &[
     ModeParityCase {
         name: "clean_publish",
         scenario: ModeParityScenario::CleanPublish,
+    },
+    ModeParityCase {
+        name: "readiness_timeout_then_visible",
+        scenario: ModeParityScenario::ReadinessTimeoutThenVisible,
     },
     ModeParityCase {
         name: "permanent_failure",
@@ -6256,6 +6261,19 @@ fn mode_parity_routes(
             )]),
             2,
         ),
+        ModeParityScenario::ReadinessTimeoutThenVisible => (
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                // Initial version check, first readiness poll (timeout),
+                // then the next readiness attempt observes visibility.
+                vec![
+                    (404, "{}".to_string()),
+                    (404, "{}".to_string()),
+                    (200, "{}".to_string()),
+                ],
+            )]),
+            3,
+        ),
         ModeParityScenario::PermanentFailure => (
             BTreeMap::from([(
                 "/api/v1/crates/demo/0.1.0".to_string(),
@@ -6283,9 +6301,9 @@ fn mode_parity_routes(
 
 fn mode_parity_seed_state(ws: &PlannedWorkspace, scenario: ModeParityScenario) -> ExecutionState {
     match scenario {
-        ModeParityScenario::CleanPublish | ModeParityScenario::PermanentFailure => {
-            init_state_for_workspace(ws)
-        }
+        ModeParityScenario::CleanPublish
+        | ModeParityScenario::ReadinessTimeoutThenVisible
+        | ModeParityScenario::PermanentFailure => init_state_for_workspace(ws),
         ModeParityScenario::AlreadyPublishedInState => {
             init_state_with_checkpoint(ws, &pkg_key("demo", "0.1.0"), PackageState::Published, 1)
         }
@@ -6307,7 +6325,9 @@ fn mode_parity_cargo_env<'a>(
     cargo_args_log: &'a str,
 ) -> Vec<(&'static str, Option<&'a str>)> {
     match scenario {
-        ModeParityScenario::CleanPublish | ModeParityScenario::AlreadyPublishedInState => vec![
+        ModeParityScenario::CleanPublish
+        | ModeParityScenario::ReadinessTimeoutThenVisible
+        | ModeParityScenario::AlreadyPublishedInState => vec![
             ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
             ("SHIPPER_CARGO_EXIT", Some("0")),
             ("SHIPPER_CARGO_STDERR", Some("")),
@@ -6360,8 +6380,21 @@ fn run_mode_parity_case(
     let reg = test_registry_client(&ws);
     let mut opts = default_opts(state_dir.clone());
     opts.parallel.enabled = parallel;
-    opts.readiness.enabled = false;
-    opts.max_attempts = 1;
+    opts.readiness.enabled = matches!(scenario, ModeParityScenario::ReadinessTimeoutThenVisible);
+    opts.max_attempts = if matches!(scenario, ModeParityScenario::ReadinessTimeoutThenVisible) {
+        2
+    } else {
+        1
+    };
+    if matches!(scenario, ModeParityScenario::ReadinessTimeoutThenVisible) {
+        opts.base_delay = Duration::ZERO;
+        opts.max_delay = Duration::ZERO;
+        opts.readiness.initial_delay = Duration::ZERO;
+        opts.readiness.max_delay = Duration::ZERO;
+        opts.readiness.max_total_wait = Duration::ZERO;
+        opts.readiness.poll_interval = Duration::ZERO;
+        opts.readiness.jitter_factor = 0.0;
+    }
 
     let mut state = mode_parity_seed_state(&ws, scenario);
     let events_path = events::events_path(&state_dir);
@@ -6520,6 +6553,79 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
                 case.name,
                 pkg.state
             );
+        }
+        ModeParityScenario::ReadinessTimeoutThenVisible => {
+            assert!(seq.ok, "{}: readiness recovery should succeed", case.name);
+            let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
+            assert!(
+                matches!(pkg.state, PackageState::Published),
+                "{}: expected Published after readiness recovery, got {:?}",
+                case.name,
+                pkg.state
+            );
+
+            for (mode, path) in [("seq", &seq.events_path), ("par", &par.events_path)] {
+                let persisted = events::EventLog::read_from_file(path)
+                    .unwrap_or_else(|e| panic!("{} {mode}: read events: {e}", case.name));
+                let all_events = persisted.all_events();
+                let timeout_count = all_events
+                    .iter()
+                    .filter(|event| matches!(event.event_type, EventType::ReadinessTimeout { .. }))
+                    .count();
+                assert_eq!(
+                    timeout_count, 1,
+                    "{} {mode}: expected exactly one readiness timeout event",
+                    case.name
+                );
+                let timeout_index = all_events
+                    .iter()
+                    .position(|event| {
+                        matches!(event.event_type, EventType::ReadinessTimeout { .. })
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{} {mode}: expected readiness timeout event", case.name)
+                    });
+                let complete_count = all_events
+                    .iter()
+                    .filter(|event| matches!(event.event_type, EventType::ReadinessComplete { .. }))
+                    .count();
+                assert_eq!(
+                    complete_count, 1,
+                    "{} {mode}: expected exactly one readiness complete event",
+                    case.name
+                );
+                let complete_index = all_events
+                    .iter()
+                    .position(|event| {
+                        matches!(event.event_type, EventType::ReadinessComplete { .. })
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{} {mode}: expected readiness complete event", case.name)
+                    });
+                let published_index = all_events
+                    .iter()
+                    .position(|event| {
+                        matches!(event.event_type, EventType::PackagePublished { .. })
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{} {mode}: expected package published event", case.name)
+                    });
+
+                assert!(
+                    timeout_index < complete_index && complete_index < published_index,
+                    "{} {mode}: readiness recovery events out of order",
+                    case.name
+                );
+                assert_eq!(
+                    all_events
+                        .iter()
+                        .filter(|event| matches!(event.event_type, EventType::PackageUploaded))
+                        .count(),
+                    1,
+                    "{} {mode}: retry after readiness timeout must not re-upload",
+                    case.name
+                );
+            }
         }
         ModeParityScenario::PermanentFailure => {
             assert!(!seq.ok, "{}: permanent failure should err", case.name);
