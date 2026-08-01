@@ -36,9 +36,11 @@ use crate::types::{Finishability, PreflightPackage};
 pub(crate) mod execute_package;
 mod preflight;
 mod publish;
-#[cfg(test)]
 mod readiness;
+mod reconcile;
 mod rehearsal;
+#[cfg(test)]
+mod test_readiness;
 pub(crate) mod transition;
 
 #[cfg(test)]
@@ -47,7 +49,7 @@ use crate::types::{
 };
 pub use preflight::PreflightRunOptions;
 #[cfg(test)]
-use readiness::verify_published;
+use test_readiness::verify_published;
 
 pub trait Reporter {
     fn info(&mut self, msg: &str);

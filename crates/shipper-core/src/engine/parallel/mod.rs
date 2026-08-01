@@ -21,8 +21,6 @@ use shipper_types::{ExecutionState, PackageReceipt, RuntimeOptions};
 
 mod flow;
 pub(crate) mod policy;
-pub(crate) mod readiness;
-pub(crate) mod reconcile;
 mod scheduler;
 pub(crate) mod webhook;
 

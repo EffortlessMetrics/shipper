@@ -70,10 +70,12 @@ crates/shipper-core/src/
 │   ├── plan_yank.rs      # Reverse-topological yank planning
 │   ├── fix_forward.rs    # Fix-forward planning for compromised releases
 │   ├── execute_package.rs # Per-package publish/retry/readiness execution
+│   ├── readiness.rs      # Shared sparse-index + API visibility queries
+│   ├── reconcile.rs      # Ambiguous-publish reconciliation against registry truth
+│   ├── test_readiness.rs # Test-only readiness event/reporter adapter
 │   └── parallel/         # Parallel publish orchestration
 │       ├── mod.rs         # Parallel entrypoints + module exports
 │       ├── scheduler.rs   # Concurrency scheduling + dependency gating
-│       └── readiness.rs   # Sparse-index + API visibility queries
 ├── runtime/              # Execution runtime + error classification
 │   └── execution/        # ErrorClass classification, classify_cargo_failure
 ├── plan/                 # Workspace analysis + topo-sort + plan_id

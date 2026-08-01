@@ -96,7 +96,7 @@ pub fn short_state(st: &PackageState) -> &'static str {
 /// authoritative resolution for an [`ErrorClass::Ambiguous`] outcome comes
 /// from querying the registry (sparse index + API) via the reconciliation
 /// flow — never from the cargo text alone. See the `ErrorClass` rustdoc
-/// and `shipper::engine::parallel::reconcile` for the "hint vs truth"
+/// and `shipper::engine::reconcile` for the "hint vs truth"
 /// contract.
 pub fn classify_cargo_failure(stderr: &str, stdout: &str) -> (ErrorClass, String) {
     let outcome = shipper_cargo_failure::classify_publish_failure(stderr, stdout);

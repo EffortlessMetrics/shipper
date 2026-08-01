@@ -1012,7 +1012,7 @@ pub enum PackageState {
 ///   can coexist with a successful upload. Ambiguous outcomes MUST be
 ///   reconciled against registry truth before any further action ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never
 ///   blind-retry. See [`ReconciliationOutcome`] and the reconciliation flow
-///   in `shipper::engine::parallel::reconcile`.
+///   in `shipper::engine::reconcile`.
 ///
 /// The authoritative classification for `Ambiguous` outcomes comes from
 /// **querying the registry** (sparse index + API) after the fact. Cargo

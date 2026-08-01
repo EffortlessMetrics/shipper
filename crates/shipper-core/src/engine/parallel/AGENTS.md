@@ -34,13 +34,10 @@ in-tree duplicate, including the webhook submodule and BDD tests).
   it invokes the canonical executor and does not own package transitions.
 - `../execute_package.rs` — single-package execution primitives
   (`publish_package`, `PackagePublishResult`).
-- `readiness.rs` — readiness-visibility polling with backoff/jitter and
-  sparse-index fallback.
-- `reconcile.rs` — ambiguous-publish reconciliation against registry truth.
-  Wraps `readiness::is_version_visible_with_backoff` into a three-outcome
-  state machine (`Published` / `NotPublished` / `StillUnknown`) so the
-  publish retry loop can avoid blind retries after an ambiguous `cargo
-  publish` exit. See `shipper-types::ReconciliationOutcome` and issue #99.
+- Shared readiness visibility and ambiguous-outcome reconciliation live in
+  the parent `crate::engine` module so sequential and parallel execution use
+  the same helpers. See `crate::engine::readiness`,
+  `crate::engine::reconcile`, and issue #153.
 - `policy.rs` — `policy_effects` adapter (translates `PublishPolicy` into
   resolved effects).
 - `webhook.rs` — engine-specific webhook glue wrapping `shipper_webhook`.
