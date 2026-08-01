@@ -82,7 +82,9 @@ runner, binary-build, and credential boundaries are explicitly decided.
 The self-hosted Rust-small lane proves:
 
 ```bash
+cargo fmt --all -- --check
 cargo check --workspace --locked --all-targets
+cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 cargo nextest run --workspace --locked --all-targets --all-features --profile ci
 cargo test --workspace --locked --doc
 cargo run -p shipper -- --help
@@ -90,13 +92,14 @@ cargo run -p shipper -- plan --help
 cargo run -p shipper -- preflight --help
 ```
 
-The tiny fallback intentionally proves less:
+`cargo fmt --check` and `cargo clippy` run here — not only in `ci.yml`'s
+`lint` job — because `ci.yml` has no `pull_request` trigger. Without them
+on this lane, lint regressions are only caught after merge.
 
-```bash
-cargo check --workspace --locked --all-targets
-cargo run -p shipper -- --help
-cargo run -p shipper -- plan --help
-```
+The GitHub-hosted fallback lane runs the same command list. It used to
+prove less (`cargo check` + `--help` only); that was reverted after a
+regression escaped through it, and the fallback now carries the full
+gate. Only the runner differs.
 
 ## `ci.yml` — Full-CI Lane Map
 
@@ -177,7 +180,7 @@ The `policy` job runs each check in blocking-allowlist mode and uploads `target/
 | Job | Workflow | Trigger | What it proves |
 |---|---|---|---|
 | `coverage` | `coverage.yml` | `push` to main, dispatch, `coverage` or `full-ci` label on PR | Codecov line/branch coverage. |
-| `rust-small` | `em-ci-routed-rust.yml` | PRs, merge groups, pushes to main, dispatch | Required Rust-small PR gate with self-hosted routing and explicit fallback control. |
+| `rust-small` | `em-ci-routed-rust.yml` | PRs, merge groups, pushes to main, dispatch | Required Rust-small PR gate with self-hosted routing and explicit fallback control. Carries `cargo fmt --check` and `cargo clippy -- -D warnings`, because `ci.yml`'s `lint` job never sees a pull request. |
 | `ripr-pilot` | `ripr.yml` | PRs touching `crates/**`, `xtask/**`, `Cargo.{toml,lock}`, `ripr.toml`, `policy/ripr-suppressions.toml`, `.github/workflows/ripr.yml`. `continue-on-error: true`. | Static mutation-exposure analysis: does the diff appear exposed to a meaningful test oracle? |
 | `mutants-pr` | `mutation.yml` | PRs labeled `mutation` or `full-ci` | Runtime mutation backstop scoped to the PR's changed files via `cargo xtask mutants-pr --changed`. Blocking when it runs. |
 | `droid-review` | `droid-review.yml` | Human-authored same-repo PRs (excluding generated `droid/security-report-*` branches); maintainers can use `@droid review` for bot-authored refreshes. | Automated code review via Factory Droid (BYOK MiniMax M3). Advisory comments, no merge gate. |

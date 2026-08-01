@@ -231,6 +231,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -247,8 +249,14 @@ jobs:
           key: ${{ runner.os }}-routed-rust-small-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-routed-rust-small-
 
+      - name: Format check
+        run: cargo fmt --all -- --check
+
       - name: Check workspace
         run: cargo check --workspace --locked --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 
       - name: Test workspace
         run: cargo nextest run --workspace --locked --all-targets --all-features --profile ci
@@ -319,7 +327,9 @@ jobs:
       - name: Run Rust small gate
         run: |
           set -euo pipefail
+          cargo fmt --all -- --check
           cargo check --workspace --locked --all-targets
+          cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
           cargo nextest run --workspace --locked --all-targets --all-features --profile ci
           cargo test --workspace --locked --doc
           cargo run -p shipper -- --help
@@ -347,6 +357,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -363,8 +375,14 @@ jobs:
           key: ${{ runner.os }}-routed-rust-small-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-routed-rust-small-
 
+      - name: Format check
+        run: cargo fmt --all -- --check
+
       - name: Check workspace
         run: cargo check --workspace --locked --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 
       - name: Test workspace
         run: cargo nextest run --workspace --locked --all-targets --all-features --profile ci
@@ -408,8 +426,8 @@ jobs:
     # fallback refreshes use workflow_dispatch force_route=github.
     #
     # Runs the SAME meaningful Rust-small gate as the self-hosted lanes
-    # (check + nextest all-features + doc tests + smoke help), not just
-    # cargo check + --help. This is deliberate: a fallback lane that skips
+    # (fmt + check + clippy + nextest all-features + doc tests + smoke
+    # help), not just cargo check + --help. This is deliberate: a fallback lane that skips
     # the test suite lets red sneak onto main (the #417 error-renderer
     # regression escaped detection for weeks because the tiny fallback
     # could not run snapshot tests). Costs Actions minutes — acceptable for
@@ -421,6 +439,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -437,8 +457,14 @@ jobs:
           key: ${{ runner.os }}-routed-rust-small-github-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-routed-rust-small-github-
 
+      - name: Format check
+        run: cargo fmt --all -- --check
+
       - name: Check workspace
         run: cargo check --workspace --locked --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 
       - name: Test workspace
         run: cargo nextest run --workspace --locked --all-targets --all-features --profile ci
