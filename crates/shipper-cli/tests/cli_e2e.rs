@@ -268,7 +268,7 @@ fn doctor_command_snapshot() {
         status: blocked
         severity: blocked
         why: ownership checks and live publish require registry credentials before Shipper can prove or execute a release
-        evidence: auth_type: NONE FOUND (set CARGO_REGISTRY_TOKEN)
+        evidence: auth_type: NONE FOUND (set CARGO_REGISTRY_TOKEN); registry_token: missing; oidc_request_url: missing; oidc_request_token: missing
         try next:
           - run `cargo login <token>` for local token auth
           - configure Trusted Publishing with `permissions: id-token: write` and `rust-lang/crates-io-auth-action@v1`

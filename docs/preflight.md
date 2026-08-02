@@ -73,10 +73,12 @@ Also detects authentication type:
 |-----------|---------|
 | `Token` | A Cargo registry token was found |
 | `Trusted` | GitHub Actions OIDC trusted publishing environment detected; the workflow still must run `rust-lang/crates-io-auth-action@v1` and pass its output as `CARGO_REGISTRY_TOKEN` before ownership checks or live publish can use it |
-| `Unknown` | Partial OIDC environment (only one of `ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN` set) |
+| `Unknown` | Partial OIDC environment (only one of `ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN` contains a non-blank value) |
 | `-` | No authentication found |
 
-If GitHub OIDC request variables are present but Cargo token auth wins,
+Blank or whitespace-only OIDC values are treated as missing and are reported
+as `blank` by the doctor evidence without including their contents. If both
+non-blank GitHub OIDC request variables are present but Cargo token auth wins,
 preflight emits an advisory warning. That state is allowed while long-lived
 token fallback is still configured, but release runs should prefer the
 short-lived token minted by `rust-lang/crates-io-auth-action@v1`.

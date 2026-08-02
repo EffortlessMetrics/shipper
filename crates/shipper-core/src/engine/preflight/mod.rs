@@ -171,8 +171,8 @@ fn warn_if_token_auth_overrides_oidc(
         return;
     }
 
-    let oidc_url_present = std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_URL").is_some();
-    let oidc_token_present = std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_TOKEN").is_some();
+    let oidc_url_present = auth::oidc::has_nonblank_value("ACTIONS_ID_TOKEN_REQUEST_URL");
+    let oidc_token_present = auth::oidc::has_nonblank_value("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
     if oidc_url_present || oidc_token_present {
         reporter.warn(
             "Trusted Publishing OIDC environment is present, but Shipper is using Cargo token auth. \

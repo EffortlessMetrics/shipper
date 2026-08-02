@@ -33,5 +33,4 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 ## Invariants
 - Tokens are opaque strings; NEVER log them.
 - Whitespace-trimmed; empty tokens treated as absent (at the top-level `resolve_token` layer).
-- OIDC detection: requires both `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`.
-
+- OIDC detection: requires both `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` to contain non-blank values; blank or whitespace-only values are treated as missing.

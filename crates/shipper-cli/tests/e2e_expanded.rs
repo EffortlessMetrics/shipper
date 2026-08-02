@@ -7,6 +7,7 @@ use std::thread;
 
 use assert_cmd::Command;
 use insta::{assert_debug_snapshot, assert_snapshot};
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tempfile::tempdir;
 use tiny_http::{Header, Response, Server, StatusCode};
@@ -2541,9 +2542,15 @@ fn doctor_shows_no_auth_when_no_token() {
         .env("CARGO_HOME", td.path().join("cargo-home"))
         .env_remove("CARGO_REGISTRY_TOKEN")
         .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .env("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+        .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
         .assert()
         .success()
-        .stdout(contains("NONE FOUND"));
+        .stdout(
+            contains("NONE FOUND")
+                .and(contains("oidc_request_url: blank"))
+                .and(contains("oidc_request_token: blank")),
+        );
 
     registry.join();
 }
