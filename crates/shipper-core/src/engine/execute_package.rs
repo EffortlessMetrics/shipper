@@ -24,13 +24,12 @@ use crate::state::execution_state as state;
 use shipper_types::{
     AttemptDetail, AttemptEvidence, ErrorClass, EventType, ExecutionState, PackageEvidence,
     PackageReceipt, PackageState, PlannedPackage, PublishEvent, PublishRegime, ReadinessConfig,
-    ReadinessEvidence, ReconciliationOutcome, RuntimeOptions,
+    ReadinessEvidence, ReadinessMethod, ReconciliationOutcome, RuntimeOptions,
 };
 
 use crate::engine::parallel::SendReporter;
 use crate::engine::parallel::policy::policy_effects;
 use crate::engine::parallel::webhook::{WebhookEvent, maybe_send_event};
-use crate::engine::readiness::is_version_visible_with_backoff_and_events;
 use crate::engine::reconcile::reconcile_ambiguous_upload;
 
 /// Result of publishing a single package (for parallel execution)
@@ -508,6 +507,42 @@ fn record_readiness_event(
     Ok(())
 }
 
+fn record_readiness_started(
+    event_log: &Arc<Mutex<events::EventLog>>,
+    events_path: &Path,
+    method: ReadinessMethod,
+    pkg_label: &str,
+) -> Result<()> {
+    record_readiness_event(
+        event_log,
+        events_path,
+        PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::ReadinessStarted { method },
+            package: pkg_label.to_string(),
+        },
+    )
+}
+
+fn record_readiness_error(
+    event_log: &Arc<Mutex<events::EventLog>>,
+    events_path: &Path,
+    duration: Duration,
+    pkg_label: &str,
+) -> Result<()> {
+    record_readiness_event(
+        event_log,
+        events_path,
+        PublishEvent {
+            timestamp: Utc::now(),
+            event_type: EventType::ReadinessError {
+                duration_ms: duration.as_millis() as u64,
+            },
+            package: pkg_label.to_string(),
+        },
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn wait_after_retry(
     reporter: &Arc<SendReporter>,
@@ -887,10 +922,15 @@ pub(crate) fn publish_package_with_timeout(
             "{}@{}: resuming from uploaded (verifying registry visibility)",
             p.name, p.version
         ));
+        let readiness_started_at = Instant::now();
+        if let Err(e) =
+            record_readiness_started(event_log, events_path, readiness_config.method, &pkg_label)
+        {
+            return PackagePublishResult { result: Err(e) };
+        }
         let mut emit_readiness_event =
             |event| record_readiness_event(event_log, events_path, event);
-        match is_version_visible_with_backoff_and_events(
-            reg,
+        match reg.is_version_visible_with_backoff_and_events(
             &p.name,
             &p.version,
             &readiness_config,
@@ -899,6 +939,26 @@ pub(crate) fn publish_package_with_timeout(
             Ok((visible, checks)) => {
                 readiness_evidence = checks;
                 if visible {
+                    if let Err(e) = record_readiness_event(
+                        event_log,
+                        events_path,
+                        PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::ReadinessComplete {
+                                duration_ms: readiness_started_at.elapsed().as_millis() as u64,
+                                attempts: readiness_evidence.len() as u32,
+                            },
+                            package: pkg_label.clone(),
+                        },
+                    ) {
+                        let _ = record_readiness_error(
+                            event_log,
+                            events_path,
+                            readiness_started_at.elapsed(),
+                            &pkg_label,
+                        );
+                        return PackagePublishResult { result: Err(e) };
+                    }
                     if let Err(e) = commit_transition(
                         st,
                         state_dir,
@@ -951,6 +1011,20 @@ pub(crate) fn publish_package_with_timeout(
                     };
                 }
 
+                if let Err(e) = record_readiness_event(
+                    event_log,
+                    events_path,
+                    PublishEvent {
+                        timestamp: Utc::now(),
+                        event_type: EventType::ReadinessTimeout {
+                            max_wait_ms: readiness_config.max_total_wait.as_millis() as u64,
+                        },
+                        package: pkg_label.clone(),
+                    },
+                ) {
+                    return PackagePublishResult { result: Err(e) };
+                }
+
                 if attempt >= opts.max_attempts {
                     return PackagePublishResult {
                         result: Err(anyhow::anyhow!(
@@ -966,6 +1040,16 @@ pub(crate) fn publish_package_with_timeout(
                 cargo_succeeded = false;
             }
             Err(error) => {
+                if let Err(close_error) = record_readiness_error(
+                    event_log,
+                    events_path,
+                    readiness_started_at.elapsed(),
+                    &pkg_label,
+                ) {
+                    return PackagePublishResult {
+                        result: Err(close_error),
+                    };
+                }
                 return PackagePublishResult {
                     result: Err(anyhow::anyhow!(
                         "{}@{}: failed to verify uploaded package visibility before publish: {error}",
@@ -1552,10 +1636,14 @@ pub(crate) fn publish_package_with_timeout(
         ));
 
         let readiness_started_at = Instant::now();
+        if let Err(e) =
+            record_readiness_started(event_log, events_path, readiness_config.method, &pkg_label)
+        {
+            return PackagePublishResult { result: Err(e) };
+        }
         let mut emit_readiness_event =
             |event| record_readiness_event(event_log, events_path, event);
-        let verify_result = is_version_visible_with_backoff_and_events(
-            reg,
+        let verify_result = reg.is_version_visible_with_backoff_and_events(
             &p.name,
             &p.version,
             &readiness_config,
@@ -1578,6 +1666,12 @@ pub(crate) fn publish_package_with_timeout(
                             package: pkg_label.clone(),
                         },
                     ) {
+                        let _ = record_readiness_error(
+                            event_log,
+                            events_path,
+                            readiness_started_at.elapsed(),
+                            &pkg_label,
+                        );
                         return PackagePublishResult { result: Err(e) };
                     }
                     if let Err(e) = commit_transition(
@@ -1651,7 +1745,19 @@ pub(crate) fn publish_package_with_timeout(
                     }
                 }
             }
-            Err(error) => return PackagePublishResult { result: Err(error) },
+            Err(error) => {
+                if let Err(close_error) = record_readiness_error(
+                    event_log,
+                    events_path,
+                    readiness_started_at.elapsed(),
+                    &pkg_label,
+                ) {
+                    return PackagePublishResult {
+                        result: Err(close_error),
+                    };
+                }
+                return PackagePublishResult { result: Err(error) };
+            }
         }
     }
 
@@ -1712,21 +1818,47 @@ pub(crate) fn publish_package_with_timeout(
 
     if let Some((class, msg)) = last_err {
         // Final chance: maybe it eventually showed up.
+        let readiness_started_at = Instant::now();
+        if let Err(e) =
+            record_readiness_started(event_log, events_path, readiness_config.method, &pkg_label)
+        {
+            return PackagePublishResult { result: Err(e) };
+        }
         let mut emit_readiness_event =
             |event| record_readiness_event(event_log, events_path, event);
-        match is_version_visible_with_backoff_and_events(
-            reg,
+        match reg.is_version_visible_with_backoff_and_events(
             &p.name,
             &p.version,
             &readiness_config,
             &mut emit_readiness_event,
         ) {
             Ok((visible, checks)) => {
+                let check_count = checks.len() as u32;
                 if !checks.is_empty() {
                     readiness_evidence.extend(checks);
                 }
 
                 if visible {
+                    if let Err(e) = record_readiness_event(
+                        event_log,
+                        events_path,
+                        PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::ReadinessComplete {
+                                duration_ms: readiness_started_at.elapsed().as_millis() as u64,
+                                attempts: check_count,
+                            },
+                            package: pkg_label.clone(),
+                        },
+                    ) {
+                        let _ = record_readiness_error(
+                            event_log,
+                            events_path,
+                            readiness_started_at.elapsed(),
+                            &pkg_label,
+                        );
+                        return PackagePublishResult { result: Err(e) };
+                    }
                     if let Err(e) = commit_transition(
                         st,
                         state_dir,
@@ -1745,6 +1877,19 @@ pub(crate) fn publish_package_with_timeout(
                         return PackagePublishResult { result: Err(e) };
                     }
                 } else {
+                    if let Err(e) = record_readiness_event(
+                        event_log,
+                        events_path,
+                        PublishEvent {
+                            timestamp: Utc::now(),
+                            event_type: EventType::ReadinessTimeout {
+                                max_wait_ms: readiness_config.max_total_wait.as_millis() as u64,
+                            },
+                            package: pkg_label.clone(),
+                        },
+                    ) {
+                        return PackagePublishResult { result: Err(e) };
+                    }
                     let error_class_str = format!("{:?}", class);
                     let failed = PackageState::Failed {
                         class: class.clone(),
@@ -1793,6 +1938,16 @@ pub(crate) fn publish_package_with_timeout(
                 }
             }
             Err(error) => {
+                if let Err(close_error) = record_readiness_error(
+                    event_log,
+                    events_path,
+                    readiness_started_at.elapsed(),
+                    &pkg_label,
+                ) {
+                    return PackagePublishResult {
+                        result: Err(close_error),
+                    };
+                }
                 return PackagePublishResult {
                     result: Err(anyhow::anyhow!(
                         "{}@{}: failed to verify final visibility after last error: {error}",

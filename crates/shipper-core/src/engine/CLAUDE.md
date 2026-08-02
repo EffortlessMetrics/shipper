@@ -26,12 +26,32 @@ except `lib.rs` re-exports and `shipper-cli`.
 - `engine/execute_package.rs` - canonical per-package Cargo/retry/readiness/
   reconciliation executor. Scheduling belongs to mode-specific scheduler
   modules; durable package outcomes belong here and in `transition.rs`.
-- `engine/readiness.rs` - shared registry-visibility polling with backoff,
-  jitter, sparse-index fallback, and readiness evidence.
 - `engine/reconcile.rs` - ambiguous-publish reconciliation against registry
   truth (`Published` / `NotPublished` / `StillUnknown`).
 - `engine/test_readiness.rs` - test-only reporter/event adapter for the
   engine-level readiness characterization tests.
+
+## Readiness ownership (issue #202)
+
+The readiness **polling loop** — backoff, jitter, `index_path` handling,
+sparse-index fallback, and `ReadinessEvidence` — is owned by
+`shipper_registry::RegistryClient::is_version_visible_with_backoff{,_and_events}`.
+There is no engine-side copy; `engine/readiness.rs` was deleted. Call the
+`RegistryClient` method directly from `execute_package.rs` and `reconcile.rs`
+— do **not** reintroduce a forwarding wrapper.
+
+What the engine owns is the *envelope* around a poll run, because
+`shipper-registry` cannot depend on `shipper-core` and therefore has no
+knowledge of `EventLog`, `events.jsonl`, or `Reporter`:
+
+- the `ReadinessStarted` / `ReadinessComplete` / `ReadinessTimeout` /
+  `ReadinessError` events,
+- the `Reporter` narration, and
+- flushing each emitted event through the event log.
+
+Production code applies that envelope inline in `execute_package.rs`;
+`test_readiness.rs` mirrors it for tests. Behavior changes to the loop belong
+in `crates/shipper-registry/src/context.rs`.
 - `engine/parallel/` — wave-based parallel publish (was the standalone
   `shipper-engine-parallel` crate, absorbed in the same PR that created this
   layer dir).

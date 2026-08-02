@@ -1626,6 +1626,20 @@ fn roundtrip_readiness_timeout_preserves_all_fields() {
 }
 
 #[test]
+fn roundtrip_readiness_error_preserves_elapsed_duration() {
+    let event = fixed_event(
+        EventType::ReadinessError { duration_ms: 1250 },
+        "broken@1.0.0",
+    );
+    let json = serde_json::to_string(&event).expect("serialize");
+    let parsed: PublishEvent = serde_json::from_str(&json).expect("deserialize");
+    match &parsed.event_type {
+        EventType::ReadinessError { duration_ms } => assert_eq!(*duration_ms, 1250),
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
 fn roundtrip_preflight_started_preserves_all_fields() {
     let event = fixed_event(EventType::PreflightStarted, "all");
     let json = serde_json::to_string(&event).expect("serialize");

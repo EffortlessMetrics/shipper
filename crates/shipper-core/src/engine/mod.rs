@@ -36,7 +36,6 @@ use crate::types::{Finishability, PreflightPackage};
 pub(crate) mod execute_package;
 mod preflight;
 mod publish;
-mod readiness;
 mod reconcile;
 mod rehearsal;
 #[cfg(test)]
@@ -1205,6 +1204,129 @@ mod tests {
         )
         .expect("verify");
         assert!(!ok);
+    }
+
+    /// The polling loop itself now lives in `shipper-registry`, but the
+    /// *event envelope* around it stays engine-side (issue #202). This pins
+    /// the ordering the engine is responsible for: `readiness_started` opens
+    /// the run, `readiness_complete` closes it, and every scheduled poll is
+    /// announced before the poll it schedules is recorded.
+    #[test]
+    fn verify_published_writes_readiness_events_in_envelope_order() {
+        let server = spawn_registry_server(
+            std::collections::BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(404, "{}".to_string()), (200, "{}".to_string())],
+            )]),
+            2,
+        );
+
+        let reg = RegistryClient::new(Registry {
+            name: "crates-io".to_string(),
+            api_base: server.base_url.clone(),
+            index_base: None,
+        })
+        .expect("client");
+
+        let config = crate::types::ReadinessConfig {
+            enabled: true,
+            method: crate::types::ReadinessMethod::Api,
+            initial_delay: Duration::from_millis(0),
+            max_delay: Duration::from_millis(50),
+            max_total_wait: Duration::from_secs(2),
+            poll_interval: Duration::from_millis(1),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        };
+
+        let mut reporter = CollectingReporter::default();
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        let mut event_log = events::EventLog::new();
+        let (ok, _evidence) = verify_published(
+            &reg,
+            "demo",
+            "0.1.0",
+            &config,
+            &mut reporter,
+            &mut event_log,
+            &events_path,
+            "demo@0.1.0",
+        )
+        .expect("verify");
+        assert!(ok);
+        server.join();
+
+        let raw = std::fs::read_to_string(&events_path).expect("events.jsonl");
+        let kinds: Vec<String> = raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).expect("event json");
+                v["event_type"]["type"]
+                    .as_str()
+                    .expect("event type tag")
+                    .to_string()
+            })
+            .collect();
+
+        assert_eq!(
+            kinds.first().map(String::as_str),
+            Some("readiness_started"),
+            "envelope must open with readiness_started: {kinds:?}"
+        );
+        assert_eq!(
+            kinds.last().map(String::as_str),
+            Some("readiness_complete"),
+            "envelope must close with readiness_complete: {kinds:?}"
+        );
+        assert!(
+            kinds.iter().any(|k| k == "readiness_poll"),
+            "the polling loop must contribute readiness_poll events: {kinds:?}"
+        );
+
+        // Every scheduled poll is announced before the poll it schedules.
+        let scheduled: Vec<u32> = raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).ok()?;
+                if v["event_type"]["type"] == "readiness_poll_scheduled" {
+                    v["event_type"]["attempt"].as_u64().map(|a| a as u32)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            !scheduled.is_empty(),
+            "a 404-then-200 run must schedule a second poll: {kinds:?}"
+        );
+        for attempt in scheduled {
+            let sched_idx = raw
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .position(|l| {
+                    let v: serde_json::Value = serde_json::from_str(l).expect("event json");
+                    v["event_type"]["type"] == "readiness_poll_scheduled"
+                        && v["event_type"]["attempt"].as_u64() == Some(attempt as u64)
+                })
+                .expect("scheduled event index");
+            let poll_idx = raw
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .position(|l| {
+                    let v: serde_json::Value = serde_json::from_str(l).expect("event json");
+                    v["event_type"]["type"] == "readiness_poll"
+                        && v["event_type"]["attempt"].as_u64() == Some(attempt as u64)
+                })
+                .expect("poll event index");
+            assert!(
+                sched_idx < poll_idx,
+                "attempt {attempt}: scheduling event must precede the poll it schedules"
+            );
+        }
     }
 
     #[test]
@@ -4292,6 +4414,20 @@ mod tests {
                     .all_events()
                     .iter()
                     .any(|event| matches!(event.event_type, EventType::ReadinessPoll { .. }))
+            );
+            let readiness_started = events
+                .all_events()
+                .iter()
+                .position(|event| matches!(event.event_type, EventType::ReadinessStarted { .. }))
+                .expect("production readiness envelope starts before polling");
+            let readiness_complete = events
+                .all_events()
+                .iter()
+                .position(|event| matches!(event.event_type, EventType::ReadinessComplete { .. }))
+                .expect("production readiness envelope completes after polling");
+            assert!(
+                readiness_started < readiness_complete,
+                "production readiness envelope must open before it closes"
             );
             assert!(
                 events

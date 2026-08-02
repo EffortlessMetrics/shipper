@@ -19,6 +19,30 @@ cargo fmt -p shipper-registry
 cargo clippy -p shipper-registry --all-targets --all-features -- -D warnings
 ```
 
+## Readiness ownership (issue #202)
+
+`RegistryClient::is_version_visible_with_backoff{,_and_events}` in
+`src/context.rs` is the **single** readiness polling loop for the workspace.
+`shipper-core`'s engine calls straight into it and keeps no copy, so changes
+here change engine behavior — treat it as production orchestration code, not
+a convenience helper.
+
+Two properties are load-bearing and covered by tests in this crate:
+
+- **Local index reads are offline.** When `ReadinessConfig::index_path` is
+  set, `visible_via_index` reads that file and parses it with
+  `shipper_sparse_index::contains_version`; it must not issue an HTTP
+  request. Tests assert a request count of zero against a counting mock.
+- **`ReadinessEvidence::delay_before` is the delay actually slept**, carried
+  forward in `pending_delay`, and equal to the `delay_ms` of the matching
+  `ReadinessPollScheduled` event. Never recompute it with a fresh jitter draw.
+
+The `ReadinessStarted` / `ReadinessComplete` / `ReadinessTimeout` /
+`ReadinessError` envelope,
+`Reporter` narration, and event-log persistence stay in `shipper-core`. This
+crate must not learn about `EventLog`, `events.jsonl`, or `Reporter` — that
+would invert the crate dependency.
+
 ## Context
 
 - Keep changes small and targeted to the crate’s existing abstractions.

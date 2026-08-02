@@ -30,8 +30,10 @@ except `lib.rs` re-exports and `shipper-cli`.
 - `engine/execute_package.rs` - canonical per-package Cargo/retry/readiness/
   reconciliation executor. Scheduling belongs to mode-specific scheduler
   modules; durable package outcomes belong here and in `transition.rs`.
-- `engine/readiness.rs` - shared registry-visibility polling with backoff,
-  jitter, sparse-index fallback, and readiness evidence.
+- Readiness polling is owned by
+  `shipper_registry::RegistryClient::is_version_visible_with_backoff{,_and_events}`.
+  The engine owns only the readiness event/reporter envelope; do not recreate
+  an engine-side polling loop.
 - `engine/reconcile.rs` - ambiguous-publish reconciliation against registry
   truth (`Published` / `NotPublished` / `StillUnknown`).
 - `engine/test_readiness.rs` - test-only reporter/event adapter for the

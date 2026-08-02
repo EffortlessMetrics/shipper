@@ -4224,6 +4224,7 @@ fn event_type_clears_next_action(event_type: &EventType) -> bool {
             | EventType::PublishReconciled { .. }
             | EventType::ReadinessComplete { .. }
             | EventType::ReadinessTimeout { .. }
+            | EventType::ReadinessError { .. }
     )
 }
 
@@ -4352,6 +4353,7 @@ fn event_type_name(event_type: &EventType) -> &'static str {
         EventType::ReadinessPollScheduled { .. } => "readiness_poll_scheduled",
         EventType::ReadinessComplete { .. } => "readiness_complete",
         EventType::ReadinessTimeout { .. } => "readiness_timeout",
+        EventType::ReadinessError { .. } => "readiness_error",
         EventType::IndexReadinessStarted { .. } => "index_readiness_started",
         EventType::IndexReadinessCheck { .. } => "index_readiness_check",
         EventType::IndexReadinessComplete { .. } => "index_readiness_complete",
@@ -4440,6 +4442,12 @@ fn summarize_event(event: &PublishEvent) -> String {
         ),
         EventType::ReadinessTimeout { max_wait_ms } => {
             format!("readiness timed out after {}", format_millis(*max_wait_ms))
+        }
+        EventType::ReadinessError { duration_ms } => {
+            format!(
+                "readiness check failed after {}",
+                format_millis(*duration_ms)
+            )
         }
         EventType::PublishReconciling { method } => {
             format!("reconciling publish outcome via {:?}", method)

@@ -1800,6 +1800,11 @@ pub enum EventType {
     ReadinessTimeout {
         max_wait_ms: u64,
     },
+    /// The readiness poll aborted before visibility or timeout was resolved.
+    /// `duration_ms` records elapsed time, not a configured wait budget.
+    ReadinessError {
+        duration_ms: u64,
+    },
     // Index readiness events
     IndexReadinessStarted {
         crate_name: String,
@@ -4918,7 +4923,7 @@ mod tests {
 
             // --- EventType all variants roundtrip ---
             #[test]
-            fn event_type_all_variants_roundtrip(variant in 0u8..23) {
+            fn event_type_all_variants_roundtrip(variant in 0u8..24) {
                 let event_type = match variant {
                     0 => EventType::PlanCreated { plan_id: "id1".to_string(), package_count: 5 },
                     1 => EventType::ExecutionStarted,
@@ -4941,11 +4946,12 @@ mod tests {
                     14 => EventType::ReadinessPollScheduled { attempt: 2, delay_ms: 1000, next_poll_at: Utc::now() },
                     15 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
                     16 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
-                    17 => EventType::IndexReadinessStarted { crate_name: "a".to_string(), version: "1.0.0".to_string() },
-                    18 => EventType::IndexReadinessCheck { crate_name: "a".to_string(), version: "1.0.0".to_string(), found: true },
-                    19 => EventType::IndexReadinessComplete { crate_name: "a".to_string(), version: "1.0.0".to_string(), visible: true },
-                    20 => EventType::RetryScheduled { attempt: 1, max_attempts: 3, delay_ms: 1000, next_attempt_at: Utc::now(), reason: ErrorClass::Retryable, message: "retry".to_string() },
-                    21 => EventType::PreflightStarted,
+                    17 => EventType::ReadinessError { duration_ms: 500 },
+                    18 => EventType::IndexReadinessStarted { crate_name: "a".to_string(), version: "1.0.0".to_string() },
+                    19 => EventType::IndexReadinessCheck { crate_name: "a".to_string(), version: "1.0.0".to_string(), found: true },
+                    20 => EventType::IndexReadinessComplete { crate_name: "a".to_string(), version: "1.0.0".to_string(), visible: true },
+                    21 => EventType::RetryScheduled { attempt: 1, max_attempts: 3, delay_ms: 1000, next_attempt_at: Utc::now(), reason: ErrorClass::Retryable, message: "retry".to_string() },
+                    22 => EventType::PreflightStarted,
                     _ => EventType::PreflightComplete { finishability: Finishability::Proven },
                 };
                 let json = serde_json::to_string(&event_type).unwrap();
@@ -5735,7 +5741,7 @@ mod tests {
 
             #[test]
             fn event_type_debug_never_panics(
-                variant in 0u8..23,
+                variant in 0u8..24,
                 msg in "\\PC{0,100}",
             ) {
                 let event_type = match variant {
@@ -5760,11 +5766,12 @@ mod tests {
                     14 => EventType::ReadinessPollScheduled { attempt: 2, delay_ms: 1000, next_poll_at: Utc::now() },
                     15 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
                     16 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
-                    17 => EventType::IndexReadinessStarted { crate_name: msg.clone(), version: "1.0.0".to_string() },
-                    18 => EventType::IndexReadinessCheck { crate_name: msg.clone(), version: "1.0.0".to_string(), found: true },
-                    19 => EventType::IndexReadinessComplete { crate_name: msg.clone(), version: "1.0.0".to_string(), visible: true },
-                    20 => EventType::RetryScheduled { attempt: 1, max_attempts: 3, delay_ms: 1000, next_attempt_at: Utc::now(), reason: ErrorClass::Retryable, message: msg.clone() },
-                    21 => EventType::PreflightStarted,
+                    17 => EventType::ReadinessError { duration_ms: 500 },
+                    18 => EventType::IndexReadinessStarted { crate_name: msg.clone(), version: "1.0.0".to_string() },
+                    19 => EventType::IndexReadinessCheck { crate_name: msg.clone(), version: "1.0.0".to_string(), found: true },
+                    20 => EventType::IndexReadinessComplete { crate_name: msg.clone(), version: "1.0.0".to_string(), visible: true },
+                    21 => EventType::RetryScheduled { attempt: 1, max_attempts: 3, delay_ms: 1000, next_attempt_at: Utc::now(), reason: ErrorClass::Retryable, message: msg.clone() },
+                    22 => EventType::PreflightStarted,
                     _ => EventType::PreflightComplete { finishability: Finishability::Proven },
                 };
                 let debug = format!("{:?}", event_type);

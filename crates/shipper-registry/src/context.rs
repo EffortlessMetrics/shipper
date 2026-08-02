@@ -213,6 +213,34 @@ impl RegistryClient {
         Ok(shipper_sparse_index::contains_version(content, version))
     }
 
+    /// Resolve index visibility for a readiness poll, honoring
+    /// [`ReadinessConfig::index_path`].
+    ///
+    /// When an operator configures a local sparse-index path, readiness is a
+    /// **local file read** — no network request is issued. This matters for
+    /// vendored/offline registries and for CI runners that mirror the index
+    /// on disk. Without the local path, this falls back to the HTTP sparse
+    /// index probe.
+    fn visible_via_index(
+        &self,
+        crate_name: &str,
+        version: &str,
+        config: &ReadinessConfig,
+    ) -> Result<bool> {
+        if let Some(path) = &config.index_path {
+            let content = std::fs::read_to_string(path).map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to read local sparse-index path {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
+            Ok(shipper_sparse_index::contains_version(&content, version))
+        } else {
+            self.check_index_visibility(crate_name, version)
+        }
+    }
+
     /// Attempt ownership verification for a crate.
     ///
     /// Returns true if ownership is verified, false if verification fails or endpoint is unavailable.
@@ -260,6 +288,16 @@ impl RegistryClient {
 
     /// Check if a version is visible with exponential backoff and jitter,
     /// emitting scheduling events for callers that persist release timelines.
+    ///
+    /// This is the single canonical readiness polling loop for the whole
+    /// workspace; `shipper-core`'s engine calls straight into it rather than
+    /// keeping a parallel copy.
+    ///
+    /// Evidence contract: each [`ReadinessEvidence::delay_before`] is the
+    /// delay that was **actually slept** immediately before that poll — the
+    /// same value carried by the matching `ReadinessPollScheduled` event.
+    /// Attempt 1 reports `config.initial_delay` when an initial delay was
+    /// slept, and `Duration::ZERO` otherwise.
     pub fn is_version_visible_with_backoff_and_events(
         &self,
         crate_name: &str,
@@ -286,6 +324,11 @@ impl RegistryClient {
         let start = Instant::now();
         let mut attempt: u32 = 0;
 
+        // `pending_delay` carries the delay that was *actually slept* before
+        // the upcoming poll, so the evidence record for that poll reports the
+        // real wait rather than an independently re-drawn jitter sample.
+        let mut pending_delay = Duration::ZERO;
+
         // Initial delay before first poll
         if config.initial_delay > Duration::ZERO {
             emit_event(readiness_poll_scheduled_event(
@@ -294,34 +337,24 @@ impl RegistryClient {
                 config.initial_delay,
             ))?;
             std::thread::sleep(config.initial_delay);
+            pending_delay = config.initial_delay;
         }
 
         loop {
             attempt += 1;
 
-            // Calculate delay for this iteration (used for evidence; applied after check)
-            let jittered_delay = if attempt == 1 {
-                Duration::ZERO
-            } else {
-                let base_delay = config.poll_interval;
-                let exponential_delay = base_delay
-                    .saturating_mul(2_u32.saturating_pow(attempt.saturating_sub(2).min(16)));
-                let capped_delay = exponential_delay.min(config.max_delay);
-                let jitter_range = config.jitter_factor;
-                let jitter = 1.0 + (rand::random::<f64>() * 2.0 * jitter_range - jitter_range);
-                Duration::from_millis((capped_delay.as_millis() as f64 * jitter).round() as u64)
-            };
+            let jittered_delay = pending_delay;
 
             // Check visibility based on method
             // Errors are treated as "not visible" to allow backoff retries
             let visible = match config.method {
                 ReadinessMethod::Api => self.version_exists(crate_name, version).unwrap_or(false),
                 ReadinessMethod::Index => self
-                    .check_index_visibility(crate_name, version)
+                    .visible_via_index(crate_name, version, config)
                     .unwrap_or(false),
                 ReadinessMethod::Both => {
                     if config.prefer_index {
-                        match self.check_index_visibility(crate_name, version) {
+                        match self.visible_via_index(crate_name, version, config) {
                             Ok(true) => true,
                             _ => self.version_exists(crate_name, version).unwrap_or(false),
                         }
@@ -329,7 +362,7 @@ impl RegistryClient {
                         match self.version_exists(crate_name, version) {
                             Ok(true) => true,
                             _ => self
-                                .check_index_visibility(crate_name, version)
+                                .visible_via_index(crate_name, version, config)
                                 .unwrap_or(false),
                         }
                     }
@@ -369,6 +402,7 @@ impl RegistryClient {
                 attempt.saturating_add(1),
                 next_delay,
             ))?;
+            pending_delay = next_delay;
             std::thread::sleep(next_delay);
         }
     }
@@ -435,6 +469,10 @@ pub struct Owner {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
 
     use tiny_http::{Response, Server, StatusCode};
@@ -5388,5 +5426,351 @@ mod tests {
         // Smoke test — the client is constructed and `registry()` is
         // still accessible.
         assert_eq!(cli.registry().name, "test");
+    }
+
+    // ── Canonical readiness loop: local sparse-index reads ──────────
+    //
+    // These characterization tests moved here from
+    // `shipper-core/src/engine/readiness.rs` when the engine's duplicate
+    // polling loop was retired (issue #202). `RegistryClient` is now the
+    // single implementation, so the local-index and evidence-delay
+    // properties must be proven at this layer.
+
+    /// Mock registry that counts every request it receives, so a test can
+    /// assert that a code path issued **zero** HTTP requests.
+    struct CountingServer {
+        base_url: String,
+        shutdown: Arc<AtomicBool>,
+        counter: Arc<AtomicUsize>,
+    }
+
+    impl CountingServer {
+        fn request_count(&self) -> usize {
+            self.counter.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for CountingServer {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Serve a fixed sequence of `(status, body)` responses regardless of
+    /// path; later requests reuse the last entry. The worker polls with a
+    /// short timeout so it exits promptly when the test drops the server.
+    fn spawn_counting_registry(responses: Vec<(u16, String)>) -> CountingServer {
+        let server = Server::http("127.0.0.1:0").expect("mock server");
+        let base_url = format!("http://{}", server.server_addr());
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
+
+        thread::spawn(move || {
+            let last = responses.last().cloned().unwrap_or((404, "{}".to_string()));
+            let mut iter = responses.into_iter();
+            while !shutdown_clone.load(Ordering::SeqCst) {
+                match server.recv_timeout(Duration::from_millis(50)) {
+                    Ok(Some(req)) => {
+                        counter_clone.fetch_add(1, Ordering::SeqCst);
+                        let (status, body) = iter.next().unwrap_or_else(|| last.clone());
+                        let resp = Response::from_string(body)
+                            .with_status_code(StatusCode(status))
+                            .with_header(
+                                tiny_http::Header::from_bytes("Content-Type", "application/json")
+                                    .expect("header"),
+                            );
+                        let _ = req.respond(resp);
+                    }
+                    Ok(None) => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+
+        CountingServer {
+            base_url,
+            shutdown,
+            counter,
+        }
+    }
+
+    fn counting_client(server: &CountingServer) -> RegistryClient {
+        let registry = Registry {
+            name: "mock-registry".to_string(),
+            api_base: server.base_url.clone(),
+            index_base: Some(format!("{}/index", server.base_url.trim_end_matches('/'))),
+        };
+        RegistryClient::new(registry).expect("registry client")
+    }
+
+    /// Write a line-delimited sparse-index fragment listing `versions`.
+    fn write_sparse_index(dir: &std::path::Path, versions: &[&str]) -> PathBuf {
+        let path = dir.join("index-snippet.json");
+        let mut f = std::fs::File::create(&path).expect("create index file");
+        for v in versions {
+            let entry = serde_json::json!({
+                "name": "demo",
+                "vers": v,
+                "deps": [],
+                "cksum": "",
+                "features": {},
+                "yanked": false,
+            });
+            writeln!(f, "{}", entry).expect("write entry");
+        }
+        path
+    }
+
+    fn readiness_config(method: ReadinessMethod) -> ReadinessConfig {
+        ReadinessConfig {
+            enabled: true,
+            method,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_millis(20),
+            max_total_wait: Duration::from_millis(150),
+            poll_interval: Duration::from_millis(5),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        }
+    }
+
+    #[test]
+    fn index_method_with_local_path_finds_version_without_network() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = write_sparse_index(td.path(), &["0.1.0", "1.2.3"]);
+
+        let server = spawn_counting_registry(vec![(404, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Index);
+        cfg.index_path = Some(path);
+
+        let (visible, _) = cli
+            .is_version_visible_with_backoff("demo", "1.2.3", &cfg)
+            .expect("backoff");
+
+        assert!(visible);
+        assert_eq!(
+            server.request_count(),
+            0,
+            "Index method with a local index_path must not hit the network"
+        );
+    }
+
+    #[test]
+    fn index_method_with_local_path_misses_unknown_version_without_network() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = write_sparse_index(td.path(), &["0.1.0"]);
+
+        let server = spawn_counting_registry(vec![(404, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Index);
+        cfg.index_path = Some(path);
+        cfg.max_total_wait = Duration::from_millis(40);
+
+        let (visible, _) = cli
+            .is_version_visible_with_backoff("demo", "9.9.9", &cfg)
+            .expect("backoff");
+
+        assert!(!visible);
+        assert_eq!(
+            server.request_count(),
+            0,
+            "a local-index miss must not fall through to the network in Index mode"
+        );
+    }
+
+    #[test]
+    fn visible_via_index_errors_when_local_path_missing() {
+        let server = spawn_counting_registry(vec![(404, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Index);
+        cfg.index_path = Some(PathBuf::from("/this/path/definitely/does/not/exist.json"));
+
+        let err = cli
+            .visible_via_index("demo", "1.0.0", &cfg)
+            .expect_err("missing local path must surface as error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("failed to read local sparse-index path"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn both_method_prefer_index_uses_local_path_without_api_call() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = write_sparse_index(td.path(), &["1.0.0"]);
+
+        let server = spawn_counting_registry(vec![(404, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Both);
+        cfg.prefer_index = true;
+        cfg.index_path = Some(path);
+
+        let (visible, _) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+            .expect("backoff");
+
+        assert!(visible);
+        assert_eq!(
+            server.request_count(),
+            0,
+            "prefer_index + local-index hit must not fall back to the api"
+        );
+    }
+
+    #[test]
+    fn both_method_prefer_index_falls_back_to_api_when_local_index_misses() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = write_sparse_index(td.path(), &["0.1.0"]);
+
+        let server = spawn_counting_registry(vec![(200, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Both);
+        cfg.prefer_index = true;
+        cfg.index_path = Some(path);
+
+        let (visible, _) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+            .expect("backoff");
+
+        assert!(visible, "api fallback should report visible");
+        assert!(
+            server.request_count() >= 1,
+            "api fallback must hit the network"
+        );
+    }
+
+    #[test]
+    fn both_method_default_tries_api_first_when_prefer_index_false() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = write_sparse_index(td.path(), &["1.0.0"]);
+
+        let server = spawn_counting_registry(vec![(200, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Both);
+        cfg.prefer_index = false;
+        cfg.index_path = Some(path);
+
+        let (visible, _) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+            .expect("backoff");
+
+        assert!(visible);
+        assert!(
+            server.request_count() >= 1,
+            "api must be tried first when prefer_index=false"
+        );
+    }
+
+    // ── Canonical readiness loop: evidence delay accounting ─────────
+
+    /// `delay_before` must equal the delay actually slept before that poll —
+    /// i.e. the delay announced by the preceding `ReadinessPollScheduled`
+    /// event. A fresh jitter draw at evidence time would break this, which
+    /// is exactly the drift issue #202 set out to remove. Jitter is turned
+    /// **up** here so a re-draw would almost certainly disagree.
+    #[test]
+    fn delay_before_matches_the_scheduled_sleep() {
+        let server = spawn_counting_registry(vec![
+            (404, "{}".to_string()),
+            (404, "{}".to_string()),
+            (200, "{}".to_string()),
+        ]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Api);
+        cfg.jitter_factor = 0.5;
+        cfg.poll_interval = Duration::from_millis(4);
+        cfg.max_delay = Duration::from_millis(40);
+        cfg.max_total_wait = Duration::from_secs(5);
+
+        let mut scheduled: Vec<(u32, Duration)> = Vec::new();
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff_and_events("demo", "1.0.0", &cfg, &mut |event| {
+                if let EventType::ReadinessPollScheduled {
+                    attempt, delay_ms, ..
+                } = event.event_type
+                {
+                    scheduled.push((attempt, Duration::from_millis(delay_ms)));
+                }
+                Ok(())
+            })
+            .expect("backoff");
+
+        assert!(visible);
+        assert!(evidence.len() >= 3, "expected at least three polls");
+        assert_eq!(
+            evidence[0].delay_before,
+            Duration::ZERO,
+            "no initial_delay was configured, so attempt 1 slept nothing"
+        );
+
+        for (attempt, delay) in scheduled {
+            let record = evidence
+                .iter()
+                .find(|e| e.attempt == attempt)
+                .unwrap_or_else(|| panic!("no evidence recorded for scheduled attempt {attempt}"));
+            assert_eq!(
+                record.delay_before, delay,
+                "attempt {attempt} evidence must report the delay that was scheduled and slept"
+            );
+        }
+    }
+
+    /// When `initial_delay` is slept before the first poll, attempt 1's
+    /// evidence reports that delay. Reporting `ZERO` would contradict the
+    /// `ReadinessPollScheduled { attempt: 1 }` event the loop already emits.
+    #[test]
+    fn first_attempt_records_the_initial_delay_it_slept() {
+        let server = spawn_counting_registry(vec![(200, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Api);
+        cfg.initial_delay = Duration::from_millis(30);
+
+        let mut scheduled: Vec<(u32, Duration)> = Vec::new();
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff_and_events("demo", "1.0.0", &cfg, &mut |event| {
+                if let EventType::ReadinessPollScheduled {
+                    attempt, delay_ms, ..
+                } = event.event_type
+                {
+                    scheduled.push((attempt, Duration::from_millis(delay_ms)));
+                }
+                Ok(())
+            })
+            .expect("backoff");
+
+        assert!(visible);
+        assert_eq!(evidence[0].attempt, 1);
+        assert_eq!(evidence[0].delay_before, Duration::from_millis(30));
+        assert_eq!(
+            scheduled.first().copied(),
+            Some((1, Duration::from_millis(30))),
+            "evidence must agree with the emitted scheduling event"
+        );
+    }
+
+    #[test]
+    fn first_attempt_records_zero_when_no_initial_delay_is_slept() {
+        let server = spawn_counting_registry(vec![(200, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let cfg = readiness_config(ReadinessMethod::Api);
+        let (_, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+            .expect("backoff");
+
+        assert_eq!(evidence[0].delay_before, Duration::ZERO);
     }
 }
