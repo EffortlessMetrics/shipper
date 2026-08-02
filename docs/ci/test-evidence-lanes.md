@@ -46,10 +46,11 @@ self-hosted runners in this order:
 CPX42 -> CX43 -> CX53
 ```
 
-Fallback paths use the tiny self-hosted fallback lane. Silent GitHub-hosted
-fallback is blocked: `shipper-swarm` workflow jobs run on self-hosted capacity,
-including the fallback route, unless a future policy PR explicitly restores a
-GitHub-hosted emergency path.
+The router and normalized-result bootstrap jobs run on GitHub-hosted
+infrastructure so they can observe an empty self-hosted pool. The selected
+Rust execution lane remains self-hosted when capacity is available. When no
+approved runner is idle, the router explicitly selects the full GitHub-hosted
+fallback lane; this is not a silent fallback or a label-triggered bypass.
 
 Public fork PRs are denied by the normalized result instead of running
 repository code on self-hosted runners. A maintainer can move trusted work onto

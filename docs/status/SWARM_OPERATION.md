@@ -172,10 +172,12 @@ Current routed Rust-small proof:
 - Current self-hosted fallback proof passed on post-merge `main` run
   `26413498807`; `Shipper Rust Tiny Fallback (routed to self-hosted)` and the
   normalized `Shipper Rust Small Result` both succeeded.
-- Current `shipper-swarm` policy routes all workflow jobs, including the tiny
-  fallback lane, to self-hosted runners. Do not sync that policy to
-  `EffortlessMetrics/shipper` until the release-authority runner and
-  credential boundaries are explicitly decided.
+- The router and normalized-result bootstrap jobs run on GitHub-hosted
+  infrastructure so an empty self-hosted pool can be detected. Selected Rust
+  execution lanes remain self-hosted when available; the explicit fallback
+  lane is GitHub-hosted and runs the full Rust-small command list. Do not sync
+  this swarm routing policy to `EffortlessMetrics/shipper` until the
+  release-authority runner and credential boundaries are explicitly decided.
 
 ## Credential Boundary
 

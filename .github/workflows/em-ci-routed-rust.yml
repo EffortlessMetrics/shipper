@@ -38,9 +38,11 @@ jobs:
   route:
     name: Route Shipper Rust Small
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on:
-      group: em-ci-nano
-      labels: [self-hosted, linux, x64, em-ci, cx23, ci-nano, trusted-pr]
+    # The router must be able to observe an empty self-hosted pool. Keeping
+    # this bootstrap job on GitHub-hosted infrastructure prevents the exact
+    # no-runner condition it is responsible for detecting from deadlocking
+    # the required result check.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       target: ${{ steps.pick.outputs.target }}
@@ -514,9 +516,10 @@ jobs:
     if: |
       always() &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on:
-      group: em-ci-nano
-      labels: [self-hosted, linux, x64, em-ci, cx23, ci-nano, trusted-pr]
+    # Result normalization is a small, non-secret reporting step. It must
+    # remain available when every optional self-hosted execution lane is
+    # offline, otherwise branch protection can never observe the fallback.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7.0.1
