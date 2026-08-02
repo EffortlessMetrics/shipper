@@ -1279,8 +1279,27 @@ pub fn run() -> Result<std::process::ExitCode> {
                     current_opts.state_dir = opts.state_dir.join(&reg.name);
                 }
 
+                // A resume with no state at all is not a resume *failure* —
+                // nothing was ever started. Say that, instead of wrapping it
+                // in the generic hint about plan-ID mismatch, corrupt state,
+                // and stale locks, none of which can apply here.
+                let resumable_state = shipper_core::runtime::execution::resolve_state_dir(
+                    &current_planned.workspace_root,
+                    &current_opts.state_dir,
+                )
+                .join(shipper_core::state::execution_state::STATE_FILE);
+                if !resumable_state.exists() {
+                    bail!(
+                        "nothing to resume: no publish state at {}\n  \
+                         * run `shipper plan` to preview the release\n  \
+                         * run `shipper publish` to start it — `resume` continues \
+                         an interrupted run, it does not begin one",
+                        resumable_state.display()
+                    );
+                }
+
                 let total_packages = current_planned.plan.packages.len();
-                let mut progress = ProgressReporter::new(total_packages, cli.quiet);
+                let progress = ProgressReporter::new(total_packages, cli.quiet);
                 let package_positions: BTreeMap<String, usize> = current_planned
                     .plan
                     .packages
@@ -1289,11 +1308,11 @@ pub fn run() -> Result<std::process::ExitCode> {
                     .map(|(idx, pkg)| (format!("{}@{}", pkg.name, pkg.version), idx + 1))
                     .collect();
 
-                // Show initial progress if we have packages
-                if total_packages > 0 {
-                    let first_pkg = &current_planned.plan.packages[0];
-                    progress.set_package(1, &first_pkg.name, &first_pkg.version);
-                }
+                // Deliberately no "[1/n] Publishing <first package>" line here.
+                // Resume exists precisely because earlier packages may already
+                // be published; announcing a publish of package 1 before the
+                // engine has read state claims work that usually does not
+                // happen. The engine narrates each package as it acts on it.
 
                 // Install the progress handle on the reporter so the engine's
                 // retry-backoff narration (#103) can drive a live TTY
@@ -1960,6 +1979,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                 &planned.workspace_root,
                 keep_receipt,
                 opts.force,
+                &cli.format,
             )?;
         }
         Commands::Config(_) => {
@@ -3512,7 +3532,15 @@ fn run_inspect_events(
 
     let event_logs = discover_event_logs(&state_dir)?;
     if event_logs.is_empty() {
-        println!("No event logs found under {}", state_dir.display());
+        // In `--format json` this command emits JSON Lines — one event per
+        // line — so "no events" must be zero lines on stdout, not an English
+        // sentence a consumer would try to parse. The notice still reaches a
+        // human, on stderr.
+        if format == "json" {
+            eprintln!("No event logs found under {}", state_dir.display());
+        } else {
+            println!("No event logs found under {}", state_dir.display());
+        }
         return Ok(());
     }
 
@@ -3657,6 +3685,16 @@ fn run_inspect_receipt(
     };
 
     let receipt_path = shipper_core::state::execution_state::receipt_path(&state_dir);
+    if !receipt_path.exists() {
+        bail!(
+            "no receipt at {} — receipts are written at the end of a `shipper publish` \
+             or `shipper resume` run\n  \
+             * run `shipper publish` first, or point at another run with `--state-dir <path>`\n  \
+             * `shipper inspect-events` reads the authoritative event log, which exists \
+             from the first event onward",
+            receipt_path.display()
+        );
+    }
     let content = std::fs::read_to_string(&receipt_path)
         .with_context(|| format!("failed to read receipt from {}", receipt_path.display()))?;
 
@@ -4574,11 +4612,36 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
     Ok(())
 }
 
+/// What `clean` did to one path, in the order it happened.
+///
+/// Collected rather than printed inline so the same walk can render as
+/// text or as the `shipper.clean.v1` JSON envelope. `clean` accepts the
+/// global `--format json` like every other command; before this it
+/// answered with English prose on stdout either way, which broke any
+/// pipeline that piped it to a JSON parser.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case", tag = "action", content = "path")]
+enum CleanAction {
+    Removed(String),
+    Kept(String),
+}
+
+#[derive(Debug, Serialize)]
+struct CleanReport {
+    schema_version: &'static str,
+    command: &'static str,
+    state_dir: String,
+    /// False when there was nothing to clean; `actions` is then empty.
+    state_dir_existed: bool,
+    actions: Vec<CleanAction>,
+}
+
 fn run_clean(
     state_dir: &PathBuf,
     workspace_root: &Path,
     keep_receipt: bool,
     force: bool,
+    format: &str,
 ) -> Result<()> {
     let abs_state = if state_dir.is_absolute() {
         state_dir.clone()
@@ -4586,8 +4649,14 @@ fn run_clean(
         workspace_root.join(state_dir)
     };
 
+    let json = format == "json";
+
     if !abs_state.exists() {
-        println!("State directory does not exist: {}", abs_state.display());
+        if json {
+            print_clean_report(&abs_state, false, Vec::new())?;
+        } else {
+            println!("State directory does not exist: {}", abs_state.display());
+        }
         return Ok(());
     }
 
@@ -4604,11 +4673,37 @@ fn run_clean(
         }
     }
 
+    let mut actions = Vec::new();
     for dir in dirs_to_clean {
-        clean_single_dir(&dir, workspace_root, keep_receipt, force)?;
+        actions.extend(clean_single_dir(&dir, workspace_root, keep_receipt, force)?);
     }
 
+    if json {
+        return print_clean_report(&abs_state, true, actions);
+    }
+
+    for action in &actions {
+        match action {
+            CleanAction::Removed(path) => println!("Removed: {path}"),
+            CleanAction::Kept(path) => println!("Kept: {path} (--keep-receipt specified)"),
+        }
+    }
     println!("Clean complete");
+    Ok(())
+}
+
+fn print_clean_report(state_dir: &Path, existed: bool, actions: Vec<CleanAction>) -> Result<()> {
+    let report = CleanReport {
+        schema_version: "shipper.clean.v1",
+        command: "clean",
+        state_dir: state_dir.display().to_string(),
+        state_dir_existed: existed,
+        actions,
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).context("serialize clean report")?
+    );
     Ok(())
 }
 
@@ -4617,7 +4712,8 @@ fn clean_single_dir(
     workspace_root: &Path,
     keep_receipt: bool,
     force: bool,
-) -> Result<()> {
+) -> Result<Vec<CleanAction>> {
+    let mut actions = Vec::new();
     let state_path = dir.join(shipper_core::state::execution_state::STATE_FILE);
     let receipt_path = dir.join(shipper_core::state::execution_state::RECEIPT_FILE);
     let reconciliation_path = dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE);
@@ -4657,7 +4753,7 @@ fn clean_single_dir(
     if state_path.exists() {
         std::fs::remove_file(&state_path)
             .with_context(|| format!("failed to remove state file {}", state_path.display()))?;
-        println!("Removed: {}", state_path.display());
+        actions.push(CleanAction::Removed(state_path.display().to_string()));
     }
 
     // Remove event logs (authoritative + preflight-only sidecars)
@@ -4666,7 +4762,7 @@ fn clean_single_dir(
             std::fs::remove_file(&events_path).with_context(|| {
                 format!("failed to remove events file {}", events_path.display())
             })?;
-            println!("Removed: {}", events_path.display());
+            actions.push(CleanAction::Removed(events_path.display().to_string()));
         }
     }
 
@@ -4674,12 +4770,9 @@ fn clean_single_dir(
     if !keep_receipt && receipt_path.exists() {
         std::fs::remove_file(&receipt_path)
             .with_context(|| format!("failed to remove receipt file {}", receipt_path.display()))?;
-        println!("Removed: {}", receipt_path.display());
+        actions.push(CleanAction::Removed(receipt_path.display().to_string()));
     } else if keep_receipt && receipt_path.exists() {
-        println!(
-            "Kept: {} (--keep-receipt specified)",
-            receipt_path.display()
-        );
+        actions.push(CleanAction::Kept(receipt_path.display().to_string()));
     }
 
     if !keep_receipt && reconciliation_path.exists() {
@@ -4689,12 +4782,11 @@ fn clean_single_dir(
                 reconciliation_path.display()
             )
         })?;
-        println!("Removed: {}", reconciliation_path.display());
+        actions.push(CleanAction::Removed(
+            reconciliation_path.display().to_string(),
+        ));
     } else if keep_receipt && reconciliation_path.exists() {
-        println!(
-            "Kept: {} (--keep-receipt specified)",
-            reconciliation_path.display()
-        );
+        actions.push(CleanAction::Kept(reconciliation_path.display().to_string()));
     }
 
     // Remove cache directory if exists
@@ -4702,10 +4794,10 @@ fn clean_single_dir(
     if cache_dir.exists() {
         std::fs::remove_dir_all(&cache_dir)
             .with_context(|| format!("failed to remove cache directory {}", cache_dir.display()))?;
-        println!("Removed: {}", cache_dir.display());
+        actions.push(CleanAction::Removed(cache_dir.display().to_string()));
     }
 
-    Ok(())
+    Ok(actions)
 }
 
 fn run_config(cmd: ConfigCommands) -> Result<()> {
@@ -4721,7 +4813,14 @@ fn run_config(cmd: ConfigCommands) -> Result<()> {
         }
         ConfigCommands::Validate { path } => {
             if !path.exists() {
-                bail!("Config file not found: {}", path.display());
+                bail!(
+                    "Config file not found: {}\n  \
+                     * run `shipper config init` to write a documented default there\n  \
+                     * or point at an existing file with `shipper config validate --path <file>`\n  \
+                     Shipper runs fine without a config file — every setting has a default \
+                     and CLI flags override both.",
+                    path.display()
+                );
             }
             let config = ShipperConfig::load_from_file(&path)
                 .with_context(|| format!("Failed to load config file: {}", path.display()))?;
@@ -5788,7 +5887,7 @@ mode = "fast"
         )
         .expect("write lock");
 
-        let err = run_clean(&state_dir, td.path(), false, false).expect_err("must fail");
+        let err = run_clean(&state_dir, td.path(), false, false, "text").expect_err("must fail");
         assert!(err.to_string().contains("cannot clean: active lock exists"));
         assert!(lock_path.exists());
     }
@@ -5827,7 +5926,7 @@ mode = "fast"
         )
         .expect("write lock");
 
-        run_clean(&state_dir, td.path(), false, true).expect("clean with force");
+        run_clean(&state_dir, td.path(), false, true, "text").expect("clean with force");
 
         assert!(!state_path.exists(), "state file should be removed");
         assert!(!receipt_path.exists(), "receipt file should be removed");

@@ -407,7 +407,8 @@ mod resume_no_state {
             .arg("resume")
             .assert()
             .failure()
-            .stderr(contains("no existing state found"));
+            .stderr(contains("nothing to resume"))
+            .stderr(contains("shipper publish"));
     }
 
     /// Given an empty state directory,
@@ -428,7 +429,8 @@ mod resume_no_state {
             .arg("resume")
             .assert()
             .failure()
-            .stderr(contains("no existing state found"));
+            .stderr(contains("nothing to resume"))
+            .stderr(contains("shipper publish"));
     }
 
     /// Given a corrupted state file,
@@ -470,7 +472,8 @@ mod resume_no_state {
             .arg("resume")
             .assert()
             .failure()
-            .stderr(contains("no existing state found"));
+            .stderr(contains("nothing to resume"))
+            .stderr(contains("shipper publish"));
     }
 }
 

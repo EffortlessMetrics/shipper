@@ -204,7 +204,8 @@ fn resume_no_state_file_shows_error() {
         .arg("resume")
         .assert()
         .failure()
-        .stderr(contains("no existing state found"));
+        .stderr(contains("nothing to resume"))
+        .stderr(contains("shipper publish"));
 }
 
 // ============================================================================
@@ -452,7 +453,8 @@ fn resume_with_custom_state_dir() {
         .arg("resume")
         .assert()
         .failure()
-        .stderr(contains("no existing state found"));
+        .stderr(contains("nothing to resume"))
+        .stderr(contains("shipper publish"));
 
     // Default .shipper dir should not have been created
     assert!(
