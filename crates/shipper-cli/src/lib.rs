@@ -1185,7 +1185,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                 opts.registries.clone()
             };
 
-            let mut last_exit_code = std::process::ExitCode::SUCCESS;
+            let mut worst_outcome: Option<ExecutionResult> = None;
             for reg in target_registries {
                 if opts.registries.len() > 1 {
                     if cli.format == "json" {
@@ -1243,10 +1243,12 @@ pub fn run() -> Result<std::process::ExitCode> {
                     &cli.format,
                 )?;
 
-                last_exit_code = exit_code_for_result(&receipt.execution_result);
+                worst_outcome = Some(worst_result(worst_outcome, &receipt.execution_result));
             }
 
-            return Ok(last_exit_code);
+            return Ok(worst_outcome
+                .as_ref()
+                .map_or(std::process::ExitCode::SUCCESS, exit_code_for_result));
         }
         Commands::Resume => {
             let target_registries = if opts.registries.is_empty() {
@@ -1255,7 +1257,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                 opts.registries.clone()
             };
 
-            let mut last_exit_code = std::process::ExitCode::SUCCESS;
+            let mut worst_outcome: Option<ExecutionResult> = None;
             for reg in target_registries {
                 if opts.registries.len() > 1 {
                     if cli.format == "json" {
@@ -1312,10 +1314,12 @@ pub fn run() -> Result<std::process::ExitCode> {
                     &cli.format,
                 )?;
 
-                last_exit_code = exit_code_for_result(&receipt.execution_result);
+                worst_outcome = Some(worst_result(worst_outcome, &receipt.execution_result));
             }
 
-            return Ok(last_exit_code);
+            return Ok(worst_outcome
+                .as_ref()
+                .map_or(std::process::ExitCode::SUCCESS, exit_code_for_result));
         }
         Commands::Rehearse => {
             let outcome = engine::run_rehearsal(&planned, &opts, &mut reporter)?;
@@ -1724,7 +1728,7 @@ pub fn run() -> Result<std::process::ExitCode> {
             match cli.format.as_str() {
                 "json" => {
                     let report = PlanYankJsonReport {
-                        schema_version: "shipper.plan_yank.v1",
+                        schema_version: plan_yank::PLAN_YANK_SCHEMA_VERSION,
                         command: "plan-yank",
                         plan: &plan,
                     };
@@ -1979,12 +1983,20 @@ pub fn run() -> Result<std::process::ExitCode> {
 /// | Code | Meaning |
 /// |-----:|---------|
 /// | 0 | All packages published/skipped (`Success`) |
-/// | 1 | All packages failed / general error (`CompleteFailure`) |
-/// | 2 | Some packages published, some failed — resume is safe (`PartialFailure`) |
+/// | 1 | All packages failed (`CompleteFailure`) |
+/// | 2 | Some package did not reach a successful terminal state (`PartialFailure`) |
 ///
 /// The `PartialFailure → 2` mapping is the key integration improvement: a CI
 /// pipeline can check `if exit_code == 2` to trigger a `shipper resume` step
 /// rather than treating the run as a hard failure.
+///
+/// Note that finalization does not currently produce `CompleteFailure`:
+/// `sequential_execution_result` / `parallel_execution_result` classify
+/// every non-all-successful receipt as `PartialFailure`, so an all-failed
+/// run also exits 2. Exit 1 reaches the process from the `Err` path in
+/// `main` instead — an error that ended the run before a receipt was
+/// finalized. Changing that classification is a behavior change for CI
+/// consumers and is deliberately not made here.
 fn exit_code_for_result(result: &ExecutionResult) -> std::process::ExitCode {
     use std::process::ExitCode;
     match result {
@@ -1993,6 +2005,32 @@ fn exit_code_for_result(result: &ExecutionResult) -> std::process::ExitCode {
         // the intended next step — distinguish from a hard error (exit 1).
         ExecutionResult::PartialFailure => ExitCode::from(2),
         ExecutionResult::CompleteFailure => ExitCode::FAILURE,
+    }
+}
+
+/// Rank an [`ExecutionResult`] by severity, worst-highest.
+///
+/// Exit *codes* are not ordered by severity (`PartialFailure` is 2,
+/// `CompleteFailure` is 1), so multi-registry runs cannot just keep the
+/// numerically larger code. They rank, then map once at the end.
+fn result_severity(result: &ExecutionResult) -> u8 {
+    match result {
+        ExecutionResult::Success => 0,
+        ExecutionResult::PartialFailure => 1,
+        ExecutionResult::CompleteFailure => 2,
+    }
+}
+
+/// Keep the worse of two outcomes.
+///
+/// `--registries` / `--all-registries` publish to each registry in turn.
+/// Reporting only the last registry's outcome lets a partial failure on
+/// an earlier registry be masked by a success on the last one, and a CI
+/// job reading exit 0 would advance on an incomplete release.
+fn worst_result(current: Option<ExecutionResult>, next: &ExecutionResult) -> ExecutionResult {
+    match current {
+        Some(current) if result_severity(&current) >= result_severity(next) => current,
+        _ => next.clone(),
     }
 }
 
@@ -4715,6 +4753,41 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    // ── Multi-registry exit-code aggregation ────────────────────────
+
+    #[test]
+    fn worst_result_keeps_the_worse_outcome_regardless_of_order() {
+        use ExecutionResult::{CompleteFailure, PartialFailure, Success};
+
+        // A later success must not mask an earlier failure: with
+        // `--registries a,b`, a partial failure on `a` followed by a clean
+        // `b` used to exit 0 because only the last outcome was kept.
+        assert!(matches!(
+            worst_result(Some(PartialFailure), &Success),
+            PartialFailure
+        ));
+        assert!(matches!(
+            worst_result(Some(Success), &PartialFailure),
+            PartialFailure
+        ));
+        assert!(matches!(
+            worst_result(Some(PartialFailure), &CompleteFailure),
+            CompleteFailure
+        ));
+        // Severity, not exit-code magnitude: CompleteFailure exits 1 and
+        // PartialFailure exits 2, so a numeric max would pick the wrong one.
+        assert!(matches!(
+            worst_result(Some(CompleteFailure), &PartialFailure),
+            CompleteFailure
+        ));
+        // First registry seeds the accumulator.
+        assert!(matches!(
+            worst_result(None, &PartialFailure),
+            PartialFailure
+        ));
+        assert!(matches!(worst_result(Some(Success), &Success), Success));
+    }
 
     #[derive(Default)]
     struct TestReporter {
