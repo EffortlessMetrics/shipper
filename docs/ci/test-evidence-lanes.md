@@ -87,10 +87,16 @@ cargo check --workspace --locked --all-targets
 cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 cargo nextest run --workspace --locked --all-targets --all-features --profile ci
 cargo test --workspace --locked --doc
+cargo package --workspace --locked --exclude xtask
 cargo run -p shipper -- --help
 cargo run -p shipper -- plan --help
 cargo run -p shipper -- preflight --help
 ```
+
+`cargo package` proves each crate builds from its own `.crate` tarball with
+path dependencies resolved through version requirements — the check the
+`install-smoke` lane structurally cannot make, because `cargo install --path`
+resolves path deps directly.
 
 `cargo fmt --check` and `cargo clippy` run here — not only in `ci.yml`'s
 `lint` job — because `ci.yml` has no `pull_request` trigger. Without them

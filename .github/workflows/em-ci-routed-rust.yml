@@ -264,6 +264,14 @@ jobs:
       - name: Test docs
         run: cargo test --workspace --locked --doc
 
+      # Proves every crate builds from its own `.crate` tarball, with
+      # intra-workspace path dependencies resolved through their version
+      # requirements. `cargo install --path` cannot catch this: path deps
+      # short-circuit the check, which is what let the rc.1 first-publish
+      # fail after the irreversible step.
+      - name: Package check
+        run: cargo package --workspace --locked --exclude xtask
+
       - name: Smoke CLI help
         run: |
           cargo run -p shipper -- --help
@@ -332,6 +340,7 @@ jobs:
           cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
           cargo nextest run --workspace --locked --all-targets --all-features --profile ci
           cargo test --workspace --locked --doc
+          cargo package --workspace --locked --exclude xtask
           cargo run -p shipper -- --help
           cargo run -p shipper -- plan --help
           cargo run -p shipper -- preflight --help
@@ -389,6 +398,14 @@ jobs:
 
       - name: Test docs
         run: cargo test --workspace --locked --doc
+
+      # Proves every crate builds from its own `.crate` tarball, with
+      # intra-workspace path dependencies resolved through their version
+      # requirements. `cargo install --path` cannot catch this: path deps
+      # short-circuit the check, which is what let the rc.1 first-publish
+      # fail after the irreversible step.
+      - name: Package check
+        run: cargo package --workspace --locked --exclude xtask
 
       - name: Smoke CLI help
         run: |
@@ -471,6 +488,14 @@ jobs:
 
       - name: Test docs
         run: cargo test --workspace --locked --doc
+
+      # Proves every crate builds from its own `.crate` tarball, with
+      # intra-workspace path dependencies resolved through their version
+      # requirements. `cargo install --path` cannot catch this: path deps
+      # short-circuit the check, which is what let the rc.1 first-publish
+      # fail after the irreversible step.
+      - name: Package check
+        run: cargo package --workspace --locked --exclude xtask
 
       - name: Smoke CLI help
         run: |
