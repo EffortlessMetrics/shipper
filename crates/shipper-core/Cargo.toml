@@ -7,8 +7,8 @@ rust-version.workspace = true
 description = "Core library behind the `shipper` CLI: engine, planning, state, registry, and remediation primitives for `cargo publish` workspaces."
 readme = "README.md"
 documentation = "https://docs.rs/shipper-core"
-homepage = "https://github.com/EffortlessMetrics/shipper"
-repository = "https://github.com/EffortlessMetrics/shipper"
+homepage.workspace = true
+repository.workspace = true
 keywords = ["cargo", "publish", "workspace", "release"]
 categories = ["development-tools", "development-tools::build-utils"]
 

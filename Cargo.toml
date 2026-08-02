@@ -24,6 +24,10 @@ version = "0.4.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
+# `EffortlessMetrics/shipper` is the release authority for crates.io (see
+# CLAUDE.md); published crates point there, not at this development repo.
+homepage = "https://github.com/EffortlessMetrics/shipper"
+repository = "https://github.com/EffortlessMetrics/shipper"
 
 [workspace.lints.rust]
 # Rust 1.95 compiler-side lint floor. Zero current fallout per the audit in

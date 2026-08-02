@@ -7,8 +7,8 @@ rust-version.workspace = true
 description = "CLI adapter for Shipper; install the user-facing `shipper` package unless embedding the adapter."
 readme = "README.md"
 documentation = "https://docs.rs/shipper-cli"
-homepage = "https://github.com/EffortlessMetrics/shipper"
-repository = "https://github.com/EffortlessMetrics/shipper"
+homepage.workspace = true
+repository.workspace = true
 keywords = ["cargo", "publish", "workspace", "cli", "ci"]
 categories = ["command-line-utilities", "development-tools"]
 # `build.rs` emits git SHA, build profile, and rustc version as

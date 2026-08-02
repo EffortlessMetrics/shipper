@@ -23,6 +23,26 @@ Post-0.4.0 release cleanup. Resolves the carry-over items flagged in the
   carries `#[serial]`, bringing it into the same serialization group as the
   engine integration tests that share the `SHIPPER_GIT_BIN` environment
   variable.
+- **Resume fidelity: attempt history survives the event boundary.** Attempt
+  details are persisted through the transition boundary and the attempt history
+  is rebuilt from `events.jsonl`, so a resumed run reports the attempts the
+  original run actually made instead of starting the count over
+  ([#162](https://github.com/EffortlessMetrics/shipper/issues/162),
+  [#195](https://github.com/EffortlessMetrics/shipper/issues/195)).
+- **Resume fidelity: uploaded and pending-reconciliation checkpoints.** An
+  interruption after upload but before the readiness check now persists that
+  checkpoint, and pending reconciliation state is projected into `state.json`
+  rather than being lost, so resume picks up at the real position
+  ([#159](https://github.com/EffortlessMetrics/shipper/issues/159),
+  [#160](https://github.com/EffortlessMetrics/shipper/issues/160)).
+- **Sequential and parallel modes agree.** `Published` / `Skipped` resume-skip
+  handling moved into the shared package executor so both schedulers take the
+  same trusted path, a failed level no longer discards the previous level's
+  execution state, and a table-driven mode-parity corpus (clean publish,
+  permanent failure, already-published, `StillUnknown`) holds the two modes to
+  the same observable outcome
+  ([#153](https://github.com/EffortlessMetrics/shipper/issues/153),
+  [#196](https://github.com/EffortlessMetrics/shipper/issues/196)).
 - **No-panic baseline at zero.** The final 8 production panic sites (inline
   `.lock().unwrap()` in `publish.rs`, `receipt["k"]` JSON indexing in
   `execution_state/mod.rs`, `.expect()` invariants in `plan/graph.rs` and

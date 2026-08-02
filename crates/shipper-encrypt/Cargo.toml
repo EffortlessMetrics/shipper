@@ -5,10 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "State file encryption for shipper using AES-256-GCM"
-repository = "https://github.com/EffortlessMetrics/shipper"
+homepage.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/shipper-encrypt"
 keywords = ["encryption", "aes", "gcm", "pbkdf2", "security"]
-categories = ["cryptography", "security"]
+categories = ["cryptography"]
 
 [dependencies]
 serde.workspace = true
