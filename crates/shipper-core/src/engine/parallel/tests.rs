@@ -6439,6 +6439,7 @@ const MODE_PARITY_CORPUS: &[ModeParityCase] = &[
 struct ModeRunOutcome {
     ok: bool,
     error: Option<String>,
+    receipts: Vec<PackageReceipt>,
     state: ExecutionState,
     events_path: PathBuf,
     state_dir: PathBuf,
@@ -6706,6 +6707,7 @@ fn run_mode_parity_case(
     });
     let error = result.as_ref().err().map(ToString::to_string);
     let ok = result.is_ok();
+    let receipts = result.as_ref().ok().cloned().unwrap_or_default();
 
     if let Some(server) = server {
         server.join();
@@ -6714,6 +6716,7 @@ fn run_mode_parity_case(
     ModeRunOutcome {
         ok,
         error,
+        receipts,
         state,
         events_path,
         state_dir,
@@ -6822,6 +6825,11 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
         );
     }
 
+    assert_receipt_parity(case.name, seq, par);
+    if !matches!(case.scenario, ModeParityScenario::EventWriteFailure) {
+        assert_semantic_event_sequences_match(seq, par, case.name);
+    }
+
     match case.scenario {
         ModeParityScenario::CleanPublish => {
             assert!(seq.ok, "{}: clean publish should succeed", case.name);
@@ -6908,7 +6916,6 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
         }
         ModeParityScenario::RetryableExhaustion => {
             assert!(!seq.ok, "{}: retryable exhaustion should err", case.name);
-            assert_semantic_event_sequences_match(seq, par, case.name);
             let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
             assert!(
                 matches!(
@@ -6970,7 +6977,6 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
         }
         ModeParityScenario::AmbiguousResolvesPublished => {
             assert!(seq.ok, "{}: visible ambiguity should succeed", case.name);
-            assert_semantic_event_sequences_match(seq, par, case.name);
             let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
             assert!(
                 matches!(pkg.state, PackageState::Published),
@@ -6990,7 +6996,6 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
         }
         ModeParityScenario::AmbiguousRetriesWhenNotPublished => {
             assert!(!seq.ok, "{}: unresolved ambiguity should fail", case.name);
-            assert_semantic_event_sequences_match(seq, par, case.name);
             let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
             assert!(
                 matches!(
@@ -7020,7 +7025,6 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
                 "{}: StillUnknown must stop with an error",
                 case.name
             );
-            assert_semantic_event_sequences_match(seq, par, case.name);
             let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
             assert!(
                 matches!(pkg.state, PackageState::Ambiguous { .. }),
@@ -7126,6 +7130,74 @@ fn cargo_invocation_count(outcome: &ModeRunOutcome) -> usize {
                 .count()
         })
         .unwrap_or(0)
+}
+
+fn assert_receipt_parity(case_name: &str, seq: &ModeRunOutcome, par: &ModeRunOutcome) {
+    let seq_receipts = normalized_receipts(&seq.receipts, case_name, "seq");
+    let par_receipts = normalized_receipts(&par.receipts, case_name, "par");
+    assert_eq!(
+        seq_receipts, par_receipts,
+        "{case_name}: sequential and parallel receipt evidence differs"
+    );
+}
+
+fn normalized_receipts(
+    receipts: &[PackageReceipt],
+    case_name: &str,
+    mode: &str,
+) -> Vec<serde_json::Value> {
+    let mut normalized = receipts
+        .iter()
+        .map(|receipt| {
+            let mut value = serde_json::to_value(receipt)
+                .unwrap_or_else(|e| panic!("{case_name} {mode}: serialize receipt: {e}"));
+            strip_nondeterministic_receipt_fields(&mut value);
+            value
+        })
+        .collect::<Vec<_>>();
+    normalized.sort_by_key(|value| {
+        (
+            value
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            value
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        )
+    });
+    normalized
+}
+
+fn strip_nondeterministic_receipt_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for field in [
+                "started_at",
+                "finished_at",
+                "duration_ms",
+                "timestamp",
+                "duration",
+            ] {
+                fields.remove(field);
+            }
+            for child in fields.values_mut() {
+                strip_nondeterministic_receipt_fields(child);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                strip_nondeterministic_receipt_fields(value);
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
 }
 
 fn assert_semantic_event_sequences_match(
