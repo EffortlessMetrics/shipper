@@ -270,7 +270,7 @@ crates/shipper/src/
     │   ├── CLAUDE.md
     │   ├── mod.rs
     │   ├── metadata.rs
-    │   └── publish.rs
+    │   └── execute_package.rs
     └── storage/                        ← shipper-storage
         ├── CLAUDE.md
         ├── mod.rs
@@ -336,7 +336,7 @@ crates/shipper-cli/src/
 ├── commands/
 │   ├── CLAUDE.md
 │   ├── mod.rs
-│   ├── plan.rs, preflight.rs, publish.rs, resume.rs,
+│   ├── plan.rs, preflight.rs, execute_package.rs, resume.rs,
 │   ├── status.rs, doctor.rs, inspect_events.rs,
 │   ├── inspect_receipt.rs, clean.rs, config.rs
 │   └── (folders only when a command grows past one file)

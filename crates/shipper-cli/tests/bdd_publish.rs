@@ -303,6 +303,12 @@ fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
+fn loopback_shipper_cmd() -> Command {
+    let mut command = shipper_cmd();
+    command.arg("--allow-loopback");
+    command
+}
+
 // ============================================================================
 // Feature: Deterministic Publish Order
 // ============================================================================
@@ -318,7 +324,7 @@ mod deterministic_publish_order {
         create_workspace(td.path());
 
         // When: We run shipper plan
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -408,7 +414,7 @@ mode = "fast"
 
         let registry = spawn_registry(vec![404, 404, 404, 404, 404, 404], 6);
 
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -444,7 +450,7 @@ mode = "fast"
         let registry = spawn_registry(vec![404, 404, 404, 404, 404, 404], 6);
 
         // When: Running preflight without a token (using fast policy to skip dry-run)
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -483,7 +489,7 @@ mode = "fast"
         let registry = spawn_registry(vec![404, 404, 404, 404, 404, 404], 6);
 
         // When: Running preflight without a token (using fast policy to skip dry-run)
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -521,7 +527,7 @@ mode = "fast"
         // Mock registry returns 200 for version_exists (already published) - 3 crates x 2 checks
         let registry = spawn_registry(vec![200, 200, 200, 200, 200, 200], 6);
 
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -578,7 +584,7 @@ mod resumability {
         // First publish (should succeed)
         let registry = spawn_registry(vec![404, 200, 404, 200, 404, 200], 6);
 
-        let mut publish = shipper_cmd();
+        let mut publish = loopback_shipper_cmd();
         publish
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -606,7 +612,7 @@ mod resumability {
         let registry2 = spawn_registry(vec![200, 200, 200], 3);
 
         // Resume should see everything is published
-        let mut resume = shipper_cmd();
+        let mut resume = loopback_shipper_cmd();
         let out = resume
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -663,7 +669,7 @@ mod readiness_modes {
 
         let registry = spawn_index_readiness_registry("demo", "0.1.0");
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -715,7 +721,7 @@ mod policy_modes {
         // 3 crates x (version check + new crate check) = 6 requests
         let registry = spawn_registry(vec![404, 404, 404, 404, 404, 404], 6);
 
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -751,7 +757,7 @@ mod policy_modes {
         // 3 crates x (version check + new crate check) = 6 requests
         let registry = spawn_registry(vec![404, 404, 404, 404, 404, 404], 6);
 
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -790,7 +796,7 @@ mod policy_modes {
         // 3 crates x (version check + new crate check) = 6 requests
         let registry = spawn_registry(vec![404, 404, 404, 404, 404, 404], 6);
 
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -835,7 +841,7 @@ mod output_formats {
         // 3 crates x (version check + new crate check) = 6 requests (using fast policy)
         let registry = spawn_registry(vec![404, 404, 404, 404, 404, 404], 6);
 
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -872,7 +878,7 @@ mod output_formats {
 
         let registry = spawn_registry(vec![404], 3);
 
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -918,7 +924,7 @@ mod error_handling {
         let td = tempdir().expect("tempdir");
         create_workspace(td.path());
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--base-delay")
@@ -935,7 +941,7 @@ mod error_handling {
         let td = tempdir().expect("tempdir");
         create_workspace(td.path());
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--base-delay")
@@ -953,7 +959,7 @@ mod error_handling {
         let td = tempdir().expect("tempdir");
         create_workspace(td.path());
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--max-attempts")
@@ -977,7 +983,7 @@ mod error_handling {
         let td = tempdir().expect("tempdir");
         create_workspace(td.path());
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--retry-strategy")
@@ -1010,7 +1016,7 @@ mod error_handling {
     fn given_missing_manifest_when_cli_then_error() {
         let td = tempdir().expect("tempdir");
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("nonexistent").join("Cargo.toml"))
             .arg("plan")
@@ -1032,7 +1038,7 @@ mod ci_templates {
         let td = tempdir().expect("tempdir");
         create_workspace(td.path());
 
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -1055,7 +1061,7 @@ mod ci_templates {
         let td = tempdir().expect("tempdir");
         create_workspace(td.path());
 
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -1077,7 +1083,7 @@ mod ci_templates {
         let td = tempdir().expect("tempdir");
         create_workspace(td.path());
 
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -1107,7 +1113,7 @@ mod ci_templates {
         let td = tempdir().expect("tempdir");
         create_workspace(td.path());
 
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -1156,7 +1162,7 @@ mod output_sanitization {
 
         let registry = spawn_registry(vec![404, 200], 4);
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")

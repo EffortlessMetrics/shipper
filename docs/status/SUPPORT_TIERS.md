@@ -3,12 +3,12 @@
 Status: accepted
 Owner: EffortlessMetrics
 Created: 2026-05-13
-Milestone: 0.4.0
+Milestone: 0.5.0 release-line stabilization
 Linked proposal: docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md
 Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md; docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md; docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md; docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md; docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Linked ADRs:
 Linked plan:
-Linked issues: #109, #195
+Linked issues: #109, #153, #195, #202, #205, #419, #420, #421, #422
 Linked PRs:
 Support-tier impact: source of truth
 Policy impact: policy ledgers remain the source of truth for exceptions and receipts
@@ -42,7 +42,7 @@ make stronger claims than this file supports.
 | No-panic production baseline | stable/internal | `cargo xtask no-panic check`; `policy/no-panic-baseline.json` | rust/lints |
 | ripr exposure signal | advisory | `cargo xtask ripr-pr`; repo-scoped badge artifacts | release/ci |
 | Mutation PR lane | advisory | `cargo xtask mutants-pr --changed`; opt-in only | tests |
-| `shipper-swarm` routed PR gate | stable/internal | `docs/ci/test-evidence-lanes.md`; `docs/status/SWARM_OPERATION.md`; `.github/workflows/em-ci-routed-rust.yml`; `gh api repos/EffortlessMetrics/shipper-swarm/branches/main/protection/required_status_checks` shows only `Shipper Rust Small Result` is required; `gh api repos/EffortlessMetrics/shipper-swarm --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,allow_auto_merge,delete_branch_on_merge}'` shows squash-only normal PR merges with auto-merge and branch deletion; `Routed Rust Small` run `26413038913` proved the `CPX42` path and normalized result on PR #117; post-merge `main` run `26413498807` proved the self-hosted tiny fallback lane and normalized result; `workflow_dispatch` runs `26355258014` and `26356173639` proved forced `CX43` and forced `CX53`; current swarm policy blocks silent GitHub-hosted fallback and must not be inferred for `EffortlessMetrics/shipper` release-authority syncs | release/ci |
+| `shipper-swarm` routed PR gate | stable/internal | `docs/ci/test-evidence-lanes.md`; `docs/status/SWARM_OPERATION.md`; `.github/workflows/em-ci-routed-rust.yml`; `gh api repos/EffortlessMetrics/shipper-swarm/branches/main/protection/required_status_checks` shows only `Shipper Rust Small Result` is required; `gh api repos/EffortlessMetrics/shipper-swarm --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,allow_auto_merge,delete_branch_on_merge}'` shows squash-only normal PR merges with auto-merge and branch deletion; routed Rust is the meaningful required gate, while automatic Droid review is advisory and skips bot-authored PRs; current swarm policy blocks silent GitHub-hosted fallback and must not be inferred for `EffortlessMetrics/shipper` release-authority syncs | release/ci |
 | 0.4.0 release readiness proof | stable | `docs/release/0.4.0-readiness.md` records the `0.4.0` version/commit/plan/preflight/policy/install/dry-run/rehearsal proof, tag `v0.4.0`, Release workflow run `26141754574`, final `.shipper` evidence, and public crates.io install smoke; Trusted Publishing default and the missing `x86_64-apple-darwin` binary asset remain explicit carry-over | release/ci |
 | Ambiguous publish reconciliation | stable | `cargo test -p shipper-core reconcile --lib`; `cargo test -p shipper-core state --lib`; `cargo test -p shipper-cli --test bdd_publish`; `PublishReconciling` / `PublishReconciled` events | engine |
 | crates.io first-publish backoff profile | stable | `cargo test -p shipper-core runtime::execution --lib`; `cargo test -p shipper-core publish --lib`; `RegistryProfile::crates_io()` | engine |
@@ -72,6 +72,18 @@ make stronger claims than this file supports.
 | Remediation dry-run artifact | stable/internal | `cargo test -p shipper-core remediation --lib --locked`; `cargo test -p shipper-cli --test e2e_expanded --locked remediate_dry_run_writes_remediation_plan_artifact`; `shipper remediate --dry-run` writes `.shipper/remediation-plan.json` as `shipper.remediation_plan.v1` with source receipt, target crate/version, affected packages, yank order, fix-forward suggestions, risk notes, and command sequence; operator-supplied reason text is omitted from durable artifacts; this does not execute yanks, edit manifests, or publish successors | cli/integrations |
 | Guarded remediation plan execution | stable/internal | `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_executes_reviewed_plan_with_fake_cargo`; `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_halts_on_failed_yank`; `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_redacts_event_reason`; `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_requires_state_dir_plan`; `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_rejects_registry_mismatch`; PR #352 CI; proves `shipper remediate --execute-plan .shipper/remediation-plan.json` executes reviewed containment yanks against fake Cargo, rejects plans outside the configured state dir, rejects registry mismatches, validates yank identifiers, emits `PackageYanked` event evidence, halts on the first failed yank, and records only the redacted reason placeholder; this does not prove live crates.io yank execution or fix-forward publishing | engine/cli |
 | Receipt-driven remediation | advisory | `docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md`; `plans/0.4.0/receipt-driven-remediation.md`; bounded primitives, dry-run artifacts, and fake-Cargo guarded execution are mapped to proof, but full mechanical remediation remains planned until live-operator yank evidence and fix-forward execution semantics are deliberately promoted | engine/cli |
+
+## 0.5.0 stabilization claims
+
+| Claim | Tier | Proof / Source | Owner |
+|---|---|---|---|
+| Shared sequential/parallel package execution authority | stable/internal | `plans/0.5.0-scheduler-conformance.md`; `mode_parity_corpus_sequential_matches_parallel`; merged exact-head conformance PRs #220, #221, and #227–#234 | engine |
+| One readiness polling authority | stable/internal | `docs/INVARIANTS.md`; `shipper_registry::RegistryClient::is_version_visible_with_backoff_and_events`; issue #202 closeout | engine/registry |
+| Validated registry destination and redirect boundary | stable/internal | Registry policy tests and merged PRs #217/#219; issue #419 release-authority promotion remains pending | security/release |
+| Context-aware webhook and authorization redaction | stable/internal | PR #209 and webhook/non-disclosure test matrix; swarm issue #205 and release issue #421 promotion remain pending | security/observability |
+| KDF v1 compatibility and KDF v2 stronger-default writes | stable/internal | `shipper-encrypt` compatibility tests; issue #420 promotion remains pending | security/state |
+| Blank OIDC values are unavailable | stable/internal | OIDC detection tests and issue #422 implementation; release-authority promotion remains pending | release/auth |
+| 0.4 artifact readability and 0.5 rebuild contract | stable/internal | `docs/INVARIANTS.md`, `docs/reference/state-files.md`, state/rebuild tests, and release evidence gate | state/recovery |
 
 ## Rules
 

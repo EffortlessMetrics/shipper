@@ -21,10 +21,11 @@ this inventory aligned when workflows are added, removed, or retargeted.
 | Workflow | Trigger | Lane | Required for merge? |
 |---|---|---|---|
 | `architecture-guard.yml` | `push` + `pull_request` | Every PR | Advisory in swarm branch protection |
+| `runner-routing-guard.yml` | `push` + path-scoped `pull_request` + `workflow_dispatch` | Workflow routing policy guard | Advisory |
 | `em-ci-routed-rust.yml` | `push` + `pull_request` + `merge_group` + `workflow_dispatch` | Required PR gate | Required via `Shipper Rust Small Result` |
 | `ci.yml` | `push` + `workflow_dispatch` + weekly `schedule` | Main/manual full-CI evidence + weekly heavy proptest | Required when triggered; not the default PR gate |
 | `coverage.yml` | `push` (main) + `pull_request` + `workflow_dispatch` | Advisory / labeled | Advisory |
-| `droid-review.yml` | `pull_request` | Advisory (same-repo + bot guard + generated security-report branch skip) | Advisory |
+| `droid-review.yml` | `pull_request` | Advisory (same-repo + human-authored guard + generated security-report branch skip) | Advisory |
 | `droid.yml` | `issues` + `pull_request` (command-triggered) | Advisory (trusted-actor guard) | Advisory |
 | `droid-security-scan.yml` | `schedule` + `workflow_dispatch` | Scheduled (Mon 08:00 UTC) | Advisory |
 | `fuzz.yml` | `schedule` + `workflow_dispatch` | Nightly | Advisory |
@@ -45,10 +46,11 @@ self-hosted runners in this order:
 CPX42 -> CX43 -> CX53
 ```
 
-Fallback paths use the tiny self-hosted fallback lane. Silent GitHub-hosted
-fallback is blocked: `shipper-swarm` workflow jobs run on self-hosted capacity,
-including the fallback route, unless a future policy PR explicitly restores a
-GitHub-hosted emergency path.
+The router and normalized-result bootstrap jobs run on GitHub-hosted
+infrastructure so they can observe an empty self-hosted pool. The selected
+Rust execution lane remains self-hosted when capacity is available. When no
+approved runner is idle, the router explicitly selects the full GitHub-hosted
+fallback lane; this is not a silent fallback or a label-triggered bypass.
 
 Public fork PRs are denied by the normalized result instead of running
 repository code on self-hosted runners. A maintainer can move trusted work onto
@@ -81,21 +83,30 @@ runner, binary-build, and credential boundaries are explicitly decided.
 The self-hosted Rust-small lane proves:
 
 ```bash
+cargo fmt --all -- --check
 cargo check --workspace --locked --all-targets
+cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 cargo nextest run --workspace --locked --all-targets --all-features --profile ci
 cargo test --workspace --locked --doc
+cargo package --workspace --locked --exclude xtask
 cargo run -p shipper -- --help
 cargo run -p shipper -- plan --help
 cargo run -p shipper -- preflight --help
 ```
 
-The tiny fallback intentionally proves less:
+`cargo package` proves each crate builds from its own `.crate` tarball with
+path dependencies resolved through version requirements — the check the
+`install-smoke` lane structurally cannot make, because `cargo install --path`
+resolves path deps directly.
 
-```bash
-cargo check --workspace --locked --all-targets
-cargo run -p shipper -- --help
-cargo run -p shipper -- plan --help
-```
+`cargo fmt --check` and `cargo clippy` run here — not only in `ci.yml`'s
+`lint` job — because `ci.yml` has no `pull_request` trigger. Without them
+on this lane, lint regressions are only caught after merge.
+
+The GitHub-hosted fallback lane runs the same command list. It used to
+prove less (`cargo check` + `--help` only); that was reverted after a
+regression escaped through it, and the fallback now carries the full
+gate. Only the runner differs.
 
 ## `ci.yml` — Full-CI Lane Map
 
@@ -176,10 +187,10 @@ The `policy` job runs each check in blocking-allowlist mode and uploads `target/
 | Job | Workflow | Trigger | What it proves |
 |---|---|---|---|
 | `coverage` | `coverage.yml` | `push` to main, dispatch, `coverage` or `full-ci` label on PR | Codecov line/branch coverage. |
-| `rust-small` | `em-ci-routed-rust.yml` | PRs, merge groups, pushes to main, dispatch | Required Rust-small PR gate with self-hosted routing and explicit fallback control. |
+| `rust-small` | `em-ci-routed-rust.yml` | PRs, merge groups, pushes to main, dispatch | Required Rust-small PR gate with self-hosted routing and explicit fallback control. Carries `cargo fmt --check` and `cargo clippy -- -D warnings`, because `ci.yml`'s `lint` job never sees a pull request. |
 | `ripr-pilot` | `ripr.yml` | PRs touching `crates/**`, `xtask/**`, `Cargo.{toml,lock}`, `ripr.toml`, `policy/ripr-suppressions.toml`, `.github/workflows/ripr.yml`. `continue-on-error: true`. | Static mutation-exposure analysis: does the diff appear exposed to a meaningful test oracle? |
 | `mutants-pr` | `mutation.yml` | PRs labeled `mutation` or `full-ci` | Runtime mutation backstop scoped to the PR's changed files via `cargo xtask mutants-pr --changed`. Blocking when it runs. |
-| `droid-review` | `droid-review.yml` | Same-repo PRs (incl. `dependabot[bot]`; excluding generated `droid/security-report-*` branches). | Automated code review via Factory Droid (BYOK MiniMax M2.7). Advisory comments, no merge gate. |
+| `droid-review` | `droid-review.yml` | Human-authored same-repo PRs (excluding generated `droid/security-report-*` branches); maintainers can use `@droid review` for bot-authored refreshes. | Automated code review via Factory Droid (BYOK MiniMax M3). Advisory comments, no merge gate. |
 | `droid` | `droid.yml` | `@droid` mentions on issues / PRs by `OWNER`/`MEMBER`/`COLLABORATOR`. | On-demand Droid actions: review, refactor, explain. |
 
 ## Scheduled

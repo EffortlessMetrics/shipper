@@ -1,5 +1,5 @@
 ---
-source: crates/shipper-events/src/lib.rs
+source: crates/shipper-core/src/state/events/tests.rs
 expression: log.all_events()
 ---
 [
@@ -49,6 +49,7 @@ expression: log.all_events()
         event_type: PackageAttempted {
             attempt: 1,
             command: "cargo publish -p core",
+            max_attempts: 1,
         },
         package: "core@0.1.0",
     },

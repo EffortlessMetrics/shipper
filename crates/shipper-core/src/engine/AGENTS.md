@@ -27,9 +27,19 @@ except `lib.rs` re-exports and `shipper-cli`.
   `run_publish`, `run_resume`) and the `Reporter` trait. This file was moved
   verbatim from `crates/shipper/src/engine.rs` when the `engine/` layer dir
   was introduced.
+- `engine/execute_package.rs` - canonical per-package Cargo/retry/readiness/
+  reconciliation executor. Scheduling belongs to mode-specific scheduler
+  modules; durable package outcomes belong here and in `transition.rs`.
+- Readiness polling is owned by
+  `shipper_registry::RegistryClient::is_version_visible_with_backoff{,_and_events}`.
+  The engine owns only the readiness event/reporter envelope; do not recreate
+  an engine-side polling loop.
+- `engine/reconcile.rs` - ambiguous-publish reconciliation against registry
+  truth (`Published` / `NotPublished` / `StillUnknown`).
+- `engine/test_readiness.rs` - test-only reporter/event adapter for the
+  engine-level readiness characterization tests.
 - `engine/parallel/` — wave-based parallel publish (was the standalone
   `shipper-engine-parallel` crate, absorbed in the same PR that created this
   layer dir).
-- Future: `engine/preflight/`, `engine/publish/`, `engine/resume/`,
-  `engine/readiness/` as `engine/mod.rs` gets split up.
-
+- Future: `engine/preflight/`, `engine/publish/`, and `engine/resume/` as
+  `engine/mod.rs` gets split up.

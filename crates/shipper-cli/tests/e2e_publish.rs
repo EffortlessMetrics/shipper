@@ -178,6 +178,12 @@ fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
+fn loopback_shipper_cmd() -> Command {
+    let mut command = shipper_cmd();
+    command.arg("--allow-loopback");
+    command
+}
+
 /// Build env vars needed for fake cargo, returning (new_path, real_cargo, fake_cargo).
 fn fake_cargo_env(bin_dir: &Path) -> (String, String, String) {
     let old_path = std::env::var("PATH").unwrap_or_default();
@@ -244,7 +250,7 @@ fn single_crate_publish_creates_state_and_receipt() {
 
     let state_dir = td.path().join(".shipper");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -319,7 +325,7 @@ fn publish_json_format_writes_command_envelope_to_stdout() {
     let registry = spawn_registry(vec![404, 200], 2);
     let state_dir = td.path().join(".shipper");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -428,7 +434,7 @@ fn multi_crate_publish_respects_dependency_order() {
 
     let state_dir = td.path().join(".shipper");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -491,7 +497,7 @@ fn plan_does_not_write_state() {
     let td = tempdir().expect("tempdir");
     create_single_crate_workspace(td.path());
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("plan")
@@ -520,7 +526,7 @@ fn publish_with_package_flag_limits_scope() {
 
     let state_dir = td.path().join(".shipper");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -570,7 +576,7 @@ fn publish_creates_events_jsonl_with_lifecycle_events() {
     let registry = spawn_registry(vec![404, 200], 2);
     let state_dir = td.path().join(".shipper");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -645,7 +651,7 @@ fn publish_with_custom_state_dir_writes_to_correct_location() {
     let registry = spawn_registry(vec![404, 200], 2);
     let custom_dir = td.path().join("my-artifacts").join("nested");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -713,7 +719,7 @@ fn failed_publish_creates_state_for_resume() {
     let registry = spawn_registry(vec![404, 404], 2);
     let state_dir = td.path().join(".shipper");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -784,7 +790,7 @@ fn publish_when_already_published_skips_all() {
     let state_dir = td.path().join(".shipper");
     let publish_log = td.path().join("publish.log");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -864,7 +870,7 @@ fn publish_mixed_existing_and_missing_publishes_missing_only() {
     let state_dir = td.path().join(".shipper");
     let publish_log = td.path().join("publish.log");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -949,7 +955,7 @@ fn publish_mixed_existing_and_missing_failure_records_failed_package() {
     let state_dir = td.path().join(".shipper");
     let publish_log = td.path().join("publish.log");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")

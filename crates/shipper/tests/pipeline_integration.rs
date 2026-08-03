@@ -36,6 +36,18 @@ fn write_file(path: &Path, content: &str) {
     fs::write(path, content).expect("write");
 }
 
+fn rehearsal_registry_client(
+    mut registry: Registry,
+) -> anyhow::Result<shipper_core::registry::RegistryClient> {
+    if registry.index_base.is_none() {
+        registry.index_base = Some(registry.api_base.clone());
+    }
+    shipper_core::registry::RegistryClient::with_policy(
+        registry,
+        shipper_core::registry::RegistryPolicy::rehearsal(),
+    )
+}
+
 fn create_two_crate_workspace(root: &Path) {
     write_file(
         &root.join("Cargo.toml"),
@@ -334,7 +346,7 @@ fn registry_timeout_error_captured_in_state_and_events() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     // Registry check fails
     let err = client
@@ -542,6 +554,7 @@ fn event_log_complete_pipeline_with_all_phases() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 1,
+            max_attempts: 1,
             command: "cargo publish -p core".to_string(),
         },
         package: "core@0.1.0".to_string(),
@@ -922,7 +935,7 @@ fn config_plan_registry_check_pipeline() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     // Re-build plan for iteration (handler consumed the ws)
     let ws2 = plan::build_plan(&spec).expect("build plan 2");
@@ -1079,7 +1092,7 @@ fn ambiguous_state_resume_and_resolution() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     let exists = client.version_exists("app", "0.1.0").expect("check");
     assert!(exists, "registry says app is published");
@@ -1644,6 +1657,7 @@ fn event_log_timestamps_are_non_decreasing() {
         },
         EventType::PackageAttempted {
             attempt: 1,
+            max_attempts: 1,
             command: "cargo publish -p alpha".to_string(),
         },
         EventType::PackagePublished { duration_ms: 100 },
@@ -2121,7 +2135,7 @@ fn registry_404_means_not_published() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
     let exists = client
         .version_exists("brand-new-crate", "0.1.0")
         .expect("check");

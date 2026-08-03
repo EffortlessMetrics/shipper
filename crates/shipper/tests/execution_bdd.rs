@@ -8,6 +8,10 @@ use shipper_core::runtime::execution;
 use shipper_types::{ExecutionState, PackageProgress, PackageState, Registry};
 
 #[test]
+#[expect(
+    deprecated,
+    reason = "legacy compatibility coverage for quarantined state-only helper"
+)]
 fn bdd_given_existing_pending_package_when_state_is_updated_and_persisted_then_state_is_written() {
     let key = execution::pkg_key("demo", "0.1.0");
     let mut st = ExecutionState {

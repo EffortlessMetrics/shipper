@@ -28,7 +28,7 @@
 //! - Tokens are opaque strings; NEVER log them.
 //! - Empty and whitespace-trimmed-empty tokens are treated as absent.
 //! - OIDC detection requires BOTH `ACTIONS_ID_TOKEN_REQUEST_URL` and
-//!   `ACTIONS_ID_TOKEN_REQUEST_TOKEN`.
+//!   `ACTIONS_ID_TOKEN_REQUEST_TOKEN` to contain non-blank values.
 
 use std::env;
 use std::path::PathBuf;
@@ -111,8 +111,8 @@ pub(crate) fn detect_auth_type_from_token(token: Option<&str>) -> Option<AuthTyp
         return Some(AuthType::Token);
     }
 
-    let has_oidc_url = env::var_os("ACTIONS_ID_TOKEN_REQUEST_URL").is_some();
-    let has_oidc_token = env::var_os("ACTIONS_ID_TOKEN_REQUEST_TOKEN").is_some();
+    let has_oidc_url = oidc::has_nonblank_value("ACTIONS_ID_TOKEN_REQUEST_URL");
+    let has_oidc_token = oidc::has_nonblank_value("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
 
     match (has_oidc_url, has_oidc_token) {
         (true, true) => Some(AuthType::TrustedPublishing),
@@ -136,8 +136,8 @@ pub fn collect_auth_evidence(registry_name: &str) -> AuthEvidence {
         .map(|token| !token.is_empty())
         .unwrap_or(false);
 
-    let oidc_request_url_present = env::var_os("ACTIONS_ID_TOKEN_REQUEST_URL").is_some();
-    let oidc_request_token_present = env::var_os("ACTIONS_ID_TOKEN_REQUEST_TOKEN").is_some();
+    let oidc_request_url_present = oidc::has_nonblank_value("ACTIONS_ID_TOKEN_REQUEST_URL");
+    let oidc_request_token_present = oidc::has_nonblank_value("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
 
     let auth_mode = if token_resolution_failed {
         AuthEvidenceMode::Unknown
@@ -371,6 +371,24 @@ token = "token-dot"
 
     #[test]
     #[serial]
+    fn detect_auth_type_ignores_blank_oidc_env() {
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("ACTIONS_ID_TOKEN_REQUEST_URL", Some("")),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", Some("  ")),
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+            ],
+            || {
+                let auth = detect_auth_type("crates-io").expect("detect");
+                assert_eq!(auth, None);
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
     fn collect_auth_evidence_reports_token_only_mode() {
         let td = tempdir().expect("tempdir");
         temp_env::with_vars(
@@ -386,6 +404,26 @@ token = "token-dot"
                 assert_eq!(evidence.registry, "crates-io");
                 assert_eq!(evidence.auth_mode, AuthEvidenceMode::CargoToken);
                 assert!(evidence.token_detected);
+                assert!(!evidence.oidc_request_url_present);
+                assert!(!evidence.oidc_request_token_present);
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn collect_auth_evidence_treats_blank_oidc_env_as_missing() {
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                ("CARGO_HOME", Some(td.path().to_str().expect("utf8"))),
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("ACTIONS_ID_TOKEN_REQUEST_URL", Some("")),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", Some("\t")),
+            ],
+            || {
+                let evidence = collect_auth_evidence("crates-io");
+                assert_eq!(evidence.auth_mode, AuthEvidenceMode::Missing);
                 assert!(!evidence.oidc_request_url_present);
                 assert!(!evidence.oidc_request_token_present);
             },

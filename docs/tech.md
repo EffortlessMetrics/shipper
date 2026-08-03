@@ -54,6 +54,12 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
 
+## Tool substrate
+
+Shipper treats `cargo xtask` as the repo-facing control plane and keeps upstream
+tools as implementation substrate. The standard substrate and wrapper doctrine
+live in [Tool Substrate Standard](ci/tool-substrate.md).
+
 ## CI
 
 GitHub Actions in `.github/workflows/`:

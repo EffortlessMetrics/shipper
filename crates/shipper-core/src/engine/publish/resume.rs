@@ -52,23 +52,6 @@ pub(in crate::engine) fn apply_resume_from_gate(
     ResumeGate::Skip
 }
 
-pub(in crate::engine) fn record_terminal_resume_skip(
-    package: &PlannedPackage,
-    progress: &PackageProgress,
-    pkg_label: &str,
-    events_path: &std::path::Path,
-    event_log: &mut events::EventLog,
-    reporter: &mut dyn Reporter,
-) -> Result<()> {
-    let short = short_state(&progress.state);
-    reporter.info(&format!(
-        "{}@{}: already complete ({})",
-        package.name, package.version, short
-    ));
-
-    record_terminal_resume_skip_event(progress, pkg_label, events_path, event_log)
-}
-
 pub(in crate::engine) fn record_terminal_resume_skip_event(
     progress: &PackageProgress,
     pkg_label: &str,
@@ -182,6 +165,7 @@ mod tests {
             webhook: WebhookConfig::default(),
             encryption: EncryptionConfig::default(),
             registries: vec![Registry::crates_io()],
+            registry_policies: Default::default(),
             resume_from: resume_from.map(|s| s.to_string()),
             rehearsal_registry: None,
             rehearsal_skip: false,
@@ -336,29 +320,21 @@ mod tests {
         assert!(reporter.infos[0].contains("already complete"));
     }
 
-    // ---- record_terminal_resume_skip ----
+    // ---- record_terminal_resume_skip_event ----
 
     #[test]
-    fn record_terminal_resume_skip_emits_info_and_event() {
+    fn record_terminal_resume_skip_event_persists_package_skipped() {
         let dir = TempDir::new().expect("tempdir");
         let events_path = dir.path().join("events.jsonl");
         let mut event_log = events::EventLog::new();
-        let mut reporter = CollectingReporter::default();
 
-        record_terminal_resume_skip(
-            &pkg("a"),
+        record_terminal_resume_skip_event(
             &progress(PackageState::Published),
             "a@1.2.3",
             &events_path,
             &mut event_log,
-            &mut reporter,
         )
         .expect("write events");
-
-        // Reporter narration
-        assert_eq!(reporter.infos.len(), 1);
-        assert!(reporter.infos[0].contains("a@1.2.3"));
-        assert!(reporter.infos[0].contains("already complete"));
 
         // Event was persisted and cleared from the in-memory log.
         let contents = std::fs::read_to_string(&events_path).expect("read events");
@@ -374,21 +350,18 @@ mod tests {
     }
 
     #[test]
-    fn record_terminal_resume_skip_writes_skipped_reason_with_state_short_form() {
+    fn record_terminal_resume_skip_event_writes_skipped_reason_with_state_short_form() {
         let dir = TempDir::new().expect("tempdir");
         let events_path = dir.path().join("events.jsonl");
         let mut event_log = events::EventLog::new();
-        let mut reporter = CollectingReporter::default();
 
-        record_terminal_resume_skip(
-            &pkg("a"),
+        record_terminal_resume_skip_event(
             &progress(PackageState::Skipped {
                 reason: "irrelevant".into(),
             }),
             "a@1.2.3",
             &events_path,
             &mut event_log,
-            &mut reporter,
         )
         .expect("write events");
 

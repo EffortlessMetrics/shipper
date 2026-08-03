@@ -193,7 +193,7 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
     let base_url = format!("http://{}", server.server_addr());
     let handle = thread::spawn(move || {
         for idx in 0..expected_requests {
-            let req = match server.recv_timeout(Duration::from_secs(30)) {
+            let req = match server.recv_timeout(Duration::from_secs(5)) {
                 Ok(Some(r)) => r,
                 _ => break,
             };
@@ -215,6 +215,12 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
 
 fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
+}
+
+fn loopback_shipper_cmd() -> Command {
+    let mut command = shipper_cmd();
+    command.arg("--allow-loopback");
+    command
 }
 
 fn fake_cargo_bin_path(bin_dir: &Path) -> String {
@@ -315,7 +321,7 @@ mod parallel_level_grouping {
         create_independent_workspace(td.path());
 
         // When
-        let out = shipper_cmd()
+        let out = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--verbose")
@@ -396,7 +402,7 @@ mod dependency_level_ordering {
         create_parallel_workspace(td.path());
 
         // When
-        let out = shipper_cmd()
+        let out = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--verbose")
@@ -444,7 +450,7 @@ mod resume_skips_completed_levels {
         // so the parallel engine skips all packages (no cargo publish, no readiness)
         let registry = spawn_registry(vec![200, 200, 200, 200], 4);
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -528,7 +534,7 @@ mod failure_stops_subsequent_levels {
         let registry = spawn_registry(vec![404], 10);
 
         // When: Parallel publish (core fails, so api/cli/app should not be attempted)
-        let assert_result = shipper_cmd()
+        let assert_result = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -538,6 +544,10 @@ mod failure_stops_subsequent_levels {
             .arg("0ms")
             .arg("--verify-poll")
             .arg("0ms")
+            .arg("--readiness-timeout")
+            .arg("250ms")
+            .arg("--readiness-poll")
+            .arg("10ms")
             .arg("--max-attempts")
             .arg("1")
             .arg("--state-dir")
@@ -606,7 +616,7 @@ mod max_concurrent_limits_parallelism {
         let registry = spawn_registry(vec![200, 200, 200], 3);
 
         // When: Publish with --max-concurrent 1 (serial within each level)
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -659,7 +669,7 @@ mod max_concurrent_limits_parallelism {
         create_independent_workspace(td.path());
 
         // When / Then: --max-concurrent flag is accepted
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--max-concurrent")

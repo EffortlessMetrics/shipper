@@ -13,7 +13,7 @@ fn main() -> std::process::ExitCode {
     match shipper_cli::run() {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("{e:#}");
+            shipper_cli::report_error(&e);
             std::process::ExitCode::FAILURE
         }
     }

@@ -34,10 +34,12 @@ jobs:
   mutants-weekly:
     name: Mutation Testing (weekly)
     if: github.event_name != 'pull_request'
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -48,7 +50,7 @@ jobs:
           tool: cargo-mutants
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -70,6 +72,8 @@ jobs:
             -p shipper-duration \
             -p shipper-types \
             -p shipper-config \
+            --timeout 120 \
+            --minimum-test-timeout 30 \
             -- --all-features
 
       - name: Upload mutation report
@@ -86,14 +90,17 @@ jobs:
     # guard, every PR would pay the mutation tax — exactly the failure
     # mode docs/ci/test-evidence-lanes.md guards against.
     if: >
-      github.event_name == 'pull_request' && (
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository && (
         contains(github.event.pull_request.labels.*.name, 'mutation') ||
         contains(github.event.pull_request.labels.*.name, 'full-ci')
       )
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
         with:
           # Full history so `git diff <base>...HEAD` works inside the
           # xtask wrapper.
@@ -108,7 +115,7 @@ jobs:
           tool: cargo-mutants
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry

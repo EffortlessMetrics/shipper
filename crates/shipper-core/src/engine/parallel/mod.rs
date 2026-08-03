@@ -15,28 +15,32 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use crate::plan::PlannedWorkspace;
+use crate::registry::RegistryClient;
 use crate::state::events;
-use shipper_registry::HttpRegistryClient as RegistryClient;
 use shipper_types::{ExecutionState, PackageReceipt, RuntimeOptions};
 
 mod flow;
-mod policy;
-mod publish;
-mod readiness;
-mod reconcile;
-mod webhook;
+pub(crate) mod policy;
+mod scheduler;
+pub(crate) mod webhook;
 
 /// Re-exported for parallel publish wave planning.
 pub use crate::plan::chunking::chunk_by_max_concurrent;
 
-use flow::{
-    LevelResumeAction, collect_level_receipts_from_state, determine_level_resume_action,
-    init_send_reporter,
-};
-use publish::run_publish_level;
-use webhook::WebhookEvent;
+use flow::{LevelResumeAction, determine_level_resume_action, init_send_reporter};
+use scheduler::run_publish_level;
 #[cfg(test)]
-use webhook::maybe_send_event;
+use webhook::{WebhookEvent, maybe_send_event};
+
+// Keep the former test/import path stable while the package implementation
+// moves out of the scheduler module. New production code should import the
+// executor from `crate::engine::execute_package` and scheduling from
+// `scheduler`.
+#[cfg(test)]
+pub(crate) mod publish {
+    pub(crate) use super::scheduler::run_publish_level;
+    pub(crate) use crate::engine::execute_package::{emit_retry_backoff, publish_package};
+}
 
 /// Reporter interface shared with the host crate. Parallel publish forwards
 /// status updates and warnings through this trait.
@@ -122,7 +126,7 @@ pub(super) struct RetryWaitNotice {
 }
 
 #[derive(Default)]
-pub(super) struct SendReporter {
+pub(crate) struct SendReporter {
     infos: Mutex<Vec<String>>,
     warns: Mutex<Vec<String>>,
     errors: Mutex<Vec<String>>,
@@ -137,21 +141,21 @@ pub(super) struct SendReporter {
 // `events.jsonl`, not this in-memory buffer. See `flow.rs` for the typed
 // sites that CAN propagate poison as an error.
 impl SendReporter {
-    pub(super) fn info(&self, msg: &str) {
+    pub(crate) fn info(&self, msg: &str) {
         self.infos
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(msg.to_string());
     }
 
-    pub(super) fn warn(&self, msg: &str) {
+    pub(crate) fn warn(&self, msg: &str) {
         self.warns
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(msg.to_string());
     }
 
-    pub(super) fn error(&self, msg: &str) {
+    pub(crate) fn error(&self, msg: &str) {
         self.errors
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -159,7 +163,7 @@ impl SendReporter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn retry_wait(
+    pub(crate) fn retry_wait(
         &self,
         pkg_name: &str,
         pkg_version: &str,
@@ -206,7 +210,7 @@ impl SendReporter {
     }
 }
 
-fn replay_buffered_messages(reporter: &mut dyn Reporter, send_reporter: &SendReporter) {
+pub(crate) fn replay_buffered_messages(reporter: &mut dyn Reporter, send_reporter: &SendReporter) {
     for msg in send_reporter.drain_infos() {
         reporter.info(&msg);
     }
@@ -218,7 +222,7 @@ fn replay_buffered_messages(reporter: &mut dyn Reporter, send_reporter: &SendRep
     }
 }
 
-pub(super) fn drain_retry_waits(reporter: &mut dyn Reporter, send_reporter: &SendReporter) {
+pub(crate) fn drain_retry_waits(reporter: &mut dyn Reporter, send_reporter: &SendReporter) {
     for notice in send_reporter.drain_retry_waits() {
         let remaining = notice.delay.saturating_sub(notice.started_at.elapsed());
         reporter.retry_wait(
@@ -233,30 +237,58 @@ pub(super) fn drain_retry_waits(reporter: &mut dyn Reporter, send_reporter: &Sen
     }
 }
 
+pub(crate) fn replay_buffered_messages_to_host(
+    reporter: &mut dyn crate::engine::Reporter,
+    send_reporter: &SendReporter,
+) {
+    let mut adapter = HostReporterAdapter { inner: reporter };
+    replay_buffered_messages(&mut adapter, send_reporter);
+}
+
+pub(crate) fn drain_retry_waits_to_host(
+    reporter: &mut dyn crate::engine::Reporter,
+    send_reporter: &SendReporter,
+) {
+    let mut adapter = HostReporterAdapter { inner: reporter };
+    drain_retry_waits(&mut adapter, send_reporter);
+}
+
 /// Run publish in parallel mode using `shipper`'s wrapped `RegistryClient`.
 ///
 /// This is the entry point called by `engine::run_publish`. It adapts the
 /// host crate's types (`crate::registry::RegistryClient`, `crate::engine::Reporter`)
 /// into the inner ones expected by the parallel engine.
 ///
-/// Constructs a fresh `shipper_registry::RegistryClient` from the host
-/// registry's configuration so the call works regardless of which `registry`
-/// impl variant is active (micro wrapper vs. in-tree legacy).
+/// Preserves the preconfigured registry client (including cache directory and
+/// transport configuration) while adapting host reporters for parallel
+/// execution.
 pub fn run_publish_parallel(
     ws: &crate::plan::PlannedWorkspace,
     opts: &RuntimeOptions,
     st: &mut ExecutionState,
     state_dir: &Path,
-    reg: &crate::registry::RegistryClient,
+    reg: &RegistryClient,
     reporter: &mut dyn crate::engine::Reporter,
 ) -> Result<Vec<PackageReceipt>> {
-    let api_base = reg.registry().api_base.trim_end_matches('/');
-    let reg_inner = shipper_registry::HttpRegistryClient::new(api_base);
-    let mut adapter = HostReporterAdapter { inner: reporter };
-    run_publish_parallel_inner(ws, opts, st, state_dir, &reg_inner, &mut adapter)
+    crate::engine::publish::notify_publish_started(ws, opts);
+    run_publish_parallel_without_start(ws, opts, st, state_dir, reg, reporter)
 }
 
-/// Inner entry point operating on `shipper_registry::RegistryClient` and the
+/// Host-reporter entry point for orchestration that has already emitted the
+/// run-level start notification.
+pub(crate) fn run_publish_parallel_without_start(
+    ws: &crate::plan::PlannedWorkspace,
+    opts: &RuntimeOptions,
+    st: &mut ExecutionState,
+    state_dir: &Path,
+    reg: &RegistryClient,
+    reporter: &mut dyn crate::engine::Reporter,
+) -> Result<Vec<PackageReceipt>> {
+    let mut adapter = HostReporterAdapter { inner: reporter };
+    run_publish_parallel_inner(ws, opts, st, state_dir, reg, &mut adapter)
+}
+
+/// Inner entry point operating on `crate::registry::RegistryClient` and the
 /// local `Reporter` trait. Kept `pub` for tests inside this module.
 pub(crate) fn run_publish_parallel_inner(
     ws: &PlannedWorkspace,
@@ -273,16 +305,6 @@ pub(crate) fn run_publish_parallel_inner(
         levels.len(),
         ws.plan.packages.len()
     ));
-
-    // Send webhook notification: publish started
-    webhook::maybe_send_event(
-        &opts.webhook,
-        WebhookEvent::PublishStarted {
-            plan_id: ws.plan.plan_id.clone(),
-            package_count: ws.plan.packages.len(),
-            registry: ws.plan.registry.name.clone(),
-        },
-    );
 
     // Initialize event log
     let events_path = events::events_path(state_dir);
@@ -312,8 +334,12 @@ pub(crate) fn run_publish_parallel_inner(
                         "Level {}: already complete (skipping)",
                         level.level
                     ));
-                    all_receipts
-                        .extend(collect_level_receipts_from_state(&level.packages, &st_arc)?);
+                    record_terminal_resume_skips(
+                        &level.packages,
+                        &st_arc,
+                        &event_log,
+                        &events_path,
+                    )?;
                     continue;
                 }
                 LevelResumeAction::SkipBeforeResumePoint(resume_point) => {
@@ -321,8 +347,12 @@ pub(crate) fn run_publish_parallel_inner(
                         "Level {}: skipping (before resume point {})",
                         level.level, resume_point
                     ));
-                    all_receipts
-                        .extend(collect_level_receipts_from_state(&level.packages, &st_arc)?);
+                    record_terminal_resume_skips(
+                        &level.packages,
+                        &st_arc,
+                        &event_log,
+                        &events_path,
+                    )?;
                     continue;
                 }
             };
@@ -339,7 +369,13 @@ pub(crate) fn run_publish_parallel_inner(
             &events_path,
             reporter,
             &send_reporter,
-        )?;
+        );
+        if let Err(err) = level_receipts {
+            replay_buffered_messages(reporter, send_reporter.as_ref());
+            synchronize_parallel_state(st, &st_arc)?;
+            return Err(err);
+        }
+        let level_receipts = level_receipts?;
         all_receipts.extend(level_receipts);
         replay_buffered_messages(reporter, send_reporter.as_ref());
     }
@@ -353,6 +389,62 @@ pub(crate) fn run_publish_parallel_inner(
     *st = updated_st.clone();
 
     Ok(all_receipts)
+}
+
+fn synchronize_parallel_state(
+    state: &mut ExecutionState,
+    state_arc: &Arc<Mutex<ExecutionState>>,
+) -> anyhow::Result<()> {
+    let updated_state = state_arc
+        .lock()
+        .map_err(|_| {
+            anyhow::anyhow!("execution state lock poisoned while synchronizing parallel state")
+        })?
+        .clone();
+    *state = updated_state;
+    Ok(())
+}
+
+fn record_terminal_resume_skips(
+    level_packages: &[shipper_types::PlannedPackage],
+    st_arc: &Arc<Mutex<ExecutionState>>,
+    event_log: &Arc<Mutex<events::EventLog>>,
+    events_path: &Path,
+) -> Result<()> {
+    let terminal_packages = {
+        let state = st_arc.lock().map_err(|_| {
+            anyhow::anyhow!("execution state lock poisoned while recording resume skips")
+        })?;
+
+        level_packages
+            .iter()
+            .filter_map(|package| {
+                let key = crate::runtime::execution::pkg_key(&package.name, &package.version);
+                let progress = state.packages.get(&key)?;
+                {
+                    matches!(
+                        progress.state,
+                        shipper_types::PackageState::Published
+                            | shipper_types::PackageState::Skipped { .. }
+                    )
+                    .then(|| (progress.clone(), key))
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut log = event_log
+        .lock()
+        .map_err(|_| anyhow::anyhow!("event log lock poisoned while recording resume skips"))?;
+    for (progress, package_label) in terminal_packages {
+        crate::engine::publish::resume::record_terminal_resume_skip_event(
+            &progress,
+            &package_label,
+            events_path,
+            &mut log,
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

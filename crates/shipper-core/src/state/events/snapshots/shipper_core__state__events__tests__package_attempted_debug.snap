@@ -1,5 +1,5 @@
 ---
-source: crates/shipper-events/src/lib.rs
+source: crates/shipper-core/src/state/events/tests.rs
 expression: event
 ---
 PublishEvent {
@@ -7,6 +7,7 @@ PublishEvent {
     event_type: PackageAttempted {
         attempt: 2,
         command: "cargo publish -p core-lib",
+        max_attempts: 2,
     },
     package: "core-lib@0.1.0",
 }

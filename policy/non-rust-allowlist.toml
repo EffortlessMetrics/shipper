@@ -349,6 +349,17 @@ created = "2026-05-11"
 review_after = "2026-08-11"
 
 [[file]]
+path = ".github/actionlint.yaml"
+kind = "workflow_lint_config"
+surface = "ci"
+classification = "config"
+owner = "release/ci"
+reason = "Actionlint configuration constraining approved self-hosted runner labels and workflow policy variables."
+covered_by = ["runner-routing-guard.yml", "actionlint"]
+created = "2026-07-12"
+review_after = "2026-10-12"
+
+[[file]]
 path = ".shipper-meta/goals/README.md"
 kind = "agent_goal_documentation"
 surface = "tooling"
@@ -369,6 +380,17 @@ reason = "Machine-readable active goal manifests, templates, and archived goal m
 covered_by = ["manual review", "future: cargo xtask check-doc-contracts"]
 created = "2026-05-13"
 review_after = "2026-08-13"
+
+[[file]]
+path = "scripts/ci/normalize-routed-rust-result.py"
+kind = "ci_policy_script"
+surface = "ci"
+classification = "script"
+owner = "release/ci"
+reason = "Normalize routed Rust workflow results into one deterministic blocking signal."
+covered_by = [".github/workflows/em-ci-routed-rust.yml", ".github/workflows/runner-routing-guard.yml"]
+created = "2026-07-18"
+review_after = "2026-10-18"
 
 [[file]]
 path = ".github/CODEOWNERS"

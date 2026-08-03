@@ -57,7 +57,7 @@ pub(in crate::engine) fn finish_sequential_run(
     });
     event_log.write_to_file(events_path)?;
 
-    send_completion_webhook(ws, opts, &receipts, &exec_result);
+    send_completion_webhook(ws, opts, state, &exec_result);
 
     write_receipt(
         ws,
@@ -97,7 +97,7 @@ pub(in crate::engine) fn finish_parallel_run(
     });
     event_log.write_to_file(events_path)?;
 
-    send_completion_webhook(ws, opts, &receipts, &exec_result);
+    send_completion_webhook(ws, opts, state, &exec_result);
 
     write_receipt(
         ws,
@@ -188,22 +188,22 @@ fn is_successful_terminal_state(state: &PackageState) -> bool {
 fn send_completion_webhook(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
-    receipts: &[PackageReceipt],
+    state: &ExecutionState,
     exec_result: &ExecutionResult,
 ) {
-    let total_packages = receipts.len();
-    let success_count = receipts
-        .iter()
-        .filter(|r| matches!(r.state, PackageState::Published))
-        .count();
-    let failure_count = receipts
-        .iter()
-        .filter(|r| !is_successful_terminal_state(&r.state))
-        .count();
-    let skipped_count = receipts
-        .iter()
-        .filter(|r| matches!(r.state, PackageState::Skipped { .. }))
-        .count();
+    let total_packages = ws.plan.packages.len();
+    let mut success_count = 0;
+    let mut failure_count = 0;
+    let mut skipped_count = 0;
+
+    for package in &ws.plan.packages {
+        let key = crate::runtime::execution::pkg_key(&package.name, &package.version);
+        match state.packages.get(&key).map(|progress| &progress.state) {
+            Some(PackageState::Published) => success_count += 1,
+            Some(PackageState::Skipped { .. }) => skipped_count += 1,
+            Some(_) | None => failure_count += 1,
+        }
+    }
 
     webhook::maybe_send_event(
         &opts.webhook,

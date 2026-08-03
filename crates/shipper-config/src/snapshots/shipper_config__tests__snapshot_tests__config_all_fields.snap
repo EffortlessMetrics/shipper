@@ -47,6 +47,7 @@ registry:
   index_base: "https://index.my-registry.example.com"
   token: ~
   default: true
+  allow_private: false
 registries:
   registries: []
   default_registries: []
@@ -68,4 +69,5 @@ storage:
   secret_access_key: ~
 rehearsal:
   enabled: false
+  allow_loopback: false
   registry: ~

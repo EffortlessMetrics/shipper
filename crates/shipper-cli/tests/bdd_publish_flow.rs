@@ -181,6 +181,12 @@ fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
+fn loopback_shipper_cmd() -> Command {
+    let mut command = shipper_cmd();
+    command.arg("--allow-loopback");
+    command
+}
+
 // ============================================================================
 // Feature: Publish Flow – Pre-publish Preview
 // ============================================================================
@@ -200,7 +206,7 @@ mod publish_preview {
         create_workspace(td.path());
 
         // When
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -243,7 +249,7 @@ mod publish_preview {
         let registry = spawn_registry(vec![404], 6);
 
         // When
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -291,7 +297,7 @@ mod manifest_errors {
         let td = tempdir().expect("tempdir");
 
         // When / Then
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("publish")
@@ -308,7 +314,7 @@ mod manifest_errors {
     #[test]
     fn given_invalid_manifest_path_when_publish_then_fails_appropriately() {
         // Given / When / Then
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg("nonexistent/path/Cargo.toml")
             .arg("publish")
@@ -328,7 +334,7 @@ mod manifest_errors {
         write_file(&td.path().join("Cargo.toml"), "this is not valid TOML {{{{");
 
         // When / Then
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("publish")
@@ -356,7 +362,7 @@ mod package_filtering {
         create_workspace(td.path());
 
         // When
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -395,7 +401,7 @@ mod package_filtering {
         let registry = spawn_registry(vec![404], 2);
 
         // When
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -439,7 +445,7 @@ mod package_filtering {
         create_workspace(td.path());
 
         // When / Then
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--package")
@@ -487,7 +493,7 @@ mod state_directory {
         let registry = spawn_registry(vec![404, 200], 2);
 
         // When
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -559,7 +565,7 @@ mod state_directory {
         let registry = spawn_registry(vec![404, 200], 2);
 
         // When
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -632,7 +638,7 @@ mod publish_execution {
         let state_dir = td.path().join(".shipper");
 
         // When
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -704,7 +710,7 @@ mod publish_execution {
         let state_dir = td.path().join(".shipper");
 
         // When
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")

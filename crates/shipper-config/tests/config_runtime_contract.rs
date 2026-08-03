@@ -550,6 +550,7 @@ fn all_registries_flag_returns_configured_registries() {
                 index_base: Some("https://index.crates.io".to_string()),
                 token: None,
                 default: true,
+                allow_private: false,
             },
             RegistryConfig {
                 name: "private".to_string(),
@@ -557,6 +558,7 @@ fn all_registries_flag_returns_configured_registries() {
                 index_base: None,
                 token: None,
                 default: false,
+                allow_private: false,
             },
         ],
         default_registries: vec![],
@@ -595,6 +597,7 @@ fn specific_registry_names_selected_from_config() {
                 index_base: None,
                 token: None,
                 default: false,
+                allow_private: false,
             },
             RegistryConfig {
                 name: "beta".to_string(),
@@ -602,6 +605,7 @@ fn specific_registry_names_selected_from_config() {
                 index_base: None,
                 token: None,
                 default: false,
+                allow_private: false,
             },
         ],
         default_registries: vec![],

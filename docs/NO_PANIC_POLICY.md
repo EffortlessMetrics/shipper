@@ -31,11 +31,11 @@ Each baseline entry is identified by exact shape, not coarse file + family:
 
 ```json
 {
-  "path": "crates/shipper-core/src/engine/parallel/publish.rs",
+  "path": "crates/shipper-core/src/engine/execute_package.rs",
   "family": "unwrap",
   "selector_kind": "method_call",
   "selector_callee": "unwrap",
-  "snippet": "let mut log = event_log.lock().unwrap();",
+  "snippet": "let pkg_state = state.get(key).unwrap()",
   "count": 15,
   "first_line": 67
 }

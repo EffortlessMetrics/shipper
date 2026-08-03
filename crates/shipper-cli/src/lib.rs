@@ -94,6 +94,11 @@ struct Cli {
     #[arg(long, global = true)]
     api_base: Option<String>,
 
+    /// Permit loopback HTTP for an explicitly configured local test or
+    /// rehearsal registry. Does not permit private-network destinations.
+    #[arg(long, global = true)]
+    allow_loopback: bool,
+
     /// Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members.
     #[arg(long = "package", global = true)]
     packages: Vec<String>,
@@ -315,7 +320,23 @@ const ADVANCED_RELEASE_ARG_IDS: &[&str] = &[
     "rehearsal_smoke_install",
 ];
 
-const FIRST_RUN_HELP_SUBCOMMANDS: &[&str] = &["plan", "doctor"];
+// Subcommands whose help should not advertise publish/resume control
+// flags. These commands either read nothing (`ci`, `completion`,
+// `config`) or only touch `state_dir` (`clean`, `inspect-*`), so listing
+// `--retry-jitter`, `--webhook-secret`, or `--max-concurrent` under them
+// is pure noise — `shipper clean --help` was 153 lines for one real flag.
+// Release-execution commands (publish, resume, preflight, rehearse,
+// status) keep the full list, because there the flags apply.
+const FIRST_RUN_HELP_SUBCOMMANDS: &[&str] = &[
+    "plan",
+    "doctor",
+    "ci",
+    "clean",
+    "config",
+    "completion",
+    "inspect-events",
+    "inspect-receipt",
+];
 const DOCTOR_HELP_HIDDEN_ARG_IDS: &[&str] = &["verbose"];
 
 fn cli_command() -> Command {
@@ -529,9 +550,50 @@ EXAMPLES:
 ")]
     InspectReceipt,
     /// Print CI configuration snippets for various platforms.
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        long_about = "\
+Print a ready-to-paste CI configuration snippet for a supported platform.
+
+The snippet covers the resumability wiring: it restores `.shipper/` from
+cache and from the previous run's artifact, runs `shipper publish`, and
+saves `.shipper/` again with `if: always()` so an interrupted run can be
+resumed from the uploaded state. It also shows where the registry token
+goes. It is printed to stdout and reads nothing from your workspace, so
+it works from any directory.
+
+It is a starting point, not a full release job. It does not include
+`shipper plan` / `shipper preflight` proof steps or the Trusted
+Publishing token-mint step — for a complete workflow, including
+`rust-lang/crates-io-auth-action@v1`, see
+docs/how-to/run-in-github-actions.md.
+
+EXAMPLES:
+    # Write a GitHub Actions release job to a workflow file:
+    shipper ci github-actions > .github/workflows/release.yml
+
+    # Preview the GitLab CI equivalent:
+    shipper ci gitlab
+"
+    )]
     Ci(CiCommands),
     /// Clean state files (state.json, receipt.json, events.jsonl, preflight-only-*.events.jsonl).
+    #[command(long_about = "\
+Delete the run artifacts under `state_dir` (default `.shipper`).
+
+Removes `state.json`, `receipt.json`, `events.jsonl`, and any
+`preflight-only-*.events.jsonl` sidecars. This discards the authoritative
+event log for the run, so treat it as destructive: clean when you are
+deliberately starting a fresh plan, not to work around a failed publish
+(use `shipper resume` for that).
+
+EXAMPLES:
+    # Start a fresh plan after an abandoned run:
+    shipper clean
+
+    # Clear resumable state but keep the audit receipt:
+    shipper clean --keep-receipt
+")]
     Clean {
         /// Keep receipt.json (remove state.json and all event logs only)
         #[arg(long)]
@@ -570,12 +632,12 @@ EXAMPLES:
         /// released"`.
         #[arg(long, conflicts_with = "plan")]
         reason: Option<String>,
-        /// Also mark the crate's existing receipt entry as compromised
-        /// (#98 PR 3). Ignored in `--plan` mode (plan execution already
+        /// Also mark the crate's existing receipt entry as compromised.
+        /// Ignored in `--plan` mode (plan execution already
         /// carries per-entry reasons from the planning step).
         #[arg(long)]
         mark_compromised: bool,
-        /// **Plan execution mode** (#98 PR 5). Path to a yank plan JSON
+        /// **Plan execution mode.** Path to a yank plan JSON
         /// file (the `--format json` output of `shipper plan-yank`).
         /// Walks the plan's entries in order, invoking `cargo yank` for
         /// each. Mutually exclusive with `--crate` / `--version` /
@@ -583,7 +645,7 @@ EXAMPLES:
         #[arg(long, value_name = "PATH")]
         plan: Option<PathBuf>,
     },
-    /// Generate a reverse-topological yank plan from a receipt (#98 PR 2).
+    /// Generate a reverse-topological yank plan from a receipt.
     ///
     /// Reads a prior `receipt.json` and emits the order in which to yank
     /// the released crates — dependents first, dependencies last — so
@@ -593,7 +655,7 @@ EXAMPLES:
     ///
     /// **Planning only.** This command does NOT execute yanks. Pipe the
     /// output through `sh`, or consume the JSON, once you've reviewed it.
-    /// `shipper fix-forward` (#98 PR 3) will wrap execution.
+    /// `shipper fix-forward` will wrap execution.
     PlanYank {
         /// Path to the receipt to derive the plan from. Defaults to
         /// `<state_dir>/receipt.json` when omitted.
@@ -605,7 +667,7 @@ EXAMPLES:
         /// with `--starting-crate`.
         #[arg(long, conflicts_with = "starting_crate")]
         compromised_only: bool,
-        /// **Graph mode** (#98 PR 4). Given a specific broken crate
+        /// **Graph mode.** Given a specific broken crate
         /// name, walk the workspace's dependency graph to find every
         /// crate that transitively depends on it, and emit a yank
         /// plan covering only that affected chain (not a full
@@ -621,7 +683,7 @@ EXAMPLES:
         reason: Option<String>,
     },
     /// Generate a fix-forward supersession plan from a compromised
-    /// receipt (#98 PR 3).
+    /// receipt.
     ///
     /// Reads a prior `receipt.json`, finds packages whose receipt entry
     /// carries a `compromised_at` marker (populated by
@@ -708,9 +770,42 @@ EXAMPLES:
         execute_plan: Option<PathBuf>,
     },
     /// Configuration file management.
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        long_about = "\
+Create and check the `.shipper.toml` configuration file.
+
+Config values set defaults for policy, verification, readiness, retry,
+locking, and registry selection; CLI flags always override them. Both
+subcommands work on a file path and do not need a loadable workspace.
+
+EXAMPLES:
+    # Write a documented default config to .shipper.toml:
+    shipper config init
+
+    # Write it somewhere else:
+    shipper config init --output config/shipper.toml
+
+    # Check an existing config before a release:
+    shipper config validate --path .shipper.toml
+"
+    )]
     Config(ConfigCommands),
     /// Generate shell completion scripts for the specified shell.
+    #[command(long_about = "\
+Generate a shell completion script on stdout.
+
+Supported shells: bash, elvish, fish, powershell, zsh. The script is
+printed, never installed — redirect it to wherever your shell loads
+completions from.
+
+EXAMPLES:
+    # Bash, for the current user:
+    shipper completion bash > ~/.local/share/bash-completion/completions/shipper
+
+    # Zsh, into a directory already on $fpath:
+    shipper completion zsh > \"${fpath[1]}/_shipper\"
+")]
     Completion {
         /// Shell to generate completions for.
         #[arg(value_enum)]
@@ -848,6 +943,32 @@ impl Reporter for CliReporter {
     }
 }
 
+/// Format a top-level error for the operator-facing format.
+///
+/// Centralized here so the `shipper` and `shipper-cli` binaries cannot
+/// diverge. Returns the anyhow error in the readable multi-line form —
+/// `Error: <outer>` followed by a blank line and a `Caused by:` section
+/// enumerating each cause. Do **not** use `{e:#}` (alternate `Display`): that
+/// flattens the chain into a single line joined by `: `, hiding the cause
+/// structure. See `report_error_format` test for the contract this preserves.
+pub fn format_error(error: &anyhow::Error) -> String {
+    format!("Error: {error:?}")
+}
+
+/// Render a top-level error to stderr via [`format_error`].
+pub fn report_error(error: &anyhow::Error) {
+    eprintln!("{}", format_error(error));
+}
+
+/// Doctor may defer only a registry-destination policy error to its
+/// connectivity report. Other configuration errors remain fail-closed.
+fn is_registry_destination_validation_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.starts_with("invalid registry '") && message.contains("' destination")
+    })
+}
+
 /// CLI entry point. Exposed for the `shipper` crate's binary target
 /// and for the `shipper-cli` crate's own `shipper-cli` binary — both
 /// are three-line `fn main() { shipper_cli::run() }` wrappers over
@@ -867,7 +988,7 @@ pub fn run() -> Result<std::process::ExitCode> {
 
     // Handle Config commands early (they don't need workspace plan)
     if let Some(Commands::Config(config_cmd)) = &cli.cmd {
-        run_config(config_cmd.clone())?;
+        run_config_with_loopback(config_cmd.clone(), cli.allow_loopback)?;
         return Ok(std::process::ExitCode::SUCCESS);
     }
 
@@ -878,12 +999,9 @@ pub fn run() -> Result<std::process::ExitCode> {
     }
 
     if cli.cmd.is_none() {
-        cli_command()
-            .error(
-                clap::error::ErrorKind::MissingSubcommand,
-                "'shipper' requires a subcommand but one was not provided",
-            )
-            .exit();
+        print_first_run_guidance();
+        // Exit 2 keeps the clap usage-error convention: no work was done.
+        return Ok(std::process::ExitCode::from(2));
     }
 
     let api_base = cli
@@ -914,29 +1032,70 @@ pub fn run() -> Result<std::process::ExitCode> {
         .as_ref()
         .map(command_name_for_hint)
         .unwrap_or("command");
-    let mut planned = plan::build_plan(&spec)
-        .with_context(|| plan_failure_hint(&spec.manifest_path, &cli.packages, command_name))?;
+
+    // `doctor` and `ci` answer questions about the environment, not about a
+    // specific plan, so a workspace that cannot be planned must not stop
+    // them — `doctor` in particular is what an operator reaches for when
+    // they are in the wrong directory, and failing it with "run `shipper
+    // plan` first" is circular advice.
+    let (mut planned, workspace_status) = match plan::build_plan(&spec) {
+        Ok(planned) => (planned, doctor::WorkspaceStatus::Planned),
+        Err(err) if cli.cmd.as_ref().is_some_and(runs_without_workspace) => {
+            let reason = short_error_reason(&err);
+            (
+                workspace_less_plan(&spec),
+                doctor::WorkspaceStatus::Unavailable(reason),
+            )
+        }
+        Err(err) => {
+            return Err(err).with_context(|| {
+                plan_failure_hint(&spec.manifest_path, &cli.packages, command_name)
+            });
+        }
+    };
 
     // Load configuration file
-    let config =
-        if let Some(ref config_path) = cli.config {
-            // Use custom config file specified via --config
-            Some(ShipperConfig::load_from_file(config_path).with_context(|| {
-                format!("Failed to load config from: {}", config_path.display())
-            })?)
+    let diagnostic_command = matches!(cli.cmd.as_ref(), Some(Commands::Doctor));
+    let config = if let Some(ref config_path) = cli.config {
+        // Use custom config file specified via --config
+        let load = if diagnostic_command {
+            ShipperConfig::load_from_file_for_diagnostics(config_path)
         } else {
-            // Try to load .shipper.toml from workspace root
-            ShipperConfig::load_from_workspace(&planned.workspace_root)
-                .with_context(|| "Failed to load config from workspace")?
+            ShipperConfig::load_from_file(config_path)
         };
+        Some(
+            load.with_context(|| format!("Failed to load config from: {}", config_path.display()))?,
+        )
+    } else {
+        // Try to load .shipper.toml from workspace root
+        let load = if diagnostic_command {
+            ShipperConfig::load_from_workspace_for_diagnostics(&planned.workspace_root)
+        } else {
+            ShipperConfig::load_from_workspace(&planned.workspace_root)
+        };
+        load.with_context(|| "Failed to load config from workspace")?
+    };
 
     // Validate loaded configuration before using it for runtime options.
+    // `doctor` intentionally keeps destination validation in its connectivity
+    // report so an unsafe configured URL is diagnosed and redacted rather than
+    // aborting the diagnostic command before the registry is applied.
     if let Some(ref cfg) = config {
         let config_path = cli
             .config
             .clone()
             .unwrap_or_else(|| planned.workspace_root.join(".shipper.toml"));
-        cfg.validate().with_context(|| {
+        let validation = cfg.validate_with_loopback(cli.allow_loopback);
+        let validation = validation.or_else(|error| {
+            if matches!(cli.cmd.as_ref(), Some(Commands::Doctor))
+                && is_registry_destination_validation_error(&error)
+            {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        });
+        validation.with_context(|| {
             format!(
                 "Configuration validation failed for {}",
                 config_path.display()
@@ -1003,6 +1162,8 @@ pub fn run() -> Result<std::process::ExitCode> {
             .map(parse_duration)
             .transpose()?,
         allow_dirty: cli.allow_dirty,
+        allow_loopback: cli.allow_loopback,
+        registry_name: cli.registry.clone(),
         skip_ownership_check: cli.skip_ownership_check,
         strict_ownership: cli.strict_ownership,
         no_verify: cli.no_verify,
@@ -1062,7 +1223,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                 opts.registries.clone()
             };
 
-            let mut last_exit_code = std::process::ExitCode::SUCCESS;
+            let mut worst_outcome: Option<ExecutionResult> = None;
             for reg in target_registries {
                 if opts.registries.len() > 1 {
                     if cli.format == "json" {
@@ -1120,10 +1281,12 @@ pub fn run() -> Result<std::process::ExitCode> {
                     &cli.format,
                 )?;
 
-                last_exit_code = exit_code_for_result(&receipt.execution_result);
+                worst_outcome = Some(worst_result(worst_outcome, &receipt.execution_result));
             }
 
-            return Ok(last_exit_code);
+            return Ok(worst_outcome
+                .as_ref()
+                .map_or(std::process::ExitCode::SUCCESS, exit_code_for_result));
         }
         Commands::Resume => {
             let target_registries = if opts.registries.is_empty() {
@@ -1132,7 +1295,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                 opts.registries.clone()
             };
 
-            let mut last_exit_code = std::process::ExitCode::SUCCESS;
+            let mut worst_outcome: Option<ExecutionResult> = None;
             for reg in target_registries {
                 if opts.registries.len() > 1 {
                     if cli.format == "json" {
@@ -1154,8 +1317,27 @@ pub fn run() -> Result<std::process::ExitCode> {
                     current_opts.state_dir = opts.state_dir.join(&reg.name);
                 }
 
+                // A resume with no state at all is not a resume *failure* —
+                // nothing was ever started. Say that, instead of wrapping it
+                // in the generic hint about plan-ID mismatch, corrupt state,
+                // and stale locks, none of which can apply here.
+                let resumable_state = shipper_core::runtime::execution::resolve_state_dir(
+                    &current_planned.workspace_root,
+                    &current_opts.state_dir,
+                )
+                .join(shipper_core::state::execution_state::STATE_FILE);
+                if !resumable_state.exists() {
+                    bail!(
+                        "nothing to resume: no publish state at {}\n  \
+                         * run `shipper plan` to preview the release\n  \
+                         * run `shipper publish` to start it — `resume` continues \
+                         an interrupted run, it does not begin one",
+                        resumable_state.display()
+                    );
+                }
+
                 let total_packages = current_planned.plan.packages.len();
-                let mut progress = ProgressReporter::new(total_packages, cli.quiet);
+                let progress = ProgressReporter::new(total_packages, cli.quiet);
                 let package_positions: BTreeMap<String, usize> = current_planned
                     .plan
                     .packages
@@ -1164,11 +1346,11 @@ pub fn run() -> Result<std::process::ExitCode> {
                     .map(|(idx, pkg)| (format!("{}@{}", pkg.name, pkg.version), idx + 1))
                     .collect();
 
-                // Show initial progress if we have packages
-                if total_packages > 0 {
-                    let first_pkg = &current_planned.plan.packages[0];
-                    progress.set_package(1, &first_pkg.name, &first_pkg.version);
-                }
+                // Deliberately no "[1/n] Publishing <first package>" line here.
+                // Resume exists precisely because earlier packages may already
+                // be published; announcing a publish of package 1 before the
+                // engine has read state claims work that usually does not
+                // happen. The engine narrates each package as it acts on it.
 
                 // Install the progress handle on the reporter so the engine's
                 // retry-backoff narration (#103) can drive a live TTY
@@ -1189,10 +1371,12 @@ pub fn run() -> Result<std::process::ExitCode> {
                     &cli.format,
                 )?;
 
-                last_exit_code = exit_code_for_result(&receipt.execution_result);
+                worst_outcome = Some(worst_result(worst_outcome, &receipt.execution_result));
             }
 
-            return Ok(last_exit_code);
+            return Ok(worst_outcome
+                .as_ref()
+                .map_or(std::process::ExitCode::SUCCESS, exit_code_for_result));
         }
         Commands::Rehearse => {
             let outcome = engine::run_rehearsal(&planned, &opts, &mut reporter)?;
@@ -1244,6 +1428,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                 registry_reports.push(build_status_registry_report(
                     &current_planned,
                     &mut reporter,
+                    &opts,
                 )?);
             }
             let report = StatusReport {
@@ -1268,9 +1453,9 @@ pub fn run() -> Result<std::process::ExitCode> {
                     current_planned.plan.registry = reg;
                     reports.push(doctor::collect_report(&current_planned, &opts)?);
                 }
-                doctor::print_json(reports)?;
+                doctor::print_json(reports, &workspace_status)?;
             } else {
-                for reg in target_registries {
+                for (idx, reg) in target_registries.into_iter().enumerate() {
                     if opts.registries.len() > 1 {
                         println!(
                             "\n🩺 Diagnostics for registry: {} ({})",
@@ -1280,7 +1465,13 @@ pub fn run() -> Result<std::process::ExitCode> {
                     }
                     let mut current_planned = planned.clone();
                     current_planned.plan.registry = reg;
-                    doctor::run(&current_planned, &opts, &mut reporter)?;
+                    doctor::run(
+                        &current_planned,
+                        &opts,
+                        &mut reporter,
+                        &workspace_status,
+                        idx == 0,
+                    )?;
                 }
             }
         }
@@ -1595,7 +1786,7 @@ pub fn run() -> Result<std::process::ExitCode> {
             match cli.format.as_str() {
                 "json" => {
                     let report = PlanYankJsonReport {
-                        schema_version: "shipper.plan_yank.v1",
+                        schema_version: plan_yank::PLAN_YANK_SCHEMA_VERSION,
                         command: "plan-yank",
                         plan: &plan,
                     };
@@ -1827,6 +2018,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                 &planned.workspace_root,
                 keep_receipt,
                 opts.force,
+                &cli.format,
             )?;
         }
         Commands::Config(_) => {
@@ -1850,12 +2042,20 @@ pub fn run() -> Result<std::process::ExitCode> {
 /// | Code | Meaning |
 /// |-----:|---------|
 /// | 0 | All packages published/skipped (`Success`) |
-/// | 1 | All packages failed / general error (`CompleteFailure`) |
-/// | 2 | Some packages published, some failed — resume is safe (`PartialFailure`) |
+/// | 1 | All packages failed (`CompleteFailure`) |
+/// | 2 | Some package did not reach a successful terminal state (`PartialFailure`) |
 ///
 /// The `PartialFailure → 2` mapping is the key integration improvement: a CI
 /// pipeline can check `if exit_code == 2` to trigger a `shipper resume` step
 /// rather than treating the run as a hard failure.
+///
+/// Note that finalization does not currently produce `CompleteFailure`:
+/// `sequential_execution_result` / `parallel_execution_result` classify
+/// every non-all-successful receipt as `PartialFailure`, so an all-failed
+/// run also exits 2. Exit 1 reaches the process from the `Err` path in
+/// `main` instead — an error that ended the run before a receipt was
+/// finalized. Changing that classification is a behavior change for CI
+/// consumers and is deliberately not made here.
 fn exit_code_for_result(result: &ExecutionResult) -> std::process::ExitCode {
     use std::process::ExitCode;
     match result {
@@ -1864,6 +2064,32 @@ fn exit_code_for_result(result: &ExecutionResult) -> std::process::ExitCode {
         // the intended next step — distinguish from a hard error (exit 1).
         ExecutionResult::PartialFailure => ExitCode::from(2),
         ExecutionResult::CompleteFailure => ExitCode::FAILURE,
+    }
+}
+
+/// Rank an [`ExecutionResult`] by severity, worst-highest.
+///
+/// Exit *codes* are not ordered by severity (`PartialFailure` is 2,
+/// `CompleteFailure` is 1), so multi-registry runs cannot just keep the
+/// numerically larger code. They rank, then map once at the end.
+fn result_severity(result: &ExecutionResult) -> u8 {
+    match result {
+        ExecutionResult::Success => 0,
+        ExecutionResult::PartialFailure => 1,
+        ExecutionResult::CompleteFailure => 2,
+    }
+}
+
+/// Keep the worse of two outcomes.
+///
+/// `--registries` / `--all-registries` publish to each registry in turn.
+/// Reporting only the last registry's outcome lets a partial failure on
+/// an earlier registry be masked by a success on the last one, and a CI
+/// job reading exit 0 would advance on an incomplete release.
+fn worst_result(current: Option<ExecutionResult>, next: &ExecutionResult) -> ExecutionResult {
+    match current {
+        Some(current) if result_severity(&current) >= result_severity(next) => current,
+        _ => next.clone(),
     }
 }
 
@@ -1945,6 +2171,67 @@ fn resume_failure_hint(state_dir: &Path) -> String {
             "ambiguous state: inspect `reconciliation.json` and let resume reconcile registry truth",
         ],
     )
+}
+
+/// Whether a command can still do its job when no plan can be built.
+///
+/// `doctor` reports on the environment (auth, tools, connectivity, git),
+/// and `ci` prints a static CI snippet — neither reads the plan, so
+/// neither should inherit `cargo metadata`'s failure. Every other
+/// command operates on the plan and must keep failing loudly.
+fn runs_without_workspace(command: &Commands) -> bool {
+    matches!(command, Commands::Doctor | Commands::Ci(_))
+}
+
+/// Flatten an error chain into one line for a diagnostics header.
+///
+/// `cargo metadata` failures arrive as multi-line output with trailing
+/// blank lines; the doctor header needs a single short clause.
+fn short_error_reason(error: &anyhow::Error) -> String {
+    let deepest = error.chain().last().unwrap_or_else(|| error.as_ref());
+    let text = deepest.to_string();
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("unknown error")
+        .to_string();
+
+    const MAX: usize = 160;
+    if line.chars().count() > MAX {
+        let truncated: String = line.chars().take(MAX).collect();
+        format!("{truncated}…")
+    } else {
+        line
+    }
+}
+
+/// An empty stand-in plan for commands that do not read the plan.
+///
+/// Used only when [`runs_without_workspace`] allows the command through a
+/// `build_plan` failure. The `plan_id` is deliberately empty: there is no
+/// plan, and nothing may treat this as one.
+fn workspace_less_plan(spec: &ReleaseSpec) -> plan::PlannedWorkspace {
+    let workspace_root = spec
+        .manifest_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    plan::PlannedWorkspace {
+        workspace_root,
+        plan: ReleasePlan {
+            plan_version: shipper_core::state::execution_state::CURRENT_PLAN_VERSION.to_string(),
+            plan_id: String::new(),
+            created_at: chrono::Utc::now(),
+            registry: spec.registry.clone(),
+            packages: Vec::new(),
+            dependencies: BTreeMap::new(),
+        },
+        skipped: Vec::new(),
+    }
 }
 
 fn plan_failure_hint(manifest_path: &Path, packages: &[String], command_name: &str) -> String {
@@ -2051,6 +2338,29 @@ fn parse_retry_strategy(s: &str) -> Result<shipper_core::retry::RetryStrategyTyp
             "invalid retry-strategy: {s} (expected: immediate, exponential, linear, constant)"
         ),
     }
+}
+
+/// Print the zero-argument first-run screen.
+///
+/// A bare `shipper` used to emit only clap's "requires a subcommand"
+/// usage error, which tells a first-time operator nothing about where to
+/// start. Print the happy path instead — the four commands, in the order
+/// they are meant to be run — and keep clap's exit code.
+fn print_first_run_guidance() {
+    eprintln!(
+        "shipper {} — resumable, evidence-backed publishing for Rust workspaces",
+        env!("CARGO_PKG_VERSION")
+    );
+    eprintln!();
+    eprintln!("Start here, in this order:");
+    eprintln!("  shipper doctor      check auth, git, tooling, and registry reachability");
+    eprintln!("  shipper plan        preview the deterministic publish order");
+    eprintln!("  shipper preflight   prove the release can finish before anything uploads");
+    eprintln!("  shipper publish     execute the plan — rerun (or `shipper resume`) to continue");
+    eprintln!();
+    eprintln!("Usage: shipper [OPTIONS] <COMMAND>");
+    eprintln!();
+    eprintln!("Run `shipper --help` for every command, or `shipper <command> --help` for one.");
 }
 
 fn print_version(verbose: bool) {
@@ -3261,7 +3571,15 @@ fn run_inspect_events(
 
     let event_logs = discover_event_logs(&state_dir)?;
     if event_logs.is_empty() {
-        println!("No event logs found under {}", state_dir.display());
+        // In `--format json` this command emits JSON Lines — one event per
+        // line — so "no events" must be zero lines on stdout, not an English
+        // sentence a consumer would try to parse. The notice still reaches a
+        // human, on stderr.
+        if format == "json" {
+            eprintln!("No event logs found under {}", state_dir.display());
+        } else {
+            println!("No event logs found under {}", state_dir.display());
+        }
         return Ok(());
     }
 
@@ -3406,6 +3724,16 @@ fn run_inspect_receipt(
     };
 
     let receipt_path = shipper_core::state::execution_state::receipt_path(&state_dir);
+    if !receipt_path.exists() {
+        bail!(
+            "no receipt at {} — receipts are written at the end of a `shipper publish` \
+             or `shipper resume` run\n  \
+             * run `shipper publish` first, or point at another run with `--state-dir <path>`\n  \
+             * `shipper inspect-events` reads the authoritative event log, which exists \
+             from the first event onward",
+            receipt_path.display()
+        );
+    }
     let content = std::fs::read_to_string(&receipt_path)
         .with_context(|| format!("failed to read receipt from {}", receipt_path.display()))?;
 
@@ -3529,9 +3857,15 @@ struct StatusPackageReport {
 fn build_status_registry_report(
     ws: &plan::PlannedWorkspace,
     reporter: &mut dyn Reporter,
+    opts: &RuntimeOptions,
 ) -> Result<StatusRegistryReport> {
     reporter.info("initializing registry client...");
-    let reg = shipper_core::registry::RegistryClient::new(ws.plan.registry.clone())?;
+    let trust = opts.registry_policies.get(&ws.plan.registry.name);
+    let policy = shipper_core::registry::RegistryPolicy::secure()
+        .with_private(trust.is_some_and(|policy| policy.allow_private))
+        .with_loopback(trust.is_some_and(|policy| policy.allow_loopback));
+    let reg =
+        shipper_core::registry::RegistryClient::with_policy(ws.plan.registry.clone(), policy)?;
 
     let mut packages = Vec::new();
     for p in &ws.plan.packages {
@@ -3935,6 +4269,7 @@ fn event_type_clears_next_action(event_type: &EventType) -> bool {
             | EventType::PublishReconciled { .. }
             | EventType::ReadinessComplete { .. }
             | EventType::ReadinessTimeout { .. }
+            | EventType::ReadinessError { .. }
     )
 }
 
@@ -4036,9 +4371,11 @@ fn event_type_name(event_type: &EventType) -> &'static str {
         EventType::ExecutionStarted => "execution_started",
         EventType::ExecutionFinished { .. } => "execution_finished",
         EventType::AuthEvidenceRecorded { .. } => "auth_evidence_recorded",
+        EventType::RegistryPolicyApplied { .. } => "registry_policy_applied",
         EventType::PackageStarted { .. } => "package_started",
         EventType::PackageAttempted { .. } => "package_attempted",
         EventType::PackageOutput { .. } => "package_output",
+        EventType::PackageUploaded => "package_uploaded",
         EventType::PackagePublished { .. } => "package_published",
         EventType::PackageFailed { .. } => "package_failed",
         EventType::PackageSkipped { .. } => "package_skipped",
@@ -4062,6 +4399,7 @@ fn event_type_name(event_type: &EventType) -> &'static str {
         EventType::ReadinessPollScheduled { .. } => "readiness_poll_scheduled",
         EventType::ReadinessComplete { .. } => "readiness_complete",
         EventType::ReadinessTimeout { .. } => "readiness_timeout",
+        EventType::ReadinessError { .. } => "readiness_error",
         EventType::IndexReadinessStarted { .. } => "index_readiness_started",
         EventType::IndexReadinessCheck { .. } => "index_readiness_check",
         EventType::IndexReadinessComplete { .. } => "index_readiness_complete",
@@ -4083,6 +4421,7 @@ fn summarize_event(event: &PublishEvent) -> String {
         EventType::PackagePublished { duration_ms } => {
             format!("published in {}", format_millis(*duration_ms))
         }
+        EventType::PackageUploaded => "upload accepted by cargo".to_string(),
         EventType::PackageFailed { class, message } => format!("failed ({:?}): {}", class, message),
         EventType::PackageSkipped { reason } => format!("skipped: {}", reason),
         EventType::PublishWaiting {
@@ -4149,6 +4488,12 @@ fn summarize_event(event: &PublishEvent) -> String {
         ),
         EventType::ReadinessTimeout { max_wait_ms } => {
             format!("readiness timed out after {}", format_millis(*max_wait_ms))
+        }
+        EventType::ReadinessError { duration_ms } => {
+            format!(
+                "readiness check failed after {}",
+                format_millis(*duration_ms)
+            )
         }
         EventType::PublishReconciling { method } => {
             format!("reconciling publish outcome via {:?}", method)
@@ -4321,11 +4666,36 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
     Ok(())
 }
 
+/// What `clean` did to one path, in the order it happened.
+///
+/// Collected rather than printed inline so the same walk can render as
+/// text or as the `shipper.clean.v1` JSON envelope. `clean` accepts the
+/// global `--format json` like every other command; before this it
+/// answered with English prose on stdout either way, which broke any
+/// pipeline that piped it to a JSON parser.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case", tag = "action", content = "path")]
+enum CleanAction {
+    Removed(String),
+    Kept(String),
+}
+
+#[derive(Debug, Serialize)]
+struct CleanReport {
+    schema_version: &'static str,
+    command: &'static str,
+    state_dir: String,
+    /// False when there was nothing to clean; `actions` is then empty.
+    state_dir_existed: bool,
+    actions: Vec<CleanAction>,
+}
+
 fn run_clean(
     state_dir: &PathBuf,
     workspace_root: &Path,
     keep_receipt: bool,
     force: bool,
+    format: &str,
 ) -> Result<()> {
     let abs_state = if state_dir.is_absolute() {
         state_dir.clone()
@@ -4333,8 +4703,14 @@ fn run_clean(
         workspace_root.join(state_dir)
     };
 
+    let json = format == "json";
+
     if !abs_state.exists() {
-        println!("State directory does not exist: {}", abs_state.display());
+        if json {
+            print_clean_report(&abs_state, false, Vec::new())?;
+        } else {
+            println!("State directory does not exist: {}", abs_state.display());
+        }
         return Ok(());
     }
 
@@ -4351,11 +4727,37 @@ fn run_clean(
         }
     }
 
+    let mut actions = Vec::new();
     for dir in dirs_to_clean {
-        clean_single_dir(&dir, workspace_root, keep_receipt, force)?;
+        actions.extend(clean_single_dir(&dir, workspace_root, keep_receipt, force)?);
     }
 
+    if json {
+        return print_clean_report(&abs_state, true, actions);
+    }
+
+    for action in &actions {
+        match action {
+            CleanAction::Removed(path) => println!("Removed: {path}"),
+            CleanAction::Kept(path) => println!("Kept: {path} (--keep-receipt specified)"),
+        }
+    }
     println!("Clean complete");
+    Ok(())
+}
+
+fn print_clean_report(state_dir: &Path, existed: bool, actions: Vec<CleanAction>) -> Result<()> {
+    let report = CleanReport {
+        schema_version: "shipper.clean.v1",
+        command: "clean",
+        state_dir: state_dir.display().to_string(),
+        state_dir_existed: existed,
+        actions,
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).context("serialize clean report")?
+    );
     Ok(())
 }
 
@@ -4364,7 +4766,8 @@ fn clean_single_dir(
     workspace_root: &Path,
     keep_receipt: bool,
     force: bool,
-) -> Result<()> {
+) -> Result<Vec<CleanAction>> {
+    let mut actions = Vec::new();
     let state_path = dir.join(shipper_core::state::execution_state::STATE_FILE);
     let receipt_path = dir.join(shipper_core::state::execution_state::RECEIPT_FILE);
     let reconciliation_path = dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE);
@@ -4404,7 +4807,7 @@ fn clean_single_dir(
     if state_path.exists() {
         std::fs::remove_file(&state_path)
             .with_context(|| format!("failed to remove state file {}", state_path.display()))?;
-        println!("Removed: {}", state_path.display());
+        actions.push(CleanAction::Removed(state_path.display().to_string()));
     }
 
     // Remove event logs (authoritative + preflight-only sidecars)
@@ -4413,7 +4816,7 @@ fn clean_single_dir(
             std::fs::remove_file(&events_path).with_context(|| {
                 format!("failed to remove events file {}", events_path.display())
             })?;
-            println!("Removed: {}", events_path.display());
+            actions.push(CleanAction::Removed(events_path.display().to_string()));
         }
     }
 
@@ -4421,12 +4824,9 @@ fn clean_single_dir(
     if !keep_receipt && receipt_path.exists() {
         std::fs::remove_file(&receipt_path)
             .with_context(|| format!("failed to remove receipt file {}", receipt_path.display()))?;
-        println!("Removed: {}", receipt_path.display());
+        actions.push(CleanAction::Removed(receipt_path.display().to_string()));
     } else if keep_receipt && receipt_path.exists() {
-        println!(
-            "Kept: {} (--keep-receipt specified)",
-            receipt_path.display()
-        );
+        actions.push(CleanAction::Kept(receipt_path.display().to_string()));
     }
 
     if !keep_receipt && reconciliation_path.exists() {
@@ -4436,12 +4836,11 @@ fn clean_single_dir(
                 reconciliation_path.display()
             )
         })?;
-        println!("Removed: {}", reconciliation_path.display());
+        actions.push(CleanAction::Removed(
+            reconciliation_path.display().to_string(),
+        ));
     } else if keep_receipt && reconciliation_path.exists() {
-        println!(
-            "Kept: {} (--keep-receipt specified)",
-            reconciliation_path.display()
-        );
+        actions.push(CleanAction::Kept(reconciliation_path.display().to_string()));
     }
 
     // Remove cache directory if exists
@@ -4449,13 +4848,13 @@ fn clean_single_dir(
     if cache_dir.exists() {
         std::fs::remove_dir_all(&cache_dir)
             .with_context(|| format!("failed to remove cache directory {}", cache_dir.display()))?;
-        println!("Removed: {}", cache_dir.display());
+        actions.push(CleanAction::Removed(cache_dir.display().to_string()));
     }
 
-    Ok(())
+    Ok(actions)
 }
 
-fn run_config(cmd: ConfigCommands) -> Result<()> {
+fn run_config_with_loopback(cmd: ConfigCommands, allow_loopback: bool) -> Result<()> {
     match cmd {
         ConfigCommands::Init { output } => {
             let template = ShipperConfig::default_toml_template();
@@ -4468,13 +4867,22 @@ fn run_config(cmd: ConfigCommands) -> Result<()> {
         }
         ConfigCommands::Validate { path } => {
             if !path.exists() {
-                bail!("Config file not found: {}", path.display());
+                bail!(
+                    "Config file not found: {}\n  \
+                     * run `shipper config init` to write a documented default there\n  \
+                     * or point at an existing file with `shipper config validate --path <file>`\n  \
+                     Shipper runs fine without a config file — every setting has a default \
+                     and CLI flags override both.",
+                    path.display()
+                );
             }
             let config = ShipperConfig::load_from_file(&path)
                 .with_context(|| format!("Failed to load config file: {}", path.display()))?;
-            config.validate().with_context(|| {
-                format!("Configuration validation failed for {}", path.display())
-            })?;
+            config
+                .validate_with_loopback(allow_loopback)
+                .with_context(|| {
+                    format!("Configuration validation failed for {}", path.display())
+                })?;
             println!("Configuration file is valid: {}", path.display());
         }
     }
@@ -4500,6 +4908,41 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    // ── Multi-registry exit-code aggregation ────────────────────────
+
+    #[test]
+    fn worst_result_keeps_the_worse_outcome_regardless_of_order() {
+        use ExecutionResult::{CompleteFailure, PartialFailure, Success};
+
+        // A later success must not mask an earlier failure: with
+        // `--registries a,b`, a partial failure on `a` followed by a clean
+        // `b` used to exit 0 because only the last outcome was kept.
+        assert!(matches!(
+            worst_result(Some(PartialFailure), &Success),
+            PartialFailure
+        ));
+        assert!(matches!(
+            worst_result(Some(Success), &PartialFailure),
+            PartialFailure
+        ));
+        assert!(matches!(
+            worst_result(Some(PartialFailure), &CompleteFailure),
+            CompleteFailure
+        ));
+        // Severity, not exit-code magnitude: CompleteFailure exits 1 and
+        // PartialFailure exits 2, so a numeric max would pick the wrong one.
+        assert!(matches!(
+            worst_result(Some(CompleteFailure), &PartialFailure),
+            CompleteFailure
+        ));
+        // First registry seeds the accumulator.
+        assert!(matches!(
+            worst_result(None, &PartialFailure),
+            PartialFailure
+        ));
+        assert!(matches!(worst_result(Some(Success), &Success), Success));
+    }
 
     #[derive(Default)]
     struct TestReporter {
@@ -4546,6 +4989,47 @@ mod tests {
         assert_eq!(
             ExitCode::FAILURE,
             exit_code_for_result(&ExecutionResult::CompleteFailure)
+        );
+    }
+
+    /// Regression guard for the top-level error format (PR #417 regression:
+    /// `{e:#}` flattened cause chains into one line; `format_error` must
+    /// preserve the readable `Error:` / `Caused by:` structure). If this
+    /// test fails, do NOT change the assertions — the renderer regressed.
+    #[test]
+    fn report_error_format_preserves_multi_line_cause_chain() {
+        // Build a three-level chain: outer -> mid -> leaf.
+        let leaf = std::io::Error::other("leaf cause");
+        let mid = anyhow::Error::new(leaf).context("mid context");
+        let error = mid.context("outer context");
+
+        let rendered = format_error(&error);
+
+        // Must start with the top-level "Error:" prefix.
+        assert!(
+            rendered.starts_with("Error: outer context"),
+            "missing `Error:` prefix; got:\n{rendered}"
+        );
+        // Must have a blank line then a `Caused by:` section header.
+        assert!(
+            rendered.contains("\n\nCaused by:"),
+            "missing blank-line + `Caused by:` section; got:\n{rendered}"
+        );
+        // Every cause level must be present.
+        assert!(
+            rendered.contains("mid context"),
+            "mid cause missing; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("leaf cause"),
+            "leaf cause missing; got:\n{rendered}"
+        );
+        // Must NOT collapse to a single line with `: ` separators (the
+        // `{e:#}` regression signature).
+        let first_line = rendered.lines().next().unwrap();
+        assert!(
+            !first_line.contains("outer context: mid context"),
+            "cause chain collapsed to single line (`{{e:#}}` regression); got:\n{rendered}"
         );
     }
 
@@ -5089,6 +5573,7 @@ mod tests {
             webhook: shipper_core::webhook::WebhookConfig::default(),
             encryption: shipper_core::encryption::EncryptionConfig::default(),
             registries: vec![],
+            registry_policies: Default::default(),
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
@@ -5114,7 +5599,14 @@ mod tests {
             ],
             || {
                 let mut reporter = TestReporter::default();
-                doctor::run(&ws, &opts, &mut reporter).expect("doctor");
+                doctor::run(
+                    &ws,
+                    &opts,
+                    &mut reporter,
+                    &doctor::WorkspaceStatus::Planned,
+                    true,
+                )
+                .expect("doctor");
             },
         );
     }
@@ -5161,6 +5653,7 @@ mod tests {
             webhook: shipper_core::webhook::WebhookConfig::default(),
             encryption: shipper_core::encryption::EncryptionConfig::default(),
             registries: vec![],
+            registry_policies: Default::default(),
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
@@ -5186,7 +5679,14 @@ mod tests {
             ],
             || {
                 let mut reporter = TestReporter::default();
-                doctor::run(&ws, &opts, &mut reporter).expect("doctor");
+                doctor::run(
+                    &ws,
+                    &opts,
+                    &mut reporter,
+                    &doctor::WorkspaceStatus::Planned,
+                    true,
+                )
+                .expect("doctor");
             },
         );
     }
@@ -5196,9 +5696,12 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let config_path = td.path().join("test-config.toml");
 
-        run_config(ConfigCommands::Init {
-            output: config_path.clone(),
-        })
+        run_config_with_loopback(
+            ConfigCommands::Init {
+                output: config_path.clone(),
+            },
+            false,
+        )
         .expect("config init should succeed");
 
         assert!(config_path.exists(), "config file should be created");
@@ -5250,9 +5753,12 @@ timeout = "1h"
 
         fs::write(&config_path, valid_config).expect("write config file");
 
-        run_config(ConfigCommands::Validate {
-            path: config_path.clone(),
-        })
+        run_config_with_loopback(
+            ConfigCommands::Validate {
+                path: config_path.clone(),
+            },
+            false,
+        )
         .expect("config validate should succeed for valid file");
     }
 
@@ -5269,15 +5775,18 @@ lines = 0
 
         fs::write(&config_path, invalid_config).expect("write config file");
 
-        let result = run_config(ConfigCommands::Validate {
-            path: config_path.clone(),
-        });
+        let result = run_config_with_loopback(
+            ConfigCommands::Validate {
+                path: config_path.clone(),
+            },
+            false,
+        );
 
         assert!(
             result.is_err(),
             "config validate should fail for invalid file"
         );
-        let err = result.unwrap_err().to_string();
+        let err = format!("{:#}", result.unwrap_err());
         // The error is wrapped in context, so check the full message
         assert!(
             err.contains("output.lines must be greater than 0")
@@ -5291,9 +5800,12 @@ lines = 0
         let td = tempdir().expect("tempdir");
         let config_path = td.path().join("nonexistent-config.toml");
 
-        let result = run_config(ConfigCommands::Validate {
-            path: config_path.clone(),
-        });
+        let result = run_config_with_loopback(
+            ConfigCommands::Validate {
+                path: config_path.clone(),
+            },
+            false,
+        );
 
         assert!(
             result.is_err(),
@@ -5445,7 +5957,7 @@ mode = "fast"
         )
         .expect("write lock");
 
-        let err = run_clean(&state_dir, td.path(), false, false).expect_err("must fail");
+        let err = run_clean(&state_dir, td.path(), false, false, "text").expect_err("must fail");
         assert!(err.to_string().contains("cannot clean: active lock exists"));
         assert!(lock_path.exists());
     }
@@ -5484,7 +5996,7 @@ mode = "fast"
         )
         .expect("write lock");
 
-        run_clean(&state_dir, td.path(), false, true).expect("clean with force");
+        run_clean(&state_dir, td.path(), false, true, "text").expect("clean with force");
 
         assert!(!state_path.exists(), "state file should be removed");
         assert!(!receipt_path.exists(), "receipt file should be removed");

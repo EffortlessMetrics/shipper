@@ -6,6 +6,44 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(test)]
+static ACTIVE_TEST_DELIVERIES: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn test_delivery_started() {
+    ACTIVE_TEST_DELIVERIES.fetch_add(1, Ordering::AcqRel);
+}
+
+#[cfg(test)]
+pub(crate) fn test_delivery_finished() {
+    ACTIVE_TEST_DELIVERIES.fetch_sub(1, Ordering::AcqRel);
+}
+
+#[cfg(test)]
+pub(crate) fn active_test_deliveries() -> usize {
+    ACTIVE_TEST_DELIVERIES.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(crate) struct TestDeliveryGuard;
+
+#[cfg(test)]
+impl TestDeliveryGuard {
+    pub(crate) fn new() -> Self {
+        test_delivery_started();
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDeliveryGuard {
+    fn drop(&mut self) {
+        test_delivery_finished();
+    }
+}
 
 /// Webhook configuration type provided by the `shipper-webhook` microcrate.
 pub type WebhookConfig = shipper_webhook::WebhookConfig;
@@ -80,7 +118,11 @@ impl WebhookClient {
         };
 
         let client = self.clone();
+        #[cfg(test)]
+        let test_delivery_guard = TestDeliveryGuard::new();
         let _ = std::thread::spawn(move || {
+            #[cfg(test)]
+            let _test_delivery_guard = test_delivery_guard;
             if let Err(e) =
                 shipper_webhook::send_webhook(&client.config, &to_micro_payload(&payload))
             {
@@ -104,7 +146,11 @@ pub fn maybe_send_event(config: &WebhookConfig, event: WebhookEvent) {
         }
     };
 
+    #[cfg(test)]
+    let test_delivery_guard = TestDeliveryGuard::new();
     let _ = std::thread::spawn(move || {
+        #[cfg(test)]
+        let _test_delivery_guard = test_delivery_guard;
         let payload = WebhookPayload {
             timestamp: Utc::now(),
             event,

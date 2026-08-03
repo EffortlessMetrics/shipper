@@ -2,17 +2,6 @@
 source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: normalize_output(&normalize_stderr(&stderr))
 ---
-[1/1] Publishing demo@0.1.0... (<DURATION>)
-Error: resume failed — next steps:
-  * if plan-ID mismatch: either `shipper clean` and start a fresh plan, or pass `--force-resume` if you understand the divergence
-  * inspect <STATE_DIR>/events.jsonl for the authoritative event log
-  * inspect <STATE_DIR>/state.json to see what was already published
-  * run `shipper status` to compare local versions to the registry
-  Common blockers to check:
-  * state mismatch: compare the current plan with the saved `plan_id` before forcing
-  * corrupt state: preserve `events.jsonl`, then rebuild or clean state intentionally
-  * stale lock: verify no other release process owns the lock before forcing
-  * ambiguous state: inspect `reconciliation.json` and let resume reconcile registry truth
-
-Caused by:
-    no existing state found in <STATE_DIR>; run shipper publish first
+Error: nothing to resume: no publish state at <STATE_DIR>/state.json
+  * run `shipper plan` to preview the release
+  * run `shipper publish` to start it — `resume` continues an interrupted run, it does not begin one

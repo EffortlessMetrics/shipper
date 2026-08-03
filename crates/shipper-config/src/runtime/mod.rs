@@ -38,6 +38,7 @@ pub fn into_runtime_options(value: RuntimeOptions) -> shipper_types::RuntimeOpti
         webhook: value.webhook,
         encryption: value.encryption,
         registries: value.registries,
+        registry_policies: value.registry_policies,
         resume_from: value.resume_from,
         rehearsal_registry: value.rehearsal_registry,
         rehearsal_skip: value.rehearsal_skip,
@@ -117,6 +118,7 @@ mod tests {
                     index_base: None,
                 },
             ],
+            registry_policies: Default::default(),
             resume_from: Some("my-crate".to_string()),
             rehearsal_registry: None,
             rehearsal_skip: false,
@@ -231,7 +233,7 @@ mod tests {
             let encryption = EncryptionConfig {
                 enabled: true,
                 passphrase: if use_secret { Some("secret-pass".to_string()) } else { None },
-                ..EncryptionConfig::default()
+                env_var: None,
             };
 
             let registries = (0..registry_count)
@@ -281,6 +283,7 @@ mod tests {
                 webhook,
                 encryption,
                 registries,
+                registry_policies: Default::default(),
                 resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
@@ -913,9 +916,10 @@ mod tests {
                 encryption: EncryptionConfig {
                     enabled: false,
                     passphrase: None,
-                    ..EncryptionConfig::default()
+                    env_var: None,
                 },
                 registries: vec![],
+                registry_policies: Default::default(),
                 resume_from: None,
                 rehearsal_registry: None,
                 rehearsal_skip: false,
@@ -1235,6 +1239,7 @@ mod tests {
                 webhook: WebhookConfig::default(),
                 encryption: EncryptionConfig::default(),
                 registries: vec![],
+                registry_policies: Default::default(),
                 resume_from: None,
                 rehearsal_registry: None,
                 rehearsal_skip: false,
@@ -1422,6 +1427,7 @@ mod tests {
                 webhook: WebhookConfig::default(),
                 encryption: EncryptionConfig::default(),
                 registries: vec![],
+                registry_policies: Default::default(),
                 resume_from: None,
                 rehearsal_registry: None,
                 rehearsal_skip: false,
@@ -1787,6 +1793,7 @@ mod tests {
                 webhook: WebhookConfig::default(),
                 encryption: EncryptionConfig::default(),
                 registries: vec![],
+                registry_policies: Default::default(),
                 resume_from: Some(String::new()),
                 rehearsal_registry: None,
                 rehearsal_skip: false,

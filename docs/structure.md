@@ -69,9 +69,13 @@ crates/shipper-core/src/
 │   ├── mod.rs            # Top-level engine entry points (run_preflight, run_publish, run_resume, run_rehearsal)
 │   ├── plan_yank.rs      # Reverse-topological yank planning
 │   ├── fix_forward.rs    # Fix-forward planning for compromised releases
-│   └── parallel/         # Parallel publish + readiness verification
-│       ├── publish.rs    # Per-crate publish loop with retry/backoff
-│       └── readiness.rs  # Sparse-index + API visibility queries
+│   ├── execute_package.rs # Per-package publish/retry/readiness execution
+│   ├── readiness.rs      # Shared sparse-index + API visibility queries
+│   ├── reconcile.rs      # Ambiguous-publish reconciliation against registry truth
+│   ├── test_readiness.rs # Test-only readiness event/reporter adapter
+│   └── parallel/         # Parallel publish orchestration
+│       ├── mod.rs         # Parallel entrypoints + module exports
+│       ├── scheduler.rs   # Concurrency scheduling + dependency gating
 ├── runtime/              # Execution runtime + error classification
 │   └── execution/        # ErrorClass classification, classify_cargo_failure
 ├── plan/                 # Workspace analysis + topo-sort + plan_id
@@ -94,6 +98,12 @@ crates/shipper-core/src/
 ├── property_tests.rs     # proptest harnesses
 └── stress_tests.rs       # Long-running validation
 ```
+
+The scheduler files under `engine/parallel/` are orchestration seams, not a
+second package-execution implementation. Both schedulers delegate package
+behavior to `engine/execute_package.rs`; the shared event/state/receipt
+contract is exercised by the #153 corpus in
+`plans/0.5.0-scheduler-conformance.md`.
 
 ## `crates/shipper-cli` module map
 

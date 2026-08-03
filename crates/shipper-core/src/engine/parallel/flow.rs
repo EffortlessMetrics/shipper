@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use shipper_types::PlannedPackage;
-use shipper_types::{ExecutionState, PackageEvidence, PackageReceipt, PackageState};
+use shipper_types::{ExecutionState, PackageState};
 
 use super::SendReporter;
 
@@ -36,38 +36,6 @@ pub(super) fn determine_level_resume_action(
             resume_point.to_string(),
         ))
     }
-}
-
-pub(super) fn collect_level_receipts_from_state(
-    level_packages: &[PlannedPackage],
-    st_arc: &Arc<Mutex<ExecutionState>>,
-) -> Result<Vec<PackageReceipt>> {
-    let st_guard = st_arc.lock().map_err(|_| {
-        anyhow::anyhow!("execution state lock poisoned while collecting level receipts")
-    })?;
-
-    Ok(level_packages
-        .iter()
-        .filter_map(|p| {
-            let key = crate::runtime::execution::pkg_key(&p.name, &p.version);
-            st_guard.packages.get(&key).map(|progress| PackageReceipt {
-                name: p.name.clone(),
-                version: p.version.clone(),
-                attempts: progress.attempts,
-                state: progress.state.clone(),
-                started_at: chrono::Utc::now(),
-                finished_at: chrono::Utc::now(),
-                duration_ms: 0,
-                evidence: PackageEvidence {
-                    attempts: vec![],
-                    readiness_checks: vec![],
-                },
-                compromised_at: None,
-                compromised_by: None,
-                superseded_by: None,
-            })
-        })
-        .collect())
 }
 
 fn is_level_already_complete(

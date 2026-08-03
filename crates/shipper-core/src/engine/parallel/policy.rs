@@ -5,7 +5,7 @@
 
 use shipper_types::RuntimeOptions;
 
-pub(super) fn policy_effects(opts: &RuntimeOptions) -> crate::runtime::policy::PolicyEffects {
+pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::runtime::policy::PolicyEffects {
     let policy = match opts.policy {
         shipper_types::PublishPolicy::Safe => crate::runtime::policy::PolicyKind::Safe,
         shipper_types::PublishPolicy::Balanced => crate::runtime::policy::PolicyKind::Balanced,

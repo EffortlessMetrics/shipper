@@ -77,7 +77,16 @@ pub(in crate::engine) fn run(
     }
 
     reporter.info("initializing registry client...");
-    let reg = init_registry_client(ws.plan.registry.clone(), &state_dir)?;
+    let reg = init_registry_client(ws.plan.registry.clone(), &state_dir, opts)?;
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RegistryPolicyApplied {
+            evidence: reg.policy_evidence(),
+        },
+        package: "all".to_string(),
+    });
+    flush_events(&event_log, &events_path)?;
+    event_log.clear();
 
     let token = auth::resolve_token(&ws.plan.registry.name)?;
     let token_detected = token.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
@@ -171,8 +180,8 @@ fn warn_if_token_auth_overrides_oidc(
         return;
     }
 
-    let oidc_url_present = std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_URL").is_some();
-    let oidc_token_present = std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_TOKEN").is_some();
+    let oidc_url_present = auth::oidc::has_nonblank_value("ACTIONS_ID_TOKEN_REQUEST_URL");
+    let oidc_token_present = auth::oidc::has_nonblank_value("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
     if oidc_url_present || oidc_token_present {
         reporter.warn(
             "Trusted Publishing OIDC environment is present, but Shipper is using Cargo token auth. \

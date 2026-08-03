@@ -2,4 +2,4 @@
 source: crates/shipper-encrypt/src/lib.rs
 expression: info
 ---
-salt_bytes=16, nonce_bytes=12, ciphertext_plus_tag_bytes=39, plaintext_len=23, overhead=44
+header_bytes=13, salt_bytes=16, nonce_bytes=12, ciphertext_plus_tag_bytes=39, plaintext_len=23, overhead=57

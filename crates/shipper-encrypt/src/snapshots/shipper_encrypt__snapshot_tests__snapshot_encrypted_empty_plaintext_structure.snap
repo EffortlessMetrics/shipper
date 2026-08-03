@@ -1,6 +1,5 @@
 ---
 source: crates/shipper-encrypt/src/lib.rs
-assertion_line: 2192
 expression: info
 ---
-raw_len=44, salt=16, nonce=12, ciphertext_plus_tag=16, plaintext_len=0
+raw_len=57, header=13, salt=16, nonce=12, ciphertext_plus_tag=16, plaintext_len=0

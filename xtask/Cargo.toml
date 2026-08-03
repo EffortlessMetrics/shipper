@@ -20,7 +20,7 @@ regex = "1"
 # AST-based panic-family detector (no-panic baseline, #187). `span-locations`
 # on proc-macro2 enables `.start().line`/`.column` from non-proc-macro
 # contexts, which is required for snippet extraction.
-syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+syn = { version = "3", features = ["full", "visit", "extra-traits"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 
 [lints]

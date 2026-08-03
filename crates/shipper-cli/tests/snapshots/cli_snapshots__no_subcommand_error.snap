@@ -2,8 +2,14 @@
 source: crates/shipper-cli/tests/cli_snapshots.rs
 expression: normalize_output(&stderr)
 ---
-error: 'shipper' requires a subcommand but one was not provided
+shipper [VERSION] — resumable, evidence-backed publishing for Rust workspaces
+
+Start here, in this order:
+  shipper doctor      check auth, git, tooling, and registry reachability
+  shipper plan        preview the deterministic publish order
+  shipper preflight   prove the release can finish before anything uploads
+  shipper publish     execute the plan — rerun (or `shipper resume`) to continue
 
 Usage: shipper [OPTIONS] <COMMAND>
 
-For more information, try '--help'.
+Run `shipper --help` for every command, or `shipper <command> --help` for one.

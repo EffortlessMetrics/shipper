@@ -62,4 +62,5 @@ storage:
   secret_access_key: ~
 rehearsal:
   enabled: false
+  allow_loopback: false
   registry: ~

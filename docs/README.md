@@ -34,6 +34,8 @@ Task-oriented recipes. Each solves one focused problem.
 
 Operator runbook (promotion to how-to pending): [release-runbook.md](release-runbook.md)
 
+Current release-line evidence: [0.5.0 release-candidate readiness](release/0.5.0-readiness.md).
+
 ## Reference
 
 Exhaustive, precise, stable specs.
@@ -44,6 +46,7 @@ Exhaustive, precise, stable specs.
 - [Preflight checks](preflight.md)
 - [Readiness verification](readiness.md)
 - [Failure modes](failure-modes.md)
+- [0.5.0 scheduler conformance ledger](../plans/0.5.0-scheduler-conformance.md)
 
 ## Explanation
 
@@ -56,6 +59,7 @@ Design decisions and reasoning. Read these to understand *why* things are the wa
 - [Product overview](product.md)
 - [Repository structure](structure.md)
 - [Tech stack](tech.md)
+- [Tool substrate standard](ci/tool-substrate.md)
 
 ## Root-level orientation
 

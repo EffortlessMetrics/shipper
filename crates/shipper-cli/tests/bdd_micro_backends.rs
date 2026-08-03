@@ -80,6 +80,12 @@ fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
+fn loopback_shipper_cmd() -> Command {
+    let mut command = shipper_cmd();
+    command.arg("--allow-loopback");
+    command
+}
+
 struct TestRegistry {
     base_url: String,
     handle: thread::JoinHandle<()>,
@@ -140,7 +146,7 @@ mod preflight_stability {
         let registry = spawn_not_found_registry(6);
 
         // When: I run "shipper preflight" with "--policy fast" and "--allow-dirty"
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let out = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
