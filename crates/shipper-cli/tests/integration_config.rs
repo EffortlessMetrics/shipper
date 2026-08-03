@@ -8,6 +8,7 @@ use std::path::Path;
 
 use assert_cmd::Command;
 use predicates::str::contains;
+use serial_test::serial;
 use tempfile::tempdir;
 
 fn shipper_cmd() -> Command {
@@ -145,6 +146,7 @@ fn config_flag_with_missing_file_fails() {
 // ── 4. Config values affect CLI behavior ────────────────────────────
 
 #[test]
+#[serial]
 fn config_registry_name_appears_in_plan_output() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
@@ -158,6 +160,7 @@ schema_version = "shipper.config.v1"
 [registry]
 name = "my-private-registry"
 api_base = "https://registry.example.com"
+index_base = "https://index.registry.example.com"
 "#,
     );
 
@@ -241,6 +244,7 @@ fn config_flag_with_invalid_toml_fails() {
 // ── 6. Config precedence: CLI flags override .shipper.toml values ───
 
 #[test]
+#[serial]
 fn cli_registry_flag_overrides_config_registry() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
@@ -254,6 +258,7 @@ schema_version = "shipper.config.v1"
 [registry]
 name = "config-registry"
 api_base = "https://config.example.com"
+index_base = "https://index.config.example.com"
 "#,
     );
 
@@ -270,6 +275,7 @@ api_base = "https://config.example.com"
 }
 
 #[test]
+#[serial]
 fn cli_api_base_flag_overrides_config_api_base() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
@@ -283,6 +289,7 @@ schema_version = "shipper.config.v1"
 [registry]
 name = "my-reg"
 api_base = "https://config-api.example.com"
+index_base = "https://index.config-api.example.com"
 "#,
     );
 

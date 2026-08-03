@@ -68,6 +68,9 @@ jq '.packages[] | select(.state.state == "published") | .name' .shipper/state.js
 
 # Packages still pending
 jq '.packages[] | select(.state.state == "pending") | .name' .shipper/state.json
+
+# Per-attempt history reconstructed from state.json events projection
+jq '.attempt_history[] | "\(.package)@\(.version)#\(.attempt)/\(.max_attempts): \(.error_class // "ok")"' .shipper/state.json
 ```
 
 ## Reading receipts

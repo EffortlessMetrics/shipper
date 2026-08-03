@@ -9,22 +9,47 @@ use shipper_types::{
     EventType, PublishEvent, ReadinessConfig, ReadinessEvidence, ReadinessMethod, Registry,
 };
 
+use crate::{RegistryPolicy, ValidatedRegistry};
+
 #[derive(Debug, Clone)]
 pub struct RegistryClient {
     registry: Registry,
+    validated: ValidatedRegistry,
     http: Client,
     cache_dir: Option<std::path::PathBuf>,
 }
 
 impl RegistryClient {
     pub fn new(registry: Registry) -> Result<Self> {
+        Self::with_policy(registry, RegistryPolicy::secure())
+    }
+
+    /// Construct a client after validating the registry under explicit trust
+    /// choices. Rehearsal and mock-server callers must opt into loopback
+    /// deliberately through [`RegistryPolicy::rehearsal`].
+    pub fn with_policy(registry: Registry, policy: RegistryPolicy) -> Result<Self> {
+        let validated = ValidatedRegistry::new(registry.clone(), policy)?;
+        let api_host = validated
+            .api_base()
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("validated api_base URL has no host"))?;
+        let index_host = validated
+            .index_base()
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("validated index_base URL has no host"))?;
+        let api_addrs = validated.approved_socket_addrs(validated.api_base(), "api_base")?;
+        let index_addrs = validated.approved_socket_addrs(validated.index_base(), "index_base")?;
         let http = Client::builder()
             .user_agent(format!("shipper/{}", env!("CARGO_PKG_VERSION")))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(api_host, &api_addrs)
+            .resolve_to_addrs(index_host, &index_addrs)
             .build()
             .context("failed to build HTTP client")?;
 
         Ok(Self {
             registry,
+            validated,
             http,
             cache_dir: None,
         })
@@ -40,10 +65,16 @@ impl RegistryClient {
         &self.registry
     }
 
+    /// Return the sanitized destination and trust posture applied to this
+    /// client. No credentials or URL query material is included.
+    pub fn policy_evidence(&self) -> shipper_types::RegistryPolicyEvidence {
+        self.validated.sanitized_evidence()
+    }
+
     pub fn version_exists(&self, crate_name: &str, version: &str) -> Result<bool> {
         let url = format!(
             "{}/api/v1/crates/{}/{}",
-            self.registry.api_base.trim_end_matches('/'),
+            self.validated.api_base().as_str().trim_end_matches('/'),
             crate_name,
             version
         );
@@ -63,7 +94,7 @@ impl RegistryClient {
     pub fn crate_exists(&self, crate_name: &str) -> Result<bool> {
         let url = format!(
             "{}/api/v1/crates/{}",
-            self.registry.api_base.trim_end_matches('/'),
+            self.validated.api_base().as_str().trim_end_matches('/'),
             crate_name
         );
 
@@ -82,7 +113,7 @@ impl RegistryClient {
     pub fn list_owners(&self, crate_name: &str, token: &str) -> Result<OwnersResponse> {
         let url = format!(
             "{}/api/v1/crates/{}/owners",
-            self.registry.api_base.trim_end_matches('/'),
+            self.validated.api_base().as_str().trim_end_matches('/'),
             crate_name
         );
 
@@ -157,7 +188,7 @@ impl RegistryClient {
 
     /// Fetch the index file content from the registry.
     fn fetch_index_file(&self, index_path: &str) -> Result<String> {
-        let index_base = self.registry.get_index_base();
+        let index_base = self.validated.index_base().as_str();
         let url = format!("{}/{}", index_base.trim_end_matches('/'), index_path);
 
         let cache_file = self.cache_dir.as_ref().map(|d| d.join(index_path));
@@ -213,6 +244,34 @@ impl RegistryClient {
         Ok(shipper_sparse_index::contains_version(content, version))
     }
 
+    /// Resolve index visibility for a readiness poll, honoring
+    /// [`ReadinessConfig::index_path`].
+    ///
+    /// When an operator configures a local sparse-index path, readiness is a
+    /// **local file read** — no network request is issued. This matters for
+    /// vendored/offline registries and for CI runners that mirror the index
+    /// on disk. Without the local path, this falls back to the HTTP sparse
+    /// index probe.
+    fn visible_via_index(
+        &self,
+        crate_name: &str,
+        version: &str,
+        config: &ReadinessConfig,
+    ) -> Result<bool> {
+        if let Some(path) = &config.index_path {
+            let content = std::fs::read_to_string(path).map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to read local sparse-index path {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
+            Ok(shipper_sparse_index::contains_version(&content, version))
+        } else {
+            self.check_index_visibility(crate_name, version)
+        }
+    }
+
     /// Attempt ownership verification for a crate.
     ///
     /// Returns true if ownership is verified, false if verification fails or endpoint is unavailable.
@@ -260,6 +319,16 @@ impl RegistryClient {
 
     /// Check if a version is visible with exponential backoff and jitter,
     /// emitting scheduling events for callers that persist release timelines.
+    ///
+    /// This is the single canonical readiness polling loop for the whole
+    /// workspace; `shipper-core`'s engine calls straight into it rather than
+    /// keeping a parallel copy.
+    ///
+    /// Evidence contract: each [`ReadinessEvidence::delay_before`] is the
+    /// delay that was **actually slept** immediately before that poll — the
+    /// same value carried by the matching `ReadinessPollScheduled` event.
+    /// Attempt 1 reports `config.initial_delay` when an initial delay was
+    /// slept, and `Duration::ZERO` otherwise.
     pub fn is_version_visible_with_backoff_and_events(
         &self,
         crate_name: &str,
@@ -286,6 +355,11 @@ impl RegistryClient {
         let start = Instant::now();
         let mut attempt: u32 = 0;
 
+        // `pending_delay` carries the delay that was *actually slept* before
+        // the upcoming poll, so the evidence record for that poll reports the
+        // real wait rather than an independently re-drawn jitter sample.
+        let mut pending_delay = Duration::ZERO;
+
         // Initial delay before first poll
         if config.initial_delay > Duration::ZERO {
             emit_event(readiness_poll_scheduled_event(
@@ -294,34 +368,24 @@ impl RegistryClient {
                 config.initial_delay,
             ))?;
             std::thread::sleep(config.initial_delay);
+            pending_delay = config.initial_delay;
         }
 
         loop {
             attempt += 1;
 
-            // Calculate delay for this iteration (used for evidence; applied after check)
-            let jittered_delay = if attempt == 1 {
-                Duration::ZERO
-            } else {
-                let base_delay = config.poll_interval;
-                let exponential_delay = base_delay
-                    .saturating_mul(2_u32.saturating_pow(attempt.saturating_sub(2).min(16)));
-                let capped_delay = exponential_delay.min(config.max_delay);
-                let jitter_range = config.jitter_factor;
-                let jitter = 1.0 + (rand::random::<f64>() * 2.0 * jitter_range - jitter_range);
-                Duration::from_millis((capped_delay.as_millis() as f64 * jitter).round() as u64)
-            };
+            let jittered_delay = pending_delay;
 
             // Check visibility based on method
             // Errors are treated as "not visible" to allow backoff retries
             let visible = match config.method {
                 ReadinessMethod::Api => self.version_exists(crate_name, version).unwrap_or(false),
                 ReadinessMethod::Index => self
-                    .check_index_visibility(crate_name, version)
+                    .visible_via_index(crate_name, version, config)
                     .unwrap_or(false),
                 ReadinessMethod::Both => {
                     if config.prefer_index {
-                        match self.check_index_visibility(crate_name, version) {
+                        match self.visible_via_index(crate_name, version, config) {
                             Ok(true) => true,
                             _ => self.version_exists(crate_name, version).unwrap_or(false),
                         }
@@ -329,7 +393,7 @@ impl RegistryClient {
                         match self.version_exists(crate_name, version) {
                             Ok(true) => true,
                             _ => self
-                                .check_index_visibility(crate_name, version)
+                                .visible_via_index(crate_name, version, config)
                                 .unwrap_or(false),
                         }
                     }
@@ -369,6 +433,7 @@ impl RegistryClient {
                 attempt.saturating_add(1),
                 next_delay,
             ))?;
+            pending_delay = next_delay;
             std::thread::sleep(next_delay);
         }
     }
@@ -435,6 +500,10 @@ pub struct Owner {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
 
     use tiny_http::{Response, Server, StatusCode};
@@ -470,6 +539,20 @@ mod tests {
         }
     }
 
+    fn test_registry_client(mut registry: Registry) -> Result<RegistryClient> {
+        if registry.index_base.is_none() {
+            registry.index_base = Some(registry.api_base.clone());
+        }
+        RegistryClient::with_policy(registry, RegistryPolicy::rehearsal())
+    }
+
+    fn closed_loopback_url() -> String {
+        let server = Server::http("127.0.0.1:0").expect("server");
+        let base_url = format!("http://{}", server.server_addr());
+        drop(server);
+        base_url
+    }
+
     fn with_multi_server<F>(handler: F, request_count: usize) -> (String, thread::JoinHandle<()>)
     where
         F: Fn(tiny_http::Request) + Send + Sync + 'static,
@@ -478,18 +561,16 @@ mod tests {
         // the accept loop blocks on `handler(req)` until the response is
         // written, the remaining clients can sit in the kernel's TCP backlog
         // long enough to exceed reqwest's default OS-level timeout on slow
-        // macOS CI runners. We saw this as a recurring flake — three hits
-        // in a single rollout session — until the loop was rewritten to
-        // accept-and-dispatch: spawn a worker thread per request and let
-        // the accept loop return immediately to `recv_timeout`. The
-        // `recv_timeout` itself is bumped from 30s to 60s for headroom.
+        // CI runners. Accept and dispatch each request so handlers do not
+        // block the receiver. A short idle timeout is only a fallback for
+        // tests that intentionally receive fewer requests than their bound.
         let handler = std::sync::Arc::new(handler);
         let server = Server::http("127.0.0.1:0").expect("server");
         let addr = format!("http://{}", server.server_addr());
         let handle = thread::spawn(move || {
             let mut workers: Vec<thread::JoinHandle<()>> = Vec::with_capacity(request_count);
             for _ in 0..request_count {
-                match server.recv_timeout(Duration::from_mins(1)) {
+                match server.recv_timeout(Duration::from_secs(2)) {
                     Ok(Some(req)) => {
                         let handler = handler.clone();
                         workers.push(thread::spawn(move || handler(req)));
@@ -512,7 +593,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert_eq!(cli.registry().name, "crates-io");
         let exists = cli.version_exists("demo", "1.2.3").expect("exists");
         assert!(exists);
@@ -526,7 +607,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let exists = cli.version_exists("demo", "1.2.3").expect("exists");
         assert!(!exists);
         handle.join().expect("join");
@@ -539,7 +620,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .version_exists("demo", "1.2.3")
             .expect_err("unexpected status must fail");
@@ -555,7 +636,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let exists = cli.crate_exists("demo").expect("exists");
         assert!(exists);
         handle.join().expect("join");
@@ -568,7 +649,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let exists = cli.crate_exists("demo").expect("exists");
         assert!(!exists);
         handle.join().expect("join");
@@ -581,7 +662,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .crate_exists("demo")
             .expect_err("unexpected status must fail");
@@ -610,7 +691,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli.list_owners("demo", "token-abc").expect("owners");
         assert_eq!(owners.users.len(), 1);
         assert_eq!(owners.users[0].login, "alice");
@@ -623,7 +704,7 @@ mod tests {
             req.respond(Response::empty(StatusCode(404)))
                 .expect("respond");
         });
-        let cli_404 = RegistryClient::new(test_registry(api_base_404)).expect("client");
+        let cli_404 = test_registry_client(test_registry(api_base_404)).expect("client");
         let err_404 = cli_404
             .list_owners("missing", "token")
             .expect_err("404 must fail");
@@ -634,7 +715,7 @@ mod tests {
             req.respond(Response::empty(StatusCode(403)))
                 .expect("respond");
         });
-        let cli_403 = RegistryClient::new(test_registry(api_base_403)).expect("client");
+        let cli_403 = test_registry_client(test_registry(api_base_403)).expect("client");
         let err_403 = cli_403
             .list_owners("demo", "token")
             .expect_err("403 must fail");
@@ -645,7 +726,7 @@ mod tests {
             req.respond(Response::empty(StatusCode(500)))
                 .expect("respond");
         });
-        let cli_500 = RegistryClient::new(test_registry(api_base_500)).expect("client");
+        let cli_500 = test_registry_client(test_registry(api_base_500)).expect("client");
         let err_500 = cli_500
             .list_owners("demo", "token")
             .expect_err("500 must fail");
@@ -660,7 +741,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let base = Duration::from_millis(100);
         let max = Duration::from_millis(500);
         let jitter_factor = 0.5;
@@ -690,7 +771,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: false,
             method: ReadinessMethod::Api,
@@ -721,7 +802,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         // Test standard crate names (4+ chars use first_two/chars_2_4/name)
         assert_eq!(cli.calculate_index_path("serde"), "se/rd/serde");
@@ -737,7 +818,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         // Test single-character crate name
         assert_eq!(cli.calculate_index_path("a"), "1/a");
@@ -756,7 +837,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         // Test crate names with special characters (lowercased, using length-based scheme)
         assert_eq!(cli.calculate_index_path("_serde"), "_s/er/_serde");
@@ -772,7 +853,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         let index_content = "{\"vers\":\"1.0.0\"}\n{\"vers\":\"1.0.1\"}\n{\"vers\":\"2.0.0\"}\n";
 
@@ -788,7 +869,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         let index_content = "{\"vers\":\"1.0.0\"}\n{\"vers\":\"1.0.1\"}\n";
 
@@ -804,7 +885,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         let invalid_json = "not valid json";
 
@@ -828,7 +909,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.1").expect("check");
         assert!(visible);
         handle.join().expect("join");
@@ -849,7 +930,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.1").expect("check");
         assert!(!visible);
         handle.join().expect("join");
@@ -862,7 +943,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let visible = cli
             .check_index_visibility("missing", "1.0.0")
             .expect("check");
@@ -872,14 +953,14 @@ mod tests {
 
     #[test]
     fn check_index_visibility_returns_false_for_network_error() {
-        // Use a non-existent URL to simulate a network error
+        let closed_base = closed_loopback_url();
         let registry = Registry {
             name: "test".to_string(),
-            api_base: "http://nonexistent.invalid:9999".to_string(),
-            index_base: Some("http://nonexistent.invalid:9999".to_string()),
+            api_base: closed_base.clone(),
+            index_base: Some(closed_base),
         };
 
-        let cli = RegistryClient::new(registry).expect("client");
+        let cli = test_registry_client(registry).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(!visible);
     }
@@ -896,7 +977,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(!visible);
         handle.join().expect("join");
@@ -917,7 +998,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Index,
@@ -953,7 +1034,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Both,
@@ -1023,7 +1104,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(!visible);
         handle.join().expect("join");
@@ -1046,7 +1127,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
 
         // Check each version exists
         assert!(cli.check_index_visibility("demo", "0.1.0").expect("check"));
@@ -1075,7 +1156,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         // Valid lines are still parsed; invalid lines are skipped
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(visible);
@@ -1094,7 +1175,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -1127,7 +1208,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Both,
@@ -1159,7 +1240,7 @@ mod tests {
             10,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -1183,14 +1264,14 @@ mod tests {
 
     #[test]
     fn is_version_visible_with_backoff_handles_network_errors_gracefully() {
-        // Use a non-existent URL to simulate network errors
+        let closed_base = closed_loopback_url();
         let registry = Registry {
             name: "test".to_string(),
-            api_base: "http://nonexistent.invalid:9999".to_string(),
-            index_base: Some("http://nonexistent.invalid:9999".to_string()),
+            api_base: closed_base.clone(),
+            index_base: Some(closed_base),
         };
 
-        let cli = RegistryClient::new(registry).expect("client");
+        let cli = test_registry_client(registry).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -1223,7 +1304,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -1262,7 +1343,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let verified = cli.verify_ownership("demo", "fake-token").expect("verify");
         assert!(verified);
         handle.join().expect("join");
@@ -1280,7 +1361,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let verified = cli.verify_ownership("demo", "fake-token").expect("verify");
         assert!(!verified);
         handle.join().expect("join");
@@ -1298,7 +1379,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let verified = cli.verify_ownership("demo", "fake-token").expect("verify");
         assert!(!verified);
         handle.join().expect("join");
@@ -1311,7 +1392,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let is_new = cli.check_new_crate("demo").expect("check");
         assert!(is_new);
         handle.join().expect("join");
@@ -1329,7 +1410,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let is_new = cli.check_new_crate("demo").expect("check");
         assert!(!is_new);
         handle.join().expect("join");
@@ -1344,7 +1425,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -1378,7 +1459,7 @@ mod tests {
             20,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -1422,7 +1503,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -1457,7 +1538,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Index,
@@ -1490,7 +1571,7 @@ mod tests {
             10,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Index,
@@ -1524,7 +1605,7 @@ mod tests {
             10,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Index,
@@ -1572,7 +1653,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base.clone())).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base.clone())).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Both,
@@ -1617,7 +1698,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base.clone())).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base.clone())).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Both,
@@ -1646,7 +1727,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -1693,7 +1774,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -1743,7 +1824,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let base = Duration::from_millis(100);
         let max = Duration::from_secs(10);
 
@@ -1775,7 +1856,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let base = Duration::from_millis(100);
         let max = Duration::from_millis(500);
 
@@ -1795,7 +1876,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: false,
             method: ReadinessMethod::Api,
@@ -1830,7 +1911,7 @@ mod tests {
             20,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base.clone())).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base.clone())).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Both,
@@ -1861,7 +1942,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .version_exists("demo", "1.0.0")
             .expect_err("429 must fail");
@@ -1876,7 +1957,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .version_exists("demo", "1.0.0")
             .expect_err("502 must fail");
@@ -1891,7 +1972,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .version_exists("demo", "1.0.0")
             .expect_err("503 must fail");
@@ -1906,7 +1987,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli.crate_exists("demo").expect_err("429 must fail");
         assert!(format!("{err:#}").contains("unexpected status"));
         handle.join().expect("join");
@@ -1919,7 +2000,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli.list_owners("demo", "token").expect_err("429 must fail");
         assert!(format!("{err:#}").contains("unexpected status while querying owners"));
         handle.join().expect("join");
@@ -1938,7 +2019,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("non-json must fail");
@@ -1958,7 +2039,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("truncated json must fail");
@@ -1979,7 +2060,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("wrong schema must fail");
@@ -1996,7 +2077,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         let content = "{\"vers\":\"1.0.0\"}\n{\"vers\":\"1.0.10\"}\n{\"vers\":\"1.0.0-beta.1\"}\n";
 
@@ -2016,7 +2097,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         let content = "{\"vers\":\"1.0.0-alpha.1\"}\n{\"vers\":\"1.0.0-beta.2\"}\n{\"vers\":\"1.0.0-rc.1\"}\n{\"vers\":\"1.0.0\"}\n";
 
@@ -2045,7 +2126,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         assert!(!cli.parse_version_from_index("", "1.0.0").unwrap());
         assert!(!cli.parse_version_from_index("\n\n\n", "1.0.0").unwrap());
@@ -2062,7 +2143,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let exists = cli.version_exists("demo", "1.0.0").expect("exists");
         assert!(exists);
         handle.join().expect("join");
@@ -2080,7 +2161,7 @@ mod tests {
             10,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -2112,7 +2193,7 @@ mod tests {
             10,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Index,
@@ -2158,7 +2239,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Both,
@@ -2212,7 +2293,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Both,
@@ -2252,7 +2333,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli.list_owners("demo", "token").expect("owners");
         insta::assert_debug_snapshot!("owners_response_parsed", owners);
         handle.join().expect("join");
@@ -2265,7 +2346,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -2373,7 +2454,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .version_exists("demo", "1.0.0")
             .expect_err("401 must fail");
@@ -2388,7 +2469,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .version_exists("demo", "1.0.0")
             .expect_err("403 must fail");
@@ -2403,7 +2484,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli.crate_exists("demo").expect_err("401 must fail");
         assert!(format!("{err:#}").contains("unexpected status"));
         handle.join().expect("join");
@@ -2416,7 +2497,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli.crate_exists("demo").expect_err("502 must fail");
         assert!(format!("{err:#}").contains("unexpected status"));
         handle.join().expect("join");
@@ -2429,7 +2510,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli.crate_exists("demo").expect_err("503 must fail");
         assert!(format!("{err:#}").contains("unexpected status"));
         handle.join().expect("join");
@@ -2442,7 +2523,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli.list_owners("demo", "token").expect_err("401 must fail");
         assert!(format!("{err:#}").contains("unexpected status while querying owners"));
         handle.join().expect("join");
@@ -2455,7 +2536,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli.list_owners("demo", "token").expect_err("502 must fail");
         assert!(format!("{err:#}").contains("unexpected status while querying owners"));
         handle.join().expect("join");
@@ -2473,7 +2554,7 @@ mod tests {
             10,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -2513,7 +2594,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -2551,7 +2632,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("empty body must fail");
@@ -2570,7 +2651,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("html must fail");
@@ -2596,7 +2677,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli.list_owners("demo", "token").expect("owners");
         assert_eq!(owners.users.len(), 3);
         assert_eq!(owners.users[0].login, "alice");
@@ -2618,7 +2699,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli.list_owners("demo", "token").expect("owners");
         assert!(owners.users.is_empty());
         handle.join().expect("join");
@@ -2647,7 +2728,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli.list_owners("demo", "token").expect("owners");
         assert_eq!(owners.users.len(), 100);
         assert_eq!(owners.users[99].login, "user99");
@@ -2672,7 +2753,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         // Find the last version in a large index
         assert!(
             cli.check_index_visibility("demo", "499.0.0")
@@ -2688,7 +2769,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         let mut lines = Vec::new();
         for i in 0..1000 {
@@ -2709,7 +2790,7 @@ mod tests {
         let addr = format!("http://{}", server.server_addr());
         drop(server);
 
-        let cli = RegistryClient::new(test_registry(addr)).expect("client");
+        let cli = test_registry_client(test_registry(addr)).expect("client");
         let err = cli
             .version_exists("demo", "1.0.0")
             .expect_err("connection refused must fail");
@@ -2722,7 +2803,7 @@ mod tests {
         let addr = format!("http://{}", server.server_addr());
         drop(server);
 
-        let cli = RegistryClient::new(test_registry(addr)).expect("client");
+        let cli = test_registry_client(test_registry(addr)).expect("client");
         let err = cli
             .crate_exists("demo")
             .expect_err("connection refused must fail");
@@ -2735,7 +2816,7 @@ mod tests {
         let addr = format!("http://{}", server.server_addr());
         drop(server);
 
-        let cli = RegistryClient::new(test_registry(addr)).expect("client");
+        let cli = test_registry_client(test_registry(addr)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("connection refused must fail");
@@ -2751,7 +2832,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         // check_index_visibility degrades gracefully on errors
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(!visible);
@@ -2765,7 +2846,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(!visible);
         handle.join().expect("join");
@@ -2778,7 +2859,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(!visible);
         handle.join().expect("join");
@@ -2792,7 +2873,7 @@ mod tests {
         });
 
         // No cache dir set, so 304 should fail gracefully
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(!visible);
         handle.join().expect("join");
@@ -2810,7 +2891,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base))
+        let cli = test_registry_client(test_registry_with_index(api_base))
             .expect("client")
             .with_cache_dir(cache_dir.path().to_path_buf());
 
@@ -2831,7 +2912,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base))
+        let cli = test_registry_client(test_registry_with_index(api_base))
             .expect("client")
             .with_cache_dir(cache_dir.path().to_path_buf());
 
@@ -2879,7 +2960,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base))
+        let cli = test_registry_client(test_registry_with_index(api_base))
             .expect("client")
             .with_cache_dir(cache_dir.path().to_path_buf());
 
@@ -2901,7 +2982,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert!(cli.version_exists("my-crate", "1.0.0").expect("exists"));
         handle.join().expect("join");
     }
@@ -2914,7 +2995,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert!(cli.version_exists("my_crate", "2.0.0").expect("exists"));
         handle.join().expect("join");
     }
@@ -2926,7 +3007,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert_eq!(cli.calculate_index_path("my-crate"), "my/-c/my-crate");
     }
 
@@ -2937,7 +3018,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert_eq!(cli.calculate_index_path("MyLib"), "my/li/mylib");
         assert_eq!(cli.calculate_index_path("UPPER"), "up/pe/upper");
     }
@@ -2957,7 +3038,7 @@ mod tests {
         );
 
         let cli =
-            std::sync::Arc::new(RegistryClient::new(test_registry(api_base)).expect("client"));
+            std::sync::Arc::new(test_registry_client(test_registry(api_base)).expect("client"));
 
         let handles: Vec<_> = (0..CONCURRENT_REQUESTS)
             .map(|i| {
@@ -2992,7 +3073,7 @@ mod tests {
         );
 
         let cli =
-            std::sync::Arc::new(RegistryClient::new(test_registry(api_base)).expect("client"));
+            std::sync::Arc::new(test_registry_client(test_registry(api_base)).expect("client"));
 
         let names = ["found1", "found2", "missing1", "missing2"];
         let handles: Vec<_> = names
@@ -3026,7 +3107,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let verified = cli.verify_ownership("demo", "fake-token").expect("verify");
         assert!(!verified);
         handle.join().expect("join");
@@ -3039,7 +3120,7 @@ mod tests {
         let addr = format!("http://{}", server.server_addr());
         drop(server);
 
-        let cli = RegistryClient::new(test_registry(addr)).expect("client");
+        let cli = test_registry_client(test_registry(addr)).expect("client");
         // Connection refused produces an error that doesn't contain "forbidden"/"not found"
         // so it should propagate rather than degrade gracefully
         let result = cli.verify_ownership("demo", "token");
@@ -3055,7 +3136,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let content = "   \n  \n\t\n";
         assert!(!cli.parse_version_from_index(content, "1.0.0").unwrap());
     }
@@ -3067,7 +3148,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let content = "garbage\n{\"vers\":\"1.0.0\"}\n<<invalid>>\n{\"vers\":\"2.0.0\"}\nnull\n";
 
         assert!(cli.parse_version_from_index(content, "1.0.0").unwrap());
@@ -3082,7 +3163,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         // A JSON array is not valid JSONL format for sparse index
         let content = r#"[{"vers":"1.0.0"},{"vers":"2.0.0"}]"#;
         assert!(!cli.parse_version_from_index(content, "1.0.0").unwrap());
@@ -3095,7 +3176,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let content = r#"{"name":"demo","vers":"1.0.0","cksum":"abc123","deps":[],"features":{},"yanked":false}"#;
         // Even with extra fields, version should still be found
         assert!(cli.parse_version_from_index(content, "1.0.0").unwrap());
@@ -3110,7 +3191,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let delay = cli.calculate_backoff_delay(Duration::ZERO, Duration::from_secs(10), 5, 0.0);
         assert_eq!(delay, Duration::ZERO);
     }
@@ -3122,7 +3203,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let delay = cli.calculate_backoff_delay(Duration::from_millis(100), Duration::ZERO, 3, 0.0);
         assert_eq!(delay, Duration::ZERO);
     }
@@ -3134,7 +3215,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         // u32::MAX attempt should not panic due to saturating arithmetic
         let delay = cli.calculate_backoff_delay(
             Duration::from_millis(100),
@@ -3152,7 +3233,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         // With 100% jitter, delay should be 0..2× base
         for _ in 0..50 {
             let delay = cli.calculate_backoff_delay(
@@ -3181,7 +3262,7 @@ mod tests {
             index_base: None,
         };
 
-        let cli = RegistryClient::new(registry).expect("client");
+        let cli = test_registry_client(registry).expect("client");
         assert!(cli.version_exists("demo", "1.0.0").expect("exists"));
         handle.join().expect("join");
     }
@@ -3200,7 +3281,7 @@ mod tests {
             index_base: None,
         };
 
-        let cli = RegistryClient::new(registry).expect("client");
+        let cli = test_registry_client(registry).expect("client");
         assert!(cli.crate_exists("demo").expect("exists"));
         handle.join().expect("join");
     }
@@ -3214,7 +3295,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli.check_new_crate("demo").expect_err("500 must propagate");
         assert!(format!("{err:#}").contains("unexpected status"));
         handle.join().expect("join");
@@ -3245,7 +3326,7 @@ mod tests {
             6,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -3306,7 +3387,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base))
+        let cli = test_registry_client(test_registry_with_index(api_base))
             .expect("client")
             .with_cache_dir(cache_dir.path().to_path_buf());
 
@@ -3341,7 +3422,7 @@ mod tests {
             api_base: "https://example.com".to_string(),
             index_base: None,
         };
-        let cli = RegistryClient::new(registry)
+        let cli = test_registry_client(registry)
             .expect("client")
             .with_cache_dir(std::path::PathBuf::from("/tmp/test-cache"));
         // Verify the client can be constructed with a cache dir (smoke test)
@@ -3355,18 +3436,19 @@ mod tests {
                 .expect("respond");
         });
 
+        let expected_index = format!("{api_base}/index");
         let registry = Registry {
             name: "custom-registry".to_string(),
             api_base: api_base.clone(),
-            index_base: Some("https://index.custom.io".to_string()),
+            index_base: Some(expected_index.clone()),
         };
 
-        let cli = RegistryClient::new(registry).expect("client");
+        let cli = test_registry_client(registry).expect("client");
         assert_eq!(cli.registry().name, "custom-registry");
         assert_eq!(cli.registry().api_base, api_base);
         assert_eq!(
             cli.registry().index_base.as_deref(),
-            Some("https://index.custom.io")
+            Some(expected_index.as_str())
         );
     }
 
@@ -3409,7 +3491,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .version_exists("demo", "1.0.0")
             .expect_err("429 with Retry-After must fail");
@@ -3428,7 +3510,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .crate_exists("demo")
             .expect_err("429 with Retry-After must fail");
@@ -3446,7 +3528,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("429 with Retry-After must fail");
@@ -3464,7 +3546,7 @@ mod tests {
                     .expect("respond");
             });
 
-            let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+            let cli = test_registry_client(test_registry(api_base)).expect("client");
             let err = cli
                 .version_exists("demo", "1.0.0")
                 .expect_err("server error must fail");
@@ -3485,7 +3567,7 @@ mod tests {
                     .expect("respond");
             });
 
-            let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+            let cli = test_registry_client(test_registry(api_base)).expect("client");
             let err = cli
                 .crate_exists("demo")
                 .expect_err("server error must fail");
@@ -3505,7 +3587,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli.list_owners("demo", "token").expect_err("503 must fail");
         assert!(format!("{err:#}").contains("unexpected status while querying owners"));
         handle.join().expect("join");
@@ -3527,7 +3609,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli
             .list_owners("demo", "token")
             .expect("should parse despite extra fields");
@@ -3550,7 +3632,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli.list_owners("demo", "token").expect("owners");
         assert_eq!(owners.users[0].login, "user-ñ");
         assert_eq!(owners.users[0].name.as_deref(), Some("José García 日本語"));
@@ -3569,7 +3651,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("null body must fail");
@@ -3589,7 +3671,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("array body must fail");
@@ -3606,7 +3688,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         let content =
             "{\"vers\":\"1.0.0+build.1\"}\n{\"vers\":\"1.0.0+build.2\"}\n{\"vers\":\"1.0.0\"}\n";
@@ -3634,7 +3716,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         let content = "{\"vers\":\"1.0.0\"}\n";
         // "v1.0.0" should NOT match "1.0.0" — exact string match
@@ -3648,7 +3730,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         let content =
             "{\"vers\":\"1.0.0\",\"yanked\":true}\n{\"vers\":\"2.0.0\",\"yanked\":false}\n";
@@ -3664,7 +3746,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         let content = "{\"vers\":\"1.0.0-alpha.1.beta.2.rc.3\"}\n";
         assert!(
@@ -3684,7 +3766,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         let content = "{\"vers\":null}\n{\"vers\":\"1.0.0\"}\n";
         assert!(cli.parse_version_from_index(content, "1.0.0").unwrap());
@@ -3698,7 +3780,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         // vers as a number instead of string; should not match "100"
         let content = "{\"vers\":100}\n{\"vers\":\"2.0.0\"}\n";
@@ -3715,7 +3797,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         // 500 is not in the graceful-degradation list, so it should propagate
         let result = cli.verify_ownership("demo", "token");
         assert!(result.is_err());
@@ -3729,7 +3811,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         // 429 is not in the graceful-degradation patterns, should propagate
         let result = cli.verify_ownership("demo", "token");
         assert!(result.is_err());
@@ -3750,7 +3832,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert!(cli.verify_ownership("demo", "token").expect("verify"));
         handle.join().expect("join");
     }
@@ -3776,7 +3858,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert!(cli.verify_ownership("demo", "token").expect("verify"));
         handle.join().expect("join");
     }
@@ -3795,7 +3877,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         // verify_ownership returns true if list_owners succeeds (even if empty)
         assert!(cli.verify_ownership("demo", "token").expect("verify"));
         handle.join().expect("join");
@@ -3814,7 +3896,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base))
+        let cli = test_registry_client(test_registry_with_index(api_base))
             .expect("client")
             .with_cache_dir(cache_dir.path().to_path_buf());
 
@@ -3861,7 +3943,7 @@ mod tests {
             2,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base))
+        let cli = test_registry_client(test_registry_with_index(api_base))
             .expect("client")
             .with_cache_dir(cache_dir.path().to_path_buf());
 
@@ -3897,7 +3979,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -3933,13 +4015,15 @@ mod tests {
             10,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Index,
             initial_delay: Duration::ZERO,
             max_delay: Duration::from_millis(20),
-            max_total_wait: Duration::from_millis(80),
+            // Leave enough room for the first loopback connection while the
+            // full crate suite is running other tiny_http servers in parallel.
+            max_total_wait: Duration::from_millis(200),
             poll_interval: Duration::from_millis(10),
             jitter_factor: 0.0,
             index_path: None,
@@ -3975,7 +4059,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -4023,7 +4107,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli.list_owners("demo", "token").expect("owners");
         insta::assert_debug_snapshot!("owners_empty_users", owners);
         handle.join().expect("join");
@@ -4043,7 +4127,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli.list_owners("demo", "token").expect("owners");
         insta::assert_debug_snapshot!("owners_multiple_with_mixed_names", owners);
         handle.join().expect("join");
@@ -4094,7 +4178,7 @@ mod tests {
             8,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -4139,7 +4223,7 @@ mod tests {
             30,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -4180,7 +4264,7 @@ mod tests {
                 10,
             );
 
-            let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+            let cli = test_registry_client(test_registry(api_base)).expect("client");
             let config = ReadinessConfig {
                 enabled: true,
                 method: ReadinessMethod::Api,
@@ -4228,7 +4312,7 @@ mod tests {
                 5,
             );
 
-            let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+            let cli = test_registry_client(test_registry(api_base)).expect("client");
             let config = ReadinessConfig {
                 enabled: true,
                 method: ReadinessMethod::Api,
@@ -4266,7 +4350,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("binary garbage must fail");
@@ -4287,7 +4371,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("wrong types must fail");
@@ -4309,7 +4393,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .list_owners("demo", "token")
             .expect_err("bad id type must fail");
@@ -4327,7 +4411,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let exists = cli.version_exists("demo", "0.1.0-alpha.1").expect("exists");
         assert!(!exists);
         handle.join().expect("join");
@@ -4352,7 +4436,7 @@ mod tests {
             6,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -4386,7 +4470,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
 
         // Hyphens and underscores produce distinct paths (Cargo treats them differently in index)
         let hyphen_path = cli.calculate_index_path("my-crate-lib");
@@ -4411,7 +4495,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert!(cli.version_exists("my-crate-name", "1.0.0").expect("ok"));
         handle.join().expect("join");
     }
@@ -4424,7 +4508,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert!(cli.version_exists("my_crate_name", "1.0.0").expect("ok"));
         handle.join().expect("join");
     }
@@ -4437,7 +4521,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert!(cli.crate_exists("serde-json").expect("ok"));
         handle.join().expect("join");
     }
@@ -4456,7 +4540,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert!(cli.version_exists(&"a".repeat(64), "1.0.0").expect("ok"));
         handle.join().expect("join");
     }
@@ -4468,7 +4552,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let long_name = "abcdefghijklmnopqrstuvwxyz01234567890123456789012345678901234567";
         let path = cli.calculate_index_path(long_name);
 
@@ -4489,7 +4573,7 @@ mod tests {
         });
 
         let name = format!("{}-{}", "x".repeat(30), "y".repeat(30));
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert!(cli.crate_exists(&name).expect("ok"));
         handle.join().expect("join");
     }
@@ -4504,7 +4588,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         assert!(cli.version_exists("demo", "0.1.0-alpha.1").expect("ok"));
         handle.join().expect("join");
     }
@@ -4524,7 +4608,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         assert!(
             cli.check_index_visibility("demo", "0.1.0-alpha.1")
                 .expect("check")
@@ -4550,7 +4634,7 @@ mod tests {
             5,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -4585,7 +4669,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         // verify_ownership returns true when API call succeeds, even if user list is empty
         let verified = cli.verify_ownership("demo", "token").expect("verify");
         assert!(verified);
@@ -4604,7 +4688,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli.list_owners("demo", "token").expect("owners");
         assert!(owners.users.is_empty());
         insta::assert_debug_snapshot!("empty_owner_list_detail", owners);
@@ -4632,7 +4716,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli.list_owners("demo", "token").expect("owners");
         assert_eq!(owners.users.len(), 4);
         assert_eq!(owners.users[0].login, "alice");
@@ -4658,7 +4742,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let owners = cli.list_owners("demo", "token").expect("owners");
         insta::assert_debug_snapshot!("owners_with_teams", owners);
         handle.join().expect("join");
@@ -4685,7 +4769,7 @@ mod tests {
             6,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Api,
@@ -4727,7 +4811,7 @@ mod tests {
             30,
         );
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let max_wait = Duration::from_millis(200);
         let config = ReadinessConfig {
             enabled: true,
@@ -4765,7 +4849,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let initial_delay = Duration::from_millis(100);
         let config = ReadinessConfig {
             enabled: true,
@@ -4884,7 +4968,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base))
+        let cli = test_registry_client(test_registry_with_index(api_base))
             .expect("client")
             .with_cache_dir(cache_dir.path().to_path_buf());
 
@@ -4920,7 +5004,7 @@ mod tests {
             2,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base))
+        let cli = test_registry_client(test_registry_with_index(api_base))
             .expect("client")
             .with_cache_dir(cache_dir.path().to_path_buf());
 
@@ -4951,7 +5035,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: false,
             method: ReadinessMethod::Index,
@@ -4986,7 +5070,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: false,
             method: ReadinessMethod::Both,
@@ -5039,7 +5123,7 @@ mod tests {
             1,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Both,
@@ -5080,7 +5164,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let verified = cli.verify_ownership("demo", "tok").expect("verify");
         assert!(!verified, "401 must be classified as not-verified");
         handle.join().expect("join");
@@ -5126,7 +5210,7 @@ mod tests {
             2,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base))
+        let cli = test_registry_client(test_registry_with_index(api_base))
             .expect("client")
             .with_cache_dir(cache_dir.path().to_path_buf());
 
@@ -5170,7 +5254,7 @@ mod tests {
             req.respond(resp).expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base))
+        let cli = test_registry_client(test_registry_with_index(api_base))
             .expect("client")
             .with_cache_dir(cache_dir.path().to_path_buf());
 
@@ -5194,7 +5278,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let exists = cli.version_exists("", "1.0.0").expect("exists");
         assert!(!exists);
         handle.join().expect("join");
@@ -5224,7 +5308,7 @@ mod tests {
             2,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Both,
@@ -5272,7 +5356,7 @@ mod tests {
             2,
         );
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let config = ReadinessConfig {
             enabled: true,
             method: ReadinessMethod::Both,
@@ -5294,13 +5378,10 @@ mod tests {
         handle.join().expect("join");
     }
 
-    /// Index visibility check against a URL that returns 301 redirect — the
-    /// reqwest blocking client follows redirects by default, so we set the
-    /// mock to redirect to itself once, then respond 200 with content. This
-    /// also exercises the "unexpected status while fetching index" path
-    /// when the redirected response is something other than 2xx/3xx/4xx —
-    /// here we keep it simple by using 418 (I'm a teapot) which is treated
-    /// as unexpected.
+    /// Index visibility check against an endpoint that returns an unexpected
+    /// status. Redirects are disabled by the client, so this keeps the test
+    /// focused on the status-handling path rather than following a second
+    /// destination.
     #[test]
     fn fetch_index_file_unexpected_status_418_returns_false() {
         let (api_base, handle) = with_server(|req| {
@@ -5308,17 +5389,15 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry_with_index(api_base)).expect("client");
+        let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
         let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
         assert!(!visible);
         handle.join().expect("join");
     }
 
-    /// `crate_exists` against an unexpected 3xx (other than redirect that
-    /// reqwest auto-follows): tests the catch-all `s => bail!` arm. Because
-    /// reqwest follows redirects, we use 304 Not Modified (which is not
-    /// auto-followed for a non-conditional request) — the client should
-    /// surface it via the catch-all error arm.
+    /// `crate_exists` against an unexpected 3xx tests the catch-all
+    /// `s => bail!` arm. We use 304 Not Modified so the client surfaces it
+    /// without involving redirect handling.
     #[test]
     fn crate_exists_errors_for_unexpected_304_not_modified() {
         let (api_base, handle) = with_server(|req| {
@@ -5326,7 +5405,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli.crate_exists("demo").expect_err("304 must fail");
         assert!(format!("{err:#}").contains("unexpected status while checking crate existence"));
         handle.join().expect("join");
@@ -5341,7 +5420,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli
             .version_exists("demo", "1.0.0")
             .expect_err("304 must fail");
@@ -5358,7 +5437,7 @@ mod tests {
                 .expect("respond");
         });
 
-        let cli = RegistryClient::new(test_registry(api_base)).expect("client");
+        let cli = test_registry_client(test_registry(api_base)).expect("client");
         let err = cli.list_owners("demo", "token").expect_err("304 must fail");
         assert!(format!("{err:#}").contains("unexpected status while querying owners"));
         handle.join().expect("join");
@@ -5380,7 +5459,7 @@ mod tests {
         };
 
         // The second `with_cache_dir` call overwrites the first.
-        let cli = RegistryClient::new(registry)
+        let cli = test_registry_client(registry)
             .expect("client")
             .with_cache_dir(first.path().to_path_buf())
             .with_cache_dir(second.path().to_path_buf());
@@ -5388,5 +5467,351 @@ mod tests {
         // Smoke test — the client is constructed and `registry()` is
         // still accessible.
         assert_eq!(cli.registry().name, "test");
+    }
+
+    // ── Canonical readiness loop: local sparse-index reads ──────────
+    //
+    // These characterization tests moved here from
+    // `shipper-core/src/engine/readiness.rs` when the engine's duplicate
+    // polling loop was retired (issue #202). `RegistryClient` is now the
+    // single implementation, so the local-index and evidence-delay
+    // properties must be proven at this layer.
+
+    /// Mock registry that counts every request it receives, so a test can
+    /// assert that a code path issued **zero** HTTP requests.
+    struct CountingServer {
+        base_url: String,
+        shutdown: Arc<AtomicBool>,
+        counter: Arc<AtomicUsize>,
+    }
+
+    impl CountingServer {
+        fn request_count(&self) -> usize {
+            self.counter.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for CountingServer {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Serve a fixed sequence of `(status, body)` responses regardless of
+    /// path; later requests reuse the last entry. The worker polls with a
+    /// short timeout so it exits promptly when the test drops the server.
+    fn spawn_counting_registry(responses: Vec<(u16, String)>) -> CountingServer {
+        let server = Server::http("127.0.0.1:0").expect("mock server");
+        let base_url = format!("http://{}", server.server_addr());
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
+
+        thread::spawn(move || {
+            let last = responses.last().cloned().unwrap_or((404, "{}".to_string()));
+            let mut iter = responses.into_iter();
+            while !shutdown_clone.load(Ordering::SeqCst) {
+                match server.recv_timeout(Duration::from_millis(50)) {
+                    Ok(Some(req)) => {
+                        counter_clone.fetch_add(1, Ordering::SeqCst);
+                        let (status, body) = iter.next().unwrap_or_else(|| last.clone());
+                        let resp = Response::from_string(body)
+                            .with_status_code(StatusCode(status))
+                            .with_header(
+                                tiny_http::Header::from_bytes("Content-Type", "application/json")
+                                    .expect("header"),
+                            );
+                        let _ = req.respond(resp);
+                    }
+                    Ok(None) => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+
+        CountingServer {
+            base_url,
+            shutdown,
+            counter,
+        }
+    }
+
+    fn counting_client(server: &CountingServer) -> RegistryClient {
+        let registry = Registry {
+            name: "mock-registry".to_string(),
+            api_base: server.base_url.clone(),
+            index_base: Some(format!("{}/index", server.base_url.trim_end_matches('/'))),
+        };
+        test_registry_client(registry).expect("registry client")
+    }
+
+    /// Write a line-delimited sparse-index fragment listing `versions`.
+    fn write_sparse_index(dir: &std::path::Path, versions: &[&str]) -> PathBuf {
+        let path = dir.join("index-snippet.json");
+        let mut f = std::fs::File::create(&path).expect("create index file");
+        for v in versions {
+            let entry = serde_json::json!({
+                "name": "demo",
+                "vers": v,
+                "deps": [],
+                "cksum": "",
+                "features": {},
+                "yanked": false,
+            });
+            writeln!(f, "{}", entry).expect("write entry");
+        }
+        path
+    }
+
+    fn readiness_config(method: ReadinessMethod) -> ReadinessConfig {
+        ReadinessConfig {
+            enabled: true,
+            method,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::from_millis(20),
+            max_total_wait: Duration::from_millis(150),
+            poll_interval: Duration::from_millis(5),
+            jitter_factor: 0.0,
+            index_path: None,
+            prefer_index: false,
+        }
+    }
+
+    #[test]
+    fn index_method_with_local_path_finds_version_without_network() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = write_sparse_index(td.path(), &["0.1.0", "1.2.3"]);
+
+        let server = spawn_counting_registry(vec![(404, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Index);
+        cfg.index_path = Some(path);
+
+        let (visible, _) = cli
+            .is_version_visible_with_backoff("demo", "1.2.3", &cfg)
+            .expect("backoff");
+
+        assert!(visible);
+        assert_eq!(
+            server.request_count(),
+            0,
+            "Index method with a local index_path must not hit the network"
+        );
+    }
+
+    #[test]
+    fn index_method_with_local_path_misses_unknown_version_without_network() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = write_sparse_index(td.path(), &["0.1.0"]);
+
+        let server = spawn_counting_registry(vec![(404, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Index);
+        cfg.index_path = Some(path);
+        cfg.max_total_wait = Duration::from_millis(40);
+
+        let (visible, _) = cli
+            .is_version_visible_with_backoff("demo", "9.9.9", &cfg)
+            .expect("backoff");
+
+        assert!(!visible);
+        assert_eq!(
+            server.request_count(),
+            0,
+            "a local-index miss must not fall through to the network in Index mode"
+        );
+    }
+
+    #[test]
+    fn visible_via_index_errors_when_local_path_missing() {
+        let server = spawn_counting_registry(vec![(404, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Index);
+        cfg.index_path = Some(PathBuf::from("/this/path/definitely/does/not/exist.json"));
+
+        let err = cli
+            .visible_via_index("demo", "1.0.0", &cfg)
+            .expect_err("missing local path must surface as error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("failed to read local sparse-index path"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn both_method_prefer_index_uses_local_path_without_api_call() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = write_sparse_index(td.path(), &["1.0.0"]);
+
+        let server = spawn_counting_registry(vec![(404, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Both);
+        cfg.prefer_index = true;
+        cfg.index_path = Some(path);
+
+        let (visible, _) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+            .expect("backoff");
+
+        assert!(visible);
+        assert_eq!(
+            server.request_count(),
+            0,
+            "prefer_index + local-index hit must not fall back to the api"
+        );
+    }
+
+    #[test]
+    fn both_method_prefer_index_falls_back_to_api_when_local_index_misses() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = write_sparse_index(td.path(), &["0.1.0"]);
+
+        let server = spawn_counting_registry(vec![(200, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Both);
+        cfg.prefer_index = true;
+        cfg.index_path = Some(path);
+
+        let (visible, _) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+            .expect("backoff");
+
+        assert!(visible, "api fallback should report visible");
+        assert!(
+            server.request_count() >= 1,
+            "api fallback must hit the network"
+        );
+    }
+
+    #[test]
+    fn both_method_default_tries_api_first_when_prefer_index_false() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = write_sparse_index(td.path(), &["1.0.0"]);
+
+        let server = spawn_counting_registry(vec![(200, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Both);
+        cfg.prefer_index = false;
+        cfg.index_path = Some(path);
+
+        let (visible, _) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+            .expect("backoff");
+
+        assert!(visible);
+        assert!(
+            server.request_count() >= 1,
+            "api must be tried first when prefer_index=false"
+        );
+    }
+
+    // ── Canonical readiness loop: evidence delay accounting ─────────
+
+    /// `delay_before` must equal the delay actually slept before that poll —
+    /// i.e. the delay announced by the preceding `ReadinessPollScheduled`
+    /// event. A fresh jitter draw at evidence time would break this, which
+    /// is exactly the drift issue #202 set out to remove. Jitter is turned
+    /// **up** here so a re-draw would almost certainly disagree.
+    #[test]
+    fn delay_before_matches_the_scheduled_sleep() {
+        let server = spawn_counting_registry(vec![
+            (404, "{}".to_string()),
+            (404, "{}".to_string()),
+            (200, "{}".to_string()),
+        ]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Api);
+        cfg.jitter_factor = 0.5;
+        cfg.poll_interval = Duration::from_millis(4);
+        cfg.max_delay = Duration::from_millis(40);
+        cfg.max_total_wait = Duration::from_secs(5);
+
+        let mut scheduled: Vec<(u32, Duration)> = Vec::new();
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff_and_events("demo", "1.0.0", &cfg, &mut |event| {
+                if let EventType::ReadinessPollScheduled {
+                    attempt, delay_ms, ..
+                } = event.event_type
+                {
+                    scheduled.push((attempt, Duration::from_millis(delay_ms)));
+                }
+                Ok(())
+            })
+            .expect("backoff");
+
+        assert!(visible);
+        assert!(evidence.len() >= 3, "expected at least three polls");
+        assert_eq!(
+            evidence[0].delay_before,
+            Duration::ZERO,
+            "no initial_delay was configured, so attempt 1 slept nothing"
+        );
+
+        for (attempt, delay) in scheduled {
+            let record = evidence
+                .iter()
+                .find(|e| e.attempt == attempt)
+                .unwrap_or_else(|| panic!("no evidence recorded for scheduled attempt {attempt}"));
+            assert_eq!(
+                record.delay_before, delay,
+                "attempt {attempt} evidence must report the delay that was scheduled and slept"
+            );
+        }
+    }
+
+    /// When `initial_delay` is slept before the first poll, attempt 1's
+    /// evidence reports that delay. Reporting `ZERO` would contradict the
+    /// `ReadinessPollScheduled { attempt: 1 }` event the loop already emits.
+    #[test]
+    fn first_attempt_records_the_initial_delay_it_slept() {
+        let server = spawn_counting_registry(vec![(200, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let mut cfg = readiness_config(ReadinessMethod::Api);
+        cfg.initial_delay = Duration::from_millis(30);
+
+        let mut scheduled: Vec<(u32, Duration)> = Vec::new();
+        let (visible, evidence) = cli
+            .is_version_visible_with_backoff_and_events("demo", "1.0.0", &cfg, &mut |event| {
+                if let EventType::ReadinessPollScheduled {
+                    attempt, delay_ms, ..
+                } = event.event_type
+                {
+                    scheduled.push((attempt, Duration::from_millis(delay_ms)));
+                }
+                Ok(())
+            })
+            .expect("backoff");
+
+        assert!(visible);
+        assert_eq!(evidence[0].attempt, 1);
+        assert_eq!(evidence[0].delay_before, Duration::from_millis(30));
+        assert_eq!(
+            scheduled.first().copied(),
+            Some((1, Duration::from_millis(30))),
+            "evidence must agree with the emitted scheduling event"
+        );
+    }
+
+    #[test]
+    fn first_attempt_records_zero_when_no_initial_delay_is_slept() {
+        let server = spawn_counting_registry(vec![(200, "{}".to_string())]);
+        let cli = counting_client(&server);
+
+        let cfg = readiness_config(ReadinessMethod::Api);
+        let (_, evidence) = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+            .expect("backoff");
+
+        assert_eq!(evidence[0].delay_before, Duration::ZERO);
     }
 }

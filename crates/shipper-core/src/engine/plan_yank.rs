@@ -196,17 +196,55 @@ pub fn build_plan_from_starting_crate(
     })
 }
 
-/// Load a saved yank plan from disk (#98 PR 5).
+/// `schema_version` carried by `shipper plan-yank --format json`.
+///
+/// Lives here rather than in the CLI so the writer and the reader of a
+/// plan file agree on one constant.
+pub const PLAN_YANK_SCHEMA_VERSION: &str = "shipper.plan_yank.v1";
+
+/// Load a saved yank plan from disk.
 ///
 /// Used by `shipper yank --plan <path>` to drive execution over a
-/// reviewed plan file produced by `shipper plan-yank`. The file format
-/// is the same JSON shape `plan-yank --format json` produces, so plans
-/// round-trip without any munging.
+/// reviewed plan file produced by `shipper plan-yank --format json`.
+///
+/// That output is the `shipper.plan_yank.v1` command envelope, in which
+/// the plan's fields (`plan_id`, `registry`, `filter`, `entries`) are
+/// **flattened** to the top level alongside `schema_version` and
+/// `command`. Because [`YankPlan`] ignores unknown fields, the envelope
+/// deserializes directly; a bare `YankPlan` — hand-written, or produced
+/// by an older Shipper — is accepted the same way.
+///
+/// What is *not* accepted is another command's envelope. `--plan` drives
+/// `cargo yank`, so pointing it at the wrong file should fail on what
+/// the file is, not on whichever field happens to be missing from it.
+/// When a `schema_version` marker is present it must be
+/// [`PLAN_YANK_SCHEMA_VERSION`].
 pub fn load_plan_from_path(path: &std::path::Path) -> Result<YankPlan> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read yank plan at {}", path.display()))?;
-    serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse yank plan at {}", path.display()))
+    parse_plan(&raw).with_context(|| format!("failed to parse yank plan at {}", path.display()))
+}
+
+/// Parse a plan file, rejecting envelopes that belong to another command.
+fn parse_plan(raw: &str) -> Result<YankPlan> {
+    let value: serde_json::Value = serde_json::from_str(raw)?;
+
+    // A present marker must match — including when it is not even a
+    // string. Reading `schema_version` through `as_str()` alone would let
+    // `"schema_version": 1` through the check entirely.
+    if let Some(marker) = value.get("schema_version")
+        && marker.as_str() != Some(PLAN_YANK_SCHEMA_VERSION)
+    {
+        let found = marker
+            .as_str()
+            .map_or_else(|| marker.to_string(), str::to_string);
+        bail!(
+            "this is a `{found}` document, not a `{PLAN_YANK_SCHEMA_VERSION}` yank plan; \
+             `yank --plan` takes the output of `shipper plan-yank --format json`"
+        );
+    }
+
+    Ok(serde_json::from_value(value)?)
 }
 
 /// Load a receipt from an arbitrary path (not necessarily inside a state dir).
@@ -493,10 +531,98 @@ mod tests {
     }
 
     #[test]
+    fn load_plan_from_path_rejects_a_non_string_schema_marker() {
+        // `"schema_version": 1` must not slip past the check just because
+        // it is not a string.
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join("weird.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "schema_version": 1,
+              "plan_id": "plan-abc",
+              "registry": "crates-io",
+              "entries": []
+            }"#,
+        )
+        .expect("write");
+
+        let err = load_plan_from_path(&path).expect_err("non-string marker must be refused");
+        assert!(
+            format!("{err:#}").contains(PLAN_YANK_SCHEMA_VERSION),
+            "error should name the schema it expected: {err:#}"
+        );
+    }
+
+    #[test]
     fn load_plan_from_path_errors_on_missing_file() {
         let err = load_plan_from_path(std::path::Path::new("/definitely/not/there.json"))
             .expect_err("should fail");
         assert!(format!("{err:#}").contains("failed to read yank plan"));
+    }
+
+    #[test]
+    fn load_plan_from_path_accepts_the_flattened_plan_yank_envelope() {
+        // The shape `shipper plan-yank --format json` actually prints:
+        // `PlanYankJsonReport` flattens the plan, so the plan fields sit
+        // at the top level next to `schema_version` and `command`.
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join("envelope.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "schema_version": "shipper.plan_yank.v1",
+              "command": "plan-yank",
+              "plan_id": "plan-abc",
+              "registry": "crates-io",
+              "filter": "all_published",
+              "entries": [
+                {"name": "b", "version": "0.1.0", "reason": "CVE-1"},
+                {"name": "a", "version": "0.1.0"}
+              ]
+            }"#,
+        )
+        .expect("write");
+
+        let loaded = load_plan_from_path(&path).expect("envelope should load");
+
+        assert_eq!(loaded.plan_id, "plan-abc");
+        assert_eq!(loaded.registry, "crates-io");
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].name, "b");
+        assert_eq!(loaded.entries[0].reason.as_deref(), Some("CVE-1"));
+    }
+
+    #[test]
+    fn load_plan_from_path_rejects_another_commands_envelope() {
+        // `--plan` drives `cargo yank`. Pointing it at a fix-forward
+        // envelope must fail on what the file is, not on a missing field.
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join("fix-forward.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "schema_version": "shipper.fix_forward.v1",
+              "command": "fix-forward",
+              "plan_id": "plan-abc",
+              "registry": "crates-io",
+              "compromised_count": 1,
+              "steps": []
+            }"#,
+        )
+        .expect("write");
+
+        let err = load_plan_from_path(&path).expect_err("foreign envelope must be refused");
+        let rendered = format!("{err:#}");
+
+        assert!(
+            rendered.contains("shipper.fix_forward.v1"),
+            "error should name the document it found: {rendered}"
+        );
+        assert!(
+            rendered.contains("shipper plan-yank --format json"),
+            "error should name the command that produces a yank plan: {rendered}"
+        );
     }
 
     #[test]

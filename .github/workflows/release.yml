@@ -58,7 +58,9 @@ jobs:
   build-binaries:
     name: Build ${{ matrix.target }}
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     strategy:
       fail-fast: false
       matrix:
@@ -76,7 +78,7 @@ jobs:
             os: windows-latest
             archive: zip
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -84,7 +86,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -124,15 +126,17 @@ jobs:
   msrv-gate:
     name: MSRV gate (1.95)
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
       - name: Install Rust (MSRV)
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -154,14 +158,16 @@ jobs:
   policy-gate:
     name: Policy gate (no-panic + invariants)
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -222,20 +228,22 @@ jobs:
   publish-crates-io:
     name: Publish to crates.io (via shipper)
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     needs: [msrv-gate, policy-gate]
     environment: release
     timeout-minutes: 180
     outputs:
       publish_succeeded: ${{ steps.publish.outcome == 'success' }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -455,10 +463,12 @@ jobs:
   create-release:
     name: Create GitHub Release
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     needs: [build-binaries, publish-crates-io]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Download binary artifacts
         uses: actions/download-artifact@v8
@@ -502,7 +512,9 @@ jobs:
   release-rehearse:
     name: Release rehearse (plan + preflight dry-run)
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'rehearse'
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     # Bind to the `release` environment so the OIDC token minted here is
     # scoped identically to the production `publish-crates-io` job's.
     # Without this, rehearsal would validate only the mint *mechanism*
@@ -514,7 +526,7 @@ jobs:
     environment: release
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
@@ -522,7 +534,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -652,11 +664,13 @@ jobs:
   release-resume:
     name: Release resume
     if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'resume'
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     environment: release
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
@@ -664,7 +678,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry

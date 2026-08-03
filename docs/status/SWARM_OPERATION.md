@@ -130,15 +130,22 @@ bump opens in `EffortlessMetrics/shipper`, close the source-repo PR as duplicate
 maintenance work and let the accepted swarm commit flow back through the normal
 non-squash source sync.
 
-Dependabot's first bot-authored run can fail before evaluation if the router or
-Droid cannot read selected repository secrets. That is a trust-bootstrap
-condition, not permission to broaden bot secret access. Use the maintainer
-refresh procedure in
+Dependabot and other bot-authored PRs intentionally skip the secret-bearing
+automatic Droid review workflow. The required Rust gate still evaluates bot
+diffs through its explicit GitHub-hosted fallback. When an LLM review is useful,
+use the maintainer refresh procedure in
 [`docs/ci/test-evidence-lanes.md`](../ci/test-evidence-lanes.md) and
 [`docs/how-to/shipper-swarm-migration-runbook.md`](../how-to/shipper-swarm-migration-runbook.md):
 inspect the diff, run focused validation, push a maintainer-authored refresh or
 trusted same-repo branch, and require the normal `Shipper Rust Small Result`
-plus advisory review before merge.
+before merge.
+
+For human PRs, GitHub-hosted fallback is an explicit manual proof action, not a
+label-triggered refresh. Use the `workflow_dispatch` input `force_route=github`
+when self-hosted capacity is unavailable or a cancelled self-hosted lane needs
+to be replayed. The required workflow remains restricted to code-changing pull
+request events so a label update cannot cancel the synchronize run whose result
+branch-protection check is authoritative.
 
 ## CI and Branch Protection
 
@@ -165,10 +172,12 @@ Current routed Rust-small proof:
 - Current self-hosted fallback proof passed on post-merge `main` run
   `26413498807`; `Shipper Rust Tiny Fallback (routed to self-hosted)` and the
   normalized `Shipper Rust Small Result` both succeeded.
-- Current `shipper-swarm` policy routes all workflow jobs, including the tiny
-  fallback lane, to self-hosted runners. Do not sync that policy to
-  `EffortlessMetrics/shipper` until the release-authority runner and
-  credential boundaries are explicitly decided.
+- The router and normalized-result bootstrap jobs run on GitHub-hosted
+  infrastructure so an empty self-hosted pool can be detected. Selected Rust
+  execution lanes remain self-hosted when available; the explicit fallback
+  lane is GitHub-hosted and runs the full Rust-small command list. Do not sync
+  this swarm routing policy to `EffortlessMetrics/shipper` until the
+  release-authority runner and credential boundaries are explicitly decided.
 
 ## Credential Boundary
 

@@ -37,15 +37,22 @@ env:
 jobs:
   coverage:
     name: Codecov Coverage
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     timeout-minutes: 45
     if: >-
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.labels.*.name, 'coverage') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      (
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        (
+          contains(github.event.pull_request.labels.*.name, 'coverage') ||
+          contains(github.event.pull_request.labels.*.name, 'full-ci')
+        )
+      )
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -57,7 +64,7 @@ jobs:
         run: echo "CARGO_TARGET_DIR=${RUNNER_TEMP}/target" >> "$GITHUB_ENV"
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -108,7 +115,7 @@ jobs:
 
       - name: Upload coverage to Codecov (main)
         if: ${{ always() && github.event_name == 'push' && hashFiles('lcov.info') != '' && steps.codecov-token.outputs.present == 'true' }}
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
@@ -118,7 +125,7 @@ jobs:
 
       - name: Upload coverage to Codecov (advisory)
         if: ${{ always() && github.event_name != 'push' && hashFiles('lcov.info') != '' && steps.codecov-token.outputs.present == 'true' }}
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info

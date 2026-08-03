@@ -78,6 +78,7 @@ ShipperConfig {
     },
     rehearsal: RehearsalConfig {
         enabled: false,
+        allow_loopback: false,
         registry: None,
     },
 }

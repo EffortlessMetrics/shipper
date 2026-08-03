@@ -28,9 +28,13 @@
 
 pub mod context;
 pub mod http;
+pub mod policy;
 
 // Primary public API: the canonical, Registry-aware client.
 pub use context::{Owner, OwnersResponse, RegistryClient};
+pub use policy::{
+    RegistryAuthority, RegistryPolicy, ValidatedRegistry, authorities_share_trusted_domain,
+};
 
 // Lightweight HTTP client for callers that only have a base URL.
 pub use http::HttpRegistryClient;

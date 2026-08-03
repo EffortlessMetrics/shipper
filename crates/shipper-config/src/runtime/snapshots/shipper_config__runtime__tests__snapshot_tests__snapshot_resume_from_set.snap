@@ -54,6 +54,7 @@ RuntimeOptions {
         env_var: None,
     },
     registries: [],
+    registry_policies: {},
     resume_from: Some(
         "my-sub-crate",
     ),

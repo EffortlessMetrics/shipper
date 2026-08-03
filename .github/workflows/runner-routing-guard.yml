@@ -1,0 +1,48 @@
+name: Runner Routing Guard
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - "scripts/ci/no-bare-self-hosted.sh"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - "scripts/ci/no-bare-self-hosted.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-bare-self-hosted:
+    name: No bare self-hosted routing
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on:
+      group: em-ci-nano
+      labels: [self-hosted, linux, x64, em-ci, cx23, ci-nano, trusted-pr]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          install_dir="$RUNNER_TEMP/actionlint"
+          mkdir -p "$install_dir"
+          curl --fail --silent --show-error --location \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}" \
+            --output "$install_dir/$archive"
+          echo "$ACTIONLINT_SHA256  $install_dir/$archive" | sha256sum --check --status
+          tar --extract --gzip --file "$install_dir/$archive" --directory "$install_dir"
+          echo "$install_dir" >> "$GITHUB_PATH"
+      - name: Validate workflow syntax
+        run: actionlint -shellcheck=""
+      - name: Check runner routing policy
+        run: scripts/ci/no-bare-self-hosted.sh
+      - name: Test routed result normalization
+        run: python3 scripts/ci/normalize-routed-rust-result.py --test

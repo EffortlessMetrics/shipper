@@ -1,5 +1,5 @@
 ---
-source: crates/shipper-state/tests/state_integration.rs
+source: crates/shipper/tests/state_integration.rs
 expression: json
 ---
 {
@@ -70,5 +70,6 @@ expression: json
     "rust_version": "1.82.0",
     "os": "linux",
     "arch": "x86_64"
-  }
+  },
+  "execution_result": "success"
 }

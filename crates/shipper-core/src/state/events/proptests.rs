@@ -90,8 +90,14 @@ fn arb_event_type() -> impl Strategy<Value = EventType> {
         arb_execution_result().prop_map(|result| EventType::ExecutionFinished { result }),
         arb_auth_evidence().prop_map(|evidence| EventType::AuthEvidenceRecorded { evidence }),
         (".*", ".*").prop_map(|(name, version)| EventType::PackageStarted { name, version }),
-        (1..100u32, ".*")
-            .prop_map(|(attempt, command)| EventType::PackageAttempted { attempt, command }),
+        Just(EventType::PackageUploaded),
+        (1..100u32, ".*", 1..100u32).prop_map(|(attempt, command, max_attempts)| {
+            EventType::PackageAttempted {
+                attempt,
+                command,
+                max_attempts,
+            }
+        }),
         (".*", ".*").prop_map(|(stdout_tail, stderr_tail)| EventType::PackageOutput {
             stdout_tail,
             stderr_tail,
@@ -127,6 +133,7 @@ fn arb_event_type() -> impl Strategy<Value = EventType> {
             attempts: a,
         }),
         (0..u64::MAX).prop_map(|d| EventType::ReadinessTimeout { max_wait_ms: d }),
+        (0..u64::MAX).prop_map(|duration_ms| EventType::ReadinessError { duration_ms }),
         (1..100u32, 1..100u32, 0..u64::MAX, arb_error_class(), ".*").prop_map(
             |(attempt, max_attempts, delay_ms, reason, message)| EventType::RetryScheduled {
                 attempt,

@@ -232,39 +232,115 @@ mod strip_ansi_tests {
 }
 
 fn redact_line(line: &str) -> String {
-    let out = redact_authorization_bearer(line);
+    let out = redact_authorization_headers(line);
     let out = redact_token_assignments(&out);
     redact_cargo_token_env(&out)
 }
 
-fn redact_authorization_bearer(line: &str) -> String {
-    if let Some(pos) = find_ascii_case_insensitive(line, "authorization:", 0) {
-        let after_authorization = pos + "authorization:".len();
-        if let Some(bearer_pos) = find_ascii_case_insensitive(line, "bearer", after_authorization) {
-            let after_bearer = bearer_pos + "bearer".len();
-            if !line
-                .as_bytes()
-                .get(after_bearer)
-                .is_some_and(|b| matches!(b, b' ' | b'\t'))
-            {
-                return line.to_string();
-            }
+/// Redact values attached to authorization fields, independent of the scheme.
+///
+/// The field name is the security boundary: an HTTP-style `Authorization:` or
+/// `Proxy-Authorization:` field has a value extending to the end of the line,
+/// while a JSON-style field has one quoted value. This deliberately does not
+/// enumerate schemes, so a newly introduced scheme cannot bypass redaction.
+/// Ordinary prose mentioning `Basic` or `Bearer` is untouched because it does
+/// not contain one of these field forms.
+fn redact_authorization_headers(line: &str) -> String {
+    let mut ranges = Vec::new();
+    let mut search_from = 0;
 
-            let whitespace_after_bearer = leading_whitespace_len(&line[after_bearer..]);
-            let token_start = after_bearer + whitespace_after_bearer;
-            if token_start >= line.len() {
-                return line.to_string();
-            }
+    while let Some((_, colon_pos)) = find_next_authorization_field(line, search_from) {
+        let value_start = colon_pos + 1 + leading_whitespace_len(&line[colon_pos + 1..]);
+        if value_start >= line.len() {
+            break;
+        }
 
-            let token_end = env_value_end(line, token_start);
-            let redact_start = after_bearer + 1;
-            let mut out = line.to_string();
-            out.replace_range(redact_start..token_end, "[REDACTED]");
-            return out;
+        if line.as_bytes().get(value_start) == Some(&b'"') {
+            // If malformed JSON has no closing quote, redact to the end of
+            // the line rather than allowing an escape-terminated value to
+            // pass through unchanged.
+            let value_end = quoted_value_end(line, value_start).unwrap_or(line.len());
+            if value_end > value_start + 1 {
+                ranges.push((value_start + 1, value_end));
+            }
+            search_from = value_end + 1;
+        } else {
+            // Header/log values are line-scoped. Redacting through the end is
+            // safer than trying to infer where an arbitrary scheme ends.
+            ranges.push((value_start, line.len()));
+            break;
         }
     }
 
-    line.to_string()
+    if ranges.is_empty() {
+        return line.to_string();
+    }
+
+    let mut out = String::with_capacity(line.len());
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        out.push_str(&line[cursor..start]);
+        out.push_str("[REDACTED]");
+        cursor = end;
+    }
+    out.push_str(&line[cursor..]);
+    out
+}
+
+fn find_next_authorization_field(line: &str, search_from: usize) -> Option<(usize, usize)> {
+    ["authorization", "proxy-authorization"]
+        .iter()
+        .filter_map(|field| {
+            let mut candidate_from = search_from;
+            while let Some(field_pos) = find_ascii_case_insensitive(line, field, candidate_from) {
+                let after_field = field_pos + field.len();
+                if is_field_name_start_boundary(line.as_bytes(), field_pos)
+                    && is_field_name_end_boundary(line.as_bytes(), after_field)
+                {
+                    let name_end = if line.as_bytes().get(after_field) == Some(&b'"') {
+                        after_field + 1
+                    } else {
+                        after_field
+                    };
+                    let whitespace = leading_whitespace_len(&line[name_end..]);
+                    let colon_pos = name_end + whitespace;
+                    if line.as_bytes().get(colon_pos) == Some(&b':') {
+                        return Some((field_pos, colon_pos));
+                    }
+                }
+                candidate_from = after_field;
+            }
+            None
+        })
+        .min_by_key(|(field_pos, _)| *field_pos)
+}
+
+fn is_field_name_start_boundary(bytes: &[u8], pos: usize) -> bool {
+    pos == 0
+        || !matches!(
+            bytes[pos - 1],
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'
+        )
+}
+
+fn is_field_name_end_boundary(bytes: &[u8], pos: usize) -> bool {
+    pos == bytes.len()
+        || !matches!(bytes[pos], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_')
+}
+
+fn quoted_value_end(s: &str, quote_start: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut escaped = false;
+    for (offset, byte) in bytes[quote_start + 1..].iter().enumerate() {
+        if escaped {
+            escaped = false;
+        } else if *byte == b'\\' {
+            escaped = true;
+        } else if *byte == b'"' {
+            return Some(quote_start + 1 + offset);
+        }
+    }
+    Some(bytes.len())
 }
 
 fn redact_token_assignments(line: &str) -> String {
@@ -456,9 +532,13 @@ mod tests {
 
     #[test]
     fn redact_authorization_bearer_header() {
-        let input = "Authorization: Bearer cio_abc123secret";
-        let out = redact_sensitive(input);
-        assert_eq!(out, "Authorization: Bearer [REDACTED]");
+        let input = format!(
+            "Authorization: {} {}",
+            "Bearer",
+            ["unit", "bearer"].concat()
+        );
+        let out = redact_sensitive(&input);
+        assert_eq!(out, "Authorization: [REDACTED]");
     }
 
     #[test]
@@ -494,7 +574,7 @@ mod tests {
     fn tail_lines_takes_last_lines_then_redacts() {
         let input = "first\nAuthorization: Bearer secret_token\nthird";
         let out = tail_lines(input, 2);
-        assert_eq!(out, "Authorization: Bearer [REDACTED]\nthird");
+        assert_eq!(out, "Authorization: [REDACTED]\nthird");
     }
 
     #[test]
@@ -521,9 +601,9 @@ mod tests {
 
     #[test]
     fn redact_unicode_surrounding_text() {
-        let input = "日本語 Authorization: Bearer secret_tok 中文";
+        let input = "日本語\nAuthorization: Bearer secret_tok\n中文";
         let out = redact_sensitive(input);
-        assert_eq!(out, "日本語 Authorization: Bearer [REDACTED] 中文");
+        assert_eq!(out, "日本語\nAuthorization: [REDACTED]\n中文");
     }
 
     #[test]
@@ -571,8 +651,64 @@ mod tests {
     fn redact_authorization_case_insensitive() {
         let input = "authorization: bearer my_secret";
         let out = redact_sensitive(input);
-        assert!(out.contains("[REDACTED]"));
+        assert_eq!(out, "authorization: [REDACTED]");
         assert!(!out.contains("my_secret"));
+    }
+
+    #[test]
+    fn redact_authorization_value_without_scheme_allowlist() {
+        let input = format!(
+            "Authorization  :   FutureScheme {} with spaces",
+            ["unit", "future"].concat()
+        );
+        assert_eq!(redact_sensitive(&input), "Authorization  :   [REDACTED]");
+    }
+
+    #[test]
+    fn redact_proxy_authorization_value() {
+        let input = format!("Proxy-Authorization: Basic {}", ["unit", "proxy"].concat());
+        assert_eq!(redact_sensitive(&input), "Proxy-Authorization: [REDACTED]");
+    }
+
+    #[test]
+    fn redact_multiple_headers_and_normalize_crlf() {
+        let input = format!(
+            "Authorization: Bearer {}\r\nProxy-Authorization: Digest {}\r\nstatus: ok",
+            ["unit", "one"].concat(),
+            ["unit", "two"].concat()
+        );
+        assert_eq!(
+            redact_sensitive(&input),
+            "Authorization: [REDACTED]\nProxy-Authorization: [REDACTED]\nstatus: ok"
+        );
+    }
+
+    #[test]
+    fn redact_json_authorization_fields_without_redacting_neighboring_prose() {
+        let input = format!(
+            r#"{{"authorization":"Bearer {}","proxy-authorization":"Digest {}","message":"Basic is ordinary prose"}}"#,
+            ["unit", "json"].concat(),
+            ["unit", "proxy-json"].concat()
+        );
+        assert_eq!(
+            redact_sensitive(&input),
+            r#"{"authorization":"[REDACTED]","proxy-authorization":"[REDACTED]","message":"Basic is ordinary prose"}"#
+        );
+    }
+
+    #[test]
+    fn redact_json_authorization_with_unterminated_escaped_value() {
+        let input = r#"{"authorization":"abc\\\"}"#;
+        let out = redact_sensitive(input);
+
+        assert_eq!(out, r#"{"authorization":"[REDACTED]"#);
+        assert!(!out.contains("abc"));
+    }
+
+    #[test]
+    fn ordinary_scheme_words_are_not_redacted() {
+        let input = "Basic authentication is supported; Bearer is a scheme name.";
+        assert_eq!(redact_sensitive(input), input);
     }
 
     #[test]
@@ -604,7 +740,7 @@ mod tests {
     fn redact_mixed_case_authorization() {
         let input = "AUTHORIZATION: BEARER top_secret";
         let out = redact_sensitive(input);
-        assert!(out.contains("[REDACTED]"));
+        assert_eq!(out, "AUTHORIZATION: [REDACTED]");
         assert!(!out.contains("top_secret"));
     }
 
@@ -668,15 +804,14 @@ mod tests {
     fn redact_bearer_jwt_like_token() {
         let input = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.rXz";
         let out = redact_sensitive(input);
-        assert_eq!(out, "Authorization: Bearer [REDACTED]");
+        assert_eq!(out, "Authorization: [REDACTED]");
     }
 
     #[test]
-    fn redact_basic_auth_not_touched() {
-        // Only bearer tokens are redacted; Basic auth passes through
-        let input = "Authorization: Basic dXNlcjpwYXNz";
-        let out = redact_sensitive(input);
-        assert_eq!(out, "Authorization: Basic dXNlcjpwYXNz");
+    fn redact_basic_auth_header_value() {
+        let input = format!("Authorization: Basic {}", ["unit", "basic"].concat());
+        let out = redact_sensitive(&input);
+        assert_eq!(out, "Authorization: [REDACTED]");
     }
 
     #[test]
@@ -685,7 +820,7 @@ mod tests {
         let out = redact_sensitive(input);
         assert_eq!(
             out,
-            "Authorization: Bearer [REDACTED]\nOther line\nAuthorization: Bearer [REDACTED]"
+            "Authorization: [REDACTED]\nOther line\nAuthorization: [REDACTED]"
         );
     }
 
@@ -760,7 +895,7 @@ mod tests {
     fn redact_bearer_with_extra_whitespace() {
         let input = "Authorization:   Bearer   tok123";
         let out = redact_sensitive(input);
-        assert_eq!(out, "Authorization:   Bearer [REDACTED]");
+        assert_eq!(out, "Authorization:   [REDACTED]");
     }
 
     #[test]
@@ -831,7 +966,7 @@ mod tests {
             "   Compiling mycrate v0.1.0\nAuthorization: Bearer secret123\n   Finished release";
         let out = redact_sensitive(input);
         assert!(out.contains("Compiling mycrate v0.1.0"));
-        assert!(out.contains("Bearer [REDACTED]"));
+        assert!(out.contains("Authorization: [REDACTED]"));
         assert!(out.contains("Finished release"));
         assert!(!out.contains("secret123"));
     }
@@ -902,36 +1037,30 @@ mod tests {
     fn tail_lines_redacts_all_sensitive_in_window() {
         let input = "safe\nAuthorization: Bearer tok1\ntoken = secret2\nlast";
         let out = tail_lines(input, 3);
-        assert_eq!(
-            out,
-            "Authorization: Bearer [REDACTED]\ntoken = [REDACTED]\nlast"
-        );
+        assert_eq!(out, "Authorization: [REDACTED]\ntoken = [REDACTED]\nlast");
     }
 
-    // When two redactable patterns share one line, both secrets disappear while
-    // preserving the surrounding context for evidence readability.
+    // Assignment redaction remains independent from header redaction when the
+    // assignment appears before a header on the same line.
     #[test]
-    fn redact_cargo_token_env_preserves_trailing_redacted_bearer_secret() {
+    fn redact_cargo_token_env_and_authorization_on_one_line() {
         let input = "CARGO_REGISTRY_TOKEN=secret1 Authorization: Bearer secret2";
         let out = redact_sensitive(input);
         assert_eq!(
             out,
-            "CARGO_REGISTRY_TOKEN=[REDACTED] Authorization: Bearer [REDACTED]"
+            "CARGO_REGISTRY_TOKEN=[REDACTED] Authorization: [REDACTED]"
         );
         assert!(!out.contains("secret1"));
         assert!(!out.contains("secret2"));
     }
 
-    // Reversed order: the Authorization handler runs first, but it preserves
-    // trailing context so the later CARGO_REGISTRY_TOKEN pass can redact it.
+    // Header values are line-scoped, so an authorization field wins over any
+    // text that follows it rather than guessing a shorter credential boundary.
     #[test]
-    fn redact_bearer_preserves_trailing_redacted_cargo_token_env() {
+    fn redact_authorization_value_wins_over_trailing_text() {
         let input = "Authorization: Bearer secret2 CARGO_REGISTRY_TOKEN=secret1";
         let out = redact_sensitive(input);
-        assert_eq!(
-            out,
-            "Authorization: Bearer [REDACTED] CARGO_REGISTRY_TOKEN=[REDACTED]"
-        );
+        assert_eq!(out, "Authorization: [REDACTED]");
         assert!(!out.contains("secret1"));
         assert!(!out.contains("secret2"));
     }
@@ -1033,10 +1162,10 @@ mod property_tests {
 
         #[test]
         fn authorization_tokens_are_redacted(prefix in "[A-Za-z ]{0,12}", token in "[A-Za-z0-9_./-]{1,24}") {
-            let input = format!("{prefix}Authorization: Bearer {token}");
+            let input = format!("{prefix} Authorization: Bearer {token}");
             let out = redact_sensitive(&input);
             prop_assert!(out.contains("[REDACTED]"));
-            prop_assert!(out.ends_with("Bearer [REDACTED]"), "Expected output to end with 'Bearer [REDACTED]', got: {}", out);
+            prop_assert!(out.ends_with("[REDACTED]"), "Expected output to end with '[REDACTED]', got: {}", out);
         }
 
         #[test]

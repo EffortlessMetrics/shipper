@@ -11,7 +11,13 @@ policy = "executable-allowlist"
 owner = "EffortlessMetrics"
 status = "active"
 
-# No tracked executables are receipted at scaffold time. PR 3
-# (chore(policy): receipt high-risk non-Rust surfaces, #203) sweeps current
-# tracked-and-executable files into entries here. The checker (PR 7, #206)
-# enforces that the git executable bit matches this allowlist.
+[[file]]
+path = "scripts/ci/no-bare-self-hosted.sh"
+kind = "ci_policy_script"
+surface = "ci"
+classification = "executable"
+owner = "release/ci"
+reason = "Executable runner-policy guard invoked by runner-routing-guard.yml."
+covered_by = [".github/workflows/runner-routing-guard.yml"]
+created = "2026-07-12"
+review_after = "2026-10-12"

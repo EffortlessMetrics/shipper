@@ -815,7 +815,7 @@ mod tests {
     fn redact_authorization_bearer_header() {
         let input = "Authorization: Bearer cio_abc123secret";
         let out = redact_sensitive(input);
-        assert_eq!(out, "Authorization: Bearer [REDACTED]");
+        assert_eq!(out, "Authorization: [REDACTED]");
     }
 
     #[test]
@@ -856,7 +856,7 @@ mod tests {
     fn redact_multiple_sensitive_patterns() {
         let input = "Authorization: Bearer tok123\nCARGO_REGISTRY_TOKEN=secret";
         let out = redact_sensitive(input);
-        assert!(out.contains("Bearer [REDACTED]"));
+        assert!(out.contains("Authorization: [REDACTED]"));
         assert!(out.contains("CARGO_REGISTRY_TOKEN=[REDACTED]"));
         assert!(!out.contains("tok123"));
         assert!(!out.contains("secret"));
@@ -866,7 +866,7 @@ mod tests {
     fn tail_lines_redacts_sensitive_output() {
         let input = "line1\nline2\nAuthorization: Bearer secret_token\nline4";
         let result = tail_lines(input, 50);
-        assert!(result.contains("Bearer [REDACTED]"));
+        assert!(result.contains("Authorization: [REDACTED]"));
         assert!(!result.contains("secret_token"));
     }
 
@@ -874,7 +874,7 @@ mod tests {
     fn redact_mixed_case_authorization() {
         let input = "AUTHORIZATION: Bearer supersecret";
         let out = redact_sensitive(input);
-        assert_eq!(out, "AUTHORIZATION: Bearer [REDACTED]");
+        assert_eq!(out, "AUTHORIZATION: [REDACTED]");
         assert!(!out.contains("supersecret"));
     }
 
@@ -936,7 +936,7 @@ mod tests {
     fn redact_bearer_at_start_of_output() {
         let input = "Authorization: Bearer first_tok\nother stuff";
         let out = redact_sensitive(input);
-        assert!(out.starts_with("Authorization: Bearer [REDACTED]"));
+        assert!(out.starts_with("Authorization: [REDACTED]"));
         assert!(!out.contains("first_tok"));
     }
 
@@ -944,7 +944,7 @@ mod tests {
     fn redact_bearer_at_end_of_output() {
         let input = "stuff before\nAuthorization: Bearer last_tok";
         let out = redact_sensitive(input);
-        assert!(out.ends_with("Authorization: Bearer [REDACTED]"));
+        assert!(out.ends_with("Authorization: [REDACTED]"));
         assert!(!out.contains("last_tok"));
     }
 
@@ -1634,7 +1634,7 @@ mod tests {
     fn redact_bearer_with_base64_padding() {
         let input = "Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig==";
         let out = redact_sensitive(input);
-        assert_eq!(out, "Authorization: Bearer [REDACTED]");
+        assert_eq!(out, "Authorization: [REDACTED]");
     }
 
     #[test]

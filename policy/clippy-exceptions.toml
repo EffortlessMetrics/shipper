@@ -23,7 +23,7 @@ status = "active"
 #
 # [[exception]]
 # lint = "clippy::needless_pass_by_value"
-# path = "crates/shipper-core/src/engine/publish.rs:142"
+# path = "crates/shipper-core/src/engine/execute_package.rs:94"
 # owner = "rust/lints"
 # reason = "Hot-path function taking owned value by deliberate API contract."
 # expires = "2027-05-12"

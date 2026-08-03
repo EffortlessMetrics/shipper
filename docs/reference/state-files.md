@@ -32,6 +32,15 @@ runs:
 | `plan.txt` | Captured output | Plan JSON captured for workflow artifacts | Release workflow plan stage | Text containing JSON |
 | `preflight_workspace_verify.txt` | Captured output | ANSI-stripped Cargo workspace dry-run output | Preflight workspace verification | Text |
 
+## Compatibility note
+
+0.5 artifacts are rebuildable for every field promised by the event vocabulary.
+0.4 events, state, and receipts remain readable and safely resumable, but
+fields introduced after 0.4 are unknown when the old artifact cannot provide
+evidence; consumers must not invent default values. See
+[INVARIANTS.md](../INVARIANTS.md) for the full compatibility and event-first
+contract.
+
 ## Which file for which question?
 
 | Question | File |
@@ -73,6 +82,19 @@ Common event types:
   "state_version": "...",
   "plan_id": "23ff8f85...",
   "registry": {"name": "crates-io", "api_base": "https://crates.io"},
+  "attempt_history": [
+    {
+      "package": "shipper-types",
+      "version": "0.3.0-rc.1",
+      "attempt": 1,
+      "max_attempts": 3,
+      "started_at": "...",
+      "ended_at": "...",
+      "error_class": "retryable",
+      "next_attempt_at": "...",
+      "redacted_message": "rate limited"
+    }
+  ],
   "packages": {
     "shipper-types@0.3.0-rc.1": {
       "name": "shipper-types",
@@ -86,6 +108,15 @@ Common event types:
 ```
 
 **Field path caveat**: package state lives at `.packages[].state.state` (nested), **not** `.packages[].status`. Common misread.
+
+`attempt_history` is the per-attempt projection replayed from `events.jsonl` and is used by diagnostics and recovery workflows after interruption.
+
+Per-attempt recovery fields are under `.attempt_history[]`, keyed by:
+
+- `package`, `version`
+- `attempt`, `max_attempts`
+- `started_at`, `ended_at`
+- `error_class`, `next_attempt_at`, `redacted_message`
 
 ### `receipt.json`
 

@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
     inputs:
@@ -15,8 +15,8 @@ on:
         type: choice
         options:
           - auto
-          - cpx42
           - cx43
+          - cpx42
           - cx53
           - github
 
@@ -37,7 +37,12 @@ permissions:
 jobs:
   route:
     name: Route Shipper Rust Small
-    runs-on: self-hosted
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # The router must be able to observe an empty self-hosted pool. Keeping
+    # this bootstrap job on GitHub-hosted infrastructure prevents the exact
+    # no-runner condition it is responsible for detecting from deadlocking
+    # the required result check.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       target: ${{ steps.pick.outputs.target }}
@@ -68,7 +73,7 @@ jobs:
           github_token = os.environ.get("GITHUB_TOKEN", "")
           token = os.environ.get("GH_TOKEN", "")
           org = os.environ.get("ORG", "EffortlessMetrics")
-          route_order = ["cpx42", "cx43", "cx53"]
+          route_order = ["cx43", "cpx42", "cx53"]
 
           with open(event_path, "r", encoding="utf-8") as fh:
               event = json.load(fh)
@@ -99,12 +104,14 @@ jobs:
                   return False
               return branch.get("commit", {}).get("sha") == head_sha
 
-          labels = []
-          if event_name == "pull_request":
-              labels = [str(label.get("name", "")).lower() for label in event.get("pull_request", {}).get("labels", [])]
-          fallback_allowed = force_route == "github" or any(label in {"allow-github-hosted", "ci-budget-ack"} for label in labels)
+          # GitHub-hosted fallback is an explicit operator action for human PRs.
+          # Label changes do not trigger this required workflow, so labels must
+          # not be treated as a latent authorization signal here. Bot-authored
+          # PRs and the no-idle-runner route remain explicit, trusted fallbacks.
+          fallback_allowed = force_route == "github"
 
           trusted = event_name in {"push", "workflow_dispatch", "merge_group"}
+          bot_authored = False
           if event_name == "pull_request":
               pull_request = event.get("pull_request", {})
               head = pull_request.get("head", {})
@@ -113,6 +120,15 @@ jobs:
               trusted = head_repo == repo
               if not trusted and head_repo is None:
                   trusted = source_branch_matches(head.get("ref"), head.get("sha"))
+              # Bot-authored PRs (Dependabot, factory-droid, etc.) carry their
+              # own audit trail and consume no repository secrets at checkout
+              # time. GitHub masks repository secrets for them, so the runner
+              # read token below is unavailable by design. Treat such PRs as
+              # eligible for the GitHub-hosted fallback lane rather than as a
+              # hard routing failure (see SWARM_OPERATION.md §Queue Stewardship:
+              # trust-bootstrap condition).
+              author = pull_request.get("user") or {}
+              bot_authored = str(author.get("type", "")).lower() == "bot"
 
           def set_output(target, reason, fallback_allowed=False):
               output_path = os.environ["GITHUB_OUTPUT"]
@@ -147,7 +163,16 @@ jobs:
               sys.exit(0)
 
           if not token:
-              set_output("github", "runner_token_missing", fallback_allowed)
+              # Repository secrets are masked for Dependabot/bot PRs, so the
+              # runner read token is unavailable. For bot-authored PRs this is
+              # the documented trust-bootstrap condition, not a misconfiguration:
+              # route to the GitHub-hosted fallback (runs on ubuntu-latest, no
+              # repository secrets consumed) so the gate still runs. For human
+              # PRs keep the loud runner_token_missing hard-failure.
+              if bot_authored:
+                  set_output("github", "bot_pr_github_fallback", True)
+              else:
+                  set_output("github", "runner_token_missing", fallback_allowed)
               sys.exit(0)
 
           try:
@@ -173,8 +198,8 @@ jobs:
 
           target_labels = {
               "cpx42": {"self-hosted", "linux", "x64", "em-ci", "cpx42", "rust-16gb", "rust-medium", "trusted-pr"},
-              "cx43": {"self-hosted", "linux", "x64", "em-ci", "cx43", "rust-small", "trusted-pr"},
-              "cx53": {"self-hosted", "linux", "x64", "em-ci", "cx53", "rust-small", "trusted-pr"},
+              "cx43": {"self-hosted", "linux", "x64", "em-ci", "cx43", "rust-medium", "trusted-pr"},
+              "cx53": {"self-hosted", "linux", "x64", "em-ci", "cx53", "rust-large", "trusted-pr"},
           }
 
           for target in route_order:
@@ -198,14 +223,18 @@ jobs:
   rust_small_cx43:
     name: Shipper Rust Small on CX43
     needs: [route]
-    if: needs.route.outputs.target == 'cx43'
-    runs-on: [self-hosted, Linux, X64, em-ci, rust-small, trusted-pr, cx43]
+    if: needs.route.outputs.target == 'cx43' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -213,7 +242,7 @@ jobs:
           tool: cargo-nextest
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -222,14 +251,28 @@ jobs:
           key: ${{ runner.os }}-routed-rust-small-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-routed-rust-small-
 
+      - name: Format check
+        run: cargo fmt --all -- --check
+
       - name: Check workspace
         run: cargo check --workspace --locked --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 
       - name: Test workspace
         run: cargo nextest run --workspace --locked --all-targets --all-features --profile ci
 
       - name: Test docs
         run: cargo test --workspace --locked --doc
+
+      # Proves every crate builds from its own `.crate` tarball, with
+      # intra-workspace path dependencies resolved through their version
+      # requirements. `cargo install --path` cannot catch this: path deps
+      # short-circuit the check, which is what let the rc.1 first-publish
+      # fail after the irreversible step.
+      - name: Package check
+        run: cargo package --workspace --locked --exclude xtask
 
       - name: Smoke CLI help
         run: |
@@ -240,7 +283,7 @@ jobs:
   rust_small_cpx42:
     name: Shipper Rust Small on CPX42
     needs: [route]
-    if: needs.route.outputs.target == 'cpx42'
+    if: needs.route.outputs.target == 'cpx42' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cpx42, rust-16gb, rust-medium, trusted-pr]
@@ -251,14 +294,14 @@ jobs:
       TMPDIR: /mnt/ci-scratch/tmp/${{ github.run_id }}-${{ github.run_attempt }}
       CARGO_TARGET_DIR: /mnt/ci-scratch/shipper/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
 
       - name: Prepare CPX42 scratch
         run: |
           set -euo pipefail
-          ci-disk-guard /mnt/ci-scratch 45
+          ci-disk-guard /mnt/ci-scratch 10
           ci-disk-guard /mnt/ci-cache 10
           mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR"
 
@@ -274,7 +317,7 @@ jobs:
           tool: cargo-nextest
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -294,9 +337,12 @@ jobs:
       - name: Run Rust small gate
         run: |
           set -euo pipefail
+          cargo fmt --all -- --check
           cargo check --workspace --locked --all-targets
+          cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
           cargo nextest run --workspace --locked --all-targets --all-features --profile ci
           cargo test --workspace --locked --doc
+          cargo package --workspace --locked --exclude xtask
           cargo run -p shipper -- --help
           cargo run -p shipper -- plan --help
           cargo run -p shipper -- preflight --help
@@ -312,14 +358,18 @@ jobs:
   rust_small_cx53:
     name: Shipper Rust Small on CX53
     needs: [route]
-    if: needs.route.outputs.target == 'cx53'
-    runs-on: [self-hosted, Linux, X64, em-ci, rust-small, trusted-pr, cx53]
+    if: needs.route.outputs.target == 'cx53' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -327,7 +377,7 @@ jobs:
           tool: cargo-nextest
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -336,14 +386,28 @@ jobs:
           key: ${{ runner.os }}-routed-rust-small-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-routed-rust-small-
 
+      - name: Format check
+        run: cargo fmt --all -- --check
+
       - name: Check workspace
         run: cargo check --workspace --locked --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 
       - name: Test workspace
         run: cargo nextest run --workspace --locked --all-targets --all-features --profile ci
 
       - name: Test docs
         run: cargo test --workspace --locked --doc
+
+      # Proves every crate builds from its own `.crate` tarball, with
+      # intra-workspace path dependencies resolved through their version
+      # requirements. `cargo install --path` cannot catch this: path deps
+      # short-circuit the check, which is what let the rc.1 first-publish
+      # fail after the irreversible step.
+      - name: Package check
+        run: cargo package --workspace --locked --exclude xtask
 
       - name: Smoke CLI help
         run: |
@@ -352,24 +416,94 @@ jobs:
           cargo run -p shipper -- preflight --help
 
   rust_small_github:
-    name: Shipper Rust Tiny Fallback (routed to self-hosted)
-    needs: [route]
-    if: needs.route.outputs.target == 'github' && needs.route.outputs.fallback_allowed == 'true'
-    runs-on: self-hosted
-    timeout-minutes: 15
+    name: Shipper Rust Small (GitHub-hosted fallback)
+    needs: [route, rust_small_cx43, rust_small_cpx42, rust_small_cx53]
+    if: >
+      always() && (
+        (
+          needs.route.outputs.target == 'github' &&
+          needs.route.outputs.fallback_allowed == 'true'
+        ) ||
+        (
+          needs.route.outputs.target == 'cx43' &&
+          needs.rust_small_cx43.result == 'cancelled'
+        ) ||
+        (
+          needs.route.outputs.target == 'cpx42' &&
+          needs.rust_small_cpx42.result == 'cancelled'
+        ) ||
+        (
+          needs.route.outputs.target == 'cx53' &&
+          needs.rust_small_cx53.result == 'cancelled'
+        )
+      )
+    # GitHub-hosted runners for the fallback lane. Used by bot-authored PRs
+    # (Dependabot, factory-droid) whose diffs are trivially auditable and whose
+    # checkout-time secret surface is empty, so there is no secret-exposure
+    # risk on shared infrastructure. Keeps self-hosted capacity free for
+    # trusted human-PR work. See SWARM_OPERATION.md §Queue Stewardship. Human
+    # fallback refreshes use workflow_dispatch force_route=github.
+    #
+    # Runs the SAME meaningful Rust-small gate as the self-hosted lanes
+    # (fmt + check + clippy + nextest all-features + doc tests + smoke
+    # help), not just cargo check + --help. This is deliberate: a fallback lane that skips
+    # the test suite lets red sneak onto main (the #417 error-renderer
+    # regression escaped detection for weeks because the tiny fallback
+    # could not run snapshot tests). Costs Actions minutes — acceptable for
+    # the small volume of bot-authored PRs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-routed-rust-small-github-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-routed-rust-small-github-
+
+      - name: Format check
+        run: cargo fmt --all -- --check
 
       - name: Check workspace
         run: cargo check --workspace --locked --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+
+      - name: Test workspace
+        run: cargo nextest run --workspace --locked --all-targets --all-features --profile ci
+
+      - name: Test docs
+        run: cargo test --workspace --locked --doc
+
+      # Proves every crate builds from its own `.crate` tarball, with
+      # intra-workspace path dependencies resolved through their version
+      # requirements. `cargo install --path` cannot catch this: path deps
+      # short-circuit the check, which is what let the rc.1 first-publish
+      # fail after the irreversible step.
+      - name: Package check
+        run: cargo package --workspace --locked --exclude xtask
 
       - name: Smoke CLI help
         run: |
           cargo run -p shipper -- --help
           cargo run -p shipper -- plan --help
+          cargo run -p shipper -- preflight --help
 
   result:
     name: Shipper Rust Small Result
@@ -379,10 +513,17 @@ jobs:
       - rust_small_cpx42
       - rust_small_cx53
       - rust_small_github
-    if: always()
-    runs-on: self-hosted
+    if: |
+      always() &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # Result normalization is a small, non-secret reporting step. It must
+    # remain available when every optional self-hosted execution lane is
+    # offline, otherwise branch protection can never observe the fallback.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v7.0.1
+
       - name: Normalize routed result
         env:
           TARGET: ${{ needs.route.outputs.target }}
@@ -395,57 +536,4 @@ jobs:
           GITHUB_RESULT: ${{ needs.rust_small_github.result }}
           FALLBACK_ALLOWED: ${{ needs.route.outputs.fallback_allowed }}
         run: |
-          python3 <<'PY'
-          import os
-          import sys
-
-          target = os.environ.get("TARGET", "")
-          reason = os.environ.get("REASON", "")
-          route_result = os.environ.get("ROUTE_RESULT", "")
-          trusted = os.environ.get("TRUSTED", "")
-          fallback_allowed = os.environ.get("FALLBACK_ALLOWED", "").lower() == "true"
-          results = {
-              "cx43": os.environ.get("CX43_RESULT", ""),
-              "cpx42": os.environ.get("CPX42_RESULT", ""),
-              "cx53": os.environ.get("CX53_RESULT", ""),
-              "github": os.environ.get("GITHUB_RESULT", ""),
-          }
-
-          print(f"router_target={target}")
-          print(f"router_reason={reason}")
-          print(f"trusted={trusted}")
-          print(f"route_result={route_result}")
-          for name, value in results.items():
-              print(f"{name}_result={value}")
-
-          if route_result != "success":
-              print("Route job did not succeed.")
-              sys.exit(1)
-
-          if target not in results:
-              print("Route job did not emit a known target.")
-              sys.exit(1)
-
-          hard_fail_reasons = {"fork_pr", "runner_token_missing", "runner_token_unauthorized", "runner_token_forbidden", "runner_api_failed", "parse_failed"}
-          if target == "github" and reason in hard_fail_reasons:
-              if reason == "fork_pr":
-                  print("Fork PRs cannot run repository code on self-hosted runners.")
-              else:
-                  print("Self-hosted routing failed before a trustworthy fallback decision.")
-              sys.exit(1)
-
-          failures = []
-          for name, value in results.items():
-              if name == target:
-                  if value != "success":
-                      failures.append(f"selected {name} job result was {value}")
-              elif value != "skipped":
-                  failures.append(f"unselected {name} job result was {value}")
-
-          if failures:
-              for failure in failures:
-                  print(failure)
-              sys.exit(1)
-
-          print("Exactly one routed Rust small lane succeeded.")
-          PY
+          python3 scripts/ci/normalize-routed-rust-result.py

@@ -38,7 +38,7 @@ pub(in crate::doctor) fn inspect(ws: &plan::PlannedWorkspace) -> Result<AuthChec
             title: "crates.io auth is missing",
             why_it_matters:
                 "ownership checks and live publish require registry credentials before Shipper can prove or execute a release",
-            evidence: "auth_type: NONE FOUND (set CARGO_REGISTRY_TOKEN)".to_string(),
+            evidence: trusted_publishing_evidence(auth_label, &ws.plan.registry.name),
             try_next: vec![
                 "run `cargo login <token>` for local token auth",
                 "configure Trusted Publishing with `permissions: id-token: write` and `rust-lang/crates-io-auth-action@v1`",
@@ -54,7 +54,10 @@ pub(in crate::doctor) fn inspect(ws: &plan::PlannedWorkspace) -> Result<AuthChec
             title: "Trusted Publishing token exchange is incomplete",
             why_it_matters:
                 "GitHub OIDC request variables are present, but Cargo still needs a short-lived registry token before Shipper can prove ownership or publish",
-            evidence: trusted_publishing_evidence("trusted (detected)"),
+            evidence: trusted_publishing_evidence(
+                "trusted (detected)",
+                &ws.plan.registry.name,
+            ),
             try_next: vec![
                 "run `rust-lang/crates-io-auth-action@v1` before invoking Shipper",
                 "pass `steps.auth.outputs.token` to Shipper as `CARGO_REGISTRY_TOKEN`",
@@ -70,7 +73,7 @@ pub(in crate::doctor) fn inspect(ws: &plan::PlannedWorkspace) -> Result<AuthChec
             title: "Trusted Publishing OIDC environment is incomplete",
             why_it_matters:
                 "Trusted Publishing requires both GitHub OIDC request variables; a partial environment cannot mint a crates.io token",
-            evidence: trusted_publishing_evidence("unknown"),
+            evidence: trusted_publishing_evidence("unknown", &ws.plan.registry.name),
             try_next: vec![
                 "set `permissions: id-token: write` on the release job",
                 "run Shipper after the GitHub OIDC request URL and token are both available",
@@ -86,19 +89,44 @@ pub(in crate::doctor) fn inspect(ws: &plan::PlannedWorkspace) -> Result<AuthChec
     })
 }
 
-fn trusted_publishing_evidence(auth_label: &str) -> String {
+fn trusted_publishing_evidence(auth_label: &str, registry_name: &str) -> String {
     format!(
         "auth_type: {auth_label}; registry_token: {}; oidc_request_url: {}; oidc_request_token: {}",
-        presence(
-            std::env::var_os("CARGO_REGISTRY_TOKEN").is_some()
-                || std::env::vars_os().any(|(key, _)| {
-                    key.to_string_lossy().starts_with("CARGO_REGISTRIES_")
-                        && key.to_string_lossy().ends_with("_TOKEN")
-                })
-        ),
-        presence(std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_URL").is_some()),
-        presence(std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_TOKEN").is_some())
+        token_presence(registry_name),
+        env_presence("ACTIONS_ID_TOKEN_REQUEST_URL"),
+        env_presence("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
     )
+}
+
+fn token_presence(registry_name: &str) -> &'static str {
+    let mut blank = false;
+    if matches!(registry_name, "" | "crates-io")
+        && let Some(value) = std::env::var_os("CARGO_REGISTRY_TOKEN")
+    {
+        if !value.to_string_lossy().trim().is_empty() {
+            return "set";
+        }
+        blank = true;
+    }
+
+    let env_name = format!(
+        "CARGO_REGISTRIES_{}_TOKEN",
+        registry_name.to_ascii_uppercase().replace('-', "_")
+    );
+    match std::env::var_os(env_name) {
+        Some(value) if !value.to_string_lossy().trim().is_empty() => "set",
+        Some(_) => "blank",
+        None if blank => "blank",
+        None => "missing",
+    }
+}
+
+fn env_presence(name: &str) -> &'static str {
+    match std::env::var(name) {
+        Err(_) => "missing",
+        Ok(value) if value.trim().is_empty() => "blank",
+        Ok(_) => "set",
+    }
 }
 
 fn presence(is_set: bool) -> &'static str {
@@ -188,4 +216,93 @@ fn trusted_publishing_workflow_findings(
     }
 
     findings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn trusted_publishing_evidence_distinguishes_missing_blank_and_set() {
+        temp_env::with_vars(
+            [
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("ACTIONS_ID_TOKEN_REQUEST_URL", Some("")),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", Some("oidc-token")),
+            ],
+            || {
+                assert_eq!(
+                    trusted_publishing_evidence("unknown", "crates-io"),
+                    "auth_type: unknown; registry_token: missing; oidc_request_url: blank; oidc_request_token: set"
+                );
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn trusted_publishing_evidence_reports_missing_oidc_values() {
+        temp_env::with_vars(
+            [
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("ACTIONS_ID_TOKEN_REQUEST_URL", None::<&str>),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None::<&str>),
+            ],
+            || {
+                assert_eq!(
+                    trusted_publishing_evidence("unknown", "crates-io"),
+                    "auth_type: unknown; registry_token: missing; oidc_request_url: missing; oidc_request_token: missing"
+                );
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn trusted_publishing_evidence_ignores_unrelated_registry_token() {
+        let unrelated_token = ["private", "token"].concat();
+        temp_env::with_vars(
+            [
+                ("CARGO_REGISTRY_TOKEN", None::<&str>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<&str>),
+                (
+                    "CARGO_REGISTRIES_PRIVATE_TOKEN",
+                    Some(unrelated_token.as_str()),
+                ),
+                ("ACTIONS_ID_TOKEN_REQUEST_URL", None::<&str>),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None::<&str>),
+            ],
+            || {
+                assert_eq!(
+                    trusted_publishing_evidence("unknown", "crates-io"),
+                    "auth_type: unknown; registry_token: missing; oidc_request_url: missing; oidc_request_token: missing"
+                );
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn trusted_publishing_evidence_preserves_token_resolution_order() {
+        let registry_token = ["crates", "io", "token"].concat();
+        temp_env::with_vars(
+            [
+                ("CARGO_REGISTRY_TOKEN", Some("   ")),
+                (
+                    "CARGO_REGISTRIES_CRATES_IO_TOKEN",
+                    Some(registry_token.as_str()),
+                ),
+                ("ACTIONS_ID_TOKEN_REQUEST_URL", None::<&str>),
+                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None::<&str>),
+            ],
+            || {
+                assert_eq!(
+                    trusted_publishing_evidence("unknown", "crates-io"),
+                    "auth_type: unknown; registry_token: set; oidc_request_url: missing; oidc_request_token: missing"
+                );
+            },
+        );
+    }
 }

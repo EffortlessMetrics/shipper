@@ -1,5 +1,6 @@
 ---
 source: crates/shipper-types/src/lib.rs
+assertion_line: 4073
 expression: events
 ---
 - timestamp: "2025-01-15T12:00:00Z"
@@ -13,6 +14,7 @@ expression: events
     type: package_attempted
     attempt: 1
     command: cargo publish -p my-crate
+    max_attempts: 1
   package: my-crate@1.0.0
 - timestamp: "2025-01-15T12:00:00Z"
   event_type:

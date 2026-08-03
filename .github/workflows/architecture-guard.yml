@@ -15,9 +15,15 @@ on:
 jobs:
   layer-imports:
     name: forbid upward layer imports
-    runs-on: self-hosted
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on:
+      group: em-ci-nano
+      labels: [self-hosted, linux, x64, em-ci, cx23, ci-nano, trusted-pr]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
+
+      - name: check runner routing policy
+        run: scripts/ci/no-bare-self-hosted.sh
 
       # Architecture rules per docs/decrating-plan.md §4.2 R3:
       # - engine -> may import plan, state, runtime, ops
@@ -34,7 +40,7 @@ jobs:
             echo "ops/ layer not yet scaffolded — skipping."
             exit 0
           fi
-          if grep -rE --include='*.rs' 'use crate::(engine|plan|state|runtime)::' crates/shipper-core/src/ops/; then
+          if rg -n --glob '*.rs' 'use crate::(engine|plan|state|runtime)::' crates/shipper-core/src/ops/; then
             echo "::error::ops/ layer must not import from engine, plan, state, or runtime"
             exit 1
           fi
@@ -46,7 +52,7 @@ jobs:
             echo "runtime/ layer not yet scaffolded — skipping."
             exit 0
           fi
-          if grep -rE --include='*.rs' 'use crate::(engine|plan|state)::' crates/shipper-core/src/runtime/; then
+          if rg -n --glob '*.rs' 'use crate::(engine|plan|state)::' crates/shipper-core/src/runtime/; then
             echo "::error::runtime/ layer must not import from engine, plan, or state"
             exit 1
           fi
@@ -58,7 +64,7 @@ jobs:
             echo "state/ layer not yet scaffolded — skipping."
             exit 0
           fi
-          if grep -rE --include='*.rs' 'use crate::(engine|plan)::' crates/shipper-core/src/state/; then
+          if rg -n --glob '*.rs' 'use crate::(engine|plan)::' crates/shipper-core/src/state/; then
             echo "::error::state/ layer must not import from engine or plan"
             exit 1
           fi
@@ -70,7 +76,7 @@ jobs:
             echo "plan/ layer not yet scaffolded — skipping."
             exit 0
           fi
-          if grep -rE --include='*.rs' 'use crate::engine::' crates/shipper-core/src/plan/; then
+          if rg -n --glob '*.rs' 'use crate::engine::' crates/shipper-core/src/plan/; then
             echo "::error::plan/ layer must not import from engine"
             exit 1
           fi

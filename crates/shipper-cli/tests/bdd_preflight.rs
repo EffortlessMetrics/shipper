@@ -61,6 +61,12 @@ fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
+fn loopback_shipper_cmd() -> Command {
+    let mut command = shipper_cmd();
+    command.arg("--allow-loopback");
+    command
+}
+
 struct TestRegistry {
     base_url: String,
     handle: thread::JoinHandle<()>,
@@ -122,7 +128,7 @@ mod preflight_passes_for_new_crates {
         let registry = spawn_registry(vec![404, 404, 404, 404], 4);
 
         // When: running preflight with token, --allow-dirty, --skip-ownership-check
-        let out = shipper_cmd()
+        let out = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -188,7 +194,7 @@ mode = "fast"
         let registry = spawn_registry(vec![404, 404, 404, 404], 4);
 
         // When: running preflight WITHOUT --policy flag (should use .shipper.toml)
-        let out = shipper_cmd()
+        let out = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -240,7 +246,7 @@ mod preflight_detects_already_published {
         let registry = spawn_registry(vec![200, 200, 404, 404], 4);
 
         // When: running preflight with --policy fast to skip dry-run
-        let out = shipper_cmd()
+        let out = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -293,7 +299,7 @@ mod preflight_warns_on_missing_token {
         let registry = spawn_registry(vec![404, 404, 404, 404], 4);
 
         // When: running preflight with --policy fast (no token)
-        let out = shipper_cmd()
+        let out = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -340,7 +346,7 @@ mod preflight_fails_with_dirty_git_tree {
 
         // When: running preflight WITHOUT --allow-dirty
         // (no git repo → git cleanliness check fails)
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--skip-ownership-check")
@@ -371,7 +377,7 @@ mod strict_ownership_fails_without_token {
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
 
         // When: running preflight with --strict-ownership but no token
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--allow-dirty")
@@ -407,7 +413,7 @@ mod balanced_policy_ignores_strict_ownership {
         let registry = spawn_registry(vec![404, 404, 404, 404], 4);
 
         // When: running preflight with --policy balanced --strict-ownership --no-verify
-        let out = shipper_cmd()
+        let out = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")

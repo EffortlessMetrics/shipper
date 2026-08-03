@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use predicates::prelude::*;
 use predicates::str::contains;
 use tempfile::tempdir;
 
@@ -410,10 +411,14 @@ mod resume_skips_completed {
             .arg("--state-dir")
             .arg(&state_dir)
             .arg("resume")
-            // Then: It fails because there's no state to resume from
+            // Then: It fails, names the missing state file, and points at
+            // `publish` — the command that would create it. It must NOT
+            // announce a package publish it never performed.
             .assert()
             .failure()
-            .stderr(contains("no existing state found"));
+            .stderr(contains("nothing to resume"))
+            .stderr(contains("shipper publish"))
+            .stderr(predicates::str::contains("Publishing").not());
     }
 }
 
@@ -626,5 +631,147 @@ mod corrupted_receipt_handling {
             // Then: Plan succeeds regardless of corrupted receipt
             .assert()
             .success();
+    }
+}
+
+// ============================================================================
+// Feature: Missing-Artifact Errors Name The Command That Creates Them
+// ============================================================================
+
+mod missing_artifact_guidance {
+    use super::*;
+
+    // Scenario: inspect-receipt before any publish explains where receipts
+    // come from instead of surfacing a bare errno.
+    #[test]
+    fn given_no_receipt_when_inspecting_then_points_at_publish() {
+        // Given: A workspace that has never published
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        // When: We ask for the receipt
+        shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("inspect-receipt")
+            // Then: The error names the artifact, the command that writes it,
+            // and the flag that points elsewhere
+            .assert()
+            .failure()
+            .stderr(contains("no receipt at"))
+            .stderr(contains("shipper publish"))
+            .stderr(contains("--state-dir"));
+    }
+
+    // Scenario: config validate with no config points at config init.
+    #[test]
+    fn given_no_config_when_validating_then_points_at_config_init() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        shipper_cmd()
+            .current_dir(td.path())
+            .arg("config")
+            .arg("validate")
+            .assert()
+            .failure()
+            .stderr(contains("Config file not found"))
+            .stderr(contains("shipper config init"));
+    }
+}
+
+// ============================================================================
+// Feature: `--format json` Is Honored By Every Command That Accepts It
+// ============================================================================
+
+mod json_format_coverage {
+    use super::*;
+
+    // Scenario: `clean` emits a JSON envelope, including when there was
+    // nothing to clean. Previously it printed English on stdout either way,
+    // which breaks a pipeline that pipes it to a JSON parser.
+    #[test]
+    fn given_json_format_when_cleaning_then_stdout_is_json() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        // Nothing to clean: still an envelope, marked as such.
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--format")
+            .arg("json")
+            .arg("clean")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&output).expect("clean emits valid JSON when there is no state");
+        assert_eq!(parsed["schema_version"], "shipper.clean.v1");
+        assert_eq!(parsed["state_dir_existed"], false);
+        assert_eq!(
+            parsed["actions"].as_array().expect("actions array").len(),
+            0
+        );
+
+        // With state present: the same envelope, itemizing what was removed.
+        let state_dir = td.path().join(".shipper");
+        fs::create_dir_all(&state_dir).expect("mkdir");
+        fs::write(state_dir.join("state.json"), "{}").expect("write state");
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--format")
+            .arg("json")
+            .arg("clean")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&output).expect("clean emits valid JSON after removing files");
+        assert_eq!(parsed["state_dir_existed"], true);
+        let actions = parsed["actions"].as_array().expect("actions array");
+        assert!(
+            actions.iter().any(|action| action["action"] == "removed"
+                && action["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("state.json"))),
+            "expected state.json removal in {actions:?}"
+        );
+        assert!(!state_dir.join("state.json").exists());
+    }
+
+    // Scenario: `inspect-events` speaks JSON Lines, so "no events" must be
+    // zero stdout lines rather than a sentence a consumer would try to parse.
+    #[test]
+    fn given_json_format_when_no_events_then_stdout_is_empty() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        let output = shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--format")
+            .arg("json")
+            .arg("inspect-events")
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+
+        assert!(
+            output.stdout.is_empty(),
+            "stdout should carry no JSON Lines, got: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("No event logs found"),
+            "the human-facing notice should still reach stderr"
+        );
     }
 }

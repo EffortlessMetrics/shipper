@@ -23,9 +23,11 @@ permissions:
 jobs:
   lint:
     name: Lint (fmt + clippy)
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -33,7 +35,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -78,15 +80,17 @@ jobs:
     # target/policy/ as a `policy-reports` artifact regardless of
     # pass/fail (`if: always()`). See docs/policy/NON_RUST_ROLLOUT.md.
     name: Policy
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -134,9 +138,11 @@ jobs:
 
   test:
     name: Tests (nextest)
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -147,7 +153,7 @@ jobs:
           tool: cargo-nextest
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -180,15 +186,17 @@ jobs:
 
   install-smoke:
     name: Install Smoke
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -223,10 +231,12 @@ jobs:
     # feedback fast; if you want a specific PR to exercise it, use the
     # workflow_dispatch trigger on the PR's branch.
     if: github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -237,7 +247,7 @@ jobs:
           tool: cargo-nextest
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -262,9 +272,11 @@ jobs:
 
   msrv:
     name: MSRV Check
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust (MSRV)
         uses: dtolnay/rust-toolchain@stable
@@ -272,7 +284,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -286,9 +298,11 @@ jobs:
 
   security:
     name: Security Audit
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -297,19 +311,30 @@ jobs:
         uses: taiki-e/install-action@cargo-audit
 
       - name: Run security audit
-        run: cargo audit
+        # The advisory-db cache lives under $CARGO_HOME on the persistent
+        # self-hosted runner. An interrupted fetch can leave it as a
+        # non-empty but invalid directory, which makes cargo-audit refuse to
+        # reinitialize it ("Refusing to initialize the non-empty directory as
+        # .../advisory-db") on every subsequent run. Remove a stale db so
+        # cargo-audit performs a clean clone; the advisory-db is small, so the
+        # re-clone cost per run is negligible.
+        run: |
+          rm -rf "${CARGO_HOME:-$HOME/.cargo}/advisory-db"
+          cargo audit
 
   docs:
     name: Documentation
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -325,14 +350,16 @@ jobs:
 
   bdd:
     name: BDD Tests
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     needs: [lint]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -353,10 +380,12 @@ jobs:
   fuzz-smoke:
     name: Fuzz Smoke (PR)
     if: github.event_name != 'schedule'
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     needs: [lint]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
@@ -370,7 +399,7 @@ jobs:
           tool: cargo-fuzz
 
       - name: Cache Cargo + fuzz
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -392,14 +421,16 @@ jobs:
 
   cross-platform:
     name: Target Check (${{ matrix.target }})
-    runs-on: [self-hosted, Linux, X64]
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -410,7 +441,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -428,16 +459,18 @@ jobs:
     # but out of the default PR and nightly critical paths. Tag-time release
     # binaries are built by release.yml.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     needs: [lint, test]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry

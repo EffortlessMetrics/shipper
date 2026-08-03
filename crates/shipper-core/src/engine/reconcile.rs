@@ -18,17 +18,16 @@
 //!   NOT retry, and MUST mark the package state Ambiguous for operator
 //!   decision.
 //!
-//! This module wires the existing [`super::readiness::is_version_visible_with_backoff`]
-//! polling loop into that decision, translating its return into a
-//! [`ReconciliationOutcome`]. See [issue #99](https://github.com/EffortlessMetrics/shipper/issues/99)
+//! This module wires the canonical
+//! [`RegistryClient::is_version_visible_with_backoff`] polling loop into that
+//! decision, translating its return into a [`ReconciliationOutcome`]. See
+//! [issue #99](https://github.com/EffortlessMetrics/shipper/issues/99)
 //! for the full design discussion.
 
 use std::time::Instant;
 
-use shipper_registry::HttpRegistryClient as RegistryClient;
+use crate::registry::RegistryClient;
 use shipper_types::{ReadinessConfig, ReadinessEvidence, ReconciliationOutcome};
-
-use super::readiness::is_version_visible_with_backoff;
 
 /// Reconcile an ambiguous `cargo publish` outcome against registry truth.
 ///
@@ -37,12 +36,13 @@ use super::readiness::is_version_visible_with_backoff;
 /// plus the accumulated [`ReadinessEvidence`] so the caller can attach it to
 /// the package receipt for audit.
 ///
-/// Callers (the retry loop in [`super::publish`]) MUST honor the outcome:
+/// Callers (the retry loop in [`crate::engine::execute_package`]) MUST honor
+/// the outcome:
 /// - `Published` → advance; no further retry of `cargo publish` for this crate.
 /// - `NotPublished` → it's safe to enter the normal retry path.
 /// - `StillUnknown` → do not retry; escalate to operator (mark the package
 ///   state `Ambiguous` and halt).
-pub(super) fn reconcile_ambiguous_upload(
+pub(crate) fn reconcile_ambiguous_upload(
     reg: &RegistryClient,
     crate_name: &str,
     version: &str,
@@ -50,7 +50,7 @@ pub(super) fn reconcile_ambiguous_upload(
 ) -> (ReconciliationOutcome, Vec<ReadinessEvidence>) {
     let start = Instant::now();
 
-    match is_version_visible_with_backoff(reg, crate_name, version, config) {
+    match reg.is_version_visible_with_backoff(crate_name, version, config) {
         Ok((true, evidence)) => (
             ReconciliationOutcome::Published {
                 attempts: evidence.len() as u32,

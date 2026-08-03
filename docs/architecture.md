@@ -145,6 +145,21 @@ Any change that makes `shipper-core` depend on `shipper-cli` or `shipper`, turns
 publishable crate must update this document and `docs/status/SUPPORT_TIERS.md`
 in the same PR.
 
+## 0.5.0 execution and trust boundaries
+
+`shipper-core::engine::execute_package` is the single per-package execution
+authority. It owns Cargo invocation, retry and ambiguity classification,
+readiness, durable transitions, evidence, and package outcomes. Sequential and
+parallel modules own scheduling order, dependency levels, concurrency, and
+reporter adaptation; they do not assemble independent package transitions.
+
+Readiness polling is owned by the registry-client kernel. The engine chooses
+local-index fast paths and adapts poll evidence into durable events, but does
+not maintain a second HTTP polling loop. Registry configuration is validated
+before authenticated requests, and authority-changing redirects cannot move a
+credential to an unvalidated destination. Private destinations and loopback
+rehearsal are explicit policy choices, not hostname guesses.
+
 ## Release Pipeline
 
 The core flow is:

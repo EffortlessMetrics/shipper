@@ -90,7 +90,11 @@ pub fn maybe_send_event(config: &WebhookConfig, event: WebhookEvent) {
         }
     };
 
+    #[cfg(test)]
+    let test_delivery_guard = crate::webhook::TestDeliveryGuard::new();
     let _ = std::thread::spawn(move || {
+        #[cfg(test)]
+        let _test_delivery_guard = test_delivery_guard;
         let payload = WebhookPayload {
             timestamp: Utc::now(),
             event,

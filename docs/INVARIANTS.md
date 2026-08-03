@@ -38,3 +38,65 @@ If you are writing tooling that consumes Shipper output:
 - **For "did this release succeed and what was published"**: read `receipt.json`.
 
 Never derive critical decisions from CLI stdout alone. Stdout is a human-facing rendering of the events; structured consumers should always go to the JSON files.
+
+## Uploaded recovery checkpoint
+
+`EventType::PackageUploaded` is emitted only after Cargo has accepted an
+upload. It is now the durable checkpoint for `PackageState::Uploaded`:
+state rebuild maps that event to `uploaded`, and a later `package_published`
+event advances the projection to `published`. `EventType::ReadinessStarted`
+continues to map to `uploaded` for backward compatibility with historical
+event logs.
+
+## Readiness evidence matches readiness events
+
+`ReadinessEvidence.delay_before` is the delay that was **actually slept**
+immediately before that poll — not an independently recomputed backoff
+sample. It equals the `delay_ms` of the `ReadinessPollScheduled` event that
+announced the same attempt, so the receipt's readiness evidence and the event
+log can never disagree about how long a run waited.
+
+This holds for the first attempt too: when `readiness.initial_delay` is
+configured, the loop emits `ReadinessPollScheduled { attempt: 1 }` and sleeps,
+and attempt 1's evidence reports that same `initial_delay`. It reports
+`0` only when nothing was slept before the first poll.
+
+There is exactly one implementation of this loop —
+`shipper_registry::RegistryClient::is_version_visible_with_backoff_and_events`
+(see [#202](https://github.com/EffortlessMetrics/shipper/issues/202)). The
+engine wraps it with the `ReadinessStarted` / `ReadinessComplete` /
+`ReadinessTimeout` / `ReadinessError` envelope but does not re-implement the
+polling or the evidence. `ReadinessTimeout` means the configured wait budget
+was exhausted; `ReadinessError` means polling aborted before that budget was
+resolved and records elapsed time rather than the configured budget.
+
+Attempt details are appended to `state.json` through the same event-first
+transition boundary as the matching terminal, reconciliation, or retry event.
+This prevents a scheduler from independently persisting the attempt timeline
+and package state. State rebuild now projects all event-vocabulary-carrying
+attempt metadata into `attempt_history`, including retry backoff timestamps.
+Remaining edge cases are only where an event cannot describe the same detail
+that a runtime-only attempt transition could infer locally.
+
+## Artifact compatibility across the 0.4 to 0.5 line
+
+The compatibility promise is asymmetric:
+
+- **0.5 artifacts:** new events contain enough information to rebuild every
+  field the project claims is reconstructible. State and receipt fields are
+  projections/summaries, not a second source of truth.
+- **0.4 artifacts:** old event, state, and receipt files remain readable and
+  safely resumable. A field absent from the old vocabulary is `unknown`; it
+  must not be fabricated as zero or inferred without evidence.
+
+Encrypted payloads use a versioned KDF header for new writes. KDF v1
+unversioned payloads remain readable at their legacy PBKDF2 cost, while KDF v2
+is the new stronger default. Unsupported or unreasonable parameters are
+rejected rather than accepted as an implicit fallback.
+
+Security evidence follows the same non-disclosure rule as execution evidence:
+complete authorization header values and bounded `Token=`/`ApiKey=` values are
+redacted, ordinary prose is preserved, and webhook configuration secrets do
+not appear in events, state, receipts, diagnostics, structured output, or
+logs. OIDC availability requires both request variables to be present and
+nonblank; blank diagnostics never include their values.

@@ -62,6 +62,7 @@ fn sample_runtime_options(base_url: &str, registry_count: usize) -> RuntimeOptio
                 index_base: None,
             })
             .collect(),
+        registry_policies: Default::default(),
         resume_from: None,
         rehearsal_registry: None,
         rehearsal_skip: false,

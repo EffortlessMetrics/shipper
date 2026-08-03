@@ -42,7 +42,9 @@ jobs:
         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
       )
 
-    runs-on: self-hosted
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
 
     env:
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
@@ -56,7 +58,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
 
@@ -86,24 +88,21 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/gh"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
-      - name: Configure MiniMax BYOK for Factory Droid
+      - name: Configure MiniMax M3 for Factory Droid BYOK
         shell: bash
         run: |
           mkdir -p "$HOME/.factory"
-          cat > "$HOME/.factory/settings.local.json" <<'JSON'
+          rm -f "$HOME/.factory/settings.local.json"
+          cat > "$HOME/.factory/settings.json" <<'JSON'
           {
             "customModels": [
               {
-                "displayName": "MiniMax-M2.7",
-                "model": "MiniMax-M2.7",
+                "displayName": "MiniMax-M3",
+                "model": "MiniMax-M3",
                 "baseUrl": "https://api.minimax.io/anthropic",
                 "apiKey": "${MINIMAX_API_KEY}",
                 "provider": "anthropic",
-                "maxOutputTokens": 64000,
-                "noImageSupport": true,
-                "extraArgs": {
-                  "temperature": 1
-                }
+                "maxOutputTokens": 64000
               }
             ]
           }
@@ -115,14 +114,17 @@ jobs:
         with:
           bun-version: 1.2.11
 
-      - name: Run Droid Exec with MiniMax M2.7 BYOK
+      - name: Run Droid Exec with MiniMax M3 BYOK
         uses: EffortlessMetrics/droid-action-safe@7c1377ccbacddc95560d1570547a5baa51de01ec
+        env:
+          ANTHROPIC_AUTH_TOKEN: ""
+          ANTHROPIC_BASE_URL: ""
         with:
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
           upload_debug_artifacts: false
           path_to_bun_executable: ${{ steps.setup-bun.outputs.bun-path }}
 
           review_depth: shallow
-          review_model: "custom:MiniMax-M2.7-0"
-          security_model: "custom:MiniMax-M2.7-0"
+          review_model: "custom:MiniMax-M3-0"
+          security_model: "custom:MiniMax-M3-0"
           show_full_output: false

@@ -37,6 +37,18 @@ fn write_file(path: &Path, content: &str) {
     fs::write(path, content).expect("write");
 }
 
+fn rehearsal_registry_client(
+    mut registry: Registry,
+) -> anyhow::Result<shipper_core::registry::RegistryClient> {
+    if registry.index_base.is_none() {
+        registry.index_base = Some(registry.api_base.clone());
+    }
+    shipper_core::registry::RegistryClient::with_policy(
+        registry,
+        shipper_core::registry::RegistryPolicy::rehearsal(),
+    )
+}
+
 /// Create a three-crate workspace: `base` (no deps), `mid` depends on `base`,
 /// `top` depends on `mid`.
 fn create_three_crate_workspace(root: &Path) {
@@ -546,6 +558,7 @@ fn event_emission_full_lifecycle_with_preflight() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 1,
+            max_attempts: 1,
             command: "cargo publish -p base".to_string(),
         },
         package: "base@0.2.0".to_string(),
@@ -600,6 +613,7 @@ fn event_emission_full_lifecycle_with_preflight() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 2,
+            max_attempts: 2,
             command: "cargo publish -p mid".to_string(),
         },
         package: "mid@0.2.0".to_string(),
@@ -623,6 +637,7 @@ fn event_emission_full_lifecycle_with_preflight() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 1,
+            max_attempts: 1,
             command: "cargo publish -p top".to_string(),
         },
         package: "top@0.2.0".to_string(),
@@ -795,7 +810,7 @@ fn registry_crate_exists_with_mock() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     let exists = client.crate_exists("existing-crate").expect("check");
     assert!(exists);
@@ -821,7 +836,7 @@ fn registry_check_new_crate_returns_true_for_404() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     let is_new = client.check_new_crate("brand-new-crate").expect("check");
     assert!(is_new, "404 should mean it's a new crate");
@@ -858,7 +873,7 @@ fn registry_list_owners_with_mock() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     let owners = client
         .list_owners("my-crate", "fake-token")
@@ -915,7 +930,7 @@ fn registry_multi_version_check_for_planned_packages() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     let mut published = vec![];
     let mut unpublished = vec![];
@@ -1129,6 +1144,7 @@ fn auth_token_integration_with_custom_registry_config() {
 [registry]
 name = "my-private"
 api_base = "https://my-registry.example.com"
+index_base = "https://index.my-registry.example.com"
 "#,
     );
 
@@ -1171,7 +1187,7 @@ fn registry_verify_ownership_handles_forbidden() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     let owned = client
         .verify_ownership("some-crate", "bad-token")
@@ -1509,7 +1525,7 @@ fn registry_server_error_propagates_through_version_check() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     // The error should propagate through the version check
     let err = client
@@ -1543,7 +1559,7 @@ fn registry_server_error_propagates_through_crate_check() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     let err = client
         .crate_exists("some-crate")
@@ -1991,7 +2007,7 @@ fn readiness_version_visible_after_publish_mock() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     // First check: not visible
     let visible1 = client.version_exists("my-crate", "0.2.0").expect("check 1");
@@ -2044,6 +2060,7 @@ fn event_log_jsonl_file_has_correct_structure() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 1,
+            max_attempts: 1,
             command: "cargo publish -p alpha".to_string(),
         },
         package: "alpha@1.0.0".to_string(),
@@ -2345,6 +2362,7 @@ fn event_log_per_package_filtering_correct() {
         timestamp: Utc::now(),
         event_type: EventType::PackageAttempted {
             attempt: 2,
+            max_attempts: 2,
             command: "cargo publish -p beta".to_string(),
         },
         package: "beta@2.0.0".to_string(),
@@ -2578,7 +2596,7 @@ fn registry_multi_crate_ownership_check_mock() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     // First crate: ownership verified
     let owned = client

@@ -61,7 +61,7 @@ reason = "Refactor planned in API cleanup PR."
 
 ```json
 {
-  "path": "crates/shipper-core/src/engine/publish.rs",
+  "path": "crates/shipper-core/src/engine/execute_package.rs",
   "family": "unwrap",
   "selector_kind": "method_call",
   "selector_callee": "unwrap",

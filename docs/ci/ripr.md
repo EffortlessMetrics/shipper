@@ -119,7 +119,7 @@ Regenerate the canonical defaults at any time with `ripr init --root . --dry-run
 ```toml
 [[suppression]]
 finding_id = "ripr-2026-001"
-path = "crates/shipper-core/src/engine/publish.rs"
+path = "crates/shipper-core/src/engine/execute_package.rs"
 owner = "engine-team"
 reason = "Covered by BDD publish_resume.feature scenarios not visible to ripr."
 created = "2026-05-12"

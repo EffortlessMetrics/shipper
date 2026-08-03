@@ -21,7 +21,7 @@
 //! send_webhook(&config, &payload).expect("send");
 //! ```
 
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use anyhow::{Context, Result};
 use hmac::{Hmac, Mac};
@@ -42,7 +42,11 @@ pub enum WebhookType {
 }
 
 /// Webhook configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Debug` is implemented manually so signing secrets and credential-bearing
+/// webhook URLs are not copied into diagnostics, error chains, or evidence
+/// that formats configuration values.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WebhookConfig {
     /// Webhook URL
     pub url: String,
@@ -59,6 +63,24 @@ pub struct WebhookConfig {
 
 fn default_timeout() -> u64 {
     30
+}
+
+const REDACTED_SECRET: &str = "<redacted>";
+
+impl fmt::Debug for WebhookConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let safe_url = if self.url.is_empty() {
+            ""
+        } else {
+            REDACTED_SECRET
+        };
+        f.debug_struct("WebhookConfig")
+            .field("url", &safe_url)
+            .field("webhook_type", &self.webhook_type)
+            .field("secret", &self.secret.as_ref().map(|_| REDACTED_SECRET))
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
+    }
 }
 
 impl Default for WebhookConfig {
@@ -527,6 +549,39 @@ mod tests {
         assert_eq!(deserialized.webhook_type, WebhookType::Discord);
         assert_eq!(deserialized.secret, Some("s3cret".to_string()));
         assert_eq!(deserialized.timeout_secs, 10);
+    }
+
+    #[test]
+    fn webhook_config_debug_redacts_secret_but_preserves_configuration_shape() {
+        let secret = ["unit", "debug", "secret"].concat();
+        let config = WebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            webhook_type: WebhookType::Slack,
+            secret: Some(secret.clone()),
+            timeout_secs: 15,
+        };
+
+        let compact = format!("{config:?}");
+        let pretty = format!("{config:#?}");
+        for rendered in [&compact, &pretty] {
+            assert!(!rendered.contains(&secret));
+            assert!(rendered.contains("<redacted>"));
+            assert!(rendered.contains("url: \"<redacted>\""));
+            assert!(rendered.contains("Slack"));
+        }
+    }
+
+    #[test]
+    fn webhook_config_debug_redacts_url_but_preserves_missing_secret() {
+        let config = WebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            webhook_type: WebhookType::Generic,
+            secret: None,
+            timeout_secs: 30,
+        };
+        let rendered = format!("{config:?}");
+        assert!(rendered.contains("secret: None"));
+        assert!(rendered.contains("url: \"<redacted>\""));
     }
 
     #[test]
@@ -1109,14 +1164,14 @@ mod tests {
 
         #[test]
         fn config_slack_with_secret() {
+            let secret = ["snapshot", "secret"].concat();
             let config = WebhookConfig {
                 url: "https://hooks.slack.com/services/T00/B00/xxx".to_string(),
                 webhook_type: WebhookType::Slack,
-                secret: Some("s3cret-key".to_string()),
+                secret: Some(secret),
                 timeout_secs: 10,
             };
-            let json: serde_json::Value = serde_json::to_value(&config).unwrap();
-            insta::assert_yaml_snapshot!("config_slack_with_secret", json);
+            insta::assert_debug_snapshot!("config_slack_with_secret", config);
         }
 
         #[test]
@@ -2121,6 +2176,23 @@ mod tests {
                 timeout_secs: 45,
             };
             insta::assert_debug_snapshot!("config_discord_with_secret", config);
+        }
+
+        #[test]
+        fn debug_redacts_credential_bearing_webhook_url() {
+            let webhook_id = ["12", "3"].concat();
+            let webhook_token = ["to", "k"].concat();
+            let config = WebhookConfig {
+                url: format!("https://discord.com/api/webhooks/{webhook_id}/{webhook_token}"),
+                webhook_type: WebhookType::Discord,
+                secret: None,
+                timeout_secs: 30,
+            };
+
+            let debug = format!("{config:?}");
+            assert!(debug.contains("url: \"<redacted>\""));
+            assert!(!debug.contains(&webhook_id));
+            assert!(!debug.contains(&webhook_token));
         }
 
         #[test]

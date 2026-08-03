@@ -18,6 +18,12 @@ fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
+fn loopback_shipper_cmd() -> Command {
+    let mut command = shipper_cmd();
+    command.arg("--allow-loopback");
+    command
+}
+
 struct TestRegistry {
     base_url: String,
     handle: thread::JoinHandle<()>,
@@ -140,13 +146,29 @@ mid-lib = { path = "../mid-lib" }
 // ── status on a simple workspace ─────────────────────────────────────
 
 #[test]
+fn status_rejects_loopback_without_explicit_opt_in() {
+    let td = tempdir().expect("tempdir");
+    create_simple_workspace(td.path());
+
+    shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg("http://127.0.0.1:9")
+        .arg("status")
+        .assert()
+        .failure()
+        .stderr(contains("loopback"));
+}
+
+#[test]
 fn status_simple_workspace_shows_local_versions() {
     let td = tempdir().expect("tempdir");
     create_simple_workspace(td.path());
     // Registry returns 404 → version not found → "missing"
     let registry = spawn_registry(vec![404], 1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -166,7 +188,7 @@ fn status_workspace_shows_published_when_registry_has_version() {
     // Registry returns 200 → version exists → "published"
     let registry = spawn_registry(vec![200], 1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -188,7 +210,7 @@ fn status_multi_crate_workspace() {
     // 3 crates, all missing
     let registry = spawn_registry(vec![404], 3);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -210,7 +232,7 @@ fn status_non_workspace_directory_fails() {
     let td = tempdir().expect("tempdir");
     write_file(&td.path().join("README.md"), "not a workspace");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("status")
@@ -227,7 +249,7 @@ fn status_explicit_manifest_path() {
     create_simple_workspace(&nested);
     let registry = spawn_registry(vec![404], 1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(nested.join("Cargo.toml"))
         .arg("--api-base")
@@ -249,7 +271,7 @@ fn status_package_filter_single() {
     // Only one crate should be queried
     let registry = spawn_registry(vec![404], 1);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -279,7 +301,7 @@ fn status_package_filter_multiple() {
     // Two crates queried
     let registry = spawn_registry(vec![404], 2);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -311,7 +333,7 @@ fn status_output_contains_plan_id() {
     create_simple_workspace(td.path());
     let registry = spawn_registry(vec![404], 1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -330,7 +352,7 @@ fn status_json_format_produces_registry_report() {
     create_simple_workspace(td.path());
     let registry = spawn_registry(vec![200], 1);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -382,7 +404,7 @@ fn status_output_format_name_at_version_colon_status() {
     create_simple_workspace(td.path());
     let registry = spawn_registry(vec![404], 1);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -420,7 +442,7 @@ fn status_mixed_published_and_missing() {
     // First crate published (200), remaining two missing (404)
     let registry = spawn_registry(vec![200, 404, 404], 3);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")

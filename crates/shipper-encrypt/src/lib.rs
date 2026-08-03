@@ -21,31 +21,92 @@
 //! ## Security
 //!
 //! - Uses AES-256-GCM for authenticated encryption
-//! - PBKDF2 with 100,000 iterations for key derivation
+//! - PBKDF2 with 600,000 iterations for key derivation (OWASP guidance for
+//!   PBKDF2-HMAC-SHA256)
 //! - Random salt and nonce for each encryption operation
-//! - Encrypted data format: base64(salt || nonce || ciphertext || auth_tag)
+//! - Encrypted data format (v2): `base64(header || salt || nonce || ciphertext || auth_tag)`
+//!
+//! ## On-disk format
+//!
+//! Two payload layouts are readable; only the current one is ever written.
+//!
+//! **v2 (current, written by [`encrypt`])**
+//!
+//! ```text
+//! magic       7 bytes   b"SHPRENC"
+//! version     1 byte    2
+//! kdf_id      1 byte    1 = PBKDF2-HMAC-SHA256
+//! iterations  4 bytes   u32, big-endian
+//! salt       16 bytes
+//! nonce      12 bytes
+//! ciphertext N bytes    plaintext length
+//! auth_tag   16 bytes
+//! ```
+//!
+//! The 13-byte header is passed to AES-GCM as additional authenticated data,
+//! so the recorded iteration count cannot be downgraded without invalidating
+//! the auth tag.
+//!
+//! **v1 (legacy, read-only)**
+//!
+//! ```text
+//! salt       16 bytes
+//! nonce      12 bytes
+//! ciphertext N bytes
+//! auth_tag   16 bytes
+//! ```
+//!
+//! v1 has no header and always used 100,000 PBKDF2 iterations. [`decrypt`]
+//! detects v1 payloads by the absence of the v2 magic prefix and derives with
+//! the legacy iteration count, so state written by older shipper versions
+//! keeps decrypting.
 
 use std::fmt;
 use std::path::Path;
 
 use aes_gcm::{
     Aes256Gcm, Nonce,
-    aead::{Aead, KeyInit, OsRng, rand_core::RngCore},
+    aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
 };
 use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use pbkdf2::pbkdf2_hmac_array;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Size of the salt for key derivation (16 bytes)
 const SALT_SIZE: usize = 16;
 /// Size of the nonce for AES-GCM (12 bytes)
 const NONCE_SIZE: usize = 12;
-/// Number of PBKDF2 iterations
-const PBKDF2_ITERATIONS: u32 = 100_000;
+/// Size of the AES-GCM authentication tag (16 bytes)
+const TAG_SIZE: usize = 16;
+/// Number of PBKDF2 iterations used for all new payloads (OWASP guidance for
+/// PBKDF2-HMAC-SHA256).
+const PBKDF2_ITERATIONS: u32 = 600_000;
+/// Iteration count used by the unversioned v1 payload format. Read-only: it is
+/// applied when decrypting legacy payloads and is never used for new writes.
+const PBKDF2_ITERATIONS_V1: u32 = 100_000;
 /// Size of the derived key (256 bits for AES-256)
 const KEY_SIZE: usize = 32;
+
+/// Magic prefix marking a versioned (v2 or later) payload.
+const FORMAT_MAGIC: [u8; 7] = *b"SHPRENC";
+/// Current on-disk payload format version.
+const FORMAT_VERSION: u8 = 2;
+/// KDF identifier for PBKDF2-HMAC-SHA256.
+const KDF_PBKDF2_HMAC_SHA256: u8 = 1;
+/// Size of the v2 header: magic(7) || version(1) || kdf_id(1) || iterations(4).
+const HEADER_SIZE: usize = FORMAT_MAGIC.len() + 1 + 1 + 4;
+/// Offset of the salt inside a v2 payload.
+const V2_SALT_OFFSET: usize = HEADER_SIZE;
+/// Offset of the nonce inside a v2 payload.
+const V2_NONCE_OFFSET: usize = V2_SALT_OFFSET + SALT_SIZE;
+/// Offset of the ciphertext (and trailing tag) inside a v2 payload.
+const V2_BODY_OFFSET: usize = V2_NONCE_OFFSET + NONCE_SIZE;
+/// Upper bound on an iteration count read from a payload header. Bounds the
+/// work a malformed or hostile file can force us to perform.
+const MAX_ACCEPTED_ITERATIONS: u32 = 10_000_000;
 
 /// Encryption configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -91,6 +152,16 @@ impl EncryptionConfig {
         }
 
         Ok(None)
+    }
+}
+
+impl Drop for EncryptionConfig {
+    /// Wipe any in-memory passphrase when the config is dropped, so it does
+    /// not linger in freed heap memory.
+    fn drop(&mut self) {
+        if let Some(passphrase) = self.passphrase.as_mut() {
+            passphrase.zeroize();
+        }
     }
 }
 
@@ -151,30 +222,62 @@ impl fmt::Display for StateEncryption {
 /// // encrypted is base64-encoded and can be safely stored as text
 /// ```
 pub fn encrypt(data: &[u8], passphrase: &str) -> Result<Vec<u8>> {
+    encrypt_with_iterations(data, passphrase, PBKDF2_ITERATIONS)
+}
+
+/// Encrypt with an explicit PBKDF2 iteration count, emitting a v2 payload.
+///
+/// Deliberately private: the public [`encrypt`] entry point is the only way in
+/// from outside this crate, so no caller can lower the production iteration
+/// count. Tests inside the crate use it (via `test_kdf`) to keep the suite
+/// fast without touching the default.
+fn encrypt_with_iterations(data: &[u8], passphrase: &str, iterations: u32) -> Result<Vec<u8>> {
     // Generate random salt and nonce
     let mut salt = [0u8; SALT_SIZE];
     let mut nonce_bytes = [0u8; NONCE_SIZE];
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce_bytes);
 
+    // Build the versioned header; it is authenticated as AAD below so the
+    // recorded KDF parameters cannot be tampered with.
+    let header = build_header(iterations);
+
     // Derive key from passphrase using PBKDF2
-    let key = derive_key(passphrase, &salt);
+    let key = derive_key(passphrase, &salt, iterations);
 
     // Create cipher and encrypt
-    let cipher = Aes256Gcm::new_from_slice(&key).context("failed to create AES-256-GCM cipher")?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key.as_slice()).context("failed to create AES-256-GCM cipher")?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, data)
+        .encrypt(
+            nonce,
+            Payload {
+                msg: data,
+                aad: &header,
+            },
+        )
         .map_err(|e| anyhow::anyhow!("encryption failed: {:?}", e))?;
 
-    // Format: salt || nonce || ciphertext
-    let mut result = Vec::with_capacity(SALT_SIZE + NONCE_SIZE + ciphertext.len());
+    // Format: header || salt || nonce || ciphertext
+    let mut result = Vec::with_capacity(HEADER_SIZE + SALT_SIZE + NONCE_SIZE + ciphertext.len());
+    result.extend_from_slice(&header);
     result.extend_from_slice(&salt);
     result.extend_from_slice(&nonce_bytes);
     result.extend_from_slice(&ciphertext);
 
     // Return base64-encoded result
     Ok(BASE64.encode(&result).into_bytes())
+}
+
+/// Build the 13-byte v2 header for the given iteration count.
+fn build_header(iterations: u32) -> [u8; HEADER_SIZE] {
+    let mut header = [0u8; HEADER_SIZE];
+    header[..FORMAT_MAGIC.len()].copy_from_slice(&FORMAT_MAGIC);
+    header[FORMAT_MAGIC.len()] = FORMAT_VERSION;
+    header[FORMAT_MAGIC.len() + 1] = KDF_PBKDF2_HMAC_SHA256;
+    header[FORMAT_MAGIC.len() + 2..].copy_from_slice(&iterations.to_be_bytes());
+    header
 }
 
 /// Decrypt data using AES-256-GCM with PBKDF2 key derivation
@@ -207,8 +310,72 @@ pub fn decrypt(encrypted_data: impl AsRef<str>, passphrase: &str) -> Result<Vec<
         .decode(encrypted_str)
         .context("invalid base64 encoding")?;
 
+    // Versioned (v2) payloads are identified by the magic prefix. If the
+    // header parses and the payload authenticates, we are done.
+    if let Some(plaintext) = try_decrypt_v2(&data, passphrase) {
+        return Ok(plaintext);
+    }
+
+    // Otherwise fall back to the unversioned v1 layout. This is also the path
+    // taken by the astronomically unlikely v1 payload whose random salt begins
+    // with the magic bytes: AES-GCM authentication makes the v2 attempt fail
+    // rather than silently producing wrong plaintext, so the fallback is what
+    // makes detection unambiguous rather than merely probable.
+    decrypt_v1(&data, passphrase)
+}
+
+/// Attempt to decrypt `data` as a versioned (v2) payload.
+///
+/// Returns `None` when the payload is not v2 or does not authenticate, so the
+/// caller can fall back to the legacy layout. AES-GCM authentication means a
+/// `Some` result is the genuine plaintext, never a misparse.
+fn try_decrypt_v2(data: &[u8], passphrase: &str) -> Option<Vec<u8>> {
+    if data.len() < V2_BODY_OFFSET + TAG_SIZE {
+        return None;
+    }
+    let header = &data[..HEADER_SIZE];
+    if header[..FORMAT_MAGIC.len()] != FORMAT_MAGIC {
+        return None;
+    }
+    if header[FORMAT_MAGIC.len()] != FORMAT_VERSION {
+        return None;
+    }
+    if header[FORMAT_MAGIC.len() + 1] != KDF_PBKDF2_HMAC_SHA256 {
+        return None;
+    }
+    let iterations = u32::from_be_bytes([
+        header[FORMAT_MAGIC.len() + 2],
+        header[FORMAT_MAGIC.len() + 3],
+        header[FORMAT_MAGIC.len() + 4],
+        header[FORMAT_MAGIC.len() + 5],
+    ]);
+    if iterations == 0 || iterations > MAX_ACCEPTED_ITERATIONS {
+        return None;
+    }
+
+    let salt = &data[V2_SALT_OFFSET..V2_NONCE_OFFSET];
+    let nonce_bytes = &data[V2_NONCE_OFFSET..V2_BODY_OFFSET];
+    let ciphertext = &data[V2_BODY_OFFSET..];
+
+    let key = derive_key(passphrase, salt, iterations);
+    let cipher = Aes256Gcm::new_from_slice(key.as_slice()).ok()?;
+    let nonce = Nonce::from_slice(nonce_bytes);
+    cipher
+        .decrypt(
+            nonce,
+            Payload {
+                msg: ciphertext,
+                aad: header,
+            },
+        )
+        .ok()
+}
+
+/// Decrypt an unversioned (v1) payload: `salt || nonce || ciphertext || tag`,
+/// keyed at the legacy 100,000-iteration PBKDF2 cost.
+fn decrypt_v1(data: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     // Check minimum length
-    if data.len() < SALT_SIZE + NONCE_SIZE + 16 {
+    if data.len() < SALT_SIZE + NONCE_SIZE + TAG_SIZE {
         bail!("encrypted data too short");
     }
 
@@ -218,10 +385,11 @@ pub fn decrypt(encrypted_data: impl AsRef<str>, passphrase: &str) -> Result<Vec<
     let ciphertext = &data[SALT_SIZE + NONCE_SIZE..];
 
     // Derive key from passphrase using PBKDF2
-    let key = derive_key(passphrase, salt);
+    let key = derive_key(passphrase, salt, PBKDF2_ITERATIONS_V1);
 
     // Create cipher and decrypt
-    let cipher = Aes256Gcm::new_from_slice(&key).context("failed to create AES-256-GCM cipher")?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key.as_slice()).context("failed to create AES-256-GCM cipher")?;
     let nonce = Nonce::from_slice(nonce_bytes);
     let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| {
         anyhow::anyhow!(
@@ -233,9 +401,15 @@ pub fn decrypt(encrypted_data: impl AsRef<str>, passphrase: &str) -> Result<Vec<
     Ok(plaintext)
 }
 
-/// Derive a 256-bit key from passphrase using PBKDF2-SHA256
-fn derive_key(passphrase: &str, salt: &[u8]) -> [u8; KEY_SIZE] {
-    pbkdf2_hmac_array::<Sha256, KEY_SIZE>(passphrase.as_bytes(), salt, PBKDF2_ITERATIONS)
+/// Derive a 256-bit key from passphrase using PBKDF2-SHA256.
+///
+/// The returned key zeroizes itself when dropped.
+fn derive_key(passphrase: &str, salt: &[u8], iterations: u32) -> Zeroizing<[u8; KEY_SIZE]> {
+    Zeroizing::new(pbkdf2_hmac_array::<Sha256, KEY_SIZE>(
+        passphrase.as_bytes(),
+        salt,
+        iterations,
+    ))
 }
 
 /// Check if data appears to be encrypted (starts with base64-encoded salt)
@@ -301,16 +475,36 @@ pub fn write_encrypted(path: &Path, data: &[u8], passphrase: &str) -> Result<()>
 /// transparently without changing the rest of the codebase.
 pub struct StateEncryption {
     config: EncryptionConfig,
+    /// PBKDF2 iteration count used for writes. Private, and only ever set to
+    /// anything but [`PBKDF2_ITERATIONS`] by the `#[cfg(test)]` constructor.
+    iterations: u32,
 }
 
 impl StateEncryption {
     /// Create a new state encryption handler
     pub fn new(config: EncryptionConfig) -> Result<Self> {
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            iterations: PBKDF2_ITERATIONS,
+        })
     }
 
-    /// Get the passphrase, trying environment variable first if configured
-    fn get_passphrase(&self) -> Result<Option<String>> {
+    /// Test-only constructor that derives keys at the cheap test iteration
+    /// count. Crate-private and `#[cfg(test)]`, so production callers cannot
+    /// reach it.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(config: EncryptionConfig) -> Result<Self> {
+        Ok(Self {
+            config,
+            iterations: test_kdf::TEST_ITERATIONS,
+        })
+    }
+
+    /// Get the passphrase, trying environment variable first if configured.
+    ///
+    /// The passphrase is returned in a [`Zeroizing`] wrapper so the copy this
+    /// crate holds is wiped when it goes out of scope.
+    fn get_passphrase(&self) -> Result<Option<Zeroizing<String>>> {
         if !self.config.enabled {
             return Ok(None);
         }
@@ -319,11 +513,11 @@ impl StateEncryption {
         if let Some(ref env_var) = self.config.env_var
             && let Ok(passphrase) = std::env::var(env_var)
         {
-            return Ok(Some(passphrase));
+            return Ok(Some(Zeroizing::new(passphrase)));
         }
 
         // Fall back to direct passphrase
-        self.config.get_passphrase()
+        Ok(self.config.get_passphrase()?.map(Zeroizing::new))
     }
 
     /// Check if encryption is enabled and we have a passphrase
@@ -337,7 +531,7 @@ impl StateEncryption {
             "encryption is enabled but no passphrase available. Set SHIPPER_ENCRYPT_KEY environment variable or provide passphrase in config.",
         )?;
 
-        encrypt(data, &passphrase)
+        encrypt_with_iterations(data, &passphrase, self.iterations)
     }
 
     /// Decrypt data if encryption is enabled
@@ -394,7 +588,7 @@ impl StateEncryption {
             .get_passphrase()?
             .context("encryption is enabled but no passphrase available")?;
 
-        let encrypted = encrypt(data, &passphrase)?;
+        let encrypted = encrypt_with_iterations(data, &passphrase, self.iterations)?;
         let encrypted_str =
             String::from_utf8(encrypted).context("encrypted data is not valid UTF-8")?;
 
@@ -403,9 +597,72 @@ impl StateEncryption {
     }
 }
 
+/// Test-only key-derivation shims.
+///
+/// PBKDF2 at the production cost (600,000 iterations) is ~6x slower than the
+/// legacy 100,000 and would push this crate's unit and property tests into the
+/// hour range in a debug build. These wrappers let tests exercise the real
+/// format at a low iteration count.
+///
+/// This module is `#[cfg(test)]` and both it and [`encrypt_with_iterations`]
+/// are crate-private, so there is no way for production code — in this crate
+/// or any other — to reach a weakened iteration count. Dedicated tests call
+/// the public [`encrypt`] and assert the header records
+/// [`PBKDF2_ITERATIONS`].
+#[cfg(test)]
+mod test_kdf {
+    use super::{KEY_SIZE, Result, Zeroizing};
+
+    /// Iteration count used by tests. Never reachable from production code.
+    pub(crate) const TEST_ITERATIONS: u32 = 1_000;
+
+    /// `encrypt` at [`TEST_ITERATIONS`]; produces a real v2 payload.
+    pub(crate) fn encrypt(data: &[u8], passphrase: &str) -> Result<Vec<u8>> {
+        super::encrypt_with_iterations(data, passphrase, TEST_ITERATIONS)
+    }
+
+    /// `derive_key` at [`TEST_ITERATIONS`].
+    pub(crate) fn derive_key(passphrase: &str, salt: &[u8]) -> Zeroizing<[u8; KEY_SIZE]> {
+        super::derive_key(passphrase, salt, TEST_ITERATIONS)
+    }
+
+    /// Build a legacy v1 payload (`salt || nonce || ciphertext || tag`, keyed
+    /// at 100,000 PBKDF2 iterations, no header, no AAD) exactly as shipper
+    /// wrote it before the format was versioned. Used to prove old state still
+    /// decrypts, without checking in a binary fixture.
+    pub(crate) fn encrypt_v1_legacy(data: &[u8], passphrase: &str) -> Vec<u8> {
+        use super::{
+            Aes256Gcm, BASE64, Engine, KeyInit, NONCE_SIZE, Nonce, OsRng, PBKDF2_ITERATIONS_V1,
+            RngCore, SALT_SIZE,
+        };
+        use aes_gcm::aead::Aead;
+
+        let mut salt = [0u8; SALT_SIZE];
+        let mut nonce_bytes = [0u8; NONCE_SIZE];
+        OsRng.fill_bytes(&mut salt);
+        OsRng.fill_bytes(&mut nonce_bytes);
+
+        let key = super::derive_key(passphrase, &salt, PBKDF2_ITERATIONS_V1);
+        let cipher = Aes256Gcm::new_from_slice(key.as_slice()).expect("cipher");
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce_bytes), data)
+            .expect("v1 encrypt");
+
+        let mut raw = Vec::with_capacity(SALT_SIZE + NONCE_SIZE + ciphertext.len());
+        raw.extend_from_slice(&salt);
+        raw.extend_from_slice(&nonce_bytes);
+        raw.extend_from_slice(&ciphertext);
+        BASE64.encode(&raw).into_bytes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Shadow the production `encrypt`/`derive_key` with the low-iteration test
+    // wrappers so the suite stays fast. Tests that must pin the production
+    // parameters call `super::encrypt` / `super::derive_key` explicitly.
+    use super::test_kdf::{TEST_ITERATIONS, derive_key, encrypt, encrypt_v1_legacy};
     use serial_test::serial;
     use tempfile::tempdir;
 
@@ -553,7 +810,7 @@ mod tests {
 
         // Decode, corrupt a byte in the ciphertext region, re-encode
         let mut raw = BASE64.decode(&encrypted_str).expect("valid base64");
-        let idx = SALT_SIZE + NONCE_SIZE + 1;
+        let idx = V2_BODY_OFFSET + 1;
         raw[idx] ^= 0xFF;
         let corrupted = BASE64.encode(&raw);
 
@@ -571,7 +828,7 @@ mod tests {
 
         // Flip a bit in the salt region
         let mut raw = BASE64.decode(&encrypted_str).expect("valid base64");
-        raw[0] ^= 0xFF;
+        raw[V2_SALT_OFFSET] ^= 0xFF;
         let corrupted = BASE64.encode(&raw);
 
         let result = decrypt(&corrupted, passphrase);
@@ -588,7 +845,7 @@ mod tests {
 
         // Flip a bit in the nonce region
         let mut raw = BASE64.decode(&encrypted_str).expect("valid base64");
-        raw[SALT_SIZE] ^= 0xFF;
+        raw[V2_NONCE_OFFSET] ^= 0xFF;
         let corrupted = BASE64.encode(&raw);
 
         let result = decrypt(&corrupted, passphrase);
@@ -698,8 +955,8 @@ mod tests {
             .expect("base64");
 
         // Ciphertext portions must differ
-        let ct1 = &raw1[SALT_SIZE + NONCE_SIZE..];
-        let ct2 = &raw2[SALT_SIZE + NONCE_SIZE..];
+        let ct1 = &raw1[V2_BODY_OFFSET..];
+        let ct2 = &raw2[V2_BODY_OFFSET..];
         assert_ne!(ct1, ct2);
     }
 
@@ -834,18 +1091,18 @@ mod tests {
     #[test]
     fn state_encryption_enabled_disabled() {
         let config = EncryptionConfig::default();
-        let encryption = StateEncryption::new(config.clone()).expect("should create");
+        let encryption = StateEncryption::new_for_test(config.clone()).expect("should create");
         assert!(!encryption.is_enabled());
 
         let config = EncryptionConfig::new("test-passphrase".to_string());
-        let encryption = StateEncryption::new(config).expect("should create");
+        let encryption = StateEncryption::new_for_test(config).expect("should create");
         assert!(encryption.is_enabled());
     }
 
     #[test]
     fn state_encryption_roundtrip() {
         let config = EncryptionConfig::new("my-secret-passphrase".to_string());
-        let encryption = StateEncryption::new(config).expect("should create");
+        let encryption = StateEncryption::new_for_test(config).expect("should create");
 
         let data = b"Test state data";
 
@@ -860,7 +1117,7 @@ mod tests {
     #[test]
     fn state_encryption_decrypt_roundtrip() {
         let config = EncryptionConfig::new("my-pass".to_string());
-        let encryption = StateEncryption::new(config).expect("should create");
+        let encryption = StateEncryption::new_for_test(config).expect("should create");
 
         let data = b"state data to encrypt";
         let encrypted = encryption.encrypt(data).expect("encrypt");
@@ -872,7 +1129,7 @@ mod tests {
     #[test]
     fn state_encryption_disabled_passthrough() {
         let config = EncryptionConfig::default();
-        let encryption = StateEncryption::new(config).expect("should create");
+        let encryption = StateEncryption::new_for_test(config).expect("should create");
 
         let data = b"Plain text data";
 
@@ -884,7 +1141,7 @@ mod tests {
     fn state_encryption_disabled_encrypt_passthrough_on_decrypt() {
         // When disabled, decrypt returns data as-is even if it looks like garbage
         let config = EncryptionConfig::default();
-        let encryption = StateEncryption::new(config).expect("should create");
+        let encryption = StateEncryption::new_for_test(config).expect("should create");
 
         let garbage = b"\x00\x01\x02\x03";
         let result = encryption.decrypt(garbage).expect("should succeed");
@@ -914,8 +1171,8 @@ mod tests {
         let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
         let raw = BASE64.decode(&encrypted_str).expect("base64");
 
-        // raw = salt(16) + nonce(12) + ciphertext(len(plaintext) + 16 for GCM tag)
-        let expected_len = SALT_SIZE + NONCE_SIZE + plaintext.len() + 16;
+        // raw = header(13) + salt(16) + nonce(12) + ciphertext(len(plaintext) + 16 GCM tag)
+        let expected_len = HEADER_SIZE + SALT_SIZE + NONCE_SIZE + plaintext.len() + TAG_SIZE;
         assert_eq!(raw.len(), expected_len);
     }
 
@@ -974,7 +1231,7 @@ mod tests {
         let path = td.path().join("state.json");
 
         let config = EncryptionConfig::new("test-pass".to_string());
-        let encryption = StateEncryption::new(config).expect("should create");
+        let encryption = StateEncryption::new_for_test(config).expect("should create");
 
         let data = br#"{"key": "value"}"#;
 
@@ -990,7 +1247,7 @@ mod tests {
         let path = td.path().join("plain.json");
 
         let config = EncryptionConfig::new("test-pass".to_string());
-        let encryption = StateEncryption::new(config).expect("should create");
+        let encryption = StateEncryption::new_for_test(config).expect("should create");
 
         // Write unencrypted file directly
         let data = r#"{"plain": "data"}"#;
@@ -1007,7 +1264,7 @@ mod tests {
         let path = td.path().join("plain.json");
 
         let config = EncryptionConfig::default();
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         let data = b"plain text content";
         encryption.write_file(&path, data).expect("write");
@@ -1023,7 +1280,7 @@ mod tests {
         std::fs::write(&path, "hello").expect("write");
 
         let config = EncryptionConfig::default();
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         let content = encryption.read_file(&path).expect("read");
         assert_eq!(content, "hello");
@@ -1035,7 +1292,7 @@ mod tests {
         let path = td.path().join("nope.json");
 
         let config = EncryptionConfig::new("pass".to_string());
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         assert!(encryption.read_file(&path).is_err());
     }
@@ -1113,8 +1370,8 @@ mod tests {
             .decode(String::from_utf8(enc2).expect("utf8"))
             .expect("base64");
 
-        let salt_nonce_1 = &raw1[..SALT_SIZE + NONCE_SIZE];
-        let salt_nonce_2 = &raw2[..SALT_SIZE + NONCE_SIZE];
+        let salt_nonce_1 = &raw1[V2_SALT_OFFSET..V2_BODY_OFFSET];
+        let salt_nonce_2 = &raw2[V2_SALT_OFFSET..V2_BODY_OFFSET];
 
         // Random salt+nonce must differ between encryptions
         assert_ne!(salt_nonce_1, salt_nonce_2);
@@ -1295,7 +1552,7 @@ mod tests {
             passphrase: None,
             env_var: None,
         };
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
         assert!(!encryption.is_enabled());
 
         let result = encryption.encrypt(b"data");
@@ -1311,8 +1568,8 @@ mod tests {
     fn state_encryption_cross_config_decrypt_fails() {
         let config_a = EncryptionConfig::new("key-alpha".to_string());
         let config_b = EncryptionConfig::new("key-beta".to_string());
-        let enc_a = StateEncryption::new(config_a).expect("create");
-        let enc_b = StateEncryption::new(config_b).expect("create");
+        let enc_a = StateEncryption::new_for_test(config_a).expect("create");
+        let enc_b = StateEncryption::new_for_test(config_b).expect("create");
 
         let data = b"cross-config secret";
         let encrypted = enc_a.encrypt(data).expect("encrypt with A");
@@ -1337,8 +1594,8 @@ mod tests {
         let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
         let raw = BASE64.decode(&encrypted_str).expect("base64");
 
-        // Truncate to just salt + nonce + 16 bytes (minimum that passes length check)
-        let truncated = &raw[..SALT_SIZE + NONCE_SIZE + 16];
+        // Truncate to the minimum length that still passes the length check
+        let truncated = &raw[..V2_BODY_OFFSET + TAG_SIZE];
         let encoded = BASE64.encode(truncated);
 
         assert!(
@@ -1432,7 +1689,7 @@ mod tests {
     #[serial]
     fn state_encryption_from_env_var_roundtrip() {
         let config = EncryptionConfig::from_env("SHIPPER_TEST_ENC_PASS".to_string());
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         temp_env::with_var("SHIPPER_TEST_ENC_PASS", Some("my-env-key"), || {
             assert!(encryption.is_enabled());
@@ -1452,7 +1709,7 @@ mod tests {
             passphrase: Some("inline-pass".to_string()),
             env_var: Some("SHIPPER_TEST_PRIO_PASS".to_string()),
         };
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         temp_env::with_var("SHIPPER_TEST_PRIO_PASS", Some("env-pass"), || {
             // StateEncryption.get_passphrase tries env var first
@@ -1475,7 +1732,7 @@ mod tests {
         let path = td.path().join("env_enc.json");
 
         let config = EncryptionConfig::from_env("SHIPPER_TEST_FILE_PASS".to_string());
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         temp_env::with_var("SHIPPER_TEST_FILE_PASS", Some("file-env-key"), || {
             let data = br#"{"encrypted_via": "env_var"}"#;
@@ -1497,7 +1754,7 @@ mod tests {
             let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
             let encrypted_str = String::from_utf8(encrypted).expect("utf8");
             let raw = BASE64.decode(&encrypted_str).expect("base64");
-            let salt = raw[..SALT_SIZE].to_vec();
+            let salt = raw[V2_SALT_OFFSET..V2_NONCE_OFFSET].to_vec();
             salts.push(salt);
         }
 
@@ -1567,7 +1824,7 @@ mod tests {
     #[test]
     fn state_encryption_decrypt_returns_original_on_bad_encrypted_data() {
         let config = EncryptionConfig::new("test-pass".to_string());
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         // Data that isn't valid encrypted content
         let raw_json = b"plain JSON content";
@@ -1649,7 +1906,7 @@ mod tests {
             passphrase: None,
             env_var: Some("SHIPPER_TEST_IGNORED_VAR".to_string()),
         };
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         temp_env::with_var("SHIPPER_TEST_IGNORED_VAR", Some("secret"), || {
             assert!(!encryption.is_enabled());
@@ -1717,7 +1974,7 @@ mod tests {
         let path = td.path().join("missing_subdir").join("state.enc");
 
         let config = EncryptionConfig::new("io-err-pass".to_string());
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         let result = encryption.write_file(&path, b"payload");
         assert!(result.is_err(), "write to missing parent dir must fail");
@@ -1736,7 +1993,7 @@ mod tests {
         let path = td.path().join("missing_subdir").join("plain.txt");
 
         let config = EncryptionConfig::default();
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         let result = encryption.write_file(&path, b"plain payload");
         assert!(result.is_err(), "plain write to missing dir must fail");
@@ -1757,7 +2014,7 @@ mod tests {
         let path = td.path().join("binary.enc");
 
         let config = EncryptionConfig::new("rf-pass".to_string());
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         // Encrypt binary (non-UTF-8) data using the StateEncryption wrapper so
         // the file on disk is a valid ciphertext under the configured passphrase.
@@ -1795,7 +2052,7 @@ mod tests {
         std::fs::write(&path, plain).expect("write plain");
 
         let config = EncryptionConfig::new("any-pass".to_string());
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         let content = encryption.read_file(&path).expect("read");
         assert_eq!(content, plain);
@@ -1816,7 +2073,7 @@ mod tests {
         std::fs::write(&path, [0xFFu8, 0xFE, 0xFD, 0x80, 0xC0]).expect("write");
 
         let config = EncryptionConfig::new("any-pass".to_string());
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         let result = encryption.read_file(&path);
         assert!(
@@ -1875,7 +2132,7 @@ mod tests {
             passphrase: Some("inline-fallback".to_string()),
             env_var: Some("SHIPPER_TEST_FALLBACK_VAR".to_string()),
         };
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         temp_env::with_var("SHIPPER_TEST_FALLBACK_VAR", None::<&str>, || {
             assert!(encryption.is_enabled());
@@ -1901,7 +2158,7 @@ mod tests {
             passphrase: None,
             env_var: None,
         };
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
         assert!(
             !encryption.is_enabled(),
             "enabled=true with no passphrase must report not-enabled"
@@ -1918,7 +2175,7 @@ mod tests {
             passphrase: None,
             env_var: Some("SHIPPER_TEST_NOT_SET_AT_ALL_VAR".to_string()),
         };
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
         temp_env::with_var("SHIPPER_TEST_NOT_SET_AT_ALL_VAR", None::<&str>, || {
             assert!(!encryption.is_enabled());
         });
@@ -1937,7 +2194,7 @@ mod tests {
             passphrase: None,
             env_var: None,
         };
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         let data = b"would-be-encrypted but no passphrase";
         encryption.write_file(&path, data).expect("write plaintext");
@@ -1976,16 +2233,247 @@ mod tests {
 
     // ── PBKDF2 constants invariant (security-critical pins) ─────────────
 
-    /// Invariant pin: PBKDF2 iterations is 100,000. Reducing this lowers the
-    /// cost of an offline brute-force attack; any change should be a conscious,
+    /// Invariant pin: new payloads are written at 600,000 PBKDF2 iterations
+    /// (OWASP guidance for PBKDF2-HMAC-SHA256). Reducing this lowers the cost
+    /// of an offline brute-force attack; any change should be a conscious,
     /// reviewed action — this test is the trip-wire.
     #[test]
-    fn pbkdf2_iteration_count_pinned_at_100k() {
+    fn pbkdf2_iteration_count_pinned_at_600k() {
         assert_eq!(
-            PBKDF2_ITERATIONS, 100_000,
+            PBKDF2_ITERATIONS, 600_000,
             "PBKDF2 iteration count is a security parameter; \
              do not change without explicit security review"
         );
+    }
+
+    /// Invariant pin: the legacy v1 iteration count is 100,000. It is a format
+    /// constant, not a policy knob — changing it would make every payload
+    /// written before the format was versioned undecryptable.
+    #[test]
+    fn legacy_v1_iteration_count_pinned_at_100k() {
+        assert_eq!(
+            PBKDF2_ITERATIONS_V1, 100_000,
+            "v1 payloads were written at 100,000 iterations; \
+             this constant is what keeps them readable"
+        );
+    }
+
+    /// Invariant: the public `encrypt` entry point — the only way in from
+    /// outside this crate — records 600,000 iterations in the header. This is
+    /// the assertion that proves the low-cost test shims did not weaken the
+    /// production default.
+    #[test]
+    fn public_encrypt_writes_600k_in_header() {
+        // NOTE: deliberately `super::encrypt`, not the test shim.
+        let encrypted = super::encrypt(b"production params", "prod-pass").expect("encrypt");
+        let raw = BASE64
+            .decode(String::from_utf8(encrypted).expect("utf8"))
+            .expect("base64");
+
+        assert_eq!(&raw[..FORMAT_MAGIC.len()], &FORMAT_MAGIC, "magic prefix");
+        assert_eq!(raw[FORMAT_MAGIC.len()], FORMAT_VERSION, "format version 2");
+        assert_eq!(
+            raw[FORMAT_MAGIC.len() + 1],
+            KDF_PBKDF2_HMAC_SHA256,
+            "kdf id"
+        );
+        let iterations = u32::from_be_bytes([
+            raw[FORMAT_MAGIC.len() + 2],
+            raw[FORMAT_MAGIC.len() + 3],
+            raw[FORMAT_MAGIC.len() + 4],
+            raw[FORMAT_MAGIC.len() + 5],
+        ]);
+        assert_eq!(
+            iterations, 600_000,
+            "public encrypt must record the production iteration count"
+        );
+    }
+
+    /// Invariant: a payload written by the public `encrypt` round-trips
+    /// through the public `decrypt` at production parameters.
+    #[test]
+    fn production_params_roundtrip() {
+        let plaintext = b"round trip at production cost";
+        let encrypted = super::encrypt(plaintext, "prod-roundtrip").expect("encrypt");
+        let encrypted_str = String::from_utf8(encrypted).expect("utf8");
+        let decrypted = decrypt(&encrypted_str, "prod-roundtrip").expect("decrypt");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    // ── v1 backward compatibility ───────────────────────────────────────
+
+    /// Invariant: a payload in the legacy unversioned format — no header,
+    /// 100,000 iterations, no AAD, exactly what shipper wrote before this
+    /// change — still decrypts through the current public `decrypt`.
+    #[test]
+    fn v1_payload_still_decrypts() {
+        let plaintext = b"state written by an older shipper";
+        let passphrase = "legacy-pass";
+
+        let legacy = encrypt_v1_legacy(plaintext, passphrase);
+        let legacy_str = String::from_utf8(legacy).expect("utf8");
+
+        // The legacy payload has no magic prefix.
+        let raw = BASE64.decode(&legacy_str).expect("base64");
+        assert_ne!(
+            &raw[..FORMAT_MAGIC.len()],
+            &FORMAT_MAGIC,
+            "v1 payload must not carry the v2 magic"
+        );
+        assert_eq!(
+            raw.len(),
+            SALT_SIZE + NONCE_SIZE + plaintext.len() + TAG_SIZE
+        );
+
+        let decrypted = decrypt(&legacy_str, passphrase).expect("v1 payload must still decrypt");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// Invariant: a v1 payload with the wrong passphrase still fails, i.e. the
+    /// legacy path is not a decryption bypass.
+    #[test]
+    fn v1_payload_wrong_passphrase_fails() {
+        let legacy = encrypt_v1_legacy(b"legacy secret", "right-pass");
+        let legacy_str = String::from_utf8(legacy).expect("utf8");
+        assert!(decrypt(&legacy_str, "wrong-pass").is_err());
+    }
+
+    /// Invariant: `StateEncryption` reads a legacy v1 file transparently, so
+    /// an existing `.shipper/state.json` keeps loading after upgrade.
+    #[test]
+    fn state_encryption_reads_legacy_v1_file() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let plaintext = br#"{"plan_id":"legacy"}"#;
+
+        let legacy = encrypt_v1_legacy(plaintext, "legacy-file-pass");
+        std::fs::write(&path, &legacy).expect("write legacy file");
+
+        let config = EncryptionConfig::new("legacy-file-pass".to_string());
+        let encryption = StateEncryption::new_for_test(config).expect("create");
+        let content = encryption.read_file(&path).expect("read legacy file");
+        assert_eq!(content.as_bytes(), plaintext);
+    }
+
+    /// Invariant: writes always use the current format. A legacy file that is
+    /// read and then rewritten comes back as v2 — the upgrade happens through
+    /// the normal write path, with no separate migration step that could lose
+    /// data part-way.
+    #[test]
+    fn rewrite_of_legacy_file_upgrades_to_v2() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let plaintext = br#"{"plan_id":"legacy"}"#;
+
+        std::fs::write(&path, encrypt_v1_legacy(plaintext, "upgrade-pass")).expect("write legacy");
+
+        let config = EncryptionConfig::new("upgrade-pass".to_string());
+        let encryption = StateEncryption::new_for_test(config).expect("create");
+
+        let content = encryption.read_file(&path).expect("read legacy");
+        encryption
+            .write_file(&path, content.as_bytes())
+            .expect("rewrite");
+
+        let raw = BASE64
+            .decode(std::fs::read_to_string(&path).expect("read back"))
+            .expect("base64");
+        assert_eq!(
+            &raw[..FORMAT_MAGIC.len()],
+            &FORMAT_MAGIC,
+            "rewritten file must be v2"
+        );
+
+        let reread = encryption.read_file(&path).expect("read upgraded");
+        assert_eq!(reread.as_bytes(), plaintext);
+    }
+
+    // ── Header integrity ────────────────────────────────────────────────
+
+    /// Invariant: the header is authenticated. Rewriting the recorded
+    /// iteration count to a cheap value makes decryption fail rather than
+    /// causing a weakened key derivation to succeed — there is no downgrade
+    /// attack against an already-written payload.
+    #[test]
+    fn header_iteration_downgrade_is_rejected() {
+        let plaintext = b"downgrade me";
+        let passphrase = "downgrade-pass";
+        let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
+        let mut raw = BASE64
+            .decode(String::from_utf8(encrypted).expect("utf8"))
+            .expect("base64");
+
+        raw[FORMAT_MAGIC.len() + 2..HEADER_SIZE].copy_from_slice(&1u32.to_be_bytes());
+        let tampered = BASE64.encode(&raw);
+
+        assert!(
+            decrypt(&tampered, passphrase).is_err(),
+            "tampering with the recorded iteration count must not decrypt"
+        );
+    }
+
+    /// Invariant: an out-of-range iteration count in the header is refused
+    /// outright, so a hostile file cannot force unbounded key-derivation work.
+    #[test]
+    fn header_absurd_iteration_count_is_rejected() {
+        let encrypted = encrypt(b"bounded work", "bound-pass").expect("encrypt");
+        let mut raw = BASE64
+            .decode(String::from_utf8(encrypted).expect("utf8"))
+            .expect("base64");
+
+        raw[FORMAT_MAGIC.len() + 2..HEADER_SIZE].copy_from_slice(&u32::MAX.to_be_bytes());
+        let tampered = BASE64.encode(&raw);
+
+        assert!(decrypt(&tampered, "bound-pass").is_err());
+    }
+
+    /// Invariant: an unknown format version is not silently parsed as v2.
+    #[test]
+    fn unknown_format_version_does_not_decrypt() {
+        let encrypted = encrypt(b"future format", "future-pass").expect("encrypt");
+        let mut raw = BASE64
+            .decode(String::from_utf8(encrypted).expect("utf8"))
+            .expect("base64");
+
+        raw[FORMAT_MAGIC.len()] = 99;
+        let tampered = BASE64.encode(&raw);
+
+        assert!(decrypt(&tampered, "future-pass").is_err());
+    }
+
+    /// Invariant: a v1 payload whose random salt happens to start with the v2
+    /// magic bytes still decrypts. The v2 attempt fails authentication and the
+    /// reader falls back to v1, which is what makes version detection
+    /// unambiguous rather than merely improbable.
+    #[test]
+    fn v1_payload_with_magic_prefix_still_decrypts() {
+        let plaintext = b"salt collides with magic";
+        let passphrase = "collision-pass";
+
+        // Construct a v1 payload with a chosen salt that begins with the magic
+        // prefix, plus a plausible-looking version/kdf/iterations tail.
+        let mut salt = [0u8; SALT_SIZE];
+        salt[..FORMAT_MAGIC.len()].copy_from_slice(&FORMAT_MAGIC);
+        salt[FORMAT_MAGIC.len()] = FORMAT_VERSION;
+        salt[FORMAT_MAGIC.len() + 1] = KDF_PBKDF2_HMAC_SHA256;
+        salt[FORMAT_MAGIC.len() + 2..HEADER_SIZE].copy_from_slice(&600_000u32.to_be_bytes());
+
+        let nonce_bytes = [7u8; NONCE_SIZE];
+        let key = super::derive_key(passphrase, &salt, PBKDF2_ITERATIONS_V1);
+        let cipher = Aes256Gcm::new_from_slice(key.as_slice()).expect("cipher");
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce_bytes), &plaintext[..])
+            .expect("v1 encrypt");
+
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&salt);
+        raw.extend_from_slice(&nonce_bytes);
+        raw.extend_from_slice(&ciphertext);
+        let encoded = BASE64.encode(&raw);
+
+        let decrypted = decrypt(&encoded, passphrase)
+            .expect("magic-prefixed v1 payload must fall back to the v1 reader");
+        assert_eq!(decrypted, plaintext);
     }
 
     /// Invariant pin: derived key size is 256 bits (32 bytes), as required by
@@ -2014,36 +2502,44 @@ mod tests {
     // ── Format compatibility invariant ──────────────────────────────────
 
     /// Invariant: the encrypted payload layout is exactly
-    /// `salt(16) || nonce(12) || ciphertext(N) || tag(16)`. This test pins
-    /// the on-disk format so a future refactor that reorders the components
-    /// fails fast. (The existing `encrypted_output_has_expected_structure`
-    /// test pins the total length; this one pins each component's position
-    /// by re-assembling the payload manually and decrypting with our cipher.)
+    /// `header(13) || salt(16) || nonce(12) || ciphertext(N) || tag(16)`, and
+    /// the header is the AES-GCM associated data. This test pins the on-disk
+    /// format so a future refactor that reorders the components fails fast.
+    /// (The existing `encrypted_output_has_expected_structure` test pins the
+    /// total length; this one pins each component's position by re-assembling
+    /// the payload manually and decrypting with our cipher.)
     #[test]
-    fn ciphertext_layout_is_salt_nonce_ciphertext_tag() {
+    fn ciphertext_layout_is_header_salt_nonce_ciphertext_tag() {
         let plaintext = b"layout pin";
         let passphrase = "layout-pass";
         let encrypted = encrypt(plaintext, passphrase).expect("encrypt");
         let encrypted_str = String::from_utf8(encrypted).expect("utf8");
         let raw = BASE64.decode(&encrypted_str).expect("base64");
 
-        // Layout: salt(16) | nonce(12) | ciphertext + tag(plaintext.len()+16)
-        assert!(raw.len() >= SALT_SIZE + NONCE_SIZE + 16);
-        let salt = &raw[..SALT_SIZE];
-        let nonce_bytes = &raw[SALT_SIZE..SALT_SIZE + NONCE_SIZE];
-        let ct_tag = &raw[SALT_SIZE + NONCE_SIZE..];
+        assert!(raw.len() >= V2_BODY_OFFSET + TAG_SIZE);
+        let header = &raw[..HEADER_SIZE];
+        let salt = &raw[V2_SALT_OFFSET..V2_NONCE_OFFSET];
+        let nonce_bytes = &raw[V2_NONCE_OFFSET..V2_BODY_OFFSET];
+        let ct_tag = &raw[V2_BODY_OFFSET..];
 
-        // Manually derive the key from the extracted salt and decrypt.
-        let key = derive_key(passphrase, salt);
-        let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
+        // Manually derive the key from the extracted salt and decrypt, using
+        // the header as AAD exactly as `decrypt` does.
+        let key = super::derive_key(passphrase, salt, TEST_ITERATIONS);
+        let cipher = Aes256Gcm::new_from_slice(key.as_slice()).expect("cipher");
         let nonce = Nonce::from_slice(nonce_bytes);
         let decrypted = cipher
-            .decrypt(nonce, ct_tag)
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: ct_tag,
+                    aad: header,
+                },
+            )
             .expect("manual decrypt should succeed if layout matches");
         assert_eq!(decrypted, plaintext);
 
         // ciphertext-plus-tag must be plaintext_len + 16 (GCM tag)
-        assert_eq!(ct_tag.len(), plaintext.len() + 16);
+        assert_eq!(ct_tag.len(), plaintext.len() + TAG_SIZE);
     }
 
     /// Invariant: a ciphertext produced by the public `encrypt` API today
@@ -2089,7 +2585,7 @@ mod tests {
     #[serial]
     fn state_encryption_env_var_decrypt_handles_encrypted_bytes() {
         let config = EncryptionConfig::from_env("SHIPPER_TEST_DEC_VAR".to_string());
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
 
         temp_env::with_var("SHIPPER_TEST_DEC_VAR", Some("dec-env-pass"), || {
             let data = b"env decrypt cycle";
@@ -2152,6 +2648,9 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::*;
+    // Low-iteration shims (see `test_kdf`): property tests run hundreds of
+    // cases, so they must not pay the production KDF cost.
+    use super::test_kdf::{derive_key, encrypt};
     use proptest::prelude::*;
 
     proptest! {
@@ -2209,8 +2708,8 @@ mod proptests {
             let encrypted = encrypt(&data, "pass").expect("encrypt");
             let encrypted_str = String::from_utf8(encrypted).expect("valid UTF-8");
             let raw = BASE64.decode(&encrypted_str).expect("base64");
-            // salt(16) + nonce(12) + plaintext_len + gcm_tag(16)
-            let expected = SALT_SIZE + NONCE_SIZE + data.len() + 16;
+            // header(13) + salt(16) + nonce(12) + plaintext_len + gcm_tag(16)
+            let expected = HEADER_SIZE + SALT_SIZE + NONCE_SIZE + data.len() + TAG_SIZE;
             prop_assert_eq!(raw.len(), expected);
         }
 
@@ -2259,7 +2758,7 @@ mod proptests {
         #[test]
         fn state_encryption_roundtrip_arbitrary(data in proptest::collection::vec(any::<u8>(), 0..1024)) {
             let config = EncryptionConfig::new("state-prop-pass".to_string());
-            let se = StateEncryption::new(config).expect("create");
+            let se = StateEncryption::new_for_test(config).expect("create");
             let encrypted = se.encrypt(&data).expect("encrypt");
             let decrypted = se.decrypt(&encrypted).expect("decrypt");
             prop_assert_eq!(data, decrypted);
@@ -2279,8 +2778,8 @@ mod proptests {
             let encrypted_str = String::from_utf8(encrypted).expect("utf8");
 
             let mut raw = BASE64.decode(&encrypted_str).expect("base64");
-            // Flip a byte in the ciphertext region (after salt+nonce)
-            let idx = SALT_SIZE + NONCE_SIZE + (raw.len() - SALT_SIZE - NONCE_SIZE) / 2;
+            // Flip a byte in the ciphertext region (after header+salt+nonce)
+            let idx = V2_BODY_OFFSET + (raw.len() - V2_BODY_OFFSET) / 2;
             raw[idx] ^= 0xFF;
             let corrupted = BASE64.encode(&raw);
 
@@ -2307,9 +2806,9 @@ mod proptests {
             let raw = BASE64.decode(&encrypted_str).expect("base64");
 
             // Trim `trim` bytes off the end (corrupts auth tag or ciphertext)
-            if raw.len() > SALT_SIZE + NONCE_SIZE + 16 {
+            if raw.len() > V2_BODY_OFFSET + TAG_SIZE {
                 let truncated = &raw[..raw.len() - trim];
-                if truncated.len() >= SALT_SIZE + NONCE_SIZE + 16 {
+                if truncated.len() >= V2_BODY_OFFSET + TAG_SIZE {
                     let encoded = BASE64.encode(truncated);
                     prop_assert!(decrypt(&encoded, passphrase).is_err());
                 }
@@ -2332,8 +2831,8 @@ mod proptests {
             let b = encrypt(&data, "same-pass").expect("encrypt");
             let raw_a = BASE64.decode(String::from_utf8(a).expect("utf8")).expect("base64");
             let raw_b = BASE64.decode(String::from_utf8(b).expect("utf8")).expect("base64");
-            let salt_a = &raw_a[..SALT_SIZE];
-            let salt_b = &raw_b[..SALT_SIZE];
+            let salt_a = &raw_a[V2_SALT_OFFSET..V2_NONCE_OFFSET];
+            let salt_b = &raw_b[V2_SALT_OFFSET..V2_NONCE_OFFSET];
             prop_assert_ne!(salt_a.to_vec(), salt_b.to_vec(), "salts must differ");
         }
 
@@ -2469,7 +2968,7 @@ mod snapshot_tests {
     #[test]
     fn display_state_encryption_wrapper() {
         let cfg = EncryptionConfig::new("my-passphrase".to_string());
-        let se = StateEncryption::new(cfg).expect("create");
+        let se = StateEncryption::new_for_test(cfg).expect("create");
         assert_snapshot!(se.to_string());
     }
 
@@ -2501,7 +3000,7 @@ mod snapshot_tests {
         let encrypted = encrypt(b"data", "pass").expect("encrypt");
         let encrypted_str = String::from_utf8(encrypted).expect("utf8");
         let mut raw = BASE64.decode(&encrypted_str).expect("base64");
-        raw[SALT_SIZE + NONCE_SIZE + 1] ^= 0xFF;
+        raw[V2_BODY_OFFSET + 1] ^= 0xFF;
         let corrupted = BASE64.encode(&raw);
         let err = decrypt(&corrupted, "pass").unwrap_err();
         assert_snapshot!(err.to_string());
@@ -2531,7 +3030,7 @@ mod snapshot_tests {
         let encrypted = encrypt(b"snapshot nonce", "pass").expect("encrypt");
         let encrypted_str = String::from_utf8(encrypted).expect("utf8");
         let mut raw = BASE64.decode(&encrypted_str).expect("base64");
-        raw[SALT_SIZE] ^= 0xFF;
+        raw[V2_NONCE_OFFSET] ^= 0xFF;
         let corrupted = BASE64.encode(&raw);
         let err = decrypt(&corrupted, "pass").unwrap_err();
         assert_snapshot!(err.to_string());
@@ -2553,7 +3052,7 @@ mod snapshot_tests {
 
     #[test]
     fn snapshot_derive_key_output_format() {
-        let key = derive_key("test-passphrase", &[0u8; SALT_SIZE]);
+        let key = derive_key("test-passphrase", &[0u8; SALT_SIZE], PBKDF2_ITERATIONS);
         // Snapshot the hex-encoded key to verify deterministic output format
         let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
         assert_snapshot!(hex);
@@ -2561,7 +3060,7 @@ mod snapshot_tests {
 
     #[test]
     fn snapshot_derive_key_length() {
-        let key = derive_key("any-passphrase", &[42u8; SALT_SIZE]);
+        let key = derive_key("any-passphrase", &[42u8; SALT_SIZE], PBKDF2_ITERATIONS);
         assert_debug_snapshot!(key.len());
     }
 
@@ -2595,10 +3094,11 @@ mod snapshot_tests {
         let raw = BASE64.decode(&encrypted_str).expect("base64");
 
         let info = format!(
-            "salt_bytes={}, nonce_bytes={}, ciphertext_plus_tag_bytes={}, plaintext_len={}, overhead={}",
+            "header_bytes={}, salt_bytes={}, nonce_bytes={}, ciphertext_plus_tag_bytes={}, plaintext_len={}, overhead={}",
+            HEADER_SIZE,
             SALT_SIZE,
             NONCE_SIZE,
-            raw.len() - SALT_SIZE - NONCE_SIZE,
+            raw.len() - V2_BODY_OFFSET,
             plaintext.len(),
             raw.len() - plaintext.len(),
         );
@@ -2607,7 +3107,11 @@ mod snapshot_tests {
 
     #[test]
     fn snapshot_derive_key_alternate_passphrase() {
-        let key = derive_key("alternate-passphrase-for-snapshot", &[0xAB; SALT_SIZE]);
+        let key = derive_key(
+            "alternate-passphrase-for-snapshot",
+            &[0xAB; SALT_SIZE],
+            PBKDF2_ITERATIONS,
+        );
         let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
         assert_snapshot!(hex);
     }
@@ -2633,7 +3137,7 @@ mod snapshot_tests {
             passphrase: None,
             env_var: None,
         };
-        let encryption = StateEncryption::new(config).expect("create");
+        let encryption = StateEncryption::new_for_test(config).expect("create");
         let err = encryption.encrypt(b"data").unwrap_err();
         assert_snapshot!(err.to_string());
     }
@@ -2676,11 +3180,12 @@ mod snapshot_tests {
         let raw = BASE64.decode(&encrypted_str).expect("base64");
 
         let info = format!(
-            "raw_len={}, salt={}, nonce={}, ciphertext_plus_tag={}, plaintext_len=0",
+            "raw_len={}, header={}, salt={}, nonce={}, ciphertext_plus_tag={}, plaintext_len=0",
             raw.len(),
+            HEADER_SIZE,
             SALT_SIZE,
             NONCE_SIZE,
-            raw.len() - SALT_SIZE - NONCE_SIZE,
+            raw.len() - V2_BODY_OFFSET,
         );
         assert_snapshot!(info);
     }
