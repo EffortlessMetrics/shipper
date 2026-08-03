@@ -272,6 +272,11 @@ jobs:
       # short-circuit the check, which is what let the rc.1 first-publish
       # fail after the irreversible step.
       - name: Package check
+        env:
+          # The shared target cache can contain a stale Cargo temporary
+          # registry from another commit. Keep package verification isolated
+          # so every archive is verified against the archives produced here.
+          CARGO_TARGET_DIR: ${{ runner.temp }}/shipper-package-check-${{ github.run_id }}-${{ github.run_attempt }}
         run: cargo package --workspace --locked --exclude xtask
 
       - name: Smoke CLI help
@@ -407,6 +412,8 @@ jobs:
       # short-circuit the check, which is what let the rc.1 first-publish
       # fail after the irreversible step.
       - name: Package check
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/shipper-package-check-${{ github.run_id }}-${{ github.run_attempt }}
         run: cargo package --workspace --locked --exclude xtask
 
       - name: Smoke CLI help
@@ -497,6 +504,8 @@ jobs:
       # short-circuit the check, which is what let the rc.1 first-publish
       # fail after the irreversible step.
       - name: Package check
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/shipper-package-check-${{ github.run_id }}-${{ github.run_attempt }}
         run: cargo package --workspace --locked --exclude xtask
 
       - name: Smoke CLI help
