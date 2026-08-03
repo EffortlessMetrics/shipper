@@ -32,6 +32,15 @@ runs:
 | `plan.txt` | Captured output | Plan JSON captured for workflow artifacts | Release workflow plan stage | Text containing JSON |
 | `preflight_workspace_verify.txt` | Captured output | ANSI-stripped Cargo workspace dry-run output | Preflight workspace verification | Text |
 
+## Compatibility note
+
+0.5 artifacts are rebuildable for every field promised by the event vocabulary.
+0.4 events, state, and receipts remain readable and safely resumable, but
+fields introduced after 0.4 are unknown when the old artifact cannot provide
+evidence; consumers must not invent default values. See
+[INVARIANTS.md](../INVARIANTS.md) for the full compatibility and event-first
+contract.
+
 ## Which file for which question?
 
 | Question | File |

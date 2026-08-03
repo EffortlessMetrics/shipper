@@ -226,6 +226,13 @@ For command-line-only local fixtures, `--allow-loopback` provides the same
 explicit loopback posture for the selected registry; it never enables private
 network destinations or the live-publish rehearsal gate.
 
+The validated registry boundary captures credential authority separately from
+display URLs. Authenticated requests are sent only to the validated authority;
+authority-changing redirects are rejected or revalidated without forwarding
+authorization. DNS-resolved IPv4/IPv6 destinations are classified as well as
+their textual hostnames. A private registry remains supported, but only when
+its operator explicitly opts into the private-network policy.
+
 ## CLI Override
 
 CLI flags always take precedence over configuration file values. For example:

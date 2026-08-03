@@ -77,3 +77,26 @@ and package state. State rebuild now projects all event-vocabulary-carrying
 attempt metadata into `attempt_history`, including retry backoff timestamps.
 Remaining edge cases are only where an event cannot describe the same detail
 that a runtime-only attempt transition could infer locally.
+
+## Artifact compatibility across the 0.4 to 0.5 line
+
+The compatibility promise is asymmetric:
+
+- **0.5 artifacts:** new events contain enough information to rebuild every
+  field the project claims is reconstructible. State and receipt fields are
+  projections/summaries, not a second source of truth.
+- **0.4 artifacts:** old event, state, and receipt files remain readable and
+  safely resumable. A field absent from the old vocabulary is `unknown`; it
+  must not be fabricated as zero or inferred without evidence.
+
+Encrypted payloads use a versioned KDF header for new writes. KDF v1
+unversioned payloads remain readable at their legacy PBKDF2 cost, while KDF v2
+is the new stronger default. Unsupported or unreasonable parameters are
+rejected rather than accepted as an implicit fallback.
+
+Security evidence follows the same non-disclosure rule as execution evidence:
+complete authorization header values and bounded `Token=`/`ApiKey=` values are
+redacted, ordinary prose is preserved, and webhook configuration secrets do
+not appear in events, state, receipts, diagnostics, structured output, or
+logs. OIDC availability requires both request variables to be present and
+nonblank; blank diagnostics never include their values.

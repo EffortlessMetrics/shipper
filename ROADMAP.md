@@ -8,6 +8,21 @@
 
 The post-release retrospective produced a product thesis organized around nine competencies. This document is structured around them. Each competency has a tracking issue (#100–#108); the master roadmap is **#109**.
 
+## 0.5.0 release-line status
+
+The 0.5.0 line is the capstone for the current execution and security work.
+`shipper-swarm` is the development and proof surface; the separate
+`EffortlessMetrics/shipper` repository remains the release authority for tags,
+crates.io publication, signing, and release evidence.
+
+The stabilized boundaries are one per-package execution authority shared by
+both schedulers, event-first transitions with rebuild evidence, one readiness
+polling kernel, validated registry destinations and redirects, context-aware
+authorization redaction, versioned KDF compatibility, and blank-value-safe
+OIDC diagnostics. A green swarm branch is not itself a release: promotion
+still requires one exact candidate SHA and release-authority evidence. Release
+credentials must not move into this repository.
+
 ## Five existential pillars (the safety claim)
 
 Cargo 1.90 stabilized multi-package workspace publishing. "Publish several crates at once" is no longer a differentiator. Shipper is only worth existing if it owns five guarantees Cargo still does not give you — together they are the **release-closure system** that the engine is moving toward:

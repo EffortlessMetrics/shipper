@@ -53,6 +53,26 @@ Post-0.4.0 release cleanup. Resolves the carry-over items flagged in the
 
 ### Changed
 
+- **Shared package execution and scheduler conformance.** Sequential and
+  parallel publishing now use one per-package execution authority, event-first
+  transitions, resume-skip operation, readiness evidence, and run-start
+  notification contract. The exact evidence is tracked in
+  `plans/0.5.0-scheduler-conformance.md`.
+- **Readiness authority.** Registry polling, attempt numbering, backoff, actual
+  sleep-duration evidence, timeout posture, and visibility evidence now have one
+  shared registry-client kernel; the engine retains local-index selection and
+  durable event adaptation.
+- **Versioned encryption migration.** New encrypted payloads use versioned
+  PBKDF2-HMAC-SHA256 parameters at the stronger 600,000-iteration default.
+  Existing unversioned KDF v1 payloads remain decryptable at their legacy
+  100,000-iteration cost.
+- **Release-auth diagnostics.** Blank or whitespace-only OIDC request values
+  are unavailable and reported as `blank` without credential material.
+- **Registry and webhook security boundaries.** Registry destinations require
+  validated scheme/authority policy with explicit private or rehearsal opt-in,
+  while authorization redaction removes complete header values and bounded
+  credential assignments without redacting ordinary prose.
+
 - **Registry destination trust boundary.** Registry API and sparse-index URLs
   now require secure, explicitly validated destinations, trusted host-family
   alignment, and explicit private/rehearsal opt-ins. Custom registries must

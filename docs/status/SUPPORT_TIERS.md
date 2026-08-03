@@ -3,12 +3,12 @@
 Status: accepted
 Owner: EffortlessMetrics
 Created: 2026-05-13
-Milestone: 0.4.0
+Milestone: 0.5.0 release-line stabilization
 Linked proposal: docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md
 Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md; docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md; docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md; docs/specs/SHIPPER-SPEC-0007-idempotent-workspace-publish.md; docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md
 Linked ADRs:
 Linked plan:
-Linked issues: #109, #195
+Linked issues: #109, #153, #195, #202, #205, #419, #420, #421, #422
 Linked PRs:
 Support-tier impact: source of truth
 Policy impact: policy ledgers remain the source of truth for exceptions and receipts
@@ -72,6 +72,18 @@ make stronger claims than this file supports.
 | Remediation dry-run artifact | stable/internal | `cargo test -p shipper-core remediation --lib --locked`; `cargo test -p shipper-cli --test e2e_expanded --locked remediate_dry_run_writes_remediation_plan_artifact`; `shipper remediate --dry-run` writes `.shipper/remediation-plan.json` as `shipper.remediation_plan.v1` with source receipt, target crate/version, affected packages, yank order, fix-forward suggestions, risk notes, and command sequence; operator-supplied reason text is omitted from durable artifacts; this does not execute yanks, edit manifests, or publish successors | cli/integrations |
 | Guarded remediation plan execution | stable/internal | `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_executes_reviewed_plan_with_fake_cargo`; `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_halts_on_failed_yank`; `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_redacts_event_reason`; `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_requires_state_dir_plan`; `cargo test -p shipper-cli --test e2e_expanded --locked remediate_guarded_execution_rejects_registry_mismatch`; PR #352 CI; proves `shipper remediate --execute-plan .shipper/remediation-plan.json` executes reviewed containment yanks against fake Cargo, rejects plans outside the configured state dir, rejects registry mismatches, validates yank identifiers, emits `PackageYanked` event evidence, halts on the first failed yank, and records only the redacted reason placeholder; this does not prove live crates.io yank execution or fix-forward publishing | engine/cli |
 | Receipt-driven remediation | advisory | `docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md`; `plans/0.4.0/receipt-driven-remediation.md`; bounded primitives, dry-run artifacts, and fake-Cargo guarded execution are mapped to proof, but full mechanical remediation remains planned until live-operator yank evidence and fix-forward execution semantics are deliberately promoted | engine/cli |
+
+## 0.5.0 stabilization claims
+
+| Claim | Tier | Proof / Source | Owner |
+|---|---|---|---|
+| Shared sequential/parallel package execution authority | stable/internal | `plans/0.5.0-scheduler-conformance.md`; `mode_parity_corpus_sequential_matches_parallel`; merged exact-head conformance PRs #220, #221, and #227–#234 | engine |
+| One readiness polling authority | stable/internal | `docs/INVARIANTS.md`; `shipper_registry::RegistryClient::is_version_visible_with_backoff_and_events`; issue #202 closeout | engine/registry |
+| Validated registry destination and redirect boundary | stable/internal | Registry policy tests and merged PRs #217/#219; issue #419 release-authority promotion remains pending | security/release |
+| Context-aware webhook and authorization redaction | stable/internal | PR #209 and webhook/non-disclosure test matrix; swarm issue #205 and release issue #421 promotion remain pending | security/observability |
+| KDF v1 compatibility and KDF v2 stronger-default writes | stable/internal | `shipper-encrypt` compatibility tests; issue #420 promotion remains pending | security/state |
+| Blank OIDC values are unavailable | stable/internal | OIDC detection tests and issue #422 implementation; release-authority promotion remains pending | release/auth |
+| 0.4 artifact readability and 0.5 rebuild contract | stable/internal | `docs/INVARIANTS.md`, `docs/reference/state-files.md`, state/rebuild tests, and release evidence gate | state/recovery |
 
 ## Rules
 

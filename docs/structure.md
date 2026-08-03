@@ -99,6 +99,12 @@ crates/shipper-core/src/
 └── stress_tests.rs       # Long-running validation
 ```
 
+The scheduler files under `engine/parallel/` are orchestration seams, not a
+second package-execution implementation. Both schedulers delegate package
+behavior to `engine/execute_package.rs`; the shared event/state/receipt
+contract is exercised by the #153 corpus in
+`plans/0.5.0-scheduler-conformance.md`.
+
 ## `crates/shipper-cli` module map
 
 ```

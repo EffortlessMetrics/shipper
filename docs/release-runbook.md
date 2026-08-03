@@ -6,6 +6,28 @@ This is the "what do I actually type and when do I stop" doc. For the broader ho
 
 Shipper dogfoods its own release: `shipper plan → preflight → publish` drive the train end-to-end, with `shipper resume` for recovery. The workflow is tag-driven (`.github/workflows/release.yml`): pushing a `vX.Y.Z` tag triggers `publish-crates-io`.
 
+## 0.5.0 swarm/release-authority boundary
+
+`shipper-swarm/main` is the development and exact-SHA proof surface. Keep its
+normal PRs squash-merged. `EffortlessMetrics/shipper/main` remains the release
+authority and receives one non-fast-forward sync merge after the candidate is
+frozen. Do not publish, tag, sign, or add release credentials in the swarm
+repository.
+
+For 0.5.0, freeze one green swarm SHA, retain the readiness bundle, merge that
+SHA into the release-authority repository with a merge commit, rerun the full
+release gate there, and only then rehearse or publish. Tag, workspace version,
+approved commit, package order, and publication evidence must agree. An
+interrupted publication must be resumed from retained `.shipper/` evidence,
+not restarted from an unverified fresh state.
+
+After the sync merge, run tag creation, release rehearsal, publication, and
+post-publication verification from a checkout of
+`EffortlessMetrics/shipper` at the approved release-authority commit. Do not
+run those commands from `shipper-swarm` or another repository; the swarm
+checkout may prepare and verify the candidate but does not hold publication
+authority or credentials.
+
 ## Crates in the train
 
 Thirteen crates publish in this dependency order. Tier boundaries matter: crates-io's new-crate rate limit (5 burst, then 1 per 10 min) applies only to the first publish of each crate, so the first release train after adding a crate to the workspace is the one where wall-clock balloons.
