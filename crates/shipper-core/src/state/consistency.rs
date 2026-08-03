@@ -164,11 +164,13 @@ pub fn verify_finalization_consistency(
 
     let mut findings = Vec::new();
     let trusted_resume_terminal_skips = trusted_resume_terminal_skips(&event_log);
+    let legacy_attempt_metadata = legacy_attempt_metadata(&event_log);
     verify_plan_ids(receipt, &rebuilt_state, &mut findings);
     verify_state_matches_events(
         state,
         &rebuilt_state,
         &trusted_resume_terminal_skips,
+        legacy_attempt_metadata,
         &mut findings,
     );
     verify_receipt_matches_state(state, receipt, &mut findings);
@@ -201,6 +203,7 @@ fn verify_state_matches_events(
     state: &ExecutionState,
     rebuilt_state: &ExecutionState,
     trusted_resume_terminal_skips: &BTreeSet<String>,
+    legacy_attempt_metadata: bool,
     findings: &mut Vec<String>,
 ) {
     for (key, progress) in &state.packages {
@@ -238,7 +241,12 @@ fn verify_state_matches_events(
         }
     }
 
-    if state.attempt_history != rebuilt_state.attempt_history {
+    if !attempt_histories_match(
+        state,
+        rebuilt_state,
+        trusted_resume_terminal_skips,
+        legacy_attempt_metadata,
+    ) {
         let mut detail = format!(
             "attempt_history drift: state has {} entries but events project {} entries",
             state.attempt_history.len(),
@@ -292,6 +300,85 @@ fn verify_state_matches_events(
         }
         findings.push(detail);
     }
+}
+
+fn legacy_attempt_metadata(event_log: &EventLog) -> bool {
+    // 0.4 serialized PackageAttempted without max_attempts. Serde therefore
+    // leaves it at zero, which the rebuild path treats as the attempt number.
+    // Modern writers always persist a nonzero max_attempts value.
+    let attempts = event_log
+        .all_events()
+        .iter()
+        .filter_map(|event| match &event.event_type {
+            EventType::PackageAttempted { max_attempts, .. } => Some(*max_attempts),
+            _ => None,
+        });
+
+    let mut saw_attempt = false;
+    for max_attempts in attempts {
+        saw_attempt = true;
+        if max_attempts != 0 {
+            return false;
+        }
+    }
+    saw_attempt
+}
+
+fn attempt_histories_match(
+    state: &ExecutionState,
+    rebuilt_state: &ExecutionState,
+    trusted_resume_terminal_skips: &BTreeSet<String>,
+    legacy_attempt_metadata: bool,
+) -> bool {
+    if state.attempt_history == rebuilt_state.attempt_history {
+        return true;
+    }
+
+    if !legacy_attempt_metadata
+        || state.attempt_history.len() != rebuilt_state.attempt_history.len()
+    {
+        return false;
+    }
+
+    // 0.4 state ended an attempt when upload completed, while its later
+    // readiness and PackagePublished events let the event projection end it
+    // later. Compare the durable identity and failure semantics strictly, and
+    // leave only those legacy-unknown timing/retry fields tolerant.
+    state
+        .attempt_history
+        .iter()
+        .zip(rebuilt_state.attempt_history.iter())
+        .all(|(live, rebuilt)| {
+            let key = format!("{}@{}", live.package, live.version);
+            let same_terminal_state = state
+                .packages
+                .get(&key)
+                .and_then(|progress| {
+                    rebuilt_state
+                        .packages
+                        .get(&key)
+                        .map(|event| (progress, event))
+                })
+                .is_some_and(|(progress, event)| {
+                    progress.state == event.state
+                        || (matches!(
+                            (&progress.state, &event.state),
+                            (PackageState::Published, PackageState::Skipped { .. })
+                        ) && trusted_resume_terminal_skips.contains(&key))
+                });
+
+            same_terminal_state
+                && live.package == rebuilt.package
+                && live.version == rebuilt.version
+                && live.attempt == rebuilt.attempt
+                && live.error_class == rebuilt.error_class
+                && live.next_attempt_at == rebuilt.next_attempt_at
+                && live.redacted_message == rebuilt.redacted_message
+                && live.started_at == rebuilt.started_at
+                && live.ended_at <= rebuilt.ended_at
+                && rebuilt.max_attempts == rebuilt.attempt
+                && live.max_attempts >= rebuilt.max_attempts
+        })
 }
 
 fn trusted_resume_terminal_skips(event_log: &EventLog) -> BTreeSet<String> {
@@ -401,7 +488,7 @@ fn state_name(state: &PackageState) -> &'static str {
 mod tests {
     use std::collections::BTreeMap;
 
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use shipper_types::{
         AttemptDetail, EnvironmentFingerprint, ErrorClass, PackageEvidence, PackageProgress,
         PackageReceipt, PublishEvent, ReconciliationEvidenceKind, ReconciliationEvidenceSource,
@@ -679,6 +766,77 @@ mod tests {
             Some(&report),
         )
         .expect("reconciled published event should project to published state");
+    }
+
+    #[test]
+    fn legacy_attempt_metadata_does_not_block_resume_finalization() {
+        let td = tempdir().expect("tempdir");
+        let attempt_started = Utc::now();
+        let upload_finished = attempt_started + Duration::seconds(2);
+        let published = upload_finished + Duration::seconds(1);
+        write_events(
+            td.path(),
+            vec![
+                plan_created_event(),
+                PublishEvent {
+                    timestamp: attempt_started,
+                    event_type: EventType::PackageStarted {
+                        name: "legacy".to_string(),
+                        version: "0.4.0".to_string(),
+                    },
+                    package: "legacy@0.4.0".to_string(),
+                },
+                PublishEvent {
+                    timestamp: attempt_started,
+                    event_type: EventType::PackageAttempted {
+                        attempt: 1,
+                        command: "cargo publish".to_string(),
+                        max_attempts: 0,
+                    },
+                    package: "legacy@0.4.0".to_string(),
+                },
+                PublishEvent {
+                    timestamp: upload_finished,
+                    event_type: EventType::PackageOutput {
+                        stdout_tail: String::new(),
+                        stderr_tail: String::new(),
+                    },
+                    package: "legacy@0.4.0".to_string(),
+                },
+                PublishEvent {
+                    timestamp: published,
+                    event_type: EventType::PackagePublished { duration_ms: 3_000 },
+                    package: "legacy@0.4.0".to_string(),
+                },
+            ],
+        );
+
+        let mut state = make_state(vec![pkg_progress(
+            "legacy",
+            "0.4.0",
+            PackageState::Published,
+        )]);
+        state.state_version = "shipper.state.v1".to_string();
+        state.attempt_history = vec![AttemptDetail {
+            package: "legacy".to_string(),
+            version: "0.4.0".to_string(),
+            attempt: 1,
+            max_attempts: 12,
+            started_at: attempt_started,
+            ended_at: upload_finished,
+            error_class: None,
+            next_attempt_at: None,
+            redacted_message: None,
+        }];
+
+        let receipt = receipt(vec![package_receipt(
+            "legacy",
+            "0.4.0",
+            PackageState::Published,
+        )]);
+
+        verify_finalization_consistency(&td.path().join(EVENTS_FILE), &state, &receipt, None)
+            .expect("legacy unknown attempt metadata should remain resumable");
     }
 
     #[test]
