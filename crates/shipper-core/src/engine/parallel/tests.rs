@@ -2414,6 +2414,266 @@ fn test_partial_success_within_level() {
     server.join();
 }
 
+#[test]
+#[serial]
+fn test_partial_multi_package_failure_mode_parity() {
+    #[derive(Debug)]
+    struct PartialFailureOutcome {
+        _tempdir: tempfile::TempDir,
+        error: Option<String>,
+        receipts: Vec<PackageReceipt>,
+        state: ExecutionState,
+        rebuilt: ExecutionState,
+        events_path: PathBuf,
+        cargo_args_log: PathBuf,
+        reporter_messages: Vec<String>,
+    }
+
+    let run_case = |parallel: bool| {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let cargo_args_log = td.path().join("cargo-args.log");
+        let server = spawn_registry_server(
+            BTreeMap::from([
+                (
+                    "/api/v1/crates/alpha/0.1.0".to_string(),
+                    vec![(200, "{}".to_string())],
+                ),
+                (
+                    "/api/v1/crates/beta/0.1.0".to_string(),
+                    vec![(404, "{}".to_string()), (404, "{}".to_string())],
+                ),
+            ]),
+            3,
+        );
+        let packages = vec![
+            PlannedPackage {
+                name: "alpha".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join("alpha").join("Cargo.toml"),
+                regime: None,
+            },
+            PlannedPackage {
+                name: "beta".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: td.path().join("beta").join("Cargo.toml"),
+                regime: None,
+            },
+        ];
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-partial-parity".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: packages.clone(),
+                dependencies: BTreeMap::new(),
+            },
+            skipped: vec![],
+        };
+        let reg = test_registry_client(&ws);
+        let state_dir = td.path().join(".shipper");
+        fs::create_dir_all(&state_dir).expect("mkdir state dir");
+        let mut opts = default_opts(state_dir.clone());
+        opts.parallel.enabled = parallel;
+        opts.max_attempts = 1;
+        opts.readiness.enabled = false;
+
+        let mut state_packages = BTreeMap::new();
+        for package in &packages {
+            state_packages.insert(
+                pkg_key(&package.name, &package.version),
+                PackageProgress {
+                    name: package.name.clone(),
+                    version: package.version.clone(),
+                    attempts: 0,
+                    state: PackageState::Pending,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+        let mut state = ExecutionState {
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            attempt_history: Vec::new(),
+            packages: state_packages,
+        };
+        let events_path = events::events_path(&state_dir);
+        let mut event_log = events::EventLog::new();
+        let mut reporter = CollectingReporter::default();
+        let cargo_bin = fake_cargo_path(&bin).to_str().expect("utf8").to_string();
+        let cargo_args_path = cargo_args_log.to_str().expect("utf8").to_string();
+        let result = temp_env::with_vars(
+            [
+                ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
+                ("SHIPPER_CARGO_ARGS_LOG", Some(cargo_args_path)),
+                ("SHIPPER_CARGO_EXIT", Some("1".to_string())),
+                (
+                    "SHIPPER_CARGO_STDERR",
+                    Some("permission denied".to_string()),
+                ),
+            ],
+            || {
+                if parallel {
+                    run_publish_parallel(&ws, &opts, &mut state, &state_dir, &reg, &mut reporter)
+                } else {
+                    crate::engine::execute_package::run_sequential_scheduler(
+                        &ws,
+                        &opts,
+                        &mut state,
+                        &state_dir,
+                        &reg,
+                        &mut event_log,
+                        &events_path,
+                        &mut reporter,
+                    )
+                }
+            },
+        );
+        let error = result.as_ref().err().map(ToString::to_string);
+        let receipts = result.ok().unwrap_or_default();
+        server.join();
+
+        let rebuilt = rebuild_state_from_events(
+            &events_path,
+            StateRebuildOptions::new(state.registry.clone()).with_fallback_plan_id(&state.plan_id),
+        )
+        .expect("rebuild partial-failure events");
+        let reporter_messages = reporter
+            .infos
+            .into_iter()
+            .chain(reporter.warns)
+            .chain(reporter.errors)
+            .collect();
+
+        PartialFailureOutcome {
+            _tempdir: td,
+            error,
+            receipts,
+            state,
+            rebuilt,
+            events_path,
+            cargo_args_log,
+            reporter_messages,
+        }
+    };
+
+    let sequential = run_case(false);
+    let parallel = run_case(true);
+    for (mode, outcome) in [("sequential", &sequential), ("parallel", &parallel)] {
+        let error = outcome
+            .error
+            .as_deref()
+            .unwrap_or("partial failure unexpectedly succeeded");
+        assert!(
+            error.contains("beta@0.1.0") && error.contains("permanent failure"),
+            "{mode}: caller-visible error must identify beta's permanent failure: {error}"
+        );
+        assert!(
+            outcome.receipts.is_empty(),
+            "{mode}: a failed multi-package run must not return a partial receipt vector"
+        );
+        assert_eq!(
+            cargo_invocation_count_for_path(&outcome.cargo_args_log),
+            1,
+            "{mode}: only beta should invoke Cargo once; error={:?}, messages={:?}",
+            outcome.error,
+            outcome.reporter_messages
+        );
+        for package in ["alpha@0.1.0", "beta@0.1.0"] {
+            assert!(
+                outcome
+                    .reporter_messages
+                    .iter()
+                    .any(|message| message.contains(package)),
+                "{mode}: caller reporter must receive buffered output for {package}: {:?}",
+                outcome.reporter_messages
+            );
+        }
+        let alpha = outcome.state.packages.get("alpha@0.1.0").expect("alpha");
+        assert!(
+            matches!(alpha.state, PackageState::Skipped { .. }) && alpha.attempts == 0,
+            "{mode}: alpha should be skipped without a Cargo attempt, got {alpha:?}"
+        );
+        let beta = outcome.state.packages.get("beta@0.1.0").expect("beta");
+        assert!(
+            matches!(
+                beta.state,
+                PackageState::Failed {
+                    class: ErrorClass::Permanent,
+                    ..
+                }
+            ) && beta.attempts == 1,
+            "{mode}: beta should be a one-attempt permanent failure, got {beta:?}"
+        );
+        for key in ["alpha@0.1.0", "beta@0.1.0"] {
+            let live = outcome.state.packages.get(key).expect("live package");
+            let rebuilt = outcome.rebuilt.packages.get(key).expect("rebuilt package");
+            assert_eq!(rebuilt.name, live.name, "{mode}: rebuild name for {key}");
+            assert_eq!(
+                rebuilt.version, live.version,
+                "{mode}: rebuild version for {key}"
+            );
+            assert_eq!(rebuilt.state, live.state, "{mode}: rebuild state for {key}");
+            assert_eq!(
+                rebuilt.attempts, live.attempts,
+                "{mode}: rebuild attempts for {key}"
+            );
+        }
+    }
+
+    assert_eq!(
+        normalized_receipts(&sequential.receipts, "partial-failure", "sequential"),
+        normalized_receipts(&parallel.receipts, "partial-failure", "parallel")
+    );
+    assert_eq!(
+        sequential.state.packages.len(),
+        parallel.state.packages.len(),
+        "partial-failure: package count"
+    );
+    for (key, sequential_progress) in &sequential.state.packages {
+        let parallel_progress = parallel.state.packages.get(key).expect("parallel package");
+        assert_eq!(
+            sequential_progress.state, parallel_progress.state,
+            "partial-failure: state for {key}"
+        );
+        assert_eq!(
+            sequential_progress.attempts, parallel_progress.attempts,
+            "partial-failure: attempts for {key}"
+        );
+    }
+    for package in ["alpha@0.1.0", "beta@0.1.0"] {
+        let sequential_events =
+            semantic_event_sequence(&sequential.events_path, "partial-failure", "sequential")
+                .into_iter()
+                .filter(|(event_package, _)| event_package == package)
+                .collect::<Vec<_>>();
+        let parallel_events =
+            semantic_event_sequence(&parallel.events_path, "partial-failure", "parallel")
+                .into_iter()
+                .filter(|(event_package, _)| event_package == package)
+                .collect::<Vec<_>>();
+        assert_eq!(
+            sequential_events, parallel_events,
+            "partial-failure: package-local event sequence for {package}"
+        );
+    }
+    assert_eq!(
+        cargo_invocation_count_for_path(&sequential.cargo_args_log),
+        cargo_invocation_count_for_path(&parallel.cargo_args_log),
+        "partial-failure: Cargo invocation count"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Webhook notification integration: events are sent to a real HTTP endpoint
 // ---------------------------------------------------------------------------
@@ -7221,7 +7481,11 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
 }
 
 fn cargo_invocation_count(outcome: &ModeRunOutcome) -> usize {
-    fs::read_to_string(&outcome.cargo_args_log)
+    cargo_invocation_count_for_path(&outcome.cargo_args_log)
+}
+
+fn cargo_invocation_count_for_path(path: &Path) -> usize {
+    fs::read_to_string(path)
         .map(|contents| {
             contents
                 .lines()
