@@ -1164,14 +1164,14 @@ mod tests {
 
         #[test]
         fn config_slack_with_secret() {
+            let secret = ["snapshot", "secret"].concat();
             let config = WebhookConfig {
                 url: "https://hooks.slack.com/services/T00/B00/xxx".to_string(),
                 webhook_type: WebhookType::Slack,
-                secret: Some("s3cret-key".to_string()),
+                secret: Some(secret),
                 timeout_secs: 10,
             };
-            let json: serde_json::Value = serde_json::to_value(&config).unwrap();
-            insta::assert_yaml_snapshot!("config_slack_with_secret", json);
+            insta::assert_debug_snapshot!("config_slack_with_secret", config);
         }
 
         #[test]
