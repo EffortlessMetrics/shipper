@@ -2,4 +2,4 @@
 source: crates/shipper-registry/src/lib.rs
 expression: url
 ---
-https://my-registry.example.com/api/v1/crates/private-lib
+https://127.0.0.1/api/v1/crates/private-lib

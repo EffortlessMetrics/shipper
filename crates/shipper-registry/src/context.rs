@@ -29,9 +29,21 @@ impl RegistryClient {
     /// deliberately through [`RegistryPolicy::rehearsal`].
     pub fn with_policy(registry: Registry, policy: RegistryPolicy) -> Result<Self> {
         let validated = ValidatedRegistry::new(registry.clone(), policy)?;
+        let api_host = validated
+            .api_base()
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("validated api_base URL has no host"))?;
+        let index_host = validated
+            .index_base()
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("validated index_base URL has no host"))?;
+        let api_addrs = validated.approved_socket_addrs(validated.api_base(), "api_base")?;
+        let index_addrs = validated.approved_socket_addrs(validated.index_base(), "index_base")?;
         let http = Client::builder()
             .user_agent(format!("shipper/{}", env!("CARGO_PKG_VERSION")))
             .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(api_host, &api_addrs)
+            .resolve_to_addrs(index_host, &index_addrs)
             .build()
             .context("failed to build HTTP client")?;
 
@@ -4009,7 +4021,9 @@ mod tests {
             method: ReadinessMethod::Index,
             initial_delay: Duration::ZERO,
             max_delay: Duration::from_millis(20),
-            max_total_wait: Duration::from_millis(80),
+            // Leave enough room for the first loopback connection while the
+            // full crate suite is running other tiny_http servers in parallel.
+            max_total_wait: Duration::from_millis(200),
             poll_interval: Duration::from_millis(10),
             jitter_factor: 0.0,
             index_path: None,
@@ -5364,13 +5378,10 @@ mod tests {
         handle.join().expect("join");
     }
 
-    /// Index visibility check against a URL that returns 301 redirect — the
-    /// reqwest blocking client follows redirects by default, so we set the
-    /// mock to redirect to itself once, then respond 200 with content. This
-    /// also exercises the "unexpected status while fetching index" path
-    /// when the redirected response is something other than 2xx/3xx/4xx —
-    /// here we keep it simple by using 418 (I'm a teapot) which is treated
-    /// as unexpected.
+    /// Index visibility check against an endpoint that returns an unexpected
+    /// status. Redirects are disabled by the client, so this keeps the test
+    /// focused on the status-handling path rather than following a second
+    /// destination.
     #[test]
     fn fetch_index_file_unexpected_status_418_returns_false() {
         let (api_base, handle) = with_server(|req| {
@@ -5384,11 +5395,9 @@ mod tests {
         handle.join().expect("join");
     }
 
-    /// `crate_exists` against an unexpected 3xx (other than redirect that
-    /// reqwest auto-follows): tests the catch-all `s => bail!` arm. Because
-    /// reqwest follows redirects, we use 304 Not Modified (which is not
-    /// auto-followed for a non-conditional request) — the client should
-    /// surface it via the catch-all error arm.
+    /// `crate_exists` against an unexpected 3xx tests the catch-all
+    /// `s => bail!` arm. We use 304 Not Modified so the client surfaces it
+    /// without involving redirect handling.
     #[test]
     fn crate_exists_errors_for_unexpected_304_not_modified() {
         let (api_base, handle) = with_server(|req| {

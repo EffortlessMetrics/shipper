@@ -6,6 +6,7 @@
 //! For the complete registry surface, use the [`crate::HttpRegistryClient`] from
 //! the [`crate::context`] module.
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -29,6 +30,8 @@ pub struct HttpRegistryClient {
     cache_dir: Option<std::path::PathBuf>,
     policy: RegistryPolicy,
     validated_authority: Option<RegistryAuthority>,
+    resolved_host: Option<String>,
+    resolved_addrs: Vec<SocketAddr>,
     validation_error: Option<String>,
 }
 
@@ -45,6 +48,8 @@ impl HttpRegistryClient {
                 cache_dir: None,
                 policy,
                 validated_authority: None,
+                resolved_host: None,
+                resolved_addrs: Vec::new(),
                 validation_error: Some(error.to_string()),
             },
         }
@@ -62,6 +67,12 @@ impl HttpRegistryClient {
             index_base: Some(base_url.to_string()),
         };
         let validated = ValidatedRegistry::new(identity, policy)?;
+        let resolved_host = validated
+            .api_base()
+            .host_str()
+            .ok_or_else(|| anyhow!("validated api_base URL has no host"))?
+            .to_string();
+        let resolved_addrs = validated.approved_socket_addrs(validated.api_base(), "api_base")?;
 
         Ok(Self {
             base_url: validated
@@ -70,10 +81,15 @@ impl HttpRegistryClient {
                 .trim_end_matches('/')
                 .to_string(),
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
-            client: Some(build_client(Duration::from_secs(DEFAULT_TIMEOUT_SECS))?),
+            client: Some(build_client(
+                Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                &[(resolved_host.as_str(), resolved_addrs.as_slice())],
+            )?),
             cache_dir: None,
             policy,
             validated_authority: Some(validated.credential_authority().clone()),
+            resolved_host: Some(resolved_host),
+            resolved_addrs,
             validation_error: None,
         })
     }
@@ -93,7 +109,13 @@ impl HttpRegistryClient {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         if self.validation_error.is_none() {
-            match build_client(timeout) {
+            match build_client(
+                timeout,
+                &[(
+                    self.resolved_host.as_deref().unwrap_or_default(),
+                    self.resolved_addrs.as_slice(),
+                )],
+            ) {
                 Ok(client) => self.client = Some(client),
                 Err(error) => {
                     self.client = None;
@@ -284,7 +306,22 @@ impl HttpRegistryClient {
             request = request.header(reqwest::header::IF_NONE_MATCH, etag.trim());
         }
 
-        let response = request.send().context("index request failed")?;
+        // The API client pins the API hostname. Index traffic may use a
+        // different, but explicitly trusted, hostname, so it needs its own
+        // pinned client as well. Reusing the API client here would let the
+        // index hostname resolve at connection time and reopen a DNS-rebind
+        // window after validation.
+        let index_host = validated_index
+            .index_base()
+            .host_str()
+            .ok_or_else(|| anyhow!("validated index URL has no host"))?;
+        let index_addrs =
+            validated_index.approved_socket_addrs(validated_index.index_base(), "index_base")?;
+        let index_client = build_client(self.timeout, &[(index_host, index_addrs.as_slice())])?;
+        let response = request.build().context("failed to build index request")?;
+        let response = index_client
+            .execute(response)
+            .context("index request failed")?;
 
         match response.status() {
             reqwest::StatusCode::OK => {
@@ -330,11 +367,18 @@ impl HttpRegistryClient {
     }
 }
 
-fn build_client(timeout: Duration) -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
+fn build_client(
+    timeout: Duration,
+    resolved_hosts: &[(&str, &[SocketAddr])],
+) -> Result<reqwest::blocking::Client> {
+    let mut builder = reqwest::blocking::Client::builder()
         .timeout(timeout)
         .user_agent(USER_AGENT)
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::none());
+    for (host, addrs) in resolved_hosts {
+        builder = builder.resolve_to_addrs(host, addrs);
+    }
+    builder
         .build()
         .context("failed to build registry HTTP client")
 }
@@ -427,8 +471,8 @@ mod tests {
 
     #[test]
     fn client_with_custom_url() {
-        let client = test_client("https://custom.registry.io/");
-        assert_eq!(client.base_url(), "https://custom.registry.io");
+        let client = test_client("https://127.0.0.1/");
+        assert_eq!(client.base_url(), "https://127.0.0.1");
     }
 
     #[test]
@@ -439,6 +483,60 @@ mod tests {
 
         assert!(!error.to_string().contains("fixture-secret"));
         assert!(!error.to_string().contains("fixture-token"));
+    }
+
+    #[test]
+    fn dns_name_uses_only_policy_approved_pinned_addresses() {
+        use tiny_http::{Response, Server, StatusCode};
+
+        let server = Server::http("127.0.0.1:0").expect("mock server");
+        let direct_base = format!("http://{}", server.server_addr());
+        let hostname_base = direct_base.replace("127.0.0.1", "localhost");
+        let handle = std::thread::spawn(move || {
+            let request = server.recv().expect("request");
+            request
+                .respond(Response::empty(StatusCode(200)))
+                .expect("respond");
+        });
+
+        let client = test_client(&hostname_base);
+        assert!(!client.resolved_addrs.is_empty());
+        assert!(
+            client
+                .resolved_addrs
+                .iter()
+                .all(|address| address.ip().is_loopback())
+        );
+        assert!(client.crate_exists("demo").expect("request"));
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn redirects_are_not_followed_to_a_second_request() {
+        use tiny_http::{Header, Response, Server, StatusCode};
+
+        let server = Server::http("127.0.0.1:0").expect("mock server");
+        let base = format!("http://{}", server.server_addr());
+        let location = format!("{base}/redirected");
+        let handle = std::thread::spawn(move || {
+            let request = server.recv().expect("initial request");
+            let response = Response::empty(StatusCode(302))
+                .with_header(Header::from_bytes("Location", location).expect("location header"));
+            request.respond(response).expect("redirect response");
+            assert!(
+                server
+                    .recv_timeout(Duration::from_millis(200))
+                    .expect("redirect observation")
+                    .is_none(),
+                "redirect policy must prevent a second request"
+            );
+        });
+
+        let error = test_client(&base)
+            .crate_exists("demo")
+            .expect_err("302 must not be followed");
+        assert!(error.to_string().contains("unexpected status code: 302"));
+        handle.join().expect("server thread");
     }
 
     #[test]
@@ -1221,7 +1319,7 @@ mod tests {
 
     #[test]
     fn snapshot_url_construction_custom_registry() {
-        let client = test_client("https://my-registry.example.com/");
+        let client = test_client("https://127.0.0.1/");
         let url = format!("{}/api/v1/crates/{}", client.base_url(), "private-lib");
         insta::assert_snapshot!("url_custom_registry", url);
     }
@@ -1306,7 +1404,7 @@ mod tests {
         proptest! {
             #[test]
             fn url_normalization_strips_trailing_slashes(
-                base in "https://[a-z]{3,12}\\.[a-z]{2,4}",
+                base in Just("https://127.0.0.1".to_string()),
                 slashes in "/{0,10}",
             ) {
                 let input = format!("{base}{slashes}");

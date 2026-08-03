@@ -4,12 +4,13 @@
 //! a publish token to owner requests, so validation must happen before a
 //! request target is built and before credentials are added to a request.
 //!
-//! This module deliberately does not resolve DNS names or follow redirects.
-//! Those network-time decisions belong to the follow-up enforcement lane. It
-//! does validate all literal IP ranges and preserves the approved authorities
-//! needed by that lane.
+//! URL parsing remains side-effect free, while the approved-address helper
+//! resolves and policy-checks DNS results for callers that build HTTP clients.
+//! Redirects are disabled by those clients rather than delegated to arbitrary
+//! destinations.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::collections::BTreeSet;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 
 use anyhow::{Result, anyhow, bail};
 use url::{Host, Url};
@@ -167,6 +168,39 @@ impl ValidatedRegistry {
         self.policy
     }
 
+    /// Resolve a validated destination and return only addresses permitted by
+    /// the applied policy. Callers must pin these addresses into the actual
+    /// HTTP client; a separate preflight lookup would not close a DNS-rebind
+    /// window.
+    pub(crate) fn approved_socket_addrs(&self, url: &Url, field: &str) -> Result<Vec<SocketAddr>> {
+        let host = url
+            .host_str()
+            .ok_or_else(|| anyhow!("validated registry {field} URL has no host"))?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| anyhow!("validated registry {field} URL has no port"))?;
+
+        let candidates = match url.host() {
+            Some(Host::Domain(_)) => (host, port)
+                .to_socket_addrs()
+                .map_err(|error| anyhow!("failed to resolve registry {field} host: {error}"))?
+                .collect::<Vec<_>>(),
+            Some(Host::Ipv4(address)) => vec![SocketAddr::new(IpAddr::V4(address), port)],
+            Some(Host::Ipv6(address)) => vec![SocketAddr::new(IpAddr::V6(address), port)],
+            None => Vec::new(),
+        };
+
+        let mut unique = BTreeSet::new();
+        for address in candidates {
+            validate_ip(address.ip(), &format!("resolved {field}"), self.policy)?;
+            unique.insert(address);
+        }
+        if unique.is_empty() {
+            bail!("registry {field} host resolved to no addresses")
+        }
+        Ok(unique.into_iter().collect())
+    }
+
     /// Evidence contains only policy posture and authorities; it never
     /// contains tokens, URL userinfo, query strings, or fragments.
     pub fn sanitized_evidence(&self) -> RegistryPolicyEvidence {
@@ -278,8 +312,9 @@ fn validate_ip(address: IpAddr, field: &str, policy: RegistryPolicy) -> Result<(
     Ok(())
 }
 
-/// Return IPv4 addresses embedded in IPv4-compatible or IPv4-mapped IPv6
-/// forms so they receive the same private, loopback, and metadata checks.
+/// Return IPv4 addresses embedded in IPv4-compatible, mapped, 6to4, Teredo,
+/// or well-known NAT64 IPv6 forms so they receive the same private, loopback,
+/// and metadata checks.
 fn embedded_ipv4(address: Ipv6Addr) -> Option<Ipv4Addr> {
     if address.is_loopback() || address.is_unspecified() {
         return None;
@@ -295,7 +330,42 @@ fn embedded_ipv4(address: Ipv6Addr) -> Option<Ipv4Addr> {
         ));
     }
 
-    address.to_ipv4_mapped()
+    if let Some(mapped) = address.to_ipv4_mapped() {
+        return Some(mapped);
+    }
+
+    // 6to4: 2002:<IPv4-as-two-segments>::/48.
+    if segments[0] == 0x2002 {
+        return Some(Ipv4Addr::new(
+            (segments[1] >> 8) as u8,
+            segments[1] as u8,
+            (segments[2] >> 8) as u8,
+            segments[2] as u8,
+        ));
+    }
+
+    // Teredo: the final IPv4 address is obfuscated with bitwise NOT.
+    if segments[0] == 0x2001 && segments[1] == 0 {
+        let encoded = u32::from_be_bytes([
+            (segments[6] >> 8) as u8,
+            segments[6] as u8,
+            (segments[7] >> 8) as u8,
+            segments[7] as u8,
+        ]);
+        return Some(Ipv4Addr::from(!encoded));
+    }
+
+    // RFC 6052 well-known NAT64 prefix: 64:ff9b::/96.
+    if segments[..6] == [0x0064, 0xff9b, 0, 0, 0, 0] {
+        return Some(Ipv4Addr::new(
+            (segments[6] >> 8) as u8,
+            segments[6] as u8,
+            (segments[7] >> 8) as u8,
+            segments[7] as u8,
+        ));
+    }
+
+    None
 }
 
 fn host_is_loopback(host: &Host<&str>) -> bool {
@@ -505,6 +575,38 @@ mod tests {
             RegistryPolicy::secure(),
         )
         .expect("the explicit index subdomain remains valid");
+    }
+
+    #[test]
+    fn transition_ipv6_forms_receive_ipv4_private_policy() {
+        for host in [
+            "[2002:0a00:0001::]",
+            "[2001:0::f5ff:fffe]",
+            "[64:ff9b::a00:1]",
+        ] {
+            let url = format!("https://{host}");
+            ValidatedRegistry::new(registry(&url, Some(&url)), RegistryPolicy::secure())
+                .expect_err("embedded RFC1918 address must be rejected");
+            ValidatedRegistry::new(
+                registry(&url, Some(&url)),
+                RegistryPolicy::secure().with_private(true),
+            )
+            .expect("explicit private opt-in");
+        }
+    }
+
+    #[test]
+    fn approved_dns_addresses_are_resolved_and_policy_checked() {
+        let validated = ValidatedRegistry::new(
+            registry("https://localhost", Some("https://localhost")),
+            RegistryPolicy::rehearsal(),
+        )
+        .expect("loopback DNS name is valid in rehearsal posture");
+        let addresses = validated
+            .approved_socket_addrs(validated.api_base(), "api_base")
+            .expect("localhost resolves");
+        assert!(!addresses.is_empty());
+        assert!(addresses.iter().all(|address| address.ip().is_loopback()));
     }
 
     #[test]
