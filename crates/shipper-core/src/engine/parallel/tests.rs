@@ -6743,6 +6743,7 @@ enum ModeParityScenario {
     AmbiguousStillUnknown,
     StillUnknownResume,
     EventWriteFailure,
+    StateWriteFailure,
 }
 
 #[derive(Debug)]
@@ -6791,6 +6792,10 @@ const MODE_PARITY_CORPUS: &[ModeParityCase] = &[
     ModeParityCase {
         name: "event_write_failure",
         scenario: ModeParityScenario::EventWriteFailure,
+    },
+    ModeParityCase {
+        name: "state_write_failure",
+        scenario: ModeParityScenario::StateWriteFailure,
     },
 ];
 
@@ -6901,6 +6906,13 @@ fn mode_parity_routes(
             1,
         ),
         ModeParityScenario::EventWriteFailure => (BTreeMap::new(), 0),
+        ModeParityScenario::StateWriteFailure => (
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(200, "{}".to_string())],
+            )]),
+            1,
+        ),
     }
 }
 
@@ -6924,7 +6936,9 @@ fn mode_parity_seed_state(ws: &PlannedWorkspace, scenario: ModeParityScenario) -
             },
             1,
         ),
-        ModeParityScenario::EventWriteFailure => init_state_for_workspace(ws),
+        ModeParityScenario::EventWriteFailure | ModeParityScenario::StateWriteFailure => {
+            init_state_for_workspace(ws)
+        }
     }
 }
 
@@ -6970,7 +6984,7 @@ fn mode_parity_cargo_env<'a>(
             ("SHIPPER_CARGO_STDERR", Some("")),
             ("SHIPPER_CARGO_STDOUT", Some("")),
         ],
-        ModeParityScenario::EventWriteFailure => vec![
+        ModeParityScenario::EventWriteFailure | ModeParityScenario::StateWriteFailure => vec![
             ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
             ("SHIPPER_CARGO_ARGS_LOG", Some(cargo_args_log)),
             ("SHIPPER_CARGO_EXIT", Some("0")),
@@ -7043,6 +7057,12 @@ fn run_mode_parity_case(
         // A directory at the event-log path fails on every supported platform
         // without relying on administrator privileges or readonly semantics.
         fs::create_dir_all(&events_path).expect("event path directory");
+    }
+    if matches!(scenario, ModeParityScenario::StateWriteFailure) {
+        // A directory at the state path fails on every supported platform
+        // without relying on administrator privileges or readonly semantics.
+        let state_path = crate::state::execution_state::state_path(&state_dir);
+        fs::create_dir_all(&state_path).expect("state path directory");
     }
     let mut event_log = events::EventLog::new();
     let mut reporter = CollectingReporter::default();
@@ -7150,6 +7170,12 @@ fn stable_event_write_error_contract(error: &str) -> Option<&str> {
     let start = error.find(start_marker)?;
     let end = error[start..].find(end_marker)? + start + end_marker.len();
     Some(&error[start..end])
+}
+
+fn stable_state_write_error_contract(error: &str) -> Option<&str> {
+    let marker = "failed to persist package transition state for demo@0.1.0";
+    let start = error.find(marker)?;
+    Some(&error[start..start + marker.len()])
 }
 
 fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &ModeRunOutcome) {
@@ -7472,9 +7498,73 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
                 case.name
             );
         }
+        ModeParityScenario::StateWriteFailure => {
+            assert!(!seq.ok, "{}: state write failure should err", case.name);
+            let seq_error = seq
+                .error
+                .as_deref()
+                .unwrap_or("missing error for state write failure");
+            let par_error = par
+                .error
+                .as_deref()
+                .unwrap_or("missing error for state write failure");
+            for (mode, outcome) in [("seq", seq), ("par", par)] {
+                let error = outcome
+                    .error
+                    .as_deref()
+                    .unwrap_or("missing error for state write failure");
+                assert!(
+                    error.contains("failed to persist package transition state"),
+                    "{} {mode}: expected stable state projection error, got {error}",
+                    case.name
+                );
+                assert!(
+                    outcome.receipts.is_empty(),
+                    "{} {mode}: state projection failure must not return a receipt",
+                    case.name
+                );
+                let state_path = crate::state::execution_state::state_path(&outcome.state_dir);
+                assert!(
+                    state_path.is_dir(),
+                    "{} {mode}: state path must remain the failure fixture",
+                    case.name
+                );
+                let pkg = outcome.state.packages.get("demo@0.1.0").expect("demo");
+                assert!(
+                    matches!(pkg.state, PackageState::Pending) && pkg.attempts == 0,
+                    "{} {mode}: state failure must not mutate pending state, got {:?} attempts={}",
+                    case.name,
+                    pkg.state,
+                    pkg.attempts
+                );
+                let rebuilt = rebuild_state_from_events(
+                    &outcome.events_path,
+                    StateRebuildOptions::new(outcome.state.registry.clone())
+                        .with_fallback_plan_id(&outcome.state.plan_id),
+                )
+                .unwrap_or_else(|e| panic!("{} {mode}: rebuild events: {e}", case.name));
+                let rebuilt_pkg = rebuilt.packages.get("demo@0.1.0").expect("rebuilt demo");
+                assert!(
+                    matches!(rebuilt_pkg.state, PackageState::Skipped { .. }),
+                    "{} {mode}: durable event truth must project the terminal skip, got {:?}",
+                    case.name,
+                    rebuilt_pkg.state
+                );
+            }
+            assert_eq!(
+                stable_state_write_error_contract(seq_error),
+                stable_state_write_error_contract(par_error),
+                "{}: sequential and parallel state-write errors must share the same stable contract",
+                case.name
+            );
+            assert_semantic_event_sequences_match(seq, par, case.name);
+        }
     }
 
-    if !matches!(case.scenario, ModeParityScenario::EventWriteFailure) {
+    if !matches!(
+        case.scenario,
+        ModeParityScenario::EventWriteFailure | ModeParityScenario::StateWriteFailure
+    ) {
         assert_mode_parity_rebuild(seq, case.scenario, &format!("{}:seq", case.name));
         assert_mode_parity_rebuild(par, case.scenario, &format!("{}:par", case.name));
     }
