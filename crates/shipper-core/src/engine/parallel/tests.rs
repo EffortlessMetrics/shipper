@@ -6376,6 +6376,7 @@ fn publish_package_final_chance_success_emits_package_published_event() {
 enum ModeParityScenario {
     CleanPublish,
     ReadinessTimeoutThenVisible,
+    RetryableExhaustion,
     PermanentFailure,
     AlreadyPublishedInState,
     AmbiguousResolvesPublished,
@@ -6399,6 +6400,10 @@ const MODE_PARITY_CORPUS: &[ModeParityCase] = &[
     ModeParityCase {
         name: "readiness_timeout_then_visible",
         scenario: ModeParityScenario::ReadinessTimeoutThenVisible,
+    },
+    ModeParityCase {
+        name: "retryable_exhaustion",
+        scenario: ModeParityScenario::RetryableExhaustion,
     },
     ModeParityCase {
         name: "permanent_failure",
@@ -6463,6 +6468,20 @@ fn mode_parity_routes(
                 ],
             )]),
             3,
+        ),
+        ModeParityScenario::RetryableExhaustion => (
+            // Each failed Cargo attempt performs a negative visibility check;
+            // the final readiness check also remains negative.
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![
+                    (404, "{}".to_string()),
+                    (404, "{}".to_string()),
+                    (404, "{}".to_string()),
+                    (404, "{}".to_string()),
+                ],
+            )]),
+            4,
         ),
         ModeParityScenario::PermanentFailure => (
             BTreeMap::from([(
@@ -6529,6 +6548,7 @@ fn mode_parity_seed_state(ws: &PlannedWorkspace, scenario: ModeParityScenario) -
     match scenario {
         ModeParityScenario::CleanPublish
         | ModeParityScenario::ReadinessTimeoutThenVisible
+        | ModeParityScenario::RetryableExhaustion
         | ModeParityScenario::PermanentFailure => init_state_for_workspace(ws),
         ModeParityScenario::AmbiguousResolvesPublished
         | ModeParityScenario::AmbiguousRetriesWhenNotPublished
@@ -6560,6 +6580,13 @@ fn mode_parity_cargo_env<'a>(
             ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
             ("SHIPPER_CARGO_EXIT", Some("0")),
             ("SHIPPER_CARGO_STDERR", Some("")),
+            ("SHIPPER_CARGO_STDOUT", Some("")),
+        ],
+        ModeParityScenario::RetryableExhaustion => vec![
+            ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
+            ("SHIPPER_CARGO_ARGS_LOG", Some(cargo_args_log)),
+            ("SHIPPER_CARGO_EXIT", Some("1")),
+            ("SHIPPER_CARGO_STDERR", Some("timeout talking to server")),
             ("SHIPPER_CARGO_STDOUT", Some("")),
         ],
         ModeParityScenario::AmbiguousResolvesPublished
@@ -6622,6 +6649,7 @@ fn run_mode_parity_case(
     opts.max_attempts = if matches!(
         scenario,
         ModeParityScenario::ReadinessTimeoutThenVisible
+            | ModeParityScenario::RetryableExhaustion
             | ModeParityScenario::AmbiguousResolvesPublished
             | ModeParityScenario::AmbiguousRetriesWhenNotPublished
     ) {
@@ -6874,6 +6902,31 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
                         .count(),
                     1,
                     "{} {mode}: retry after readiness timeout must not re-upload",
+                    case.name
+                );
+            }
+        }
+        ModeParityScenario::RetryableExhaustion => {
+            assert!(!seq.ok, "{}: retryable exhaustion should err", case.name);
+            assert_semantic_event_sequences_match(seq, par, case.name);
+            let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
+            assert!(
+                matches!(
+                    pkg.state,
+                    PackageState::Failed {
+                        class: ErrorClass::Retryable,
+                        ..
+                    }
+                ),
+                "{}: expected Failed/Retryable, got {:?}",
+                case.name,
+                pkg.state
+            );
+            for (mode, outcome) in [("seq", seq), ("par", par)] {
+                assert_eq!(
+                    cargo_invocation_count(outcome),
+                    2,
+                    "{} {mode}: retryable failure must exhaust exactly two Cargo attempts",
                     case.name
                 );
             }
