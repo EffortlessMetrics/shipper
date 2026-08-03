@@ -27,14 +27,10 @@ pub(crate) mod webhook;
 /// Re-exported for parallel publish wave planning.
 pub use crate::plan::chunking::chunk_by_max_concurrent;
 
-use flow::{
-    LevelResumeAction, collect_level_receipts_from_state, determine_level_resume_action,
-    init_send_reporter,
-};
+use flow::{LevelResumeAction, determine_level_resume_action, init_send_reporter};
 use scheduler::run_publish_level;
-use webhook::WebhookEvent;
 #[cfg(test)]
-use webhook::maybe_send_event;
+use webhook::{WebhookEvent, maybe_send_event};
 
 // Keep the former test/import path stable while the package implementation
 // moves out of the scheduler module. New production code should import the
@@ -274,6 +270,20 @@ pub fn run_publish_parallel(
     reg: &RegistryClient,
     reporter: &mut dyn crate::engine::Reporter,
 ) -> Result<Vec<PackageReceipt>> {
+    crate::engine::publish::notify_publish_started(ws, opts);
+    run_publish_parallel_without_start(ws, opts, st, state_dir, reg, reporter)
+}
+
+/// Host-reporter entry point for orchestration that has already emitted the
+/// run-level start notification.
+pub(crate) fn run_publish_parallel_without_start(
+    ws: &crate::plan::PlannedWorkspace,
+    opts: &RuntimeOptions,
+    st: &mut ExecutionState,
+    state_dir: &Path,
+    reg: &RegistryClient,
+    reporter: &mut dyn crate::engine::Reporter,
+) -> Result<Vec<PackageReceipt>> {
     let mut adapter = HostReporterAdapter { inner: reporter };
     run_publish_parallel_inner(ws, opts, st, state_dir, reg, &mut adapter)
 }
@@ -295,16 +305,6 @@ pub(crate) fn run_publish_parallel_inner(
         levels.len(),
         ws.plan.packages.len()
     ));
-
-    // Send webhook notification: publish started
-    webhook::maybe_send_event(
-        &opts.webhook,
-        WebhookEvent::PublishStarted {
-            plan_id: ws.plan.plan_id.clone(),
-            package_count: ws.plan.packages.len(),
-            registry: ws.plan.registry.name.clone(),
-        },
-    );
 
     // Initialize event log
     let events_path = events::events_path(state_dir);
@@ -334,8 +334,12 @@ pub(crate) fn run_publish_parallel_inner(
                         "Level {}: already complete (skipping)",
                         level.level
                     ));
-                    all_receipts
-                        .extend(collect_level_receipts_from_state(&level.packages, &st_arc)?);
+                    record_terminal_resume_skips(
+                        &level.packages,
+                        &st_arc,
+                        &event_log,
+                        &events_path,
+                    )?;
                     continue;
                 }
                 LevelResumeAction::SkipBeforeResumePoint(resume_point) => {
@@ -343,8 +347,12 @@ pub(crate) fn run_publish_parallel_inner(
                         "Level {}: skipping (before resume point {})",
                         level.level, resume_point
                     ));
-                    all_receipts
-                        .extend(collect_level_receipts_from_state(&level.packages, &st_arc)?);
+                    record_terminal_resume_skips(
+                        &level.packages,
+                        &st_arc,
+                        &event_log,
+                        &events_path,
+                    )?;
                     continue;
                 }
             };
@@ -394,6 +402,48 @@ fn synchronize_parallel_state(
         })?
         .clone();
     *state = updated_state;
+    Ok(())
+}
+
+fn record_terminal_resume_skips(
+    level_packages: &[shipper_types::PlannedPackage],
+    st_arc: &Arc<Mutex<ExecutionState>>,
+    event_log: &Arc<Mutex<events::EventLog>>,
+    events_path: &Path,
+) -> Result<()> {
+    let terminal_packages = {
+        let state = st_arc.lock().map_err(|_| {
+            anyhow::anyhow!("execution state lock poisoned while recording resume skips")
+        })?;
+
+        level_packages
+            .iter()
+            .filter_map(|package| {
+                let key = crate::runtime::execution::pkg_key(&package.name, &package.version);
+                let progress = state.packages.get(&key)?;
+                {
+                    matches!(
+                        progress.state,
+                        shipper_types::PackageState::Published
+                            | shipper_types::PackageState::Skipped { .. }
+                    )
+                    .then(|| (progress.clone(), key))
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut log = event_log
+        .lock()
+        .map_err(|_| anyhow::anyhow!("event log lock poisoned while recording resume skips"))?;
+    for (progress, package_label) in terminal_packages {
+        crate::engine::publish::resume::record_terminal_resume_skip_event(
+            &progress,
+            &package_label,
+            events_path,
+            &mut log,
+        )?;
+    }
     Ok(())
 }
 

@@ -2429,9 +2429,9 @@ fn test_webhook_events_sent_on_publish() {
         1,
     );
 
-    // The parallel executor announces the start. The outer publish finalizer
-    // owns PublishCompleted so serial and parallel terminal notifications stay
-    // in one place.
+    // The public parallel entry point announces the run start. The outer
+    // publish finalizer owns PublishCompleted so serial and parallel terminal
+    // notifications stay in one place.
     let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
     let webhook_url = format!("http://{}", webhook_server.server_addr());
     let webhook_received = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -2474,7 +2474,7 @@ fn test_webhook_events_sent_on_publish() {
         Some(fake_cargo_path(&bin).to_str().expect("utf8")),
         || {
             let _receipts =
-                run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
+                super::run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
                     .expect("parallel publish");
         },
     );
@@ -2568,6 +2568,7 @@ fn test_webhook_failure_is_non_blocking_and_mode_parity_holds() {
         "SHIPPER_CARGO_BIN",
         Some(fake_cargo_path(&bin).to_str().expect("utf8")),
         || {
+            crate::engine::publish::notify_publish_started(&ws_seq, &opts_seq);
             let seq_receipts = crate::engine::execute_package::run_sequential_scheduler(
                 &ws_seq,
                 &opts_seq,
@@ -2581,7 +2582,7 @@ fn test_webhook_failure_is_non_blocking_and_mode_parity_holds() {
             .expect("sequential publish");
 
             temp_env::with_var("SHIPPER_CARGO_EXIT", Some("0"), || {
-                let par_receipts = run_publish_parallel(
+                let par_receipts = super::run_publish_parallel(
                     &ws_par,
                     &opts_par,
                     &mut par_state,
@@ -2721,18 +2722,28 @@ fn test_resume_from_skips_earlier_levels() {
                 run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter)
                     .expect("parallel publish with resume");
 
-            assert_eq!(receipts.len(), 2, "should have receipts for both packages");
-
-            // base receipt comes from the skipped-level path
-            assert_eq!(receipts[0].name, "base");
-            assert!(matches!(receipts[0].state, PackageState::Published));
+            assert_eq!(
+                receipts.len(),
+                1,
+                "only packages at and after resume point receive receipts"
+            );
 
             // dependent was actually processed
-            assert_eq!(receipts[1].name, "dependent");
+            assert_eq!(receipts[0].name, "dependent");
             assert!(
-                matches!(receipts[1].state, PackageState::Skipped { .. }),
+                matches!(receipts[0].state, PackageState::Skipped { .. }),
                 "dependent should be Skipped (already on registry), got {:?}",
-                receipts[1].state
+                receipts[0].state
+            );
+
+            let events_path = events::events_path(&state_dir);
+            let events = events::EventLog::read_from_file(&events_path).expect("read events");
+            assert!(
+                events.all_events().iter().any(|event| {
+                    event.package == "base@1.0.0"
+                        && matches!(event.event_type, EventType::PackageSkipped { .. })
+                }),
+                "terminal package before resume point must have a durable skip event"
             );
 
             // Reporter should mention skipping level before resume point
@@ -2754,7 +2765,177 @@ fn test_resume_from_skips_earlier_levels() {
 }
 
 #[test]
-fn skipped_level_helpers_report_poisoned_state_lock() {
+#[serial]
+fn test_resume_from_skip_mode_parity_preserves_durable_evidence() {
+    let run_case = |parallel: bool| {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let cargo_args = td.path().join("cargo-args.log");
+        let server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/dependent/2.0.0".to_string(),
+                vec![(200, "{}".to_string())],
+            )]),
+            1,
+        );
+
+        let ws = PlannedWorkspace {
+            workspace_root: td.path().to_path_buf(),
+            plan: ReleasePlan {
+                plan_version: "1".to_string(),
+                plan_id: "plan-resume-parity".to_string(),
+                created_at: Utc::now(),
+                registry: Registry {
+                    name: "crates-io".to_string(),
+                    api_base: server.base_url.clone(),
+                    index_base: None,
+                },
+                packages: vec![
+                    PlannedPackage {
+                        name: "base".to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_path: td.path().join("base").join("Cargo.toml"),
+                        regime: None,
+                    },
+                    PlannedPackage {
+                        name: "dependent".to_string(),
+                        version: "2.0.0".to_string(),
+                        manifest_path: td.path().join("dependent").join("Cargo.toml"),
+                        regime: None,
+                    },
+                ],
+                dependencies: BTreeMap::from([("dependent".to_string(), vec!["base".to_string()])]),
+            },
+            skipped: vec![],
+        };
+        let reg = test_registry_client(&ws);
+        let state_dir = td.path().join(".shipper");
+        let events_path = events::events_path(&state_dir);
+        let mut opts = default_opts(state_dir.clone());
+        opts.resume_from = Some("dependent".to_string());
+        opts.readiness.enabled = false;
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            pkg_key("base", "1.0.0"),
+            PackageProgress {
+                name: "base".to_string(),
+                version: "1.0.0".to_string(),
+                attempts: 2,
+                state: PackageState::Published,
+                last_updated_at: Utc::now(),
+            },
+        );
+        packages.insert(
+            pkg_key("dependent", "2.0.0"),
+            PackageProgress {
+                name: "dependent".to_string(),
+                version: "2.0.0".to_string(),
+                attempts: 0,
+                state: PackageState::Pending,
+                last_updated_at: Utc::now(),
+            },
+        );
+        let mut state = ExecutionState {
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            attempt_history: vec![],
+            packages,
+        };
+        let mut reporter = CollectingReporter::default();
+        let cargo_bin = fake_cargo_path(&bin).to_str().expect("utf8").to_string();
+        let cargo_args_path = cargo_args.to_str().expect("utf8").to_string();
+        let receipts = temp_env::with_vars(
+            [
+                ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
+                ("SHIPPER_CARGO_ARGS_LOG", Some(cargo_args_path)),
+            ],
+            || {
+                if parallel {
+                    run_publish_parallel(&ws, &opts, &mut state, &state_dir, &reg, &mut reporter)
+                } else {
+                    let mut event_log = events::EventLog::new();
+                    crate::engine::execute_package::run_sequential_scheduler(
+                        &ws,
+                        &opts,
+                        &mut state,
+                        &state_dir,
+                        &reg,
+                        &mut event_log,
+                        &events_path,
+                        &mut reporter,
+                    )
+                }
+            },
+        )
+        .expect("resume-from publish");
+        server.join();
+
+        let event_log = events::EventLog::read_from_file(&events_path).expect("read events");
+        let signatures = event_log
+            .all_events()
+            .iter()
+            .map(|event| format!("{}::{:?}", event.package, event.event_type))
+            .collect::<Vec<_>>();
+        let cargo_invocations = fs::read_to_string(&cargo_args).unwrap_or_default();
+        (receipts, state, signatures, cargo_invocations)
+    };
+
+    let (sequential_receipts, sequential_state, sequential_events, sequential_cargo) =
+        run_case(false);
+    let (parallel_receipts, parallel_state, parallel_events, parallel_cargo) = run_case(true);
+
+    assert_eq!(sequential_events, parallel_events);
+    assert_eq!(sequential_cargo, parallel_cargo);
+    assert!(sequential_cargo.trim().is_empty());
+    assert_eq!(sequential_receipts.len(), 1);
+    assert_eq!(parallel_receipts.len(), 1);
+    assert_eq!(sequential_receipts[0].name, "dependent");
+    assert_eq!(parallel_receipts[0].name, "dependent");
+    assert_eq!(sequential_receipts[0].state, parallel_receipts[0].state);
+    assert_eq!(
+        sequential_state.packages.len(),
+        parallel_state.packages.len()
+    );
+    for (key, sequential_progress) in &sequential_state.packages {
+        let parallel_progress = parallel_state.packages.get(key).expect("parallel package");
+        assert_eq!(sequential_progress.name, parallel_progress.name);
+        assert_eq!(sequential_progress.version, parallel_progress.version);
+        assert_eq!(sequential_progress.attempts, parallel_progress.attempts);
+        assert_eq!(sequential_progress.state, parallel_progress.state);
+    }
+    assert_eq!(
+        sequential_state.attempt_history.len(),
+        parallel_state.attempt_history.len(),
+        "attempt history length"
+    );
+    for (sequential, parallel) in sequential_state
+        .attempt_history
+        .iter()
+        .zip(parallel_state.attempt_history.iter())
+    {
+        assert_eq!(sequential.package, parallel.package);
+        assert_eq!(sequential.version, parallel.version);
+        assert_eq!(sequential.attempt, parallel.attempt);
+        assert_eq!(sequential.max_attempts, parallel.max_attempts);
+        assert_eq!(sequential.error_class, parallel.error_class);
+        assert_eq!(
+            sequential.next_attempt_at.is_some(),
+            parallel.next_attempt_at.is_some()
+        );
+    }
+    assert!(sequential_events.iter().any(|event| {
+        event.contains("base@1.0.0::PackageSkipped")
+            && event.contains("resume: state already published")
+    }));
+}
+
+#[test]
+fn skipped_level_resume_action_reports_poisoned_state_lock() {
     let registry = Registry {
         name: "crates-io".to_string(),
         api_base: "http://127.0.0.1".to_string(),
@@ -2781,17 +2962,6 @@ fn skipped_level_helpers_report_poisoned_state_lock() {
         manifest_path: PathBuf::from("base/Cargo.toml"),
         regime: None,
     }];
-
-    let receipt_err = match collect_level_receipts_from_state(&packages, &st_arc) {
-        Ok(_) => panic!("poisoned state lock should fail receipt collection"),
-        Err(err) => err,
-    };
-    assert!(
-        receipt_err
-            .to_string()
-            .contains("execution state lock poisoned while collecting level receipts"),
-        "unexpected receipt collection error: {receipt_err:#}"
-    );
 
     let action_err = match determine_level_resume_action(&packages, &st_arc, Some("dependent")) {
         Ok(_) => panic!("poisoned state lock should fail resume action selection"),

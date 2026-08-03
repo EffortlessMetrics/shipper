@@ -245,9 +245,11 @@ pub fn run_publish(
         run_started,
     } = publish::bootstrap::prepare_publish_run(ws, opts, reporter)?;
 
+    publish::notify_publish_started(ws, opts);
+
     // Check for parallel mode
     if opts.parallel.enabled {
-        let parallel_receipts = crate::engine::parallel::run_publish_parallel(
+        let parallel_receipts = crate::engine::parallel::run_publish_parallel_without_start(
             ws, opts, &mut st, &state_dir, &reg, reporter,
         )?;
 
@@ -2884,6 +2886,128 @@ mod tests {
 
     #[test]
     #[serial]
+    fn run_publish_parallel_resume_from_webhook_counts() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+
+        let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
+        let webhook_url = format!("http://{}", webhook_server.server_addr());
+        let webhook_received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let webhook_received_clone = Arc::clone(&webhook_received);
+        let webhook_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let webhook_done_clone = Arc::clone(&webhook_done);
+        let webhook_handle = thread::spawn(move || {
+            while !webhook_done_clone.load(std::sync::atomic::Ordering::Acquire) {
+                if let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_millis(100)) {
+                    let mut body = Vec::new();
+                    let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+                    webhook_received_clone
+                        .lock()
+                        .expect("webhook lock")
+                        .push(String::from_utf8_lossy(&body).to_string());
+                    req.respond(Response::from_string("ok")).expect("respond");
+                }
+            }
+        });
+
+        let mut env_vars = fake_program_env_vars(&bin);
+        env_vars.extend([
+            ("SHIPPER_CARGO_STDOUT", Some("cargo publish".to_string())),
+            ("SHIPPER_CARGO_STDERR", Some(String::new())),
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+        ]);
+        temp_env::with_vars(env_vars, || {
+            let registry_server = spawn_registry_server(
+                std::collections::BTreeMap::from([(
+                    "/api/v1/crates/beta/2.0.0".to_string(),
+                    vec![(404, "{}".to_string()), (200, "{}".to_string())],
+                )]),
+                2,
+            );
+            let mut ws = planned_workspace(td.path(), registry_server.base_url.clone());
+            ws.plan.packages = vec![
+                PlannedPackage {
+                    name: "alpha".to_string(),
+                    version: "1.0.0".to_string(),
+                    manifest_path: td.path().join("alpha/Cargo.toml"),
+                    regime: None,
+                },
+                PlannedPackage {
+                    name: "beta".to_string(),
+                    version: "2.0.0".to_string(),
+                    manifest_path: td.path().join("beta/Cargo.toml"),
+                    regime: None,
+                },
+            ];
+            ws.plan.dependencies =
+                BTreeMap::from([("beta".to_string(), vec!["alpha".to_string()])]);
+
+            let state_dir = td.path().join(".shipper");
+            state::save_state(
+                &state_dir,
+                &ExecutionState {
+                    state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
+                    plan_id: ws.plan.plan_id.clone(),
+                    registry: ws.plan.registry.clone(),
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    attempt_history: Vec::new(),
+                    packages: BTreeMap::from([(
+                        "alpha@1.0.0".to_string(),
+                        PackageProgress {
+                            name: "alpha".to_string(),
+                            version: "1.0.0".to_string(),
+                            attempts: 1,
+                            state: PackageState::Published,
+                            last_updated_at: Utc::now(),
+                        },
+                    )]),
+                },
+            )
+            .expect("save resume state");
+
+            let mut opts = default_opts(state_dir);
+            opts.parallel.enabled = true;
+            opts.resume_from = Some("beta".to_string());
+            opts.webhook = crate::webhook::WebhookConfig {
+                url: webhook_url.clone(),
+                ..Default::default()
+            };
+
+            let mut reporter = CollectingReporter::default();
+            let receipt = run_publish(&ws, &opts, &mut reporter).expect("publish");
+            assert_eq!(receipt.packages.len(), 1);
+            registry_server.join();
+        });
+
+        thread::sleep(Duration::from_secs(2));
+        webhook_done.store(true, std::sync::atomic::Ordering::Release);
+        webhook_handle.join().expect("webhook thread");
+
+        let received = webhook_received.lock().expect("webhook lock");
+        let completed = received
+            .iter()
+            .map(|payload| serde_json::from_str::<serde_json::Value>(payload).expect("JSON"))
+            .find_map(|payload| {
+                let legacy = payload
+                    .get("extra")
+                    .and_then(|extra| extra.get("legacy"))
+                    .or_else(|| payload.get("legacy"))?;
+                ((legacy.get("event")).and_then(serde_json::Value::as_str)
+                    == Some("publish_completed"))
+                .then(|| legacy.clone())
+            })
+            .unwrap_or_else(|| panic!("completion webhook; payloads: {received:?}"));
+
+        assert_eq!(completed["total_packages"], 2);
+        assert_eq!(completed["success_count"], 2);
+        assert_eq!(completed["skipped_count"], 0);
+        assert_eq!(completed["failure_count"], 0);
+    }
+
+    #[test]
+    #[serial]
     fn run_publish_adds_missing_package_entries_to_existing_state() {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
@@ -4262,13 +4386,26 @@ mod tests {
     fn run_publish_errors_on_invalid_resume_from_target() {
         let td = tempdir().expect("tempdir");
         let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+        let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
+        let webhook_url = format!("http://{}", webhook_server.server_addr());
         let mut opts = default_opts(PathBuf::from(".shipper"));
         opts.resume_from = Some("nonexistent-package".to_string());
+        opts.webhook = crate::webhook::WebhookConfig {
+            url: webhook_url,
+            ..Default::default()
+        };
 
         let mut reporter = CollectingReporter::default();
         let err = run_publish(&ws, &opts, &mut reporter).expect_err("must fail");
         assert!(format!("{err:#}").contains("resume-from package"));
         assert!(format!("{err:#}").contains("not found in publish plan"));
+        assert!(
+            webhook_server
+                .recv_timeout(Duration::from_millis(200))
+                .expect("check webhook server")
+                .is_none(),
+            "preparation failure must not emit PublishStarted"
+        );
     }
 
     #[test]

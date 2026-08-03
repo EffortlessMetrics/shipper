@@ -60,17 +60,6 @@ pub(crate) fn run_sequential_scheduler(
         bail!("resume package not found in plan: {resume_from}");
     }
 
-    // Schedulers own PublishStarted so bootstrap stays mode-agnostic and
-    // parallel does not double-notify when entered through run_publish.
-    maybe_send_event(
-        &opts.webhook,
-        WebhookEvent::PublishStarted {
-            plan_id: ws.plan.plan_id.clone(),
-            package_count: ws.plan.packages.len(),
-            registry: ws.plan.registry.name.clone(),
-        },
-    );
-
     let st_arc = Arc::new(Mutex::new(st.clone()));
     let event_log_arc = Arc::new(Mutex::new(std::mem::replace(
         event_log,
