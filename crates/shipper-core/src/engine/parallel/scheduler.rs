@@ -1,6 +1,8 @@
 //! Dependency-level scheduling for the canonical package executor.
 
 use std::path::Path;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -15,6 +17,53 @@ use crate::state::events;
 use shipper_types::{ExecutionState, PackageReceipt, PublishLevel, RuntimeOptions};
 
 use super::{Reporter, SendReporter, drain_retry_waits};
+
+struct WorkerHandle {
+    handle: thread::JoinHandle<PackagePublishResult>,
+    #[cfg(test)]
+    join_should_fail: bool,
+}
+
+impl WorkerHandle {
+    fn is_finished(&self) -> bool {
+        self.handle.is_finished()
+    }
+
+    fn join(self) -> thread::Result<PackagePublishResult> {
+        let result = self.handle.join();
+        #[cfg(test)]
+        if self.join_should_fail {
+            return Err(Box::new("injected worker join failure"));
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+static INJECT_WORKER_JOIN_FAILURE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) struct WorkerJoinFailureGuard;
+
+#[cfg(test)]
+impl Drop for WorkerJoinFailureGuard {
+    fn drop(&mut self) {
+        INJECT_WORKER_JOIN_FAILURE.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn inject_worker_join_failure() -> WorkerJoinFailureGuard {
+    INJECT_WORKER_JOIN_FAILURE.store(true, Ordering::SeqCst);
+    WorkerJoinFailureGuard
+}
+
+#[cfg(test)]
+fn take_worker_join_failure_injection() -> bool {
+    INJECT_WORKER_JOIN_FAILURE
+        .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
 
 /// Publish packages in one dependency level using the canonical executor.
 #[allow(clippy::too_many_arguments)]
@@ -42,7 +91,7 @@ pub(crate) fn run_publish_level(
     let mut errors: Vec<String> = Vec::new();
 
     for chunk in chunk_by_max_concurrent(&level.packages, max_concurrent) {
-        let mut handles: Vec<std::thread::JoinHandle<PackagePublishResult>> = Vec::new();
+        let mut handles: Vec<WorkerHandle> = Vec::new();
 
         for p in chunk {
             let p = p.clone();
@@ -69,7 +118,11 @@ pub(crate) fn run_publish_level(
                 )
             });
 
-            handles.push(handle);
+            handles.push(WorkerHandle {
+                handle,
+                #[cfg(test)]
+                join_should_fail: take_worker_join_failure_injection(),
+            });
         }
 
         while handles.iter().any(|handle| !handle.is_finished()) {
@@ -78,14 +131,19 @@ pub(crate) fn run_publish_level(
         }
         drain_retry_waits(reporter, send_reporter.as_ref());
 
+        let mut join_failures = 0;
         for handle in handles {
-            let result = handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("publish thread panicked"))?;
-            match result.result {
-                Ok(receipt) => all_receipts.push(receipt),
-                Err(e) => errors.push(format!("{e:#}")),
+            match handle.join() {
+                Ok(result) => match result.result {
+                    Ok(receipt) => all_receipts.push(receipt),
+                    Err(e) => errors.push(format!("{e:#}")),
+                },
+                Err(_) => join_failures += 1,
             }
+        }
+
+        if join_failures > 0 {
+            bail!("parallel publish worker join failed for {join_failures} package(s)");
         }
     }
 

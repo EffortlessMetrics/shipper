@@ -12,6 +12,7 @@ use tiny_http::{Header, Response, Server, StatusCode};
 use super::policy::policy_effects;
 use super::publish::{emit_retry_backoff, publish_package, run_publish_level};
 use super::run_publish_parallel_inner as run_publish_parallel;
+use super::scheduler::inject_worker_join_failure;
 use super::*;
 use crate::plan::PlannedWorkspace;
 use crate::registry::{RegistryClient, RegistryPolicy};
@@ -926,6 +927,82 @@ fn test_run_publish_parallel_single_package() {
             assert_eq!(receipts[0].name, "demo");
             assert_eq!(receipts[0].version, "0.1.0");
             assert_eq!(receipts[0].attempts, 0);
+        },
+    );
+    server.join();
+}
+
+#[test]
+#[serial]
+fn parallel_worker_join_failure_synchronizes_state_and_replays_reporter() {
+    let td = tempdir().expect("tempdir");
+    let bin = td.path().join("bin");
+    write_fake_tools(&bin);
+
+    let server = spawn_registry_server(
+        BTreeMap::from([(
+            "/api/v1/crates/demo/0.1.0".to_string(),
+            vec![(404, "{}".to_string()), (200, "{}".to_string())],
+        )]),
+        2,
+    );
+    let ws = planned_workspace(td.path(), server.base_url.clone());
+    let reg = test_registry_client(&ws);
+    let state_dir = td.path().join(".shipper");
+    let opts = default_opts(state_dir.clone());
+    let mut st = init_state_for_package(&ws.plan.plan_id, &ws.plan.registry, "demo", "0.1.0");
+    let mut reporter = CollectingReporter::default();
+    let _join_failure = inject_worker_join_failure();
+
+    temp_env::with_vars(
+        [
+            (
+                "SHIPPER_CARGO_BIN",
+                Some(fake_cargo_path(&bin).to_str().expect("utf8")),
+            ),
+            ("SHIPPER_CARGO_EXIT", Some("0")),
+        ],
+        || {
+            let result = run_publish_parallel(&ws, &opts, &mut st, &state_dir, &reg, &mut reporter);
+
+            let error = result.expect_err("injected worker join failure should reach caller");
+            assert!(
+                error
+                    .to_string()
+                    .contains("parallel publish worker join failed for 1 package(s)"),
+                "unexpected worker join error: {error:#}"
+            );
+
+            let progress = st.packages.get("demo@0.1.0").expect("demo state");
+            assert!(
+                matches!(progress.state, PackageState::Published),
+                "completed worker state must be synchronized before returning: {:?}",
+                progress.state
+            );
+            assert!(
+                reporter
+                    .infos
+                    .iter()
+                    .any(|message| message.contains("demo@0.1.0: publishing...")),
+                "buffered worker output must be replayed before returning: {:?}",
+                reporter.infos
+            );
+
+            let events_path = events::events_path(&state_dir);
+            assert!(events_path.exists(), "worker events must remain durable");
+            let rebuilt = rebuild_state_from_events(
+                &events_path,
+                StateRebuildOptions::new(ws.plan.registry.clone())
+                    .with_fallback_plan_id(&ws.plan.plan_id),
+            )
+            .expect("rebuild worker events");
+            assert!(matches!(
+                rebuilt
+                    .packages
+                    .get("demo@0.1.0")
+                    .map(|progress| &progress.state),
+                Some(PackageState::Published)
+            ));
         },
     );
     server.join();
