@@ -2889,6 +2889,228 @@ fn test_webhook_failure_is_non_blocking_and_mode_parity_holds() {
     );
 }
 
+#[test]
+#[serial]
+fn test_public_publish_webhook_counts_match_between_modes() {
+    fn run_case(root: &Path, parallel: bool) -> Vec<String> {
+        let bin = root.join("bin");
+        write_fake_tools(&bin);
+        let registry_server = spawn_registry_server(
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(404, "{}".to_string()), (200, "{}".to_string())],
+            )]),
+            2,
+        );
+        let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
+        let webhook_url = format!("http://{}", webhook_server.server_addr());
+        let received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let received_by_server = Arc::clone(&received);
+        let webhook_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let webhook_done_by_server = Arc::clone(&webhook_done);
+        let webhook_handle = std::thread::spawn(move || {
+            while !webhook_done_by_server.load(std::sync::atomic::Ordering::Acquire) {
+                if let Ok(Some(mut request)) =
+                    webhook_server.recv_timeout(Duration::from_millis(50))
+                {
+                    let mut body = Vec::new();
+                    std::io::Read::read_to_end(request.as_reader(), &mut body)
+                        .expect("read webhook body");
+                    received_by_server
+                        .lock()
+                        .expect("webhook bodies lock")
+                        .push(String::from_utf8_lossy(&body).to_string());
+                    request
+                        .respond(Response::from_string("ok"))
+                        .expect("respond to webhook");
+                }
+            }
+            let drain_deadline = Instant::now() + Duration::from_secs(1);
+            while Instant::now() < drain_deadline {
+                if let Ok(Some(mut request)) =
+                    webhook_server.recv_timeout(Duration::from_millis(50))
+                {
+                    let mut body = Vec::new();
+                    std::io::Read::read_to_end(request.as_reader(), &mut body)
+                        .expect("read webhook body");
+                    received_by_server
+                        .lock()
+                        .expect("webhook bodies lock")
+                        .push(String::from_utf8_lossy(&body).to_string());
+                    request
+                        .respond(Response::from_string("ok"))
+                        .expect("respond to webhook");
+                }
+            }
+        });
+
+        let ws = planned_workspace(root, registry_server.base_url.clone());
+        let state_dir = root.join(".shipper");
+        let mut opts = default_opts(state_dir);
+        opts.parallel.enabled = parallel;
+        opts.readiness.enabled = false;
+        opts.max_attempts = 1;
+        opts.webhook = shipper_webhook::WebhookConfig {
+            url: webhook_url,
+            ..Default::default()
+        };
+        opts.registry_policies.insert(
+            "crates-io".to_string(),
+            shipper_types::RegistryTrustOptions {
+                allow_private: false,
+                allow_loopback: true,
+            },
+        );
+        let mut reporter = CollectingReporter::default();
+
+        let cargo_bin = fake_cargo_path(&bin);
+        let cargo_bin = cargo_bin.to_str().expect("utf8");
+        temp_env::with_vars(
+            [
+                ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
+                ("HTTP_PROXY", None),
+                ("HTTPS_PROXY", None),
+                ("ALL_PROXY", None),
+                ("http_proxy", None),
+                ("https_proxy", None),
+                ("all_proxy", None),
+                ("NO_PROXY", Some("127.0.0.1,localhost")),
+                ("no_proxy", Some("127.0.0.1,localhost")),
+            ],
+            || {
+                crate::engine::run_publish(&ws, &opts, &mut reporter).expect("publish");
+            },
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while crate::webhook::active_test_deliveries() != 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            crate::webhook::active_test_deliveries(),
+            0,
+            "all webhook senders must finish before count assertions"
+        );
+        webhook_done.store(true, std::sync::atomic::Ordering::Release);
+        registry_server.join();
+        webhook_handle.join().expect("webhook thread");
+        Arc::try_unwrap(received)
+            .expect("webhook capture has one owner")
+            .into_inner()
+            .expect("webhook bodies lock")
+    }
+
+    fn webhook_event_count(bodies: &[String], event: &str) -> usize {
+        bodies
+            .iter()
+            .filter(|body| body.contains(&format!("\"{event}\"")))
+            .count()
+    }
+
+    let td = tempdir().expect("tempdir");
+    let sequential = run_case(&td.path().join("sequential"), false);
+    let parallel = run_case(&td.path().join("parallel"), true);
+    for (mode, bodies) in [("sequential", &sequential), ("parallel", &parallel)] {
+        assert_eq!(
+            bodies.len(),
+            3,
+            "{mode}: expected one start, package, and completion webhook: {bodies:?}"
+        );
+        assert_eq!(
+            webhook_event_count(bodies, "publish_started"),
+            1,
+            "{mode}: run-start webhook count"
+        );
+        assert_eq!(
+            webhook_event_count(bodies, "publish_succeeded"),
+            1,
+            "{mode}: package-success webhook count"
+        );
+        assert_eq!(
+            webhook_event_count(bodies, "publish_completed"),
+            1,
+            "{mode}: run-completion webhook count"
+        );
+    }
+
+    let sequential_events = sequential
+        .iter()
+        .map(|body| {
+            ["publish_started", "publish_succeeded", "publish_completed"]
+                .into_iter()
+                .find(|event| body.contains(&format!("\"{event}\"")))
+                .expect("known webhook event")
+        })
+        .collect::<Vec<_>>();
+    let parallel_events = parallel
+        .iter()
+        .map(|body| {
+            ["publish_started", "publish_succeeded", "publish_completed"]
+                .into_iter()
+                .find(|event| body.contains(&format!("\"{event}\"")))
+                .expect("known webhook event")
+        })
+        .collect::<Vec<_>>();
+    let mut sequential_events = sequential_events;
+    let mut parallel_events = parallel_events;
+    sequential_events.sort_unstable();
+    parallel_events.sort_unstable();
+    assert_eq!(
+        sequential_events, parallel_events,
+        "sequential and parallel webhook event multisets"
+    );
+}
+
+#[test]
+#[serial]
+fn test_publish_preparation_failure_emits_no_start_webhook() {
+    let td = tempdir().expect("tempdir");
+    let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
+    let webhook_url = format!("http://{}", webhook_server.server_addr());
+    let received = Arc::new(Mutex::new(Vec::<String>::new()));
+    let received_by_server = Arc::clone(&received);
+    let webhook_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let webhook_done_by_server = Arc::clone(&webhook_done);
+    let webhook_handle = std::thread::spawn(move || {
+        while !webhook_done_by_server.load(std::sync::atomic::Ordering::Acquire) {
+            if let Ok(Some(mut request)) = webhook_server.recv_timeout(Duration::from_millis(50)) {
+                let mut body = Vec::new();
+                std::io::Read::read_to_end(request.as_reader(), &mut body)
+                    .expect("read webhook body");
+                received_by_server
+                    .lock()
+                    .expect("webhook bodies lock")
+                    .push(String::from_utf8_lossy(&body).to_string());
+                request
+                    .respond(Response::from_string("unexpected webhook"))
+                    .expect("respond to webhook");
+            }
+        }
+    });
+    let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+    let mut opts = default_opts(td.path().join(".shipper"));
+    opts.resume_from = Some("missing".to_string());
+    opts.webhook = shipper_webhook::WebhookConfig {
+        url: webhook_url,
+        ..Default::default()
+    };
+    let mut reporter = CollectingReporter::default();
+    let error = crate::engine::run_publish(&ws, &opts, &mut reporter)
+        .expect_err("invalid resume target must fail before preparation");
+    assert!(
+        error
+            .to_string()
+            .contains("resume-from package 'missing' not found"),
+        "unexpected preparation error: {error:#}"
+    );
+    webhook_done.store(true, std::sync::atomic::Ordering::Release);
+    webhook_handle.join().expect("webhook thread");
+    assert!(
+        received.lock().expect("webhook bodies lock").is_empty(),
+        "preparation failure must not emit a run-start webhook"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Resume from specific level (resume_from option)
 // ---------------------------------------------------------------------------
