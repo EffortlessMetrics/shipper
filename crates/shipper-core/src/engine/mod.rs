@@ -8,7 +8,7 @@ use chrono::Utc;
 
 use crate::cargo;
 use crate::plan::PlannedWorkspace;
-use crate::registry::RegistryClient;
+use crate::registry::{RegistryClient, RegistryPolicy};
 #[cfg(test)]
 use crate::runtime::environment;
 #[cfg(test)]
@@ -28,7 +28,7 @@ use crate::state::execution_state as state;
 use crate::types::ExecutionResult;
 use crate::types::{
     ErrorClass, EventType, ExecutionState, PackageProgress, PackageState, PreflightReport,
-    PublishEvent, Receipt, Registry, RuntimeOptions,
+    PublishEvent, Receipt, Registry, RegistryTrustOptions, RuntimeOptions,
 };
 #[cfg(test)]
 use crate::types::{Finishability, PreflightPackage};
@@ -92,9 +92,32 @@ pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::runtime::policy::P
     crate::runtime::policy::policy_effects(opts)
 }
 
-fn init_registry_client(registry: Registry, state_dir: &Path) -> Result<RegistryClient> {
+fn init_registry_client(
+    registry: Registry,
+    state_dir: &Path,
+    opts: &RuntimeOptions,
+) -> Result<RegistryClient> {
     let cache_dir = state_dir.join("cache");
-    RegistryClient::new(registry).map(|c| c.with_cache_dir(cache_dir))
+    let allow_private = opts
+        .registry_policies
+        .get(&registry.name)
+        .is_some_and(|policy| policy.allow_private);
+    let allow_loopback = opts
+        .registry_policies
+        .get(&registry.name)
+        .is_some_and(|policy| policy.allow_loopback);
+    let policy = RegistryPolicy::secure()
+        .with_private(allow_private)
+        .with_loopback(allow_loopback);
+    RegistryClient::with_policy(registry, policy).map(|c| c.with_cache_dir(cache_dir))
+}
+
+#[cfg(test)]
+fn test_registry_client(mut registry: Registry) -> Result<RegistryClient> {
+    if registry.index_base.is_none() {
+        registry.index_base = Some(registry.api_base.clone());
+    }
+    RegistryClient::with_policy(registry, RegistryPolicy::rehearsal())
 }
 
 /// Run preflight verification checks before publishing.
@@ -462,7 +485,23 @@ pub fn run_rehearsal(
     event_log.write_to_file(&events_path)?;
     event_log.clear();
 
-    let rehearsal_client = init_registry_client(rehearsal_reg.clone(), &state_dir)?;
+    let mut rehearsal_opts = opts.clone();
+    let rehearsal_policy = rehearsal_opts
+        .registry_policies
+        .entry(rehearsal_reg.name.clone())
+        .or_insert_with(RegistryTrustOptions::secure);
+    rehearsal_policy.allow_loopback = true;
+    let rehearsal_client =
+        init_registry_client(rehearsal_reg.clone(), &state_dir, &rehearsal_opts)?;
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RegistryPolicyApplied {
+            evidence: rehearsal_client.policy_evidence(),
+        },
+        package: "all".to_string(),
+    });
+    event_log.write_to_file(&events_path)?;
+    event_log.clear();
 
     let mut packages_published: usize = 0;
     let mut first_failure: Option<String> = None;
@@ -900,6 +939,23 @@ mod tests {
         write_fake_git(bin_dir);
     }
 
+    #[test]
+    #[serial]
+    fn stale_state_does_not_enable_legacy_index_fallback() {
+        let td = tempdir().expect("tempdir");
+        fs::write(td.path().join("state.json"), "stale state").expect("write stale state");
+        let registry = Registry {
+            name: "custom".to_string(),
+            api_base: "https://registry.example.com".to_string(),
+            index_base: None,
+        };
+        let opts = default_opts(PathBuf::from(".shipper"));
+
+        let err = init_registry_client(registry, td.path(), &opts)
+            .expect_err("new or unvalidated runs must require explicit index_base");
+        assert!(err.to_string().contains("explicit index_base"));
+    }
+
     struct TestRegistryServer {
         base_url: String,
         #[allow(clippy::type_complexity)]
@@ -973,8 +1029,8 @@ mod tests {
                 created_at: Utc::now(),
                 registry: Registry {
                     name: "crates-io".to_string(),
-                    api_base,
-                    index_base: None,
+                    api_base: api_base.clone(),
+                    index_base: Some(api_base),
                 },
                 packages: vec![PlannedPackage {
                     name: "demo".to_string(),
@@ -1024,6 +1080,13 @@ mod tests {
             retry_per_error: crate::retry::PerErrorConfig::default(),
             encryption: crate::encryption::EncryptionConfig::default(),
             registries: vec![],
+            registry_policies: std::collections::BTreeMap::from([(
+                "crates-io".to_string(),
+                crate::types::RegistryTrustOptions {
+                    allow_private: false,
+                    allow_loopback: true,
+                },
+            )]),
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
@@ -1119,6 +1182,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn verify_published_returns_true_when_registry_visibility_appears() {
         let server = spawn_registry_server(
             std::collections::BTreeMap::from([(
@@ -1128,7 +1192,7 @@ mod tests {
             2,
         );
 
-        let reg = RegistryClient::new(Registry {
+        let reg = test_registry_client(Registry {
             name: "crates-io".to_string(),
             api_base: server.base_url.clone(),
             index_base: None,
@@ -1170,8 +1234,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn verify_published_returns_false_on_timeout() {
-        let reg = RegistryClient::new(Registry {
+        let reg = test_registry_client(Registry {
             name: "crates-io".to_string(),
             api_base: "http://127.0.0.1:9".to_string(),
             index_base: None,
@@ -1214,6 +1279,7 @@ mod tests {
     /// the run, `readiness_complete` closes it, and every scheduled poll is
     /// announced before the poll it schedules is recorded.
     #[test]
+    #[serial]
     fn verify_published_writes_readiness_events_in_envelope_order() {
         let server = spawn_registry_server(
             std::collections::BTreeMap::from([(
@@ -1223,7 +1289,7 @@ mod tests {
             2,
         );
 
-        let reg = RegistryClient::new(Registry {
+        let reg = test_registry_client(Registry {
             name: "crates-io".to_string(),
             api_base: server.base_url.clone(),
             index_base: None,
@@ -1334,7 +1400,7 @@ mod tests {
     #[test]
     fn registry_server_helper_returns_404_for_unknown_or_empty_routes() {
         let server_unknown = spawn_registry_server(std::collections::BTreeMap::new(), 1);
-        let reg_unknown = RegistryClient::new(Registry {
+        let reg_unknown = test_registry_client(Registry {
             name: "crates-io".to_string(),
             api_base: server_unknown.base_url.clone(),
             index_base: None,
@@ -1350,7 +1416,7 @@ mod tests {
             std::collections::BTreeMap::from([("/api/v1/crates/demo/0.1.0".to_string(), vec![])]),
             1,
         );
-        let reg_empty = RegistryClient::new(Registry {
+        let reg_empty = test_registry_client(Registry {
             name: "crates-io".to_string(),
             api_base: server_empty.base_url.clone(),
             index_base: None,
@@ -5471,6 +5537,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn verify_published_disabled_does_single_check() {
         // When readiness is disabled, it still does one version_exists check
         let server = spawn_registry_server(
@@ -5480,7 +5547,7 @@ mod tests {
             )]),
             1,
         );
-        let reg = RegistryClient::new(Registry {
+        let reg = test_registry_client(Registry {
             name: "crates-io".to_string(),
             api_base: server.base_url.clone(),
             index_base: None,
@@ -5894,8 +5961,8 @@ mod tests {
                 created_at: Utc::now(),
                 registry: Registry {
                     name: "crates-io".to_string(),
+                    index_base: Some(api_base.clone()),
                     api_base,
-                    index_base: None,
                 },
                 packages: packages
                     .iter()
@@ -6204,8 +6271,7 @@ mod tests {
                         last_updated_at: Utc::now(),
                     },
                 );
-                let reg = crate::registry::RegistryClient::new(ws.plan.registry.clone())
-                    .expect("registry");
+                let reg = test_registry_client(ws.plan.registry.clone()).expect("registry");
                 let mut reporter = CollectingReporter::default();
                 let mut event_log = events::EventLog::new();
                 let events_path = events::events_path(&state_dir);
@@ -6330,7 +6396,7 @@ mod tests {
                 last_updated_at: Utc::now(),
             },
         );
-        let reg = crate::registry::RegistryClient::new(ws.plan.registry.clone()).expect("registry");
+        let reg = test_registry_client(ws.plan.registry.clone()).expect("registry");
         let opts = default_opts(PathBuf::from(".shipper"));
         let mut event_log = events::EventLog::new();
         let mut reporter = CollectingReporter::default();
@@ -7535,7 +7601,7 @@ mod tests {
             opts.registries = vec![Registry {
                 name: "rehearsal".to_string(),
                 api_base: rehearsal_server.base_url.clone(),
-                index_base: None,
+                index_base: Some(rehearsal_server.base_url.clone()),
             }];
 
             let mut reporter = CollectingReporter::default();
@@ -7548,6 +7614,10 @@ mod tests {
             assert!(
                 types.contains(&"rehearsal_started".to_string()),
                 "types: {types:?}"
+            );
+            assert!(
+                types.contains(&"registry_policy_applied".to_string()),
+                "rehearsal must persist the applied registry trust posture: {types:?}"
             );
             assert!(
                 types.contains(&"rehearsal_package_published".to_string()),
@@ -7753,7 +7823,7 @@ mod tests {
             opts.registries = vec![Registry {
                 name: "rehearsal".to_string(),
                 api_base: rehearsal_server.base_url.clone(),
-                index_base: None,
+                index_base: Some(rehearsal_server.base_url.clone()),
             }];
             opts.rehearsal_smoke_install = Some("demo".to_string());
 
@@ -7800,7 +7870,7 @@ mod tests {
             opts.registries = vec![Registry {
                 name: "rehearsal".to_string(),
                 api_base: rehearsal_server.base_url.clone(),
-                index_base: None,
+                index_base: Some(rehearsal_server.base_url.clone()),
             }];
             opts.rehearsal_smoke_install = Some("nonexistent".to_string());
 
@@ -7837,7 +7907,7 @@ mod tests {
             opts.registries = vec![Registry {
                 name: "rehearsal".to_string(),
                 api_base: rehearsal_server.base_url.clone(),
-                index_base: None,
+                index_base: Some(rehearsal_server.base_url.clone()),
             }];
 
             let mut reporter = CollectingReporter::default();

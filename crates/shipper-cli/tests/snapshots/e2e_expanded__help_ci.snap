@@ -49,6 +49,9 @@ Options:
       --api-base <API_BASE>
           Registry API base URL (default: <https://crates.io>)
 
+      --allow-loopback
+          Permit loopback HTTP for an explicitly configured local test or rehearsal registry. Does not permit private-network destinations
+
       --package <PACKAGES>
           Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members
 

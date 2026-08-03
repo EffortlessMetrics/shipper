@@ -74,6 +74,45 @@ pub struct Registry {
     pub index_base: Option<String>,
 }
 
+/// Explicit network-trust choices carried from configuration into the engine.
+///
+/// This stays separate from [`Registry`] so the public registry identity and
+/// persisted plan shape do not silently acquire policy semantics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RegistryTrustOptions {
+    /// Permit private-network destinations after URL validation.
+    pub allow_private: bool,
+    /// Permit loopback HTTP for an explicitly configured rehearsal/test
+    /// registry. This is separate from private-network opt-in.
+    pub allow_loopback: bool,
+}
+
+impl RegistryTrustOptions {
+    /// Secure default for live registry traffic.
+    pub const fn secure() -> Self {
+        Self {
+            allow_private: false,
+            allow_loopback: false,
+        }
+    }
+
+    /// Return a copy that permits private-network destinations.
+    pub const fn with_private(self, allow_private: bool) -> Self {
+        Self {
+            allow_private,
+            allow_loopback: self.allow_loopback,
+        }
+    }
+
+    /// Return a copy that permits loopback HTTP for rehearsal/test traffic.
+    pub const fn with_loopback(self, allow_loopback: bool) -> Self {
+        Self {
+            allow_private: self.allow_private,
+            allow_loopback,
+        }
+    }
+}
+
 impl Registry {
     /// Creates a new [`Registry`] configured for crates.io.
     ///
@@ -527,6 +566,7 @@ impl Default for ParallelConfig {
 ///     webhook: shipper::webhook::WebhookConfig::default(),
 ///     encryption: shipper::encryption::EncryptionConfig::default(),
 ///     registries: vec![],
+///     registry_policies: std::collections::BTreeMap::new(),
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -579,6 +619,8 @@ pub struct RuntimeOptions {
     pub encryption: EncryptionSettings,
     /// Target registries for multi-registry publishing
     pub registries: Vec<Registry>,
+    /// Trust choices keyed by configured registry name.
+    pub registry_policies: BTreeMap<String, RegistryTrustOptions>,
     /// Optional package name to resume from (skips all packages before this one)
     pub resume_from: Option<String>,
     /// Rehearsal registry name (#97) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â if `Some`, `shipper rehearse` publishes
@@ -1628,6 +1670,10 @@ pub enum EventType {
     AuthEvidenceRecorded {
         evidence: AuthEvidence,
     },
+    /// Sanitized registry destination and trust posture applied to this run.
+    RegistryPolicyApplied {
+        evidence: RegistryPolicyEvidence,
+    },
 
     // Package events
     PackageStarted {
@@ -1916,6 +1962,29 @@ pub struct AuthEvidence {
     pub token_detected: bool,
     pub oidc_request_url_present: bool,
     pub oidc_request_token_present: bool,
+}
+
+/// Non-secret evidence of the validated registry destination and trust
+/// posture used by a run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegistryPolicyEvidence {
+    pub posture: RegistryPolicyPosture,
+    pub allow_private: bool,
+    pub allow_loopback: bool,
+    pub credential_authority: String,
+    pub index_authority: String,
+}
+
+/// Sanitized trust posture recorded for a validated registry destination.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryPolicyPosture {
+    /// Public HTTPS destination under the default policy.
+    PublicDefault,
+    /// Private-network destination explicitly permitted by configuration.
+    PrivateOptIn,
+    /// Loopback or plain HTTP destination explicitly permitted for rehearsal.
+    RehearsalOrTest,
 }
 
 /// Non-secret authentication mode observed for a publish or resume run.
@@ -2810,6 +2879,7 @@ mod tests {
             webhook: WebhookConfig::default(),
             encryption: EncryptionSettings::default(),
             registries: vec![],
+            registry_policies: BTreeMap::new(),
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
@@ -4921,37 +4991,70 @@ mod tests {
                 assert_eq!(parsed.package, event.package);
             }
 
+            #[test]
+            fn registry_policy_event_roundtrip(_dummy in 0u8..1) {
+                let event_type = EventType::RegistryPolicyApplied {
+                    evidence: RegistryPolicyEvidence {
+                        posture: RegistryPolicyPosture::PrivateOptIn,
+                        allow_private: true,
+                        allow_loopback: false,
+                        credential_authority: "https://registry.example".to_string(),
+                        index_authority: "https://index.registry.example".to_string(),
+                    },
+                };
+                let json = serde_json::to_string(&event_type).unwrap();
+                assert!(json.contains("registry_policy_applied"));
+                assert!(json.contains("private_opt_in"));
+                let parsed: EventType = serde_json::from_str(&json).unwrap();
+                match parsed {
+                    EventType::RegistryPolicyApplied { evidence } => {
+                        assert_eq!(evidence.posture, RegistryPolicyPosture::PrivateOptIn);
+                        assert!(evidence.allow_private);
+                    }
+                    _ => panic!("wrong event variant"),
+                }
+            }
+
             // --- EventType all variants roundtrip ---
             #[test]
-            fn event_type_all_variants_roundtrip(variant in 0u8..24) {
+            fn event_type_all_variants_roundtrip(variant in 0u8..25) {
                 let event_type = match variant {
                     0 => EventType::PlanCreated { plan_id: "id1".to_string(), package_count: 5 },
                     1 => EventType::ExecutionStarted,
                     2 => EventType::ExecutionFinished { result: ExecutionResult::Success },
-                    3 => EventType::PackageStarted { name: "a".to_string(), version: "1.0.0".to_string() },
-                    4 => EventType::PackageUploaded,
-                    5 => EventType::PackageAttempted {
+                    3 => EventType::RegistryPolicyApplied {
+                        evidence: RegistryPolicyEvidence {
+                            posture: RegistryPolicyPosture::PublicDefault,
+                            allow_private: false,
+                            allow_loopback: false,
+                            credential_authority: "https://registry.example".to_string(),
+                            index_authority: "https://index.registry.example".to_string(),
+                        },
+                    },
+                    4 => EventType::PackageStarted { name: "a".to_string(), version: "1.0.0".to_string() },
+                    5 => EventType::PackageUploaded,
+                    6 => EventType::PackageAttempted {
                         attempt: 1,
                         command: "cargo publish".to_string(),
                         max_attempts: 1,
                     },
-                    6 => EventType::PackageOutput { stdout_tail: "ok".to_string(), stderr_tail: "".to_string() },
-                    7 => EventType::PackagePublished { duration_ms: 100 },
-                    8 => EventType::PackageFailed { class: ErrorClass::Retryable, message: "err".to_string() },
-                    9 => EventType::PackageSkipped { reason: "exists".to_string() },
-                    10 => EventType::PublishWaiting { reason: "retry backoff".to_string(), delay_ms: 1000, until: Utc::now() },
-                    11 => EventType::RateLimitObserved { is_new_crate: true, retry_after_ms: Some(30_000), message: "rate limited".to_string() },
-                    12 => EventType::ReadinessStarted { method: ReadinessMethod::Api },
-                    13 => EventType::ReadinessPoll { attempt: 1, visible: false },
-                    14 => EventType::ReadinessPollScheduled { attempt: 2, delay_ms: 1000, next_poll_at: Utc::now() },
-                    15 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
-                    16 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
-                    17 => EventType::ReadinessError { duration_ms: 500 },
-                    18 => EventType::IndexReadinessStarted { crate_name: "a".to_string(), version: "1.0.0".to_string() },
-                    19 => EventType::IndexReadinessCheck { crate_name: "a".to_string(), version: "1.0.0".to_string(), found: true },
-                    20 => EventType::IndexReadinessComplete { crate_name: "a".to_string(), version: "1.0.0".to_string(), visible: true },
-                    21 => EventType::RetryScheduled { attempt: 1, max_attempts: 3, delay_ms: 1000, next_attempt_at: Utc::now(), reason: ErrorClass::Retryable, message: "retry".to_string() },
-                    22 => EventType::PreflightStarted,
+                    7 => EventType::PackageOutput { stdout_tail: "ok".to_string(), stderr_tail: "".to_string() },
+                    8 => EventType::PackagePublished { duration_ms: 100 },
+                    9 => EventType::PackageFailed { class: ErrorClass::Retryable, message: "err".to_string() },
+                    10 => EventType::PackageSkipped { reason: "exists".to_string() },
+                    11 => EventType::PublishWaiting { reason: "retry backoff".to_string(), delay_ms: 1000, until: Utc::now() },
+                    12 => EventType::RateLimitObserved { is_new_crate: true, retry_after_ms: Some(30_000), message: "rate limited".to_string() },
+                    13 => EventType::ReadinessStarted { method: ReadinessMethod::Api },
+                    14 => EventType::ReadinessPoll { attempt: 1, visible: false },
+                    15 => EventType::ReadinessPollScheduled { attempt: 2, delay_ms: 1000, next_poll_at: Utc::now() },
+                    16 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
+                    17 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
+                    18 => EventType::ReadinessError { duration_ms: 500 },
+                    19 => EventType::IndexReadinessStarted { crate_name: "a".to_string(), version: "1.0.0".to_string() },
+                    20 => EventType::IndexReadinessCheck { crate_name: "a".to_string(), version: "1.0.0".to_string(), found: true },
+                    21 => EventType::IndexReadinessComplete { crate_name: "a".to_string(), version: "1.0.0".to_string(), visible: true },
+                    22 => EventType::RetryScheduled { attempt: 1, max_attempts: 3, delay_ms: 1000, next_attempt_at: Utc::now(), reason: ErrorClass::Retryable, message: "retry".to_string() },
+                    23 => EventType::PreflightStarted,
                     _ => EventType::PreflightComplete { finishability: Finishability::Proven },
                 };
                 let json = serde_json::to_string(&event_type).unwrap();
@@ -5441,6 +5544,7 @@ mod tests {
                     webhook: WebhookConfig::default(),
                     encryption: EncryptionSettings::default(),
                     registries: vec![],
+                    registry_policies: BTreeMap::new(),
                     resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
@@ -5741,37 +5845,46 @@ mod tests {
 
             #[test]
             fn event_type_debug_never_panics(
-                variant in 0u8..24,
+                variant in 0u8..25,
                 msg in "\\PC{0,100}",
             ) {
                 let event_type = match variant {
                     0 => EventType::PlanCreated { plan_id: msg.clone(), package_count: 5 },
                     1 => EventType::ExecutionStarted,
                     2 => EventType::ExecutionFinished { result: ExecutionResult::Success },
-                    3 => EventType::PackageStarted { name: msg.clone(), version: "1.0.0".to_string() },
-                    4 => EventType::PackageUploaded,
-                    5 => EventType::PackageAttempted {
+                    3 => EventType::RegistryPolicyApplied {
+                        evidence: RegistryPolicyEvidence {
+                            posture: RegistryPolicyPosture::PublicDefault,
+                            allow_private: false,
+                            allow_loopback: false,
+                            credential_authority: "https://registry.example".to_string(),
+                            index_authority: "https://index.registry.example".to_string(),
+                        },
+                    },
+                    4 => EventType::PackageStarted { name: msg.clone(), version: "1.0.0".to_string() },
+                    5 => EventType::PackageUploaded,
+                    6 => EventType::PackageAttempted {
                         attempt: 1,
                         command: msg.clone(),
                         max_attempts: 1,
                     },
-                    6 => EventType::PackageOutput { stdout_tail: msg.clone(), stderr_tail: String::new() },
-                    7 => EventType::PackagePublished { duration_ms: 100 },
-                    8 => EventType::PackageFailed { class: ErrorClass::Retryable, message: msg.clone() },
-                    9 => EventType::PackageSkipped { reason: msg.clone() },
-                    10 => EventType::PublishWaiting { reason: msg.clone(), delay_ms: 1000, until: Utc::now() },
-                    11 => EventType::RateLimitObserved { is_new_crate: true, retry_after_ms: Some(30_000), message: msg.clone() },
-                    12 => EventType::ReadinessStarted { method: ReadinessMethod::Api },
-                    13 => EventType::ReadinessPoll { attempt: 1, visible: false },
-                    14 => EventType::ReadinessPollScheduled { attempt: 2, delay_ms: 1000, next_poll_at: Utc::now() },
-                    15 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
-                    16 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
-                    17 => EventType::ReadinessError { duration_ms: 500 },
-                    18 => EventType::IndexReadinessStarted { crate_name: msg.clone(), version: "1.0.0".to_string() },
-                    19 => EventType::IndexReadinessCheck { crate_name: msg.clone(), version: "1.0.0".to_string(), found: true },
-                    20 => EventType::IndexReadinessComplete { crate_name: msg.clone(), version: "1.0.0".to_string(), visible: true },
-                    21 => EventType::RetryScheduled { attempt: 1, max_attempts: 3, delay_ms: 1000, next_attempt_at: Utc::now(), reason: ErrorClass::Retryable, message: msg.clone() },
-                    22 => EventType::PreflightStarted,
+                    7 => EventType::PackageOutput { stdout_tail: msg.clone(), stderr_tail: String::new() },
+                    8 => EventType::PackagePublished { duration_ms: 100 },
+                    9 => EventType::PackageFailed { class: ErrorClass::Retryable, message: msg.clone() },
+                    10 => EventType::PackageSkipped { reason: msg.clone() },
+                    11 => EventType::PublishWaiting { reason: msg.clone(), delay_ms: 1000, until: Utc::now() },
+                    12 => EventType::RateLimitObserved { is_new_crate: true, retry_after_ms: Some(30_000), message: msg.clone() },
+                    13 => EventType::ReadinessStarted { method: ReadinessMethod::Api },
+                    14 => EventType::ReadinessPoll { attempt: 1, visible: false },
+                    15 => EventType::ReadinessPollScheduled { attempt: 2, delay_ms: 1000, next_poll_at: Utc::now() },
+                    16 => EventType::ReadinessComplete { duration_ms: 500, attempts: 3 },
+                    17 => EventType::ReadinessTimeout { max_wait_ms: 60000 },
+                    18 => EventType::ReadinessError { duration_ms: 500 },
+                    19 => EventType::IndexReadinessStarted { crate_name: msg.clone(), version: "1.0.0".to_string() },
+                    20 => EventType::IndexReadinessCheck { crate_name: msg.clone(), version: "1.0.0".to_string(), found: true },
+                    21 => EventType::IndexReadinessComplete { crate_name: msg.clone(), version: "1.0.0".to_string(), visible: true },
+                    22 => EventType::RetryScheduled { attempt: 1, max_attempts: 3, delay_ms: 1000, next_attempt_at: Utc::now(), reason: ErrorClass::Retryable, message: msg.clone() },
+                    23 => EventType::PreflightStarted,
                     _ => EventType::PreflightComplete { finishability: Finishability::Proven },
                 };
                 let debug = format!("{:?}", event_type);

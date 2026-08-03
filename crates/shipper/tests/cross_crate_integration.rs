@@ -31,6 +31,18 @@ fn write_file(path: &Path, content: &str) {
     fs::write(path, content).expect("write");
 }
 
+fn rehearsal_registry_client(
+    mut registry: Registry,
+) -> anyhow::Result<shipper_core::registry::RegistryClient> {
+    if registry.index_base.is_none() {
+        registry.index_base = Some(registry.api_base.clone());
+    }
+    shipper_core::registry::RegistryClient::with_policy(
+        registry,
+        shipper_core::registry::RegistryPolicy::rehearsal(),
+    )
+}
+
 /// Create a minimal Cargo workspace with two crates (`core` depends on nothing,
 /// `app` depends on `core`).
 fn create_two_crate_workspace(root: &Path) {
@@ -272,7 +284,7 @@ fn auth_resolve_then_registry_version_check() {
         index_base: None,
     };
 
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("build registry client");
+    let client = rehearsal_registry_client(reg).expect("build registry client");
 
     // Check version exists
     let exists = client
@@ -301,7 +313,7 @@ fn registry_reports_missing_version() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("build registry client");
+    let client = rehearsal_registry_client(reg).expect("build registry client");
 
     let exists = client
         .version_exists("nonexistent", "9.9.9")
@@ -361,7 +373,7 @@ fn config_to_plan_to_registry_version_check() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("build registry client");
+    let client = rehearsal_registry_client(reg).expect("build registry client");
 
     // Verify none of the planned packages are published yet
     for pkg in &ws.plan.packages {
@@ -910,7 +922,7 @@ fn registry_version_check_errors_on_500() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     let err = client
         .version_exists("some-crate", "1.0.0")
@@ -942,7 +954,7 @@ fn registry_crate_exists_errors_on_503() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     let err = client
         .crate_exists("some-crate")
@@ -974,7 +986,7 @@ fn registry_list_owners_errors_on_429() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     let err = client
         .list_owners("some-crate", "token")
@@ -1676,7 +1688,7 @@ fn registry_error_propagates_with_context() {
         api_base,
         index_base: None,
     };
-    let client = shipper_core::registry::RegistryClient::new(reg).expect("client");
+    let client = rehearsal_registry_client(reg).expect("client");
 
     // version_exists should error
     let ver_err = client

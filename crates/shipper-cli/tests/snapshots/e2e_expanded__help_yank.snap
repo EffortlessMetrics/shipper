@@ -42,6 +42,9 @@ Options:
       --plan <PATH>
           **Plan execution mode.** Path to a yank plan JSON file (the `--format json` output of `shipper plan-yank`). Walks the plan's entries in order, invoking `cargo yank` for each. Mutually exclusive with `--crate` / `--version` / `--reason`
 
+      --allow-loopback
+          Permit loopback HTTP for an explicitly configured local test or rehearsal registry. Does not permit private-network destinations
+
       --package <PACKAGES>
           Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members
 

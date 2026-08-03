@@ -8,10 +8,14 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
+use shipper_types::Registry;
 
-use crate::{CRATES_IO_API, DEFAULT_TIMEOUT_SECS, USER_AGENT, sparse_index_path};
+use crate::{
+    CRATES_IO_API, DEFAULT_TIMEOUT_SECS, RegistryAuthority, RegistryPolicy, USER_AGENT,
+    ValidatedRegistry, authorities_share_trusted_domain, sparse_index_path,
+};
 
 /// Lightweight HTTP registry client that operates on a raw base-URL.
 ///
@@ -21,25 +25,57 @@ use crate::{CRATES_IO_API, DEFAULT_TIMEOUT_SECS, USER_AGENT, sparse_index_path};
 pub struct HttpRegistryClient {
     base_url: String,
     timeout: Duration,
-    client: reqwest::blocking::Client,
+    client: Option<reqwest::blocking::Client>,
     cache_dir: Option<std::path::PathBuf>,
+    policy: RegistryPolicy,
+    validated_authority: Option<RegistryAuthority>,
+    validation_error: Option<String>,
 }
 
 impl HttpRegistryClient {
     /// Create a new registry client for the given base URL
     pub fn new(base_url: &str) -> Self {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-            .user_agent(USER_AGENT)
-            .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new());
-
-        Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
-            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
-            client,
-            cache_dir: None,
+        let policy = RegistryPolicy::secure();
+        match Self::try_with_policy(base_url, policy) {
+            Ok(client) => client,
+            Err(error) => Self {
+                base_url: redacted_base_url(base_url),
+                timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                client: None,
+                cache_dir: None,
+                policy,
+                validated_authority: None,
+                validation_error: Some(error.to_string()),
+            },
         }
+    }
+
+    /// Construct a client with explicit registry trust choices.
+    pub fn with_policy(base_url: &str, policy: RegistryPolicy) -> Result<Self> {
+        Self::try_with_policy(base_url, policy)
+    }
+
+    fn try_with_policy(base_url: &str, policy: RegistryPolicy) -> Result<Self> {
+        let identity = Registry {
+            name: "http-client".to_string(),
+            api_base: base_url.to_string(),
+            index_base: Some(base_url.to_string()),
+        };
+        let validated = ValidatedRegistry::new(identity, policy)?;
+
+        Ok(Self {
+            base_url: validated
+                .api_base()
+                .as_str()
+                .trim_end_matches('/')
+                .to_string(),
+            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            client: Some(build_client(Duration::from_secs(DEFAULT_TIMEOUT_SECS))?),
+            cache_dir: None,
+            policy,
+            validated_authority: Some(validated.credential_authority().clone()),
+            validation_error: None,
+        })
     }
 
     /// Set the cache directory for sparse index fragments
@@ -56,12 +92,29 @@ impl HttpRegistryClient {
     /// Set the request timeout
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
-        self.client = reqwest::blocking::Client::builder()
-            .timeout(timeout)
-            .user_agent(USER_AGENT)
-            .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new());
+        if self.validation_error.is_none() {
+            match build_client(timeout) {
+                Ok(client) => self.client = Some(client),
+                Err(error) => {
+                    self.client = None;
+                    self.validation_error = Some(error.to_string());
+                }
+            }
+        }
         self
+    }
+
+    fn ensure_validated(&self) -> Result<()> {
+        self.validation_error
+            .as_deref()
+            .map_or(Ok(()), |error| Err(anyhow!("{error}")))
+    }
+
+    fn http_client(&self) -> Result<&reqwest::blocking::Client> {
+        self.ensure_validated()?;
+        self.client
+            .as_ref()
+            .ok_or_else(|| anyhow!("registry HTTP client is unavailable"))
     }
 
     /// Check if a crate exists in the registry
@@ -69,7 +122,7 @@ impl HttpRegistryClient {
         let url = format!("{}/api/v1/crates/{}", self.base_url, name);
 
         let response = self
-            .client
+            .http_client()?
             .get(&url)
             .send()
             .context("failed to send request to registry")?;
@@ -86,7 +139,7 @@ impl HttpRegistryClient {
         let url = format!("{}/api/v1/crates/{}/{}", self.base_url, name, version);
 
         let response = self
-            .client
+            .http_client()?
             .get(&url)
             .send()
             .context("failed to send request to registry")?;
@@ -103,7 +156,7 @@ impl HttpRegistryClient {
         let url = format!("{}/api/v1/crates/{}", self.base_url, name);
 
         let response = self
-            .client
+            .http_client()?
             .get(&url)
             .send()
             .context("failed to send request to registry")?;
@@ -136,7 +189,7 @@ impl HttpRegistryClient {
         token: Option<&str>,
     ) -> Result<Option<OwnersResponse>> {
         let url = format!("{}/api/v1/crates/{}/owners", self.base_url, name);
-        let mut request = self.client.get(&url);
+        let mut request = self.http_client()?.get(&url);
         if let Some(token) = token {
             request = request.header("Authorization", token);
         }
@@ -201,14 +254,29 @@ impl HttpRegistryClient {
 
     /// Fetch sparse-index content for a crate.
     pub fn fetch_sparse_index_file(&self, index_base: &str, name: &str) -> Result<String> {
-        let index_base = index_base.trim_end_matches('/');
+        self.ensure_validated()?;
+        let index_identity = Registry {
+            name: "http-client-index".to_string(),
+            api_base: index_base.to_string(),
+            index_base: Some(index_base.to_string()),
+        };
+        let validated_index = ValidatedRegistry::new(index_identity, self.policy)
+            .context("invalid sparse index destination")?;
+        if !self.validated_authority.as_ref().is_some_and(|authority| {
+            authorities_share_trusted_domain(authority, validated_index.credential_authority())
+        }) {
+            return Err(anyhow!(
+                "sparse index destination authority must match the registry client authority"
+            ));
+        }
+        let index_base = validated_index.index_base().as_str().trim_end_matches('/');
         let index_path = sparse_index_path(name);
         let url = format!("{}/{}", index_base, index_path);
 
         let cache_file = self.cache_dir.as_ref().map(|d| d.join(&index_path));
         let etag_file = cache_file.as_ref().map(|f| f.with_extension("etag"));
 
-        let mut request = self.client.get(&url);
+        let mut request = self.http_client()?.get(&url);
 
         if let Some(ref path) = etag_file
             && let Ok(etag) = std::fs::read_to_string(path)
@@ -260,6 +328,26 @@ impl HttpRegistryClient {
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
+}
+
+fn build_client(timeout: Duration) -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("failed to build registry HTTP client")
+}
+
+fn redacted_base_url(value: &str) -> String {
+    let Ok(mut url) = url::Url::parse(value) else {
+        return "<invalid registry URL>".to_string();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
 }
 
 /// Crate information from the registry
@@ -326,6 +414,11 @@ mod tests {
     use super::*;
     use crate::{CRATES_IO_API, is_crate_visible, is_version_visible};
 
+    fn test_client(base_url: &str) -> HttpRegistryClient {
+        HttpRegistryClient::with_policy(base_url, RegistryPolicy::rehearsal())
+            .expect("valid rehearsal registry URL")
+    }
+
     #[test]
     fn client_creation() {
         let client = HttpRegistryClient::crates_io();
@@ -334,8 +427,46 @@ mod tests {
 
     #[test]
     fn client_with_custom_url() {
-        let client = HttpRegistryClient::new("https://custom.registry.io/");
+        let client = test_client("https://custom.registry.io/");
         assert_eq!(client.base_url(), "https://custom.registry.io");
+    }
+
+    #[test]
+    fn invalid_destination_fails_before_any_credentialed_request() {
+        let client = HttpRegistryClient::new("https://user:fixture-secret@registry.example");
+        assert!(!client.base_url().contains("fixture-secret"));
+        let error = client.list_owners("demo", "fixture-token").unwrap_err();
+
+        assert!(!error.to_string().contains("fixture-secret"));
+        assert!(!error.to_string().contains("fixture-token"));
+    }
+
+    #[test]
+    fn sparse_index_must_match_client_authority() {
+        let client = test_client("http://127.0.0.1:1");
+        let error = client
+            .fetch_sparse_index_file("http://127.0.0.1:2", "demo")
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("must match the registry client authority")
+        );
+    }
+
+    #[test]
+    fn private_destination_requires_explicit_policy() {
+        assert!(
+            HttpRegistryClient::with_policy("https://10.0.0.5", RegistryPolicy::secure(),).is_err()
+        );
+        assert!(
+            HttpRegistryClient::with_policy(
+                "https://10.0.0.5",
+                RegistryPolicy::secure().with_private(true),
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -461,7 +592,7 @@ mod tests {
             }
         });
 
-        let client = HttpRegistryClient::new(&base_url).with_cache_dir(cache_dir);
+        let client = test_client(&base_url).with_cache_dir(cache_dir);
 
         // First call: should fetch and cache
         let content1 = client
@@ -496,13 +627,13 @@ mod tests {
 
     #[test]
     fn url_multiple_trailing_slashes_stripped() {
-        let client = HttpRegistryClient::new("https://example.com///");
+        let client = test_client("https://example.com///");
         assert_eq!(client.base_url(), "https://example.com");
     }
 
     #[test]
     fn url_no_trailing_slash_unchanged() {
-        let client = HttpRegistryClient::new("https://example.com");
+        let client = test_client("https://example.com");
         assert_eq!(client.base_url(), "https://example.com");
     }
 
@@ -529,7 +660,7 @@ mod tests {
             assert_eq!(req.url(), "/api/v1/crates/serde");
             respond(req, 200, r#"{"crate":{}}"#);
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         assert!(client.crate_exists("serde").expect("ok"));
         handle.join().expect("join");
     }
@@ -540,7 +671,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 404, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         assert!(!client.crate_exists("nonexistent").expect("ok"));
         handle.join().expect("join");
     }
@@ -551,7 +682,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 500, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.crate_exists("bad").unwrap_err();
         assert!(err.to_string().contains("unexpected status code"));
         handle.join().expect("join");
@@ -567,7 +698,7 @@ mod tests {
             assert_eq!(req.url(), "/api/v1/crates/serde/1.0.0");
             respond(req, 200, "{}");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         assert!(client.version_exists("serde", "1.0.0").expect("ok"));
         handle.join().expect("join");
     }
@@ -578,7 +709,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 404, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         assert!(!client.version_exists("serde", "99.0.0").expect("ok"));
         handle.join().expect("join");
     }
@@ -589,7 +720,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 503, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.version_exists("x", "0.1.0").unwrap_err();
         assert!(err.to_string().contains("unexpected status code"));
         handle.join().expect("join");
@@ -611,7 +742,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 200, body);
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let info = client.get_crate_info("demo").expect("ok").expect("Some");
         assert_eq!(info.name, "demo");
         assert_eq!(info.newest_version, "2.0.0");
@@ -626,7 +757,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 404, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         assert!(client.get_crate_info("nope").expect("ok").is_none());
         handle.join().expect("join");
     }
@@ -637,7 +768,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 500, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.get_crate_info("bad").unwrap_err();
         assert!(err.to_string().contains("unexpected status code"));
         handle.join().expect("join");
@@ -649,7 +780,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 200, "NOT JSON");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.get_crate_info("bad").unwrap_err();
         assert!(err.to_string().contains("failed to parse crate response"));
         handle.join().expect("join");
@@ -666,7 +797,7 @@ mod tests {
             assert_eq!(req.url(), "/api/v1/crates/demo/owners");
             respond(req, 200, body);
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let owners = client.get_owners("demo").expect("ok");
         assert_eq!(owners.len(), 1);
         assert_eq!(owners[0].login, "alice");
@@ -679,7 +810,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 404, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let owners = client.get_owners("nonexistent").expect("ok");
         assert!(owners.is_empty());
         handle.join().expect("join");
@@ -699,7 +830,7 @@ mod tests {
             assert_eq!(auth.value.as_str(), "my-token");
             respond(req, 200, body);
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let resp = client.list_owners("demo", "my-token").expect("ok");
         assert_eq!(resp.users.len(), 1);
         assert_eq!(resp.users[0].login, "bob");
@@ -712,7 +843,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 403, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.list_owners("demo", "bad-token").unwrap_err();
         assert!(err.to_string().contains("forbidden"));
         handle.join().expect("join");
@@ -724,7 +855,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 401, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.list_owners("demo", "expired").unwrap_err();
         assert!(err.to_string().contains("forbidden"));
         handle.join().expect("join");
@@ -736,7 +867,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 404, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.list_owners("nope", "token").unwrap_err();
         assert!(err.to_string().contains("crate not found"));
         handle.join().expect("join");
@@ -748,7 +879,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 502, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.list_owners("demo", "tok").unwrap_err();
         assert!(err.to_string().contains("unexpected status"));
         handle.join().expect("join");
@@ -761,7 +892,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 200, body);
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         assert!(client.is_owner("demo", "carol").expect("ok"));
         handle.join().expect("join");
     }
@@ -773,7 +904,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 200, body);
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         assert!(!client.is_owner("demo", "dave").expect("ok"));
         handle.join().expect("join");
     }
@@ -786,7 +917,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 404, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.fetch_sparse_index_file(&base, "xy").unwrap_err();
         assert!(err.to_string().contains("index file not found"));
         handle.join().expect("join");
@@ -798,7 +929,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 502, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.fetch_sparse_index_file(&base, "xy").unwrap_err();
         assert!(err.to_string().contains("unexpected status"));
         handle.join().expect("join");
@@ -811,7 +942,7 @@ mod tests {
             respond(server.recv().expect("req"), 304, "");
         });
         // No cache_dir set
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.fetch_sparse_index_file(&base, "ab").unwrap_err();
         assert!(err.to_string().contains("304 Not Modified"));
         handle.join().expect("join");
@@ -825,7 +956,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 200, body);
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         assert!(
             client
                 .is_version_visible_in_sparse_index(&base, "demo", "0.1.0")
@@ -841,7 +972,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 200, body);
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         assert!(
             !client
                 .is_version_visible_in_sparse_index(&base, "demo", "9.9.9")
@@ -853,23 +984,15 @@ mod tests {
     // ── convenience functions ────────────────────────────────────────
 
     #[test]
-    fn is_version_visible_delegates_to_client() {
-        let (server, base) = mock_server();
-        let handle = std::thread::spawn(move || {
-            respond(server.recv().expect("req"), 200, "{}");
-        });
-        assert!(is_version_visible(&base, "serde", "1.0.0").expect("ok"));
-        handle.join().expect("join");
+    fn is_version_visible_rejects_loopback_without_explicit_policy() {
+        let error = is_version_visible("http://127.0.0.1:1", "serde", "1.0.0").unwrap_err();
+        assert!(error.to_string().contains("loopback"));
     }
 
     #[test]
-    fn is_crate_visible_delegates_to_client() {
-        let (server, base) = mock_server();
-        let handle = std::thread::spawn(move || {
-            respond(server.recv().expect("req"), 200, "{}");
-        });
-        assert!(is_crate_visible(&base, "serde").expect("ok"));
-        handle.join().expect("join");
+    fn is_crate_visible_rejects_loopback_without_explicit_policy() {
+        let error = is_crate_visible("http://127.0.0.1:1", "serde").unwrap_err();
+        assert!(error.to_string().contains("loopback"));
     }
 
     // ── timeout handling ─────────────────────────────────────────────
@@ -883,7 +1006,7 @@ mod tests {
             std::thread::sleep(Duration::from_secs(3));
             let _ = req.respond(tiny_http::Response::from_string("{}"));
         });
-        let client = HttpRegistryClient::new(&base).with_timeout(Duration::from_millis(200));
+        let client = test_client(&base).with_timeout(Duration::from_millis(200));
         let result = client.crate_exists("slow");
         assert!(result.is_err());
         handle.join().expect("join");
@@ -894,7 +1017,7 @@ mod tests {
     #[test]
     fn crate_exists_handles_connection_refused() {
         // Use a port that is very unlikely to be listening
-        let client = HttpRegistryClient::new("http://127.0.0.1:1");
+        let client = test_client("http://127.0.0.1:1");
         let result = client.crate_exists("anything");
         assert!(result.is_err());
         assert!(
@@ -1072,14 +1195,14 @@ mod tests {
 
     #[test]
     fn snapshot_url_construction_crate() {
-        let client = HttpRegistryClient::new("https://crates.io");
+        let client = test_client("https://crates.io");
         let url = format!("{}/api/v1/crates/{}", client.base_url(), "my-crate");
         insta::assert_snapshot!("url_crate", url);
     }
 
     #[test]
     fn snapshot_url_construction_version() {
-        let client = HttpRegistryClient::new("https://crates.io");
+        let client = test_client("https://crates.io");
         let url = format!(
             "{}/api/v1/crates/{}/{}",
             client.base_url(),
@@ -1091,14 +1214,14 @@ mod tests {
 
     #[test]
     fn snapshot_url_construction_owners() {
-        let client = HttpRegistryClient::new("https://crates.io");
+        let client = test_client("https://crates.io");
         let url = format!("{}/api/v1/crates/{}/owners", client.base_url(), "my-crate");
         insta::assert_snapshot!("url_owners", url);
     }
 
     #[test]
     fn snapshot_url_construction_custom_registry() {
-        let client = HttpRegistryClient::new("https://my-registry.example.com/");
+        let client = test_client("https://my-registry.example.com/");
         let url = format!("{}/api/v1/crates/{}", client.base_url(), "private-lib");
         insta::assert_snapshot!("url_custom_registry", url);
     }
@@ -1114,7 +1237,7 @@ mod tests {
 
     #[test]
     fn snapshot_error_connection_refused() {
-        let client = HttpRegistryClient::new("http://127.0.0.1:1");
+        let client = test_client("http://127.0.0.1:1");
         let err = client.crate_exists("anything").unwrap_err();
         insta::assert_snapshot!("error_connection_refused", err.to_string());
     }
@@ -1125,7 +1248,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 500, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.crate_exists("bad").unwrap_err();
         insta::assert_snapshot!("error_unexpected_status", err.to_string());
         handle.join().expect("join");
@@ -1137,7 +1260,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 403, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.list_owners("demo", "bad-token").unwrap_err();
         insta::assert_snapshot!("error_owners_forbidden", err.to_string());
         handle.join().expect("join");
@@ -1149,7 +1272,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 404, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.list_owners("nope", "token").unwrap_err();
         insta::assert_snapshot!("error_owners_not_found", err.to_string());
         handle.join().expect("join");
@@ -1183,11 +1306,11 @@ mod tests {
         proptest! {
             #[test]
             fn url_normalization_strips_trailing_slashes(
-                base in "[a-z]{3,10}://[a-z]{3,12}\\.[a-z]{2,4}",
+                base in "https://[a-z]{3,12}\\.[a-z]{2,4}",
                 slashes in "/{0,10}",
             ) {
                 let input = format!("{base}{slashes}");
-                let client = HttpRegistryClient::new(&input);
+                let client = test_client(&input);
                 let url = client.base_url();
                 prop_assert!(!url.ends_with('/'), "URL still has trailing slash: {url}");
             }
@@ -1232,7 +1355,7 @@ mod tests {
             fn version_string_in_url_construction(
                 version in version_strategy(),
             ) {
-                let client = HttpRegistryClient::new("https://example.com");
+                let client = test_client("https://example.com");
                 let expected = format!("https://example.com/api/v1/crates/test-crate/{version}");
                 let url = format!("{}/api/v1/crates/{}/{}", client.base_url(), "test-crate", version);
                 prop_assert_eq!(url, expected);
@@ -1273,7 +1396,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 403, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.get_owners("demo").unwrap_err();
         assert!(err.to_string().contains("forbidden"));
         handle.join().expect("join");
@@ -1288,7 +1411,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 403, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.is_owner("demo", "alice").unwrap_err();
         assert!(err.to_string().contains("forbidden"));
         handle.join().expect("join");
@@ -1303,7 +1426,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 404, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client
             .is_version_visible_in_sparse_index(&base, "demo", "1.0.0")
             .unwrap_err();
@@ -1319,7 +1442,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 401, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.version_exists("x", "0.1.0").unwrap_err();
         assert!(err.to_string().contains("unexpected status code"));
         handle.join().expect("join");
@@ -1333,7 +1456,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 401, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.crate_exists("x").unwrap_err();
         assert!(err.to_string().contains("unexpected status code"));
         handle.join().expect("join");
@@ -1347,7 +1470,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 429, "");
         });
-        let client = HttpRegistryClient::new(&base);
+        let client = test_client(&base);
         let err = client.get_crate_info("x").unwrap_err();
         assert!(err.to_string().contains("unexpected status code"));
         handle.join().expect("join");
@@ -1368,7 +1491,7 @@ mod tests {
             respond(server.recv().expect("req"), 200, "{\"vers\":\"0.1.0\"}");
         });
 
-        let client = HttpRegistryClient::new(&base).with_cache_dir(cache_dir.clone());
+        let client = test_client(&base).with_cache_dir(cache_dir.clone());
         let content = client
             .fetch_sparse_index_file(&base, "demo")
             .expect("fetch");
@@ -1395,7 +1518,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             respond(server.recv().expect("req"), 200, "{}");
         });
-        let client = HttpRegistryClient::new(&base).with_timeout(Duration::from_secs(5));
+        let client = test_client(&base).with_timeout(Duration::from_secs(5));
         assert_eq!(client.timeout, Duration::from_secs(5));
         assert!(client.crate_exists("any").expect("ok"));
         handle.join().expect("join");

@@ -67,6 +67,7 @@ RuntimeOptions {
             index_base: None,
         },
     ],
+    registry_policies: {},
     resume_from: None,
     rehearsal_registry: None,
     rehearsal_skip: false,

@@ -94,6 +94,11 @@ struct Cli {
     #[arg(long, global = true)]
     api_base: Option<String>,
 
+    /// Permit loopback HTTP for an explicitly configured local test or
+    /// rehearsal registry. Does not permit private-network destinations.
+    #[arg(long, global = true)]
+    allow_loopback: bool,
+
     /// Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members.
     #[arg(long = "package", global = true)]
     packages: Vec<String>,
@@ -955,6 +960,15 @@ pub fn report_error(error: &anyhow::Error) {
     eprintln!("{}", format_error(error));
 }
 
+/// Doctor may defer only a registry-destination policy error to its
+/// connectivity report. Other configuration errors remain fail-closed.
+fn is_registry_destination_validation_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.starts_with("invalid registry '") && message.contains("' destination")
+    })
+}
+
 /// CLI entry point. Exposed for the `shipper` crate's binary target
 /// and for the `shipper-cli` crate's own `shipper-cli` binary — both
 /// are three-line `fn main() { shipper_cli::run() }` wrappers over
@@ -974,7 +988,7 @@ pub fn run() -> Result<std::process::ExitCode> {
 
     // Handle Config commands early (they don't need workspace plan)
     if let Some(Commands::Config(config_cmd)) = &cli.cmd {
-        run_config(config_cmd.clone())?;
+        run_config_with_loopback(config_cmd.clone(), cli.allow_loopback)?;
         return Ok(std::process::ExitCode::SUCCESS);
     }
 
@@ -1054,12 +1068,25 @@ pub fn run() -> Result<std::process::ExitCode> {
         };
 
     // Validate loaded configuration before using it for runtime options.
+    // `doctor` intentionally keeps destination validation in its connectivity
+    // report so an unsafe configured URL is diagnosed and redacted rather than
+    // aborting the diagnostic command before the registry is applied.
     if let Some(ref cfg) = config {
         let config_path = cli
             .config
             .clone()
             .unwrap_or_else(|| planned.workspace_root.join(".shipper.toml"));
-        cfg.validate().with_context(|| {
+        let validation = cfg.validate_with_loopback(cli.allow_loopback);
+        let validation = validation.or_else(|error| {
+            if matches!(cli.cmd.as_ref(), Some(Commands::Doctor))
+                && is_registry_destination_validation_error(&error)
+            {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        });
+        validation.with_context(|| {
             format!(
                 "Configuration validation failed for {}",
                 config_path.display()
@@ -1126,6 +1153,8 @@ pub fn run() -> Result<std::process::ExitCode> {
             .map(parse_duration)
             .transpose()?,
         allow_dirty: cli.allow_dirty,
+        allow_loopback: cli.allow_loopback,
+        registry_name: cli.registry.clone(),
         skip_ownership_check: cli.skip_ownership_check,
         strict_ownership: cli.strict_ownership,
         no_verify: cli.no_verify,
@@ -1390,6 +1419,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                 registry_reports.push(build_status_registry_report(
                     &current_planned,
                     &mut reporter,
+                    &opts,
                 )?);
             }
             let report = StatusReport {
@@ -3818,9 +3848,15 @@ struct StatusPackageReport {
 fn build_status_registry_report(
     ws: &plan::PlannedWorkspace,
     reporter: &mut dyn Reporter,
+    opts: &RuntimeOptions,
 ) -> Result<StatusRegistryReport> {
     reporter.info("initializing registry client...");
-    let reg = shipper_core::registry::RegistryClient::new(ws.plan.registry.clone())?;
+    let trust = opts.registry_policies.get(&ws.plan.registry.name);
+    let policy = shipper_core::registry::RegistryPolicy::secure()
+        .with_private(trust.is_some_and(|policy| policy.allow_private))
+        .with_loopback(trust.is_some_and(|policy| policy.allow_loopback));
+    let reg =
+        shipper_core::registry::RegistryClient::with_policy(ws.plan.registry.clone(), policy)?;
 
     let mut packages = Vec::new();
     for p in &ws.plan.packages {
@@ -4326,6 +4362,7 @@ fn event_type_name(event_type: &EventType) -> &'static str {
         EventType::ExecutionStarted => "execution_started",
         EventType::ExecutionFinished { .. } => "execution_finished",
         EventType::AuthEvidenceRecorded { .. } => "auth_evidence_recorded",
+        EventType::RegistryPolicyApplied { .. } => "registry_policy_applied",
         EventType::PackageStarted { .. } => "package_started",
         EventType::PackageAttempted { .. } => "package_attempted",
         EventType::PackageOutput { .. } => "package_output",
@@ -4808,7 +4845,7 @@ fn clean_single_dir(
     Ok(actions)
 }
 
-fn run_config(cmd: ConfigCommands) -> Result<()> {
+fn run_config_with_loopback(cmd: ConfigCommands, allow_loopback: bool) -> Result<()> {
     match cmd {
         ConfigCommands::Init { output } => {
             let template = ShipperConfig::default_toml_template();
@@ -4832,9 +4869,11 @@ fn run_config(cmd: ConfigCommands) -> Result<()> {
             }
             let config = ShipperConfig::load_from_file(&path)
                 .with_context(|| format!("Failed to load config file: {}", path.display()))?;
-            config.validate().with_context(|| {
-                format!("Configuration validation failed for {}", path.display())
-            })?;
+            config
+                .validate_with_loopback(allow_loopback)
+                .with_context(|| {
+                    format!("Configuration validation failed for {}", path.display())
+                })?;
             println!("Configuration file is valid: {}", path.display());
         }
     }
@@ -5525,6 +5564,7 @@ mod tests {
             webhook: shipper_core::webhook::WebhookConfig::default(),
             encryption: shipper_core::encryption::EncryptionConfig::default(),
             registries: vec![],
+            registry_policies: Default::default(),
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
@@ -5604,6 +5644,7 @@ mod tests {
             webhook: shipper_core::webhook::WebhookConfig::default(),
             encryption: shipper_core::encryption::EncryptionConfig::default(),
             registries: vec![],
+            registry_policies: Default::default(),
             resume_from: None,
             rehearsal_registry: None,
             rehearsal_skip: false,
@@ -5646,9 +5687,12 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let config_path = td.path().join("test-config.toml");
 
-        run_config(ConfigCommands::Init {
-            output: config_path.clone(),
-        })
+        run_config_with_loopback(
+            ConfigCommands::Init {
+                output: config_path.clone(),
+            },
+            false,
+        )
         .expect("config init should succeed");
 
         assert!(config_path.exists(), "config file should be created");
@@ -5700,9 +5744,12 @@ timeout = "1h"
 
         fs::write(&config_path, valid_config).expect("write config file");
 
-        run_config(ConfigCommands::Validate {
-            path: config_path.clone(),
-        })
+        run_config_with_loopback(
+            ConfigCommands::Validate {
+                path: config_path.clone(),
+            },
+            false,
+        )
         .expect("config validate should succeed for valid file");
     }
 
@@ -5719,9 +5766,12 @@ lines = 0
 
         fs::write(&config_path, invalid_config).expect("write config file");
 
-        let result = run_config(ConfigCommands::Validate {
-            path: config_path.clone(),
-        });
+        let result = run_config_with_loopback(
+            ConfigCommands::Validate {
+                path: config_path.clone(),
+            },
+            false,
+        );
 
         assert!(
             result.is_err(),
@@ -5741,9 +5791,12 @@ lines = 0
         let td = tempdir().expect("tempdir");
         let config_path = td.path().join("nonexistent-config.toml");
 
-        let result = run_config(ConfigCommands::Validate {
-            path: config_path.clone(),
-        });
+        let result = run_config_with_loopback(
+            ConfigCommands::Validate {
+                path: config_path.clone(),
+            },
+            false,
+        );
 
         assert!(
             result.is_err(),

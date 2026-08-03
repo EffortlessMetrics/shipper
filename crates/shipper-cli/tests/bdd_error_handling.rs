@@ -85,6 +85,12 @@ fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
+fn loopback_shipper_cmd() -> Command {
+    let mut command = shipper_cmd();
+    command.arg("--allow-loopback");
+    command
+}
+
 fn path_sep() -> &'static str {
     if cfg!(windows) { ";" } else { ":" }
 }
@@ -305,7 +311,7 @@ mod auth_failure {
         // Registry: version-check → 404 (not published yet)
         let registry = spawn_registry(vec![404], 4);
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -383,7 +389,7 @@ mod rate_limiting {
         // 10-minute backoff floor.
         let registry = spawn_registry(vec![404, 404, 200, 404, 404], 20);
 
-        let output = shipper_cmd()
+        let output = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -501,7 +507,7 @@ mod network_timeout {
 
         let registry = spawn_registry(vec![404], 20);
 
-        let output = shipper_cmd()
+        let output = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -554,7 +560,7 @@ mod invalid_manifest {
     fn given_missing_manifest_when_plan_then_cli_errors() {
         let td = tempdir().expect("tempdir");
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("nonexistent").join("Cargo.toml"))
             .arg("plan")
@@ -568,7 +574,7 @@ mod invalid_manifest {
         let td = tempdir().expect("tempdir");
         write_file(&td.path().join("Cargo.toml"), "this is not valid TOML {{{");
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("plan")
@@ -589,7 +595,7 @@ resolver = "2"
 "#,
         );
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("plan")
@@ -646,7 +652,7 @@ mod registry_unreachable {
         fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
 
         // Use a port that is almost certainly not listening
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -704,7 +710,7 @@ mod mixed_success_failure_state {
         // remaining requests (utils) → 404 so utils stays unverified.
         let registry = spawn_registry(vec![404, 200, 404], 20);
 
-        let output = shipper_cmd()
+        let output = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -785,7 +791,7 @@ mod mixed_success_failure_state {
 
         let registry = spawn_registry(vec![404], 20);
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -823,7 +829,7 @@ mod mixed_success_failure_state {
         let td = tempdir().expect("tempdir");
         create_single_crate_workspace(td.path());
 
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--base-delay")
@@ -855,7 +861,7 @@ mod mixed_success_failure_state {
         let state_dir = td.path().join(".shipper");
         let registry = spawn_registry(vec![404], 20);
 
-        let output = shipper_cmd()
+        let output = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -930,7 +936,7 @@ mod ambiguous_resolves_via_registry {
         //   2nd request (post-failure version_exists) → 200 (version appeared)
         let registry = spawn_registry(vec![404, 200], 10);
 
-        let output = shipper_cmd()
+        let output = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")

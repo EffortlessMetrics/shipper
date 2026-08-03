@@ -111,7 +111,7 @@ pub(crate) fn collect_report(
     let auth = checks::auth::inspect(ws)?;
     let state_dir = checks::state_dir::inspect(ws, opts);
     let tools = checks::tools::inspect();
-    let connectivity = checks::connectivity::inspect(ws)?;
+    let connectivity = checks::connectivity::inspect(ws, opts)?;
     let git = checks::git::inspect(ws);
     let encryption = checks::encryption::inspect(opts);
 
@@ -200,7 +200,7 @@ pub(crate) fn run(
     checks::tools::check(reporter);
 
     println!();
-    all.extend(checks::connectivity::check(ws, reporter)?);
+    all.extend(checks::connectivity::check(ws, opts, reporter)?);
 
     println!();
     all.extend(checks::git::check(ws));

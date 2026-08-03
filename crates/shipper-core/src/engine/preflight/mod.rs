@@ -77,7 +77,16 @@ pub(in crate::engine) fn run(
     }
 
     reporter.info("initializing registry client...");
-    let reg = init_registry_client(ws.plan.registry.clone(), &state_dir)?;
+    let reg = init_registry_client(ws.plan.registry.clone(), &state_dir, opts)?;
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::RegistryPolicyApplied {
+            evidence: reg.policy_evidence(),
+        },
+        package: "all".to_string(),
+    });
+    flush_events(&event_log, &events_path)?;
+    event_log.clear();
 
     let token = auth::resolve_token(&ws.plan.registry.name)?;
     let token_detected = token.as_ref().map(|s| !s.is_empty()).unwrap_or(false);

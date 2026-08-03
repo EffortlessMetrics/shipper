@@ -27,6 +27,12 @@ fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
+fn loopback_shipper_cmd() -> Command {
+    let mut command = shipper_cmd();
+    command.arg("--allow-loopback");
+    command
+}
+
 /// Normalize dynamic parts of CLI output so snapshots remain stable across
 /// machines and versions.
 fn normalize_output(raw: &str) -> String {
@@ -512,7 +518,7 @@ fn write_remediation_dry_run_artifact(
     state_dir: &Path,
     receipt_path: &Path,
 ) -> PathBuf {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(root.join("Cargo.toml"))
         .arg("--state-dir")
@@ -621,7 +627,7 @@ fn spawn_registry(expected_requests: usize) -> TestRegistry {
 
 #[test]
 fn version_output_format() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--version")
         .output()
         .expect("failed to run");
@@ -648,7 +654,7 @@ fn version_output_format() {
 
 #[test]
 fn version_output_verbose_includes_build_metadata() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["--version", "--verbose"])
         .output()
         .expect("failed to run");
@@ -670,7 +676,7 @@ fn missing_manifest_path_fails_with_error() {
     let td = tempdir().expect("tempdir");
     // No Cargo.toml created
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("plan")
@@ -686,7 +692,7 @@ fn invalid_manifest_content_fails() {
         "this is {{ not valid toml content",
     );
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("plan")
@@ -711,7 +717,7 @@ edition = "2021"
 
     // This should still succeed for a single-package manifest
     // (or fail depending on implementation). Just verify it doesn't panic.
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("plan")
@@ -732,7 +738,7 @@ fn plan_excludes_publish_false_crate() {
     let td = tempdir().expect("tempdir");
     create_workspace_with_unpublished(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("plan")
@@ -761,7 +767,7 @@ fn plan_skipped_publish_false_shows_reason() {
     let td = tempdir().expect("tempdir");
     create_workspace_with_unpublished(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("plan")
@@ -787,7 +793,7 @@ fn plan_verbose_shows_dependency_analysis() {
     let td = tempdir().expect("tempdir");
     create_multi_crate_workspace(td.path());
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--verbose")
@@ -804,7 +810,7 @@ fn plan_verbose_shows_estimated_analysis() {
     let td = tempdir().expect("tempdir");
     create_multi_crate_workspace(td.path());
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--verbose")
@@ -821,7 +827,7 @@ fn plan_verbose_multi_crate_snapshot() {
     let td = tempdir().expect("tempdir");
     create_multi_crate_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--verbose")
@@ -846,7 +852,7 @@ fn plan_publish_false_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace_with_unpublished(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("plan")
@@ -872,7 +878,7 @@ fn doctor_output_starts_with_header() {
 
     let registry = spawn_registry(1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -896,7 +902,7 @@ fn doctor_output_ends_with_diagnostics_complete() {
 
     let registry = spawn_registry(1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -920,7 +926,7 @@ fn doctor_shows_registry_reachable() {
 
     let registry = spawn_registry(1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -944,7 +950,7 @@ fn doctor_shows_index_base() {
 
     let registry = spawn_registry(1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -969,7 +975,7 @@ fn clean_nonexistent_state_dir_succeeds() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -992,7 +998,7 @@ fn clean_removes_state_and_events_files() {
     fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
     fs::write(state_dir.join("reconciliation.json"), "{}").expect("write reconciliation");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1021,7 +1027,7 @@ fn clean_keep_receipt_preserves_receipt_file() {
     fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
     fs::write(state_dir.join("reconciliation.json"), "{}").expect("write reconciliation");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1056,7 +1062,7 @@ fn clean_no_state_dir_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1078,7 +1084,7 @@ fn clean_no_state_dir_snapshot() {
 
 #[test]
 fn completion_bash_generates_output() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["completion", "bash"])
         .output()
         .expect("failed to run");
@@ -1097,7 +1103,7 @@ fn completion_bash_generates_output() {
 
 #[test]
 fn completion_powershell_generates_output() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["completion", "powershell"])
         .output()
         .expect("failed to run");
@@ -1112,7 +1118,7 @@ fn completion_powershell_generates_output() {
 
 #[test]
 fn completion_zsh_generates_output() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["completion", "zsh"])
         .output()
         .expect("failed to run");
@@ -1134,7 +1140,7 @@ fn ci_circleci_includes_steps() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["ci", "circleci"])
@@ -1148,7 +1154,7 @@ fn ci_azure_devops_includes_pipeline() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["ci", "azure-devops"])
@@ -1163,7 +1169,7 @@ fn ci_circleci_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1185,7 +1191,7 @@ fn ci_azure_devops_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1211,7 +1217,7 @@ fn config_init_content_snapshot() {
     let td = tempdir().expect("tempdir");
     let config_path = td.path().join(".shipper.toml");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .args(["config", "init", "-o", config_path.to_str().unwrap()])
         .assert()
         .success();
@@ -1227,7 +1233,7 @@ fn config_init_content_snapshot() {
 /// Snapshot: error when an invalid --format value is provided.
 #[test]
 fn error_invalid_format_value_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["--format", "invalid", "plan"])
         .output()
         .expect("failed to run");
@@ -1241,7 +1247,10 @@ fn error_invalid_format_value_snapshot() {
 /// Snapshot: error when `ci` is invoked without a provider subcommand.
 #[test]
 fn error_missing_ci_subcommand_snapshot() {
-    let output = shipper_cmd().arg("ci").output().expect("failed to run");
+    let output = loopback_shipper_cmd()
+        .arg("ci")
+        .output()
+        .expect("failed to run");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1255,7 +1264,7 @@ fn error_nonexistent_package_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["--package", "nonexistent", "plan"])
@@ -1273,7 +1282,7 @@ fn error_nonexistent_package_snapshot() {
 /// Snapshot: error when an invalid --retry-strategy value is provided.
 #[test]
 fn error_invalid_retry_strategy_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["--retry-strategy", "bogus", "plan"])
         .output()
         .expect("failed to run");
@@ -1290,7 +1299,7 @@ fn error_invalid_retry_strategy_snapshot() {
 /// Snapshot: `completion --help` output.
 #[test]
 fn help_completion_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["completion", "--help"])
         .output()
         .expect("failed to run");
@@ -1303,7 +1312,7 @@ fn help_completion_snapshot() {
 /// Snapshot: `inspect-events --help` output.
 #[test]
 fn help_inspect_events_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["inspect-events", "--help"])
         .output()
         .expect("failed to run");
@@ -1316,7 +1325,7 @@ fn help_inspect_events_snapshot() {
 /// Snapshot: `inspect-receipt --help` output.
 #[test]
 fn help_inspect_receipt_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["inspect-receipt", "--help"])
         .output()
         .expect("failed to run");
@@ -1333,7 +1342,7 @@ fn help_inspect_receipt_snapshot() {
 /// Snapshot: `--version --verbose` output with version redacted.
 #[test]
 fn version_output_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["--version", "--verbose"])
         .output()
         .expect("failed to run");
@@ -1354,12 +1363,12 @@ fn config_validate_valid_snapshot() {
     let td = tempdir().expect("tempdir");
     let config_path = td.path().join(".shipper.toml");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .args(["config", "init", "-o", config_path.to_str().unwrap()])
         .assert()
         .success();
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "validate", "-p", config_path.to_str().unwrap()])
         .output()
         .expect("failed to run");
@@ -1382,7 +1391,7 @@ fn config_validate_invalid_toml_snapshot() {
     let config_path = td.path().join(".shipper.toml");
     fs::write(&config_path, "this is {{ not valid toml").expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "validate", "-p", config_path.to_str().unwrap()])
         .output()
         .expect("failed to run");
@@ -1404,7 +1413,7 @@ fn config_validate_nonexistent_fails() {
     let td = tempdir().expect("tempdir");
     let missing = td.path().join("does-not-exist.toml");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .args(["config", "validate", "-p", missing.to_str().unwrap()])
         .assert()
         .failure();
@@ -1420,7 +1429,7 @@ fn ci_github_actions_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1442,7 +1451,7 @@ fn ci_gitlab_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1474,7 +1483,7 @@ fn clean_keep_receipt_snapshot() {
     fs::write(state_dir.join("events.jsonl"), "").expect("write events");
     fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1503,7 +1512,7 @@ fn clean_all_files_snapshot() {
     fs::write(state_dir.join("events.jsonl"), "").expect("write events");
     fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1529,7 +1538,7 @@ fn plan_single_crate_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("plan")
@@ -1549,7 +1558,7 @@ fn plan_multi_crate_snapshot() {
     let td = tempdir().expect("tempdir");
     create_multi_crate_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("plan")
@@ -1573,7 +1582,7 @@ fn inspect_events_empty_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1595,7 +1604,7 @@ fn inspect_events_empty_snapshot() {
 
 #[test]
 fn completion_fish_generates_output() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["completion", "fish"])
         .output()
         .expect("failed to run");
@@ -1614,7 +1623,7 @@ fn completion_fish_generates_output() {
 
 #[test]
 fn completion_elvish_generates_output() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["completion", "elvish"])
         .output()
         .expect("failed to run");
@@ -1637,7 +1646,7 @@ fn config_init_output_message_snapshot() {
     let td = tempdir().expect("tempdir");
     let config_path = td.path().join(".shipper.toml");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "init", "-o", config_path.to_str().unwrap()])
         .output()
         .expect("failed to run");
@@ -1663,7 +1672,7 @@ fn inspect_receipt_missing_fails() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1689,7 +1698,7 @@ fn inspect_receipt_missing_fails() {
 /// Snapshot: `resume --help` output.
 #[test]
 fn help_resume_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["resume", "--help"])
         .output()
         .expect("failed to run");
@@ -1702,7 +1711,7 @@ fn help_resume_snapshot() {
 /// Snapshot: `publish --help` output.
 #[test]
 fn help_publish_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["publish", "--help"])
         .output()
         .expect("failed to run");
@@ -1715,7 +1724,7 @@ fn help_publish_snapshot() {
 /// Snapshot: `doctor --help` output.
 #[test]
 fn help_doctor_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["doctor", "--help"])
         .output()
         .expect("failed to run");
@@ -1728,7 +1737,7 @@ fn help_doctor_snapshot() {
 /// Snapshot: `status --help` output.
 #[test]
 fn help_status_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["status", "--help"])
         .output()
         .expect("failed to run");
@@ -1741,7 +1750,7 @@ fn help_status_snapshot() {
 /// Snapshot: `plan --help` output.
 #[test]
 fn help_plan_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["plan", "--help"])
         .output()
         .expect("failed to run");
@@ -1754,7 +1763,7 @@ fn help_plan_snapshot() {
 /// Snapshot: `clean --help` output.
 #[test]
 fn help_clean_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["clean", "--help"])
         .output()
         .expect("failed to run");
@@ -1767,7 +1776,7 @@ fn help_clean_snapshot() {
 /// Snapshot: `yank --help` output.
 #[test]
 fn help_yank_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["yank", "--help"])
         .output()
         .expect("failed to run");
@@ -1780,7 +1789,7 @@ fn help_yank_snapshot() {
 /// Snapshot: `plan-yank --help` output.
 #[test]
 fn help_plan_yank_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["plan-yank", "--help"])
         .output()
         .expect("failed to run");
@@ -1793,7 +1802,7 @@ fn help_plan_yank_snapshot() {
 /// Snapshot: `fix-forward --help` output.
 #[test]
 fn help_fix_forward_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["fix-forward", "--help"])
         .output()
         .expect("failed to run");
@@ -1806,7 +1815,7 @@ fn help_fix_forward_snapshot() {
 /// Snapshot: `remediate --help` output.
 #[test]
 fn help_remediate_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["remediate", "--help"])
         .output()
         .expect("failed to run");
@@ -1826,7 +1835,7 @@ fn plan_yank_json_format_emits_schema_version() {
     let receipt_path = td.path().join("receipt.json");
     write_remediation_receipt(&receipt_path);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["--format", "json", "plan-yank", "--from-receipt"])
@@ -1873,7 +1882,7 @@ fn yank_single_command_records_package_yanked_event_with_fake_cargo() {
     let fake_cargo = write_fake_yank_cargo(td.path(), false);
     let fake_log = td.path().join("fake-cargo.log");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1940,7 +1949,7 @@ fn yank_plan_execution_runs_entries_in_order_with_fake_cargo() {
     let fake_cargo = write_fake_yank_cargo(td.path(), false);
     let fake_log = td.path().join("fake-cargo.log");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -1997,7 +2006,7 @@ fn yank_plan_execution_halts_on_failed_yank() {
     let fake_cargo = write_fake_yank_cargo(td.path(), true);
     let fake_log = td.path().join("fake-cargo.log");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -2051,7 +2060,7 @@ fn fix_forward_json_format_emits_schema_version() {
     let receipt_path = td.path().join("receipt.json");
     write_remediation_receipt(&receipt_path);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["--format", "json", "fix-forward", "--from-receipt"])
@@ -2093,7 +2102,7 @@ fn remediate_dry_run_writes_remediation_plan_artifact() {
     let state_dir = td.path().join(".shipper");
     write_remediation_receipt(&receipt_path);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -2208,7 +2217,7 @@ fn remediate_guarded_execution_executes_reviewed_plan_with_fake_cargo() {
     let fake_cargo = write_fake_yank_cargo(td.path(), false);
     let fake_log = td.path().join("fake-cargo.log");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -2279,7 +2288,7 @@ fn remediate_guarded_execution_halts_on_failed_yank() {
     let fake_cargo = write_fake_yank_cargo(td.path(), true);
     let fake_log = td.path().join("fake-cargo.log");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -2346,7 +2355,7 @@ fn remediate_guarded_execution_redacts_event_reason() {
     let fake_cargo = write_fake_yank_cargo(td.path(), false);
     let fake_log = td.path().join("fake-cargo.log");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -2386,7 +2395,7 @@ fn remediate_guarded_execution_requires_state_dir_plan() {
     let outside_plan = td.path().join("outside-remediation-plan.json");
     fs::copy(&artifact, &outside_plan).expect("copy plan outside state dir");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -2427,7 +2436,7 @@ fn remediate_guarded_execution_rejects_registry_mismatch() {
     let fake_cargo = write_fake_yank_cargo(td.path(), false);
     let fake_log = td.path().join("fake-cargo.log");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -2457,7 +2466,7 @@ fn remediate_guarded_execution_rejects_registry_mismatch() {
 /// Snapshot: `config init --help` output.
 #[test]
 fn help_config_init_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "init", "--help"])
         .output()
         .expect("failed to run");
@@ -2470,7 +2479,7 @@ fn help_config_init_snapshot() {
 /// Snapshot: `config validate --help` output.
 #[test]
 fn help_config_validate_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "validate", "--help"])
         .output()
         .expect("failed to run");
@@ -2493,7 +2502,7 @@ fn doctor_full_output_has_all_sections() {
 
     let registry = spawn_registry(1);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -2533,7 +2542,7 @@ fn doctor_shows_no_auth_when_no_token() {
 
     let registry = spawn_registry(1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -2564,7 +2573,7 @@ fn doctor_shows_state_dir_not_exists() {
 
     let registry = spawn_registry(1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -2614,7 +2623,7 @@ fn status_shows_missing_for_unpublished() {
 
     let registry = spawn_registry_not_found(1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -2636,7 +2645,7 @@ fn status_shows_published_for_existing() {
 
     let registry = spawn_registry(1);
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -2658,7 +2667,7 @@ fn status_multi_crate_all_missing_snapshot() {
 
     let registry = spawn_registry_not_found(3);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -2685,7 +2694,7 @@ fn status_single_crate_published_snapshot() {
 
     let registry = spawn_registry(1);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -2714,7 +2723,7 @@ fn plan_single_package_filter_in_multi_crate() {
     let td = tempdir().expect("tempdir");
     create_multi_crate_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--package")
@@ -2748,7 +2757,7 @@ fn plan_multiple_packages_filter() {
     let td = tempdir().expect("tempdir");
     create_multi_crate_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--package")
@@ -2788,7 +2797,7 @@ fn error_invalid_policy_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["--policy", "bogus", "plan"])
@@ -2806,7 +2815,7 @@ fn error_invalid_verify_mode_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["--verify-mode", "bogus", "plan"])
@@ -2824,7 +2833,7 @@ fn error_invalid_readiness_method_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["--readiness-method", "bogus", "plan"])
@@ -2843,7 +2852,7 @@ fn error_invalid_readiness_method_snapshot() {
 /// Error when --manifest-path points to a directory that does not exist.
 #[test]
 fn manifest_path_in_nonexistent_directory_fails() {
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg("nonexistent-dir/Cargo.toml")
         .arg("plan")
@@ -2857,7 +2866,7 @@ fn config_init_custom_filename() {
     let td = tempdir().expect("tempdir");
     let config_path = td.path().join("custom-config.toml");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .args(["config", "init", "-o", config_path.to_str().unwrap()])
         .assert()
         .success();
@@ -2876,7 +2885,7 @@ fn config_init_custom_filename_snapshot() {
     let td = tempdir().expect("tempdir");
     let config_path = td.path().join("my-shipper.toml");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "init", "-o", config_path.to_str().unwrap()])
         .output()
         .expect("failed to run");
@@ -2903,7 +2912,7 @@ fn config_validate_empty_file() {
     let config_path = td.path().join(".shipper.toml");
     fs::write(&config_path, "").expect("write");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .args(["config", "validate", "-p", config_path.to_str().unwrap()])
         .assert()
         .success();
@@ -2928,7 +2937,7 @@ key = "value"
 
     // This may succeed or fail depending on whether serde(deny_unknown_fields)
     // is set. We just verify it terminates cleanly.
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "validate", "-p", config_path.to_str().unwrap()])
         .output()
         .expect("failed to run");
@@ -2949,7 +2958,7 @@ fn quiet_mode_doctor_suppresses_info_stderr() {
 
     let registry = spawn_registry(1);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -2982,7 +2991,7 @@ fn plan_verbose_single_package_filter_snapshot() {
     let td = tempdir().expect("tempdir");
     create_multi_crate_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--package")
@@ -3013,7 +3022,10 @@ fn plan_verbose_single_package_filter_snapshot() {
 /// Snapshot: error when `config` is invoked without a subcommand.
 #[test]
 fn error_missing_config_subcommand_snapshot() {
-    let output = shipper_cmd().arg("config").output().expect("failed to run");
+    let output = loopback_shipper_cmd()
+        .arg("config")
+        .output()
+        .expect("failed to run");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3023,7 +3035,7 @@ fn error_missing_config_subcommand_snapshot() {
 /// Snapshot: error when `completion` is invoked without a shell argument.
 #[test]
 fn error_missing_completion_shell_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("completion")
         .output()
         .expect("failed to run");
@@ -3045,7 +3057,7 @@ fn status_single_package_filter() {
 
     let registry = spawn_registry_not_found(1);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -3086,7 +3098,7 @@ fn status_single_package_filter() {
 fn publish_missing_manifest_snapshot() {
     let td = tempdir().expect("tempdir");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("no-such/Cargo.toml"))
         .arg("publish")
@@ -3106,7 +3118,7 @@ fn publish_missing_manifest_snapshot() {
 fn publish_missing_manifest_exit_code() {
     let td = tempdir().expect("tempdir");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("no-such/Cargo.toml"))
         .arg("publish")
@@ -3127,7 +3139,7 @@ fn resume_no_state_file_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -3150,7 +3162,7 @@ fn resume_no_state_file_exit_code() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -3172,7 +3184,7 @@ fn resume_corrupted_state_file_snapshot() {
     fs::create_dir_all(&state_dir).expect("mkdir");
     fs::write(state_dir.join("state.json"), "NOT VALID JSON {{{{").expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -3198,7 +3210,7 @@ fn resume_empty_state_file_snapshot() {
     fs::create_dir_all(&state_dir).expect("mkdir");
     fs::write(state_dir.join("state.json"), "").expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -3226,7 +3238,7 @@ fn preflight_non_git_directory_snapshot() {
     create_workspace(td.path());
 
     // Use a bogus API base that won't be contacted (git check fails first)
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -3263,7 +3275,7 @@ fn preflight_allow_dirty_snapshot() {
     // the host. Without this, the snapshot varies between developer
     // machines (which have a real credentials.toml) and CI runners
     // (which don't), causing a Token Detected: ✓/✗ drift.
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -3306,7 +3318,7 @@ method = 99999
     )
     .expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "validate", "-p", config_path.to_str().unwrap()])
         .output()
         .expect("failed to run");
@@ -3333,7 +3345,7 @@ fn config_validate_malformed_toml_snapshot() {
     let config_path = td.path().join(".shipper.toml");
     fs::write(&config_path, "[policy\nname = \"safe\"\n").expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "validate", "-p", config_path.to_str().unwrap()])
         .output()
         .expect("failed to run");
@@ -3367,7 +3379,7 @@ mode = 12345
     )
     .expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "validate", "-p", config_path.to_str().unwrap()])
         .output()
         .expect("failed to run");
@@ -3397,7 +3409,7 @@ fn verbose_single_crate_plan_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--verbose")
@@ -3451,7 +3463,7 @@ publish = false
     );
     write_file(&td.path().join("internal-b/src/lib.rs"), "");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("plan")
@@ -3468,7 +3480,7 @@ fn plan_format_json_flag_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--format")
@@ -3494,7 +3506,7 @@ fn plan_format_json_flag_snapshot() {
 /// Snapshot: `preflight --help` output.
 #[test]
 fn help_preflight_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["preflight", "--help"])
         .output()
         .expect("failed to run");
@@ -3507,7 +3519,7 @@ fn help_preflight_snapshot() {
 /// Snapshot: `ci --help` output.
 #[test]
 fn help_ci_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["ci", "--help"])
         .output()
         .expect("failed to run");
@@ -3524,7 +3536,10 @@ fn help_ci_snapshot() {
 /// Snapshot: error when an unknown subcommand is used.
 #[test]
 fn error_unknown_subcommand_snapshot() {
-    let output = shipper_cmd().arg("foobar").output().expect("failed to run");
+    let output = loopback_shipper_cmd()
+        .arg("foobar")
+        .output()
+        .expect("failed to run");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3534,7 +3549,10 @@ fn error_unknown_subcommand_snapshot() {
 /// Exit code for an unknown subcommand is non-zero (2 = clap usage error).
 #[test]
 fn error_unknown_subcommand_exit_code() {
-    let output = shipper_cmd().arg("foobar").output().expect("failed to run");
+    let output = loopback_shipper_cmd()
+        .arg("foobar")
+        .output()
+        .expect("failed to run");
 
     assert!(!output.status.success());
     assert_debug_snapshot!("error_unknown_subcommand_exit_code", output.status.code());
@@ -3562,7 +3580,7 @@ fn inspect_events_with_data_snapshot() {
     )
     .expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -3594,7 +3612,7 @@ fn inspect_events_json_format_snapshot() {
     )
     .expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -3620,7 +3638,7 @@ fn publish_invalid_manifest_content_snapshot() {
     let td = tempdir().expect("tempdir");
     write_file(&td.path().join("Cargo.toml"), "this is not valid toml {{{{");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("publish")
@@ -3644,7 +3662,7 @@ fn publish_invalid_manifest_content_snapshot() {
 fn resume_missing_manifest_snapshot() {
     let td = tempdir().expect("tempdir");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("nonexistent/Cargo.toml"))
         .arg("resume")
@@ -3666,7 +3684,10 @@ fn resume_missing_manifest_snapshot() {
 /// Snapshot: `--help` output for the root command.
 #[test]
 fn help_root_snapshot() {
-    let output = shipper_cmd().arg("--help").output().expect("failed to run");
+    let output = loopback_shipper_cmd()
+        .arg("--help")
+        .output()
+        .expect("failed to run");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -3676,7 +3697,7 @@ fn help_root_snapshot() {
 /// Snapshot: `config --help` output.
 #[test]
 fn help_config_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "--help"])
         .output()
         .expect("failed to run");
@@ -3695,7 +3716,7 @@ fn help_config_snapshot() {
 fn publish_no_verify_missing_manifest_fails() {
     let td = tempdir().expect("tempdir");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--no-verify")
@@ -3709,7 +3730,7 @@ fn publish_no_verify_missing_manifest_fails() {
 fn publish_allow_dirty_missing_manifest_fails() {
     let td = tempdir().expect("tempdir");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--allow-dirty")
@@ -3723,7 +3744,7 @@ fn publish_allow_dirty_missing_manifest_fails() {
 fn publish_skip_ownership_missing_manifest_fails() {
     let td = tempdir().expect("tempdir");
 
-    shipper_cmd()
+    loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--skip-ownership-check")
@@ -3739,7 +3760,7 @@ fn publish_combined_flags_no_git_succeeds() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--no-verify")
@@ -3774,7 +3795,7 @@ fn publish_package_filter_no_registry_runs() {
     let td = tempdir().expect("tempdir");
     create_multi_crate_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--package")
@@ -3821,7 +3842,7 @@ fn resume_wrong_plan_id_snapshot() {
     )
     .expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -3850,7 +3871,7 @@ fn resume_minimal_json_state_snapshot() {
     fs::create_dir_all(&state_dir).expect("mkdir");
     fs::write(state_dir.join("state.json"), "{}").expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -3881,13 +3902,13 @@ fn config_init_overwrite_snapshot() {
     let config_path = td.path().join(".shipper.toml");
 
     // First init succeeds
-    shipper_cmd()
+    loopback_shipper_cmd()
         .args(["config", "init", "-o", config_path.to_str().unwrap()])
         .assert()
         .success();
 
     // Second init — capture result regardless of pass/fail
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "init", "-o", config_path.to_str().unwrap()])
         .output()
         .expect("failed to run");
@@ -3939,7 +3960,7 @@ strategy = "exponential"
     )
     .expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["config", "validate", "-p", config_path.to_str().unwrap()])
         .output()
         .expect("failed to run");
@@ -3967,7 +3988,7 @@ fn status_multi_crate_all_published_snapshot() {
 
     let registry = spawn_registry(3);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -4003,7 +4024,7 @@ fn clean_only_receipt_exists_snapshot() {
     fs::create_dir_all(&state_dir).expect("mkdir");
     fs::write(state_dir.join("receipt.json"), "{}").expect("write receipt");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -4029,7 +4050,7 @@ fn clean_keep_receipt_no_receipt_snapshot() {
     fs::create_dir_all(&state_dir).expect("mkdir");
     fs::write(state_dir.join("state.json"), "{}").expect("write state");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -4056,7 +4077,7 @@ fn error_invalid_base_delay_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["--base-delay", "not-a-duration", "plan"])
@@ -4074,7 +4095,7 @@ fn error_invalid_verify_timeout_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["--verify-timeout", "xyz", "plan"])
@@ -4096,7 +4117,7 @@ fn plan_quiet_mode_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--quiet")
@@ -4124,7 +4145,7 @@ fn status_multi_package_filter_snapshot() {
     // Selecting core-lib and top-app pulls in mid-lib transitively (3 total)
     let registry = spawn_registry_not_found(3);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -4162,7 +4183,7 @@ fn status_multi_package_filter_snapshot() {
 /// Snapshot: `ci github-actions --help` output.
 #[test]
 fn help_ci_github_actions_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["ci", "github-actions", "--help"])
         .output()
         .expect("failed to run");
@@ -4175,7 +4196,7 @@ fn help_ci_github_actions_snapshot() {
 /// Snapshot: `ci gitlab --help` output.
 #[test]
 fn help_ci_gitlab_snapshot() {
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .args(["ci", "gitlab", "--help"])
         .output()
         .expect("failed to run");
@@ -4195,7 +4216,7 @@ fn preflight_json_format_non_git_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -4230,7 +4251,7 @@ fn inspect_events_malformed_snapshot() {
     fs::create_dir_all(&state_dir).expect("mkdir");
     fs::write(state_dir.join("events.jsonl"), "NOT JSON AT ALL\n").expect("write");
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--state-dir")
@@ -4262,7 +4283,7 @@ fn plan_format_json_multi_crate_snapshot() {
     let td = tempdir().expect("tempdir");
     create_multi_crate_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--format")
@@ -4296,7 +4317,7 @@ fn doctor_with_existing_state_dir_snapshot() {
 
     let registry = spawn_registry(1);
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("--api-base")
@@ -4334,7 +4355,7 @@ fn plan_max_attempts_zero_accepted() {
     create_workspace(td.path());
 
     // --max-attempts 0 should be accepted by clap (validated later at runtime)
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["--max-attempts", "0", "plan"])
@@ -4351,7 +4372,7 @@ fn plan_retry_jitter_out_of_range_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .args(["--retry-jitter", "5.0", "plan"])
@@ -4400,7 +4421,7 @@ edition = "2021"
         "pub fn deep() {}\n",
     );
 
-    let output = shipper_cmd()
+    let output = loopback_shipper_cmd()
         .arg("--manifest-path")
         .arg(td.path().join("Cargo.toml"))
         .arg("plan")

@@ -45,6 +45,12 @@ fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
+fn loopback_shipper_cmd() -> Command {
+    let mut command = shipper_cmd();
+    command.arg("--allow-loopback");
+    command
+}
+
 struct TestRegistry {
     base_url: String,
     handle: thread::JoinHandle<()>,
@@ -94,7 +100,7 @@ mod environment_info {
         let registry = spawn_registry(1);
 
         // When: We run shipper doctor
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         cmd.arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -133,7 +139,7 @@ mod cargo_detection {
         let registry = spawn_registry(1);
 
         // When: We run shipper doctor
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         let output = cmd
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
@@ -179,7 +185,7 @@ mod missing_token {
         let registry = spawn_registry(1);
 
         // When: We run shipper doctor with token env vars removed
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         cmd.arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -214,7 +220,7 @@ mod workspace_health {
         let registry = spawn_registry(1);
 
         // When: We run shipper doctor
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         cmd.arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -246,7 +252,7 @@ mod workspace_health {
         let registry = spawn_registry(1);
 
         // When: We run shipper doctor
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         cmd.arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -283,7 +289,7 @@ mod without_workspace {
         let registry = spawn_registry(1);
 
         // When: We run shipper doctor against it
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         cmd.arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -316,7 +322,7 @@ mod without_workspace {
         let registry = spawn_registry(1);
 
         // When: We ask for the machine-readable report
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         cmd.arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -368,17 +374,19 @@ mod without_workspace {
 [[registries.registries]]
 name = "alpha"
 api_base = "{base}"
+index_base = "{base}"
 
 [[registries.registries]]
 name = "beta"
 api_base = "{base}"
+index_base = "{base}"
 "#,
                 base = registry.base_url
             ),
         );
 
         // When: We ask for diagnostics against both
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         cmd.arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--all-registries")
@@ -443,17 +451,19 @@ api_base = "{base}"
 [[registries.registries]]
 name = "alpha"
 api_base = "{base}"
+index_base = "{base}"
 
 [[registries.registries]]
 name = "beta"
 api_base = "{base}"
+index_base = "{base}"
 "#,
                 base = registry.base_url
             ),
         );
 
         // When: We run text diagnostics against both
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         cmd.arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--all-registries")
@@ -496,7 +506,7 @@ api_base = "{base}"
         let td = tempdir().expect("tempdir");
 
         // When: We ask for the GitHub Actions snippet
-        let mut cmd = shipper_cmd();
+        let mut cmd = loopback_shipper_cmd();
         cmd.arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("ci")

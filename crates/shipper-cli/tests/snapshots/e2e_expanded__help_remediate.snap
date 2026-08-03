@@ -50,6 +50,9 @@ Options:
       --dry-run
           Required for now: generate the remediation artifact without executing yanks, editing manifests, or publishing successors
 
+      --allow-loopback
+          Permit loopback HTTP for an explicitly configured local test or rehearsal registry. Does not permit private-network destinations
+
       --execute-plan <PATH>
           Execute a reviewed remediation plan artifact. Runs only the recorded containment yanks and halts on the first failed yank
 

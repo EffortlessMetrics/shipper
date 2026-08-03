@@ -14,7 +14,7 @@ use super::publish::{emit_retry_backoff, publish_package, run_publish_level};
 use super::run_publish_parallel_inner as run_publish_parallel;
 use super::*;
 use crate::plan::PlannedWorkspace;
-use crate::registry::RegistryClient;
+use crate::registry::{RegistryClient, RegistryPolicy};
 use crate::runtime::execution::{pkg_key, update_state_locked};
 use crate::state::events;
 use crate::state::rebuild::{StateRebuildOptions, rebuild_state_from_events};
@@ -47,7 +47,11 @@ fn sort_attempt_history_by_fields(history: &mut [AttemptDetail]) {
 }
 
 fn test_registry_client(ws: &PlannedWorkspace) -> RegistryClient {
-    RegistryClient::new(ws.plan.registry.clone()).expect("registry client")
+    let mut registry = ws.plan.registry.clone();
+    if registry.index_base.is_none() {
+        registry.index_base = Some(registry.api_base.clone());
+    }
+    RegistryClient::with_policy(registry, RegistryPolicy::rehearsal()).expect("registry client")
 }
 
 fn make_send_reporter() -> Arc<SendReporter> {
@@ -303,8 +307,8 @@ fn planned_workspace(workspace_root: &Path, api_base: String) -> PlannedWorkspac
             created_at: Utc::now(),
             registry: Registry {
                 name: "crates-io".to_string(),
-                api_base,
-                index_base: None,
+                api_base: api_base.clone(),
+                index_base: Some(api_base),
             },
             packages: vec![PlannedPackage {
                 name: "demo".to_string(),
@@ -358,6 +362,7 @@ fn default_opts(state_dir: PathBuf) -> RuntimeOptions {
         encryption: shipper_encrypt::EncryptionConfig::default(),
         webhook: shipper_webhook::WebhookConfig::default(),
         registries: vec![],
+        registry_policies: Default::default(),
         resume_from: None,
         rehearsal_registry: None,
         rehearsal_skip: false,
@@ -403,8 +408,8 @@ fn planned_workspace_with_dependency(workspace_root: &Path, api_base: String) ->
             created_at: Utc::now(),
             registry: Registry {
                 name: "crates-io".to_string(),
-                api_base,
-                index_base: None,
+                api_base: api_base.clone(),
+                index_base: Some(api_base),
             },
             packages: vec![
                 PlannedPackage {

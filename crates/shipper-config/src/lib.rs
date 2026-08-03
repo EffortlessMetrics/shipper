@@ -31,6 +31,7 @@
 //! | `[encryption]`  | [`EncryptionConfigInner`] | State file encryption              |
 //! | `[storage]`     | [`StorageConfigInner`] | Cloud storage backend                 |
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -45,6 +46,7 @@ pub use shipper_types::{
 };
 pub use shipper_webhook::WebhookConfig;
 
+use shipper_registry::{RegistryPolicy, ValidatedRegistry};
 use shipper_retry::{PerErrorConfig, RetryPolicy, RetryStrategyType};
 use shipper_types::storage::{CloudStorageConfig, StorageType};
 
@@ -363,6 +365,7 @@ pub struct ShipperConfig {
 /// [rehearsal]
 /// enabled = true
 /// registry = "kellnr-local"  # name must match an entry in [[registries]]
+/// # allow_loopback = true      # local HTTP test posture; does not enable the gate
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RehearsalConfig {
@@ -370,6 +373,11 @@ pub struct RehearsalConfig {
     /// (opt-in until the phase-2 execution PR lands).
     #[serde(default)]
     pub enabled: bool,
+
+    /// Permit loopback HTTP for an explicitly configured local rehearsal or
+    /// test registry without enabling the live-publish rehearsal gate.
+    #[serde(default)]
+    pub allow_loopback: bool,
 
     /// Name of the registry (declared under `[[registries]]`) to use for
     /// rehearsal. Must differ from the live target registry.
@@ -386,7 +394,8 @@ pub struct RegistryConfig {
     /// Base URL for registry web API (e.g., <https://crates.io>)
     pub api_base: String,
 
-    /// Base URL for the sparse index (optional, derived from api_base if not set)
+    /// Base URL for the sparse index. Required for custom registries; crates.io
+    /// uses its well-known sparse index when this is omitted.
     #[serde(default)]
     pub index_base: Option<String>,
 
@@ -401,6 +410,10 @@ pub struct RegistryConfig {
     /// Whether this is the default registry (used when publishing to all registries)
     #[serde(default)]
     pub default: bool,
+
+    /// Permit private-network registry destinations after validation.
+    #[serde(default)]
+    pub allow_private: bool,
 }
 
 /// Multiple registry configuration
@@ -426,6 +439,7 @@ impl MultiRegistryConfig {
                 index_base: Some("https://index.crates.io".to_string()),
                 token: None,
                 default: true,
+                allow_private: false,
             }]
         } else {
             self.registries.clone()
@@ -445,6 +459,7 @@ impl MultiRegistryConfig {
                 index_base: Some("https://index.crates.io".to_string()),
                 token: None,
                 default: true,
+                allow_private: false,
             })
     }
 
@@ -480,6 +495,13 @@ pub struct CliOverrides {
     pub readiness_timeout: Option<Duration>,
     pub readiness_poll: Option<Duration>,
     pub allow_dirty: bool,
+    /// Permit loopback HTTP only for an explicitly configured local test or
+    /// rehearsal registry. This never permits private-network destinations.
+    pub allow_loopback: bool,
+    /// Effective single registry name from the CLI, when `--registry` was set.
+    /// Used to attach URL trust posture to a CLI-selected registry without
+    /// changing the multi-registry execution path.
+    pub registry_name: Option<String>,
     pub skip_ownership_check: bool,
     pub strict_ownership: bool,
     pub no_verify: bool,
@@ -613,6 +635,15 @@ impl ShipperConfig {
 
     /// Validate the configuration
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_loopback(false)
+    }
+
+    /// Validate the configuration with an explicit CLI/test loopback posture.
+    ///
+    /// The config-file validator remains secure by default. Callers may pass
+    /// `true` only when the operator explicitly supplied the loopback opt-in;
+    /// private, link-local, and metadata destinations remain rejected.
+    pub fn validate_with_loopback(&self, allow_loopback: bool) -> Result<()> {
         // Validate schema version format
         shipper_types::schema::parse_schema_version(&self.schema_version)
             .context("invalid schema_version format")?;
@@ -668,6 +699,33 @@ impl ShipperConfig {
             bail!("parallel.per_package_timeout must be greater than 0");
         }
 
+        if let Some(rehearsal_name) = self.rehearsal.registry.as_deref() {
+            let conflicts_with_live = if let Some(registry) = self.registry.as_ref() {
+                registry.name == rehearsal_name
+            } else if !self.registries.default_registries.is_empty() {
+                self.registries
+                    .default_registries
+                    .iter()
+                    .any(|name| name == rehearsal_name)
+            } else if let Some(registry) = self
+                .registries
+                .registries
+                .iter()
+                .find(|registry| registry.default)
+                .or_else(|| self.registries.registries.first())
+            {
+                registry.name == rehearsal_name
+            } else {
+                rehearsal_name == "crates-io"
+            };
+
+            if self.rehearsal.enabled && conflicts_with_live {
+                bail!(
+                    "rehearsal registry '{rehearsal_name}' must differ from the live target registry"
+                );
+            }
+        }
+
         // Validate registry if present
         if let Some(ref registry) = self.registry {
             if registry.name.is_empty() {
@@ -676,16 +734,32 @@ impl ShipperConfig {
             if registry.api_base.is_empty() {
                 bail!("registry.api_base cannot be empty");
             }
+            validate_registry_destination(
+                registry,
+                allow_loopback
+                    || ((self.rehearsal.enabled || self.rehearsal.allow_loopback)
+                        && self.rehearsal.registry.as_deref() == Some(registry.name.as_str())),
+            )?;
         }
 
         // Validate multiple registries if present
+        let mut registry_names = HashSet::new();
         for reg in &self.registries.registries {
             if reg.name.is_empty() {
                 bail!("registries[].name cannot be empty");
             }
+            if !registry_names.insert(reg.name.as_str()) {
+                bail!("duplicate registry name '{}'", reg.name);
+            }
             if reg.api_base.is_empty() {
                 bail!("registries[].api_base cannot be empty");
             }
+            validate_registry_destination(
+                reg,
+                allow_loopback
+                    || ((self.rehearsal.enabled || self.rehearsal.allow_loopback)
+                        && self.rehearsal.registry.as_deref() == Some(reg.name.as_str())),
+            )?;
         }
 
         // Ensure only one default registry
@@ -804,6 +878,13 @@ per_package_timeout = "30m"
 # [registry]
 # name = "crates-io"
 # api_base = "https://crates.io"
+# index_base = "https://index.crates.io"
+# allow_private = false  # opt in only for an explicitly trusted private registry
+
+# Optional: explicit local rehearsal/test posture
+# [rehearsal]
+# registry = "local"
+# allow_loopback = true
 
 # Optional: Webhook notifications for publish events
 # [webhook]
@@ -817,6 +898,20 @@ per_package_timeout = "30m"
 # timeout = "30s"
 "#.to_string()
     }
+}
+
+fn validate_registry_destination(registry: &RegistryConfig, allow_loopback: bool) -> Result<()> {
+    let identity = Registry {
+        name: registry.name.clone(),
+        api_base: registry.api_base.clone(),
+        index_base: registry.index_base.clone(),
+    };
+    let policy = RegistryPolicy::secure()
+        .with_private(registry.allow_private)
+        .with_loopback(allow_loopback);
+    ValidatedRegistry::new(identity, policy)
+        .map(|_| ())
+        .with_context(|| format!("invalid registry '{}' destination", registry.name))
 }
 
 #[cfg(test)]
@@ -879,6 +974,7 @@ mod tests {
                 index_base: None,
                 token: None,
                 default: false,
+                allow_private: false,
             }),
             ..Default::default()
         };
@@ -890,8 +986,119 @@ mod tests {
             index_base: None,
             token: None,
             default: false,
+            allow_private: false,
         });
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn registry_validation_requires_explicit_private_and_index_policy() {
+        let mut config = ShipperConfig {
+            registries: MultiRegistryConfig {
+                registries: vec![RegistryConfig {
+                    name: "private".to_string(),
+                    api_base: "https://10.0.0.5".to_string(),
+                    index_base: Some("https://10.0.0.5".to_string()),
+                    token: None,
+                    default: false,
+                    allow_private: false,
+                }],
+                default_registries: vec![],
+            },
+            ..ShipperConfig::default()
+        };
+        assert!(config.validate().is_err());
+
+        config.registries.registries[0].allow_private = true;
+        assert!(config.validate().is_ok());
+
+        config.registries.registries[0].index_base = None;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn loopback_registry_requires_rehearsal_posture() {
+        let mut config = ShipperConfig {
+            registries: MultiRegistryConfig {
+                registries: vec![
+                    RegistryConfig {
+                        name: "crates-io".to_string(),
+                        api_base: "https://crates.io".to_string(),
+                        index_base: Some("https://index.crates.io".to_string()),
+                        token: None,
+                        default: true,
+                        allow_private: false,
+                    },
+                    RegistryConfig {
+                        name: "local".to_string(),
+                        api_base: "http://127.0.0.1:8080".to_string(),
+                        index_base: Some("http://127.0.0.1:8080".to_string()),
+                        token: None,
+                        default: false,
+                        allow_private: false,
+                    },
+                ],
+                default_registries: vec![],
+            },
+            ..ShipperConfig::default()
+        };
+        assert!(config.validate().is_err());
+
+        config.rehearsal.allow_loopback = true;
+        config.rehearsal.registry = Some("local".to_string());
+        assert!(config.validate().is_ok());
+
+        config.rehearsal.allow_loopback = false;
+        config.rehearsal.registry = None;
+        assert!(config.validate_with_loopback(true).is_ok());
+    }
+
+    #[test]
+    fn loopback_only_posture_does_not_conflict_with_live_target() {
+        let mut config = ShipperConfig {
+            registry: Some(RegistryConfig {
+                name: "crates-io".to_string(),
+                api_base: "https://crates.io".to_string(),
+                index_base: Some("https://index.crates.io".to_string()),
+                token: None,
+                default: true,
+                allow_private: false,
+            }),
+            ..ShipperConfig::default()
+        };
+        config.rehearsal.allow_loopback = true;
+        config.rehearsal.registry = Some("crates-io".to_string());
+
+        assert!(config.validate().is_ok());
+
+        config.rehearsal.enabled = true;
+        let err = config
+            .validate()
+            .expect_err("enabled rehearsal must not target live registry");
+        assert!(err.to_string().contains("must differ"));
+    }
+
+    #[test]
+    fn registry_index_must_remain_in_the_configured_trust_domain() {
+        let mut config = ShipperConfig {
+            registry: Some(RegistryConfig {
+                name: "crates-io".to_string(),
+                api_base: "https://crates.io".to_string(),
+                index_base: Some("https://evil.example".to_string()),
+                token: None,
+                default: true,
+                allow_private: false,
+            }),
+            ..ShipperConfig::default()
+        };
+        assert!(config.validate().is_err());
+
+        config
+            .registry
+            .as_mut()
+            .expect("registry configured")
+            .index_base = Some("https://index.crates.io".to_string());
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -945,6 +1152,7 @@ skip_ownership_check = true
 [registry]
 name = "my-registry"
 api_base = "https://my-registry.example.com"
+index_base = "https://index.my-registry.example.com"
 "#;
 
         let config: ShipperConfig = toml::from_str(toml).unwrap();
@@ -952,6 +1160,10 @@ api_base = "https://my-registry.example.com"
         let registry = config.registry.unwrap();
         assert_eq!(registry.name, "my-registry");
         assert_eq!(registry.api_base, "https://my-registry.example.com");
+        assert_eq!(
+            registry.index_base.as_deref(),
+            Some("https://index.my-registry.example.com")
+        );
     }
 
     // ---- #97 rehearsal registry config plumbing ----
@@ -968,6 +1180,7 @@ api_base = "https://my-registry.example.com"
             config.rehearsal.registry.is_none(),
             "rehearsal registry default is None"
         );
+        assert!(!config.rehearsal.allow_loopback);
     }
 
     #[test]
@@ -1286,6 +1499,7 @@ enabled = true
                     index_base: Some("https://index.my-registry.example.com".to_string()),
                     token: None,
                     default: true,
+                    allow_private: false,
                 }),
                 registries: MultiRegistryConfig::default(),
                 webhook: WebhookConfig::default(),
@@ -1358,6 +1572,7 @@ enabled = true
                     index_base: None,
                     token: None,
                     default: false,
+                    allow_private: false,
                 }),
                 ..ShipperConfig::default()
             };
@@ -1520,6 +1735,7 @@ per_package_timeout = "15m"
                     index_base: None,
                     token: None,
                     default: false,
+                    allow_private: false,
                 }),
                 ..ShipperConfig::default()
             };
@@ -1561,6 +1777,7 @@ per_package_timeout = "15m"
                         index_base: None,
                         token: None,
                         default: false,
+                        allow_private: false,
                     }],
                     default_registries: vec![],
                 },
@@ -1580,6 +1797,7 @@ per_package_timeout = "15m"
                         index_base: None,
                         token: None,
                         default: false,
+                        allow_private: false,
                     }],
                     default_registries: vec![],
                 },
@@ -1597,16 +1815,18 @@ per_package_timeout = "15m"
                         RegistryConfig {
                             name: "reg-a".to_string(),
                             api_base: "https://a.example.com".to_string(),
-                            index_base: None,
+                            index_base: Some("https://index.a.example.com".to_string()),
                             token: None,
                             default: true,
+                            allow_private: false,
                         },
                         RegistryConfig {
                             name: "reg-b".to_string(),
                             api_base: "https://b.example.com".to_string(),
-                            index_base: None,
+                            index_base: Some("https://index.b.example.com".to_string()),
                             token: None,
                             default: true,
+                            allow_private: false,
                         },
                     ],
                     default_registries: vec![],
@@ -2052,6 +2272,7 @@ per_package_timeout = "2h"
 [registry]
 name = "my-reg"
 api_base = "https://example.com"
+index_base = "https://index.example.com"
 "#;
             let config: ShipperConfig = toml::from_str(toml).unwrap();
             let reg = config.registry.as_ref().unwrap();
@@ -2138,16 +2359,18 @@ max_delay = "5s"
                         RegistryConfig {
                             name: "reg-a".to_string(),
                             api_base: "https://a.example.com".to_string(),
-                            index_base: None,
+                            index_base: Some("https://index.a.example.com".to_string()),
                             token: None,
                             default: true,
+                            allow_private: false,
                         },
                         RegistryConfig {
                             name: "reg-b".to_string(),
                             api_base: "https://b.example.com".to_string(),
-                            index_base: None,
+                            index_base: Some("https://index.b.example.com".to_string()),
                             token: None,
                             default: true,
+                            allow_private: false,
                         },
                     ],
                     default_registries: vec![],
@@ -2163,6 +2386,37 @@ max_delay = "5s"
         }
 
         #[test]
+        fn duplicate_registry_names_fail_validation() {
+            let config = ShipperConfig {
+                registries: MultiRegistryConfig {
+                    registries: vec![
+                        RegistryConfig {
+                            name: "same-name".to_string(),
+                            api_base: "https://one.example.com".to_string(),
+                            index_base: Some("https://index.one.example.com".to_string()),
+                            token: None,
+                            default: false,
+                            allow_private: false,
+                        },
+                        RegistryConfig {
+                            name: "same-name".to_string(),
+                            api_base: "https://two.example.com".to_string(),
+                            index_base: Some("https://index.two.example.com".to_string()),
+                            token: None,
+                            default: false,
+                            allow_private: false,
+                        },
+                    ],
+                    default_registries: vec![],
+                },
+                ..ShipperConfig::default()
+            };
+
+            let err = config.validate().unwrap_err();
+            assert!(err.to_string().contains("duplicate registry name"));
+        }
+
+        #[test]
         fn registries_with_empty_name_fails_validation() {
             let config = ShipperConfig {
                 registries: MultiRegistryConfig {
@@ -2172,6 +2426,7 @@ max_delay = "5s"
                         index_base: None,
                         token: None,
                         default: false,
+                        allow_private: false,
                     }],
                     default_registries: vec![],
                 },
@@ -2190,6 +2445,7 @@ max_delay = "5s"
                         index_base: None,
                         token: None,
                         default: false,
+                        allow_private: false,
                     }],
                     default_registries: vec![],
                 },
@@ -2243,7 +2499,7 @@ max_delay = "5s"
         fn very_long_registry_name() {
             let long_name = "r".repeat(11_000);
             let toml = format!(
-                "[registry]\nname = \"{}\"\napi_base = \"https://example.com\"",
+                "[registry]\nname = \"{}\"\napi_base = \"https://example.com\"\nindex_base = \"https://index.example.com\"",
                 long_name
             );
             let config: ShipperConfig = toml::from_str(&toml).unwrap();
@@ -2254,7 +2510,10 @@ max_delay = "5s"
         #[test]
         fn very_long_api_base_url() {
             let long_url = format!("https://example.com/{}", "x".repeat(11_000));
-            let toml = format!("[registry]\nname = \"reg\"\napi_base = \"{}\"", long_url);
+            let toml = format!(
+                "[registry]\nname = \"reg\"\napi_base = \"{}\"\nindex_base = \"https://index.example.com\"",
+                long_url
+            );
             let config: ShipperConfig = toml::from_str(&toml).unwrap();
             assert!(config.validate().is_ok());
         }
@@ -2299,6 +2558,7 @@ max_delay = "5s"
 [registry]
 name = "登録-ré̀gistry-🦀"
 api_base = "https://例え.jp/api"
+index_base = "https://index.例え.jp"
 "#;
             let config: ShipperConfig = toml::from_str(toml).unwrap();
             let reg = config.registry.as_ref().unwrap();
@@ -2468,6 +2728,7 @@ mode = "turbo"
                         index_base: None,
                         token: None,
                         default: false,
+                        allow_private: false,
                     },
                     RegistryConfig {
                         name: "second".to_string(),
@@ -2475,6 +2736,7 @@ mode = "turbo"
                         index_base: None,
                         token: None,
                         default: true,
+                        allow_private: false,
                     },
                 ],
                 default_registries: vec![],
@@ -2492,6 +2754,7 @@ mode = "turbo"
                     index_base: None,
                     token: None,
                     default: false,
+                    allow_private: false,
                 }],
                 default_registries: vec![],
             };

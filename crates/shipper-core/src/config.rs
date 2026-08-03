@@ -577,6 +577,7 @@ lines = 123
                         index_base: None,
                         token: None,
                         default: true,
+                        allow_private: false,
                     },
                     RegistryConfig {
                         name: "reg-b".to_string(),
@@ -584,6 +585,7 @@ lines = 123
                         index_base: None,
                         token: None,
                         default: false,
+                        allow_private: false,
                     },
                 ],
                 default_registries: vec![],
@@ -611,6 +613,7 @@ lines = 123
                         index_base: Some("https://index.a.example.com".to_string()),
                         token: None,
                         default: true,
+                        allow_private: false,
                     },
                     RegistryConfig {
                         name: "reg-b".to_string(),
@@ -618,6 +621,7 @@ lines = 123
                         index_base: None,
                         token: None,
                         default: false,
+                        allow_private: false,
                     },
                 ],
                 default_registries: vec![],
@@ -868,6 +872,7 @@ base_path = "artifacts/"
 [[registries.registries]]
 name = "primary"
 api_base = "https://primary.example.com"
+index_base = "https://index.primary.example.com"
 default = true
 
 [[registries.registries]]
@@ -1188,6 +1193,7 @@ bucket = "bucket"
                     index_base: None,
                     token: None,
                     default: false,
+                    allow_private: false,
                 },
                 RegistryConfig {
                     name: "beta".to_string(),
@@ -1195,6 +1201,7 @@ bucket = "bucket"
                     index_base: None,
                     token: None,
                     default: false,
+                    allow_private: false,
                 },
             ],
             default_registries: vec![],

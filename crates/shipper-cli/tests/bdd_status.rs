@@ -23,6 +23,12 @@ fn shipper_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("shipper-cli"))
 }
 
+fn loopback_shipper_cmd() -> Command {
+    let mut command = shipper_cmd();
+    command.arg("--allow-loopback");
+    command
+}
+
 struct TestRegistry {
     base_url: String,
     handle: thread::JoinHandle<()>,
@@ -160,7 +166,7 @@ mod version_reporting {
         let registry = spawn_registry(vec![404], 3);
 
         // When: We run shipper status
-        let output = shipper_cmd()
+        let output = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -202,7 +208,7 @@ mod version_reporting {
 
         // When: We run shipper status
         // Then: The single crate version is shown
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -235,7 +241,7 @@ mod published_status_detection {
 
         // When: We run shipper status
         // Then: The crate is shown as "published"
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -260,7 +266,7 @@ mod published_status_detection {
 
         // When: We run shipper status
         // Then: The crate is shown as "missing"
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -284,7 +290,7 @@ mod published_status_detection {
         let registry = spawn_registry(vec![200, 404, 404], 3);
 
         // When: We run shipper status
-        let output = shipper_cmd()
+        let output = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -331,7 +337,7 @@ mod package_filtering {
         let registry = spawn_registry(vec![404], 1);
 
         // When: We run shipper status --package core-lib
-        let output = shipper_cmd()
+        let output = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -376,7 +382,7 @@ mod package_filtering {
         let registry = spawn_registry(vec![404], 2);
 
         // When: We run shipper status --package core-lib --package mid-lib
-        let output = shipper_cmd()
+        let output = loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -423,7 +429,7 @@ mod no_workspace_error {
 
         // When: We run shipper status pointing at the non-workspace directory
         // Then: The command fails
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("status")
@@ -439,7 +445,7 @@ mod no_workspace_error {
 
         // When: We run shipper status
         // Then: The command fails (no panic, exits with non-zero)
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("status")
@@ -472,7 +478,7 @@ mod connectivity_failures {
 
         // When: We run shipper status against the unreachable registry
         // Then: The command fails without panicking (exit code != 0)
-        shipper_cmd()
+        loopback_shipper_cmd()
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")

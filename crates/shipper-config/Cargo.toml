@@ -20,6 +20,7 @@ shipper-types.workspace = true
 shipper-encrypt.workspace = true
 shipper-webhook.workspace = true
 shipper-retry.workspace = true
+shipper-registry.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

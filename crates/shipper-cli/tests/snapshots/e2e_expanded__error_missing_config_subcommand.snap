@@ -16,6 +16,7 @@ Options:
       --manifest-path <MANIFEST_PATH>  Path to the workspace Cargo.toml [default: Cargo.toml]
       --registry <REGISTRY>            Cargo registry name (default: crates-io)
       --api-base <API_BASE>            Registry API base URL (default: <https://crates.io>)
+      --allow-loopback                 Permit loopback HTTP for an explicitly configured local test or rehearsal registry. Does not permit private-network destinations
       --package <PACKAGES>             Restrict to specific packages (repeatable). If omitted, publishes all publishable workspace members
       --state-dir <STATE_DIR>          Directory for shipper state and receipts (default: .shipper)
       --format <FORMAT>                Output format: text (default) or json [default: text] [possible values: text, json]

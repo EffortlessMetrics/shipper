@@ -53,6 +53,16 @@ Post-0.4.0 release cleanup. Resolves the carry-over items flagged in the
 
 ### Changed
 
+- **Registry destination trust boundary.** Registry API and sparse-index URLs
+  now require secure, explicitly validated destinations, trusted host-family
+  alignment, and explicit private/rehearsal opt-ins. Custom registries must
+  now declare `index_base`; only the built-in crates.io target retains its
+  well-known index default. Sanitized
+  `RegistryPolicyApplied` evidence records the applied posture. The new public
+  `RuntimeOptions.registry_policies` field is an intentional API change for
+  carrying these per-registry trust choices; downstream struct-literal callers
+  must initialize it (or migrate to their own options constructor).
+
 - **Package execution timeout policy.** Sequential and parallel publish paths
   now apply the configured finite `per_package_timeout` ceiling to each Cargo
   package operation. The existing parallel configuration key remains the

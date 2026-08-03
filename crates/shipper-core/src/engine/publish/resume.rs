@@ -165,6 +165,7 @@ mod tests {
             webhook: WebhookConfig::default(),
             encryption: EncryptionConfig::default(),
             registries: vec![Registry::crates_io()],
+            registry_policies: Default::default(),
             resume_from: resume_from.map(|s| s.to_string()),
             rehearsal_registry: None,
             rehearsal_skip: false,

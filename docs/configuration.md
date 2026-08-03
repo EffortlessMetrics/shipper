@@ -207,9 +207,24 @@ Controls parallel publishing behavior. When enabled, packages at the same depend
 [registry]
 name = "crates-io"
 api_base = "https://crates.io"
+index_base = "https://index.crates.io"
+# Custom registries must declare their sparse index explicitly.
+# allow_private = false
+# Loopback HTTP is disabled by default. Enable it only for a named local test
+# registry through the explicit [rehearsal] posture below.
 ```
 
 Optional custom registry configuration. If not specified, defaults to crates.io.
+Registry API and index URLs must use HTTPS. URLs with userinfo, queries, or
+fragments are rejected. Literal private-network destinations require the
+explicit `allow_private = true` opt-in; metadata and link-local destinations
+remain rejected. Plain HTTP is reserved for a configured local test registry
+whose `[rehearsal]` section identifies that registry and sets
+`allow_loopback = true`; `rehearsal.enabled = true` also grants that named
+registry the explicit rehearsal posture.
+For command-line-only local fixtures, `--allow-loopback` provides the same
+explicit loopback posture for the selected registry; it never enables private
+network destinations or the live-publish rehearsal gate.
 
 ## CLI Override
 
@@ -302,6 +317,7 @@ per_package_timeout = "30m"
 # [registry]
 # name = "crates-io"
 # api_base = "https://crates.io"
+# index_base = "https://index.crates.io"
 ```
 
 ## Migration from CLI Flags
