@@ -613,8 +613,32 @@ impl ShipperConfig {
         Self::load_from_file(&config_path).map(Some)
     }
 
+    /// Load a workspace configuration for diagnostic reporting without
+    /// applying value or registry-destination validation.
+    pub fn load_from_workspace_for_diagnostics(workspace_root: &Path) -> Result<Option<Self>> {
+        let config_path = workspace_root.join(".shipper.toml");
+        if !config_path.exists() {
+            return Ok(None);
+        }
+        Self::load_from_file_for_diagnostics(&config_path).map(Some)
+    }
+
     /// Load configuration from a specific file path
     pub fn load_from_file(path: &Path) -> Result<Self> {
+        Self::load_from_file_with_validation(path, true)
+    }
+
+    /// Load configuration for diagnostic reporting without applying value or
+    /// registry-destination validation.
+    ///
+    /// Diagnostic commands must be able to report an unsafe registry URL
+    /// without using it as a trusted destination. Callers must validate the
+    /// returned configuration before using it for execution.
+    pub fn load_from_file_for_diagnostics(path: &Path) -> Result<Self> {
+        Self::load_from_file_with_validation(path, false)
+    }
+
+    fn load_from_file_with_validation(path: &Path, validate_values: bool) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
@@ -634,9 +658,14 @@ impl ShipperConfig {
         // parallel, registries). Without this, an invalid config (e.g.
         // output.lines = 0) loads silently and only fails deep in the
         // publish path.
-        config
-            .validate()
-            .with_context(|| format!("invalid configuration in file: {}", path.display()))?;
+        if validate_values {
+            config.validate().with_context(|| {
+                format!(
+                    "configuration validation failed in file: {}",
+                    path.display()
+                )
+            })?;
+        }
 
         Ok(config)
     }
@@ -3088,6 +3117,35 @@ mod config_parsing_edge_case_tests {
 
         let config = ShipperConfig::load_from_file(&config_path).expect("parse");
         assert_eq!(config.schema_version, "shipper.config.v1");
+    }
+
+    #[test]
+    fn diagnostic_loader_defers_registry_destination_validation() {
+        let td = tempdir().expect("tempdir");
+        let config_path = td.path().join(".shipper.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+schema_version = "shipper.config.v1"
+
+[registry]
+name = "unsafe-test"
+api_base = "http://127.0.0.1:9/api"
+"#,
+        )
+        .expect("write");
+
+        assert!(ShipperConfig::load_from_file(&config_path).is_err());
+        let config = ShipperConfig::load_from_file_for_diagnostics(&config_path)
+            .expect("diagnostic loader should parse config");
+        assert_eq!(
+            config
+                .registry
+                .as_ref()
+                .map(|registry| registry.name.as_str()),
+            Some("unsafe-test")
+        );
+        assert!(config.validate().is_err());
     }
 
     // ── Empty TOML file uses all defaults ────────────────────────────

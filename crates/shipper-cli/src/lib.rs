@@ -1055,17 +1055,26 @@ pub fn run() -> Result<std::process::ExitCode> {
     };
 
     // Load configuration file
-    let config =
-        if let Some(ref config_path) = cli.config {
-            // Use custom config file specified via --config
-            Some(ShipperConfig::load_from_file(config_path).with_context(|| {
-                format!("Failed to load config from: {}", config_path.display())
-            })?)
+    let diagnostic_command = matches!(cli.cmd.as_ref(), Some(Commands::Doctor));
+    let config = if let Some(ref config_path) = cli.config {
+        // Use custom config file specified via --config
+        let load = if diagnostic_command {
+            ShipperConfig::load_from_file_for_diagnostics(config_path)
         } else {
-            // Try to load .shipper.toml from workspace root
-            ShipperConfig::load_from_workspace(&planned.workspace_root)
-                .with_context(|| "Failed to load config from workspace")?
+            ShipperConfig::load_from_file(config_path)
         };
+        Some(
+            load.with_context(|| format!("Failed to load config from: {}", config_path.display()))?,
+        )
+    } else {
+        // Try to load .shipper.toml from workspace root
+        let load = if diagnostic_command {
+            ShipperConfig::load_from_workspace_for_diagnostics(&planned.workspace_root)
+        } else {
+            ShipperConfig::load_from_workspace(&planned.workspace_root)
+        };
+        load.with_context(|| "Failed to load config from workspace")?
+    };
 
     // Validate loaded configuration before using it for runtime options.
     // `doctor` intentionally keeps destination validation in its connectivity
@@ -5777,7 +5786,7 @@ lines = 0
             result.is_err(),
             "config validate should fail for invalid file"
         );
-        let err = result.unwrap_err().to_string();
+        let err = format!("{:#}", result.unwrap_err());
         // The error is wrapped in context, so check the full message
         assert!(
             err.contains("output.lines must be greater than 0")
