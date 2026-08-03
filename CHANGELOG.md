@@ -7,11 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Post-0.4.0 release cleanup. Resolves the carry-over items flagged in the
-0.4.0 readiness evidence packet and CHANGELOG.
+## [0.5.0] - 2026-08-01
+
+Evidence-shape release. 0.5.0 closes the gaps between what Shipper *did* and
+what its durable artifacts *recorded*: uploaded-but-unverified packages,
+pending reconciliations, and per-attempt detail are now written to
+`events.jsonl` and projected into `state.json` instead of living only in
+process memory. It also gives CI a machine-readable outcome vocabulary
+(structured exit codes plus `execution_result` on the receipt) and finishes the
+post-0.4.0 cleanup carried over from the 0.4.0 readiness packet.
+
+**Consumers of `events.jsonl`, `state.json`, and `receipt.json` should read the
+Changed section.** Every shape change below is additive and
+backward-compatible on read, but new fields and new event records appear in
+artifacts written by 0.5.0.
+
+### Added
+
+- **Exit-code vocabulary and `execution_result` on the receipt.** `shipper
+  publish` and `shipper resume` now exit `0` on success, `1` on complete
+  failure, and `2` on partial failure where resume is safe, so CI can branch on
+  the exit status instead of parsing stderr. The `Receipt` gains an
+  `execution_result` field (`#[serde(default)]`, so pre-0.5.0 receipts still
+  deserialize as `Success`), and the publish/resume JSON envelopes gain a
+  matching top-level `execution_result`. The sequential path still fail-fasts on
+  the first package failure and exits `1`; the structured mapping fires wherever
+  a receipt is produced.
+- **`safe_to_rerun` in the publish JSON envelope.** `PublishJsonReport` now
+  reports whether rerunning the command is safe — true only when no packages
+  remain pending, failed, ambiguous, or uploaded-but-unverified.
+
+### Changed
+
+- **Shared package execution and scheduler conformance.** Sequential and
+  parallel publishing now use one per-package execution authority, event-first
+  transitions, resume-skip operation, readiness evidence, and run-start
+  notification contract. The exact evidence is tracked in
+  `plans/0.5.0-scheduler-conformance.md`.
+- **Readiness authority.** Registry polling, attempt numbering, backoff, actual
+  sleep-duration evidence, timeout posture, and visibility evidence now have one
+  shared registry-client kernel; the engine retains local-index selection and
+  durable event adaptation.
+- **`PackageUploaded` is a durable readiness checkpoint.** The window between a
+  successful `cargo publish` upload and registry-visible readiness is now
+  recorded in `events.jsonl` and projected into `state.json` rather than held in
+  memory. A run interrupted inside that window resumes from the uploaded
+  checkpoint instead of re-attempting the upload. `docs/INVARIANTS.md` records
+  the checkpoint contract.
+- **Pending reconciliation state is projected into `state.json`.** Packages
+  awaiting registry-truth reconciliation after an ambiguous Cargo outcome now
+  appear in the state projection with their pending reconciliation state, so
+  `state.json` no longer looks quiescent while reconciliation is still in
+  flight.
+- **Attempt details are persisted through the event boundary.** Retry,
+  reconciliation, and terminal transitions commit matching evidence and state
+  together through the shared event-first transition boundary in both the
+  sequential and parallel paths, so an attempt recorded in `state.json` always
+  has a corresponding event.
+- **`attempt_history` is rebuilt from events.** Attempt history reconstructs
+  from `events.jsonl` alone, `PackageAttempted` carries `max_attempts` so the
+  rebuild is faithful, and finalization enforces attempt-history parity between
+  the event log and the state projection. Success attempts finalize at
+  `PackageUploaded` and the first failure's fields are preserved, so rebuilt
+  history matches `state.json` across resume and retry paths.
+- **Shared terminal resume-skip gate across publish modes.** Already-`Published`
+  and `Skipped` packages are handled by the shared package executor, so
+  sequential and parallel runs take the same trusted resume-skip path. Resume
+  receipts now include entries for already-complete packages instead of coming
+  back empty for a fully terminal run.
+- **Package execution timeout policy.** Sequential and parallel publish paths
+  now apply the configured finite `per_package_timeout` ceiling to each Cargo
+  package operation. The existing parallel configuration key remains the
+  compatibility source for this shared runtime policy for one migration cycle.
+- **`duration_suboptimal_units` clippy lint activated.** All 223 workspace
+  sites rewritten to their optimal `Duration` unit via `cargo clippy --fix`
+  (behavior-preserving exact aliases), and the lint moved from `[[planned]]` →
+  `[[active]]` in `policy/clippy-lints.toml`. Closes the last planned lint from
+  the #191 Clippy ratchet rollout and the 0.4.0 readiness carry-over.
 
 ### Fixed
 
+- **Parallel fallback branches now emit `PackagePublished`.** Two fallback
+  branches in the parallel publish path advanced `state.json` to `Published`
+  without recording the matching `PackagePublished` event, violating the
+  events-as-truth invariant. Both branches (the "still Uploaded → final check"
+  and "final chance after error" paths, which fire when readiness times out but
+  a later existence check finds the package) now record the event, so the
+  finalization consistency check no longer turns a successful publish into a
+  drift failure.
+- **Multi-line `Error:` / `Caused by:` rendering restored.** The exit-code work
+  had switched both binary entry points to `eprintln!("{e:#}")`, which flattens
+  an `anyhow` cause chain onto one line and regressed every operator-facing
+  error path (`config validate`, `resume`, `plan`, `preflight`, `publish`,
+  duration/policy/verify-mode parsing). Top-level error rendering is now
+  centralized in `shipper-cli` and both binaries route through it, so the
+  readable multi-line form is back and the two entry points cannot diverge. The
+  exit-code vocabulary is preserved.
+- **First-run help flags scoped.** Advanced release-execution flags are hidden
+  from the help output of `shipper`, `shipper plan`, and `shipper doctor` so
+  first-run help does not read like a publish control panel. The flags remain
+  parseable everywhere for compatibility.
+- **Parallel resume state lock panic.** The parallel resume flow no longer
+  panics when acquiring execution-state locks.
 - **`engine/parallel` mutex poison posture.** All production `.lock().unwrap()`
   sites in `engine/parallel/` (40 sites across `publish.rs` and `mod.rs`) now
   handle poison gracefully instead of panicking: `Result`-returning sites
@@ -51,17 +148,8 @@ Post-0.4.0 release cleanup. Resolves the carry-over items flagged in the
   (`production_sites=0`), achieving the policy goal in
   `docs/NO_PANIC_POLICY.md`.
 
-### Changed
+### Security
 
-- **Shared package execution and scheduler conformance.** Sequential and
-  parallel publishing now use one per-package execution authority, event-first
-  transitions, resume-skip operation, readiness evidence, and run-start
-  notification contract. The exact evidence is tracked in
-  `plans/0.5.0-scheduler-conformance.md`.
-- **Readiness authority.** Registry polling, attempt numbering, backoff, actual
-  sleep-duration evidence, timeout posture, and visibility evidence now have one
-  shared registry-client kernel; the engine retains local-index selection and
-  durable event adaptation.
 - **Versioned encryption migration.** New encrypted payloads use versioned
   PBKDF2-HMAC-SHA256 parameters at the stronger 600,000-iteration default.
   Existing unversioned KDF v1 payloads remain decryptable at their legacy
@@ -83,16 +171,8 @@ Post-0.4.0 release cleanup. Resolves the carry-over items flagged in the
   carrying these per-registry trust choices; downstream struct-literal callers
   must initialize it (or migrate to their own options constructor).
 
-- **Package execution timeout policy.** Sequential and parallel publish paths
-  now apply the configured finite `per_package_timeout` ceiling to each Cargo
-  package operation. The existing parallel configuration key remains the
-  compatibility source for this shared runtime policy for one migration cycle.
-
-- **`duration_suboptimal_units` clippy lint activated.** All 223 workspace
-  sites rewritten to their optimal `Duration` unit via `cargo clippy --fix`
-  (behavior-preserving exact aliases), and the lint moved from `[[planned]]` →
-  `[[active]]` in `policy/clippy-lints.toml`. Closes the last planned lint from
-  the #191 Clippy ratchet rollout and the 0.4.0 readiness carry-over.
+- **`quinn-proto` security patch.** Bumped `quinn-proto` 0.11.14 → 0.11.15 in
+  `Cargo.lock` to pick up the upstream security fix.
 
 ### Resolved carry-over
 
