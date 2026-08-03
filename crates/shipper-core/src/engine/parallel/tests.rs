@@ -20,8 +20,8 @@ use crate::state::events;
 use crate::state::rebuild::{StateRebuildOptions, rebuild_state_from_events};
 use shipper_types::{
     AttemptDetail, ErrorClass, EventType, ExecutionState, PackageEvidence, PackageProgress,
-    PackageReceipt, PackageState, PlannedPackage, PublishLevel, ReadinessConfig, Registry,
-    ReleasePlan, RuntimeOptions,
+    PackageReceipt, PackageState, PlannedPackage, PublishEvent, PublishLevel, ReadinessConfig,
+    Registry, ReleasePlan, RuntimeOptions,
 };
 
 fn error_class_rank(error_class: &Option<ErrorClass>) -> u8 {
@@ -2851,6 +2851,42 @@ fn test_resume_from_skip_mode_parity_preserves_durable_evidence() {
             attempt_history: vec![],
             packages,
         };
+        let prior_attempt_started_at = chrono::DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
+            .expect("prior attempt start timestamp")
+            .with_timezone(&Utc);
+        let prior_attempt_finished_at =
+            chrono::DateTime::parse_from_rfc3339("2020-01-01T00:00:01Z")
+                .expect("prior attempt finish timestamp")
+                .with_timezone(&Utc);
+        state.attempt_history.push(AttemptDetail {
+            package: "base".to_string(),
+            version: "1.0.0".to_string(),
+            attempt: 2,
+            max_attempts: 3,
+            started_at: prior_attempt_started_at,
+            ended_at: prior_attempt_finished_at,
+            error_class: None,
+            next_attempt_at: None,
+            redacted_message: None,
+        });
+        let mut prior_events = events::EventLog::new();
+        prior_events.record(PublishEvent {
+            timestamp: prior_attempt_started_at,
+            event_type: EventType::PackageAttempted {
+                attempt: 2,
+                command: "cargo publish -p base".to_string(),
+                max_attempts: 3,
+            },
+            package: "base@1.0.0".to_string(),
+        });
+        prior_events.record(PublishEvent {
+            timestamp: prior_attempt_finished_at,
+            event_type: EventType::PackagePublished { duration_ms: 1 },
+            package: "base@1.0.0".to_string(),
+        });
+        prior_events
+            .write_to_file(&events_path)
+            .expect("write prior resume events");
         let mut reporter = CollectingReporter::default();
         let cargo_bin = fake_cargo_path(&bin).to_str().expect("utf8").to_string();
         let cargo_args_path = cargo_args.to_str().expect("utf8").to_string();
@@ -2886,21 +2922,46 @@ fn test_resume_from_skip_mode_parity_preserves_durable_evidence() {
             .iter()
             .map(|event| format!("{}::{:?}", event.package, event.event_type))
             .collect::<Vec<_>>();
+        let rebuilt = rebuild_state_from_events(
+            &events_path,
+            StateRebuildOptions::new(state.registry.clone()).with_fallback_plan_id(&state.plan_id),
+        )
+        .expect("rebuild resume-from events");
         let cargo_invocations = fs::read_to_string(&cargo_args).unwrap_or_default();
-        (receipts, state, signatures, cargo_invocations)
+        (receipts, state, signatures, cargo_invocations, rebuilt)
     };
 
-    let (sequential_receipts, sequential_state, sequential_events, sequential_cargo) =
-        run_case(false);
-    let (parallel_receipts, parallel_state, parallel_events, parallel_cargo) = run_case(true);
+    let (
+        sequential_receipts,
+        sequential_state,
+        sequential_events,
+        sequential_cargo,
+        sequential_rebuilt,
+    ) = run_case(false);
+    let (parallel_receipts, parallel_state, parallel_events, parallel_cargo, parallel_rebuilt) =
+        run_case(true);
 
     assert_eq!(sequential_events, parallel_events);
     assert_eq!(sequential_cargo, parallel_cargo);
     assert!(sequential_cargo.trim().is_empty());
+    assert_eq!(
+        normalized_receipts(&sequential_receipts, "resume-from-skip", "sequential"),
+        normalized_receipts(&parallel_receipts, "resume-from-skip", "parallel")
+    );
     assert_eq!(sequential_receipts.len(), 1);
     assert_eq!(parallel_receipts.len(), 1);
     assert_eq!(sequential_receipts[0].name, "dependent");
     assert_eq!(parallel_receipts[0].name, "dependent");
+    assert!(
+        sequential_receipts[0].evidence.attempts.is_empty(),
+        "resume-from skip must not fabricate cargo attempt evidence"
+    );
+    assert!(
+        sequential_receipts
+            .iter()
+            .all(|receipt| receipt.name != "base"),
+        "a package skipped before the resume point must not get a fabricated receipt"
+    );
     assert_eq!(sequential_receipts[0].state, parallel_receipts[0].state);
     assert_eq!(
         sequential_state.packages.len(),
@@ -2933,6 +2994,44 @@ fn test_resume_from_skip_mode_parity_preserves_durable_evidence() {
             parallel.next_attempt_at.is_some()
         );
     }
+    for (key, sequential_progress) in &sequential_state.packages {
+        let sequential_rebuilt_progress = sequential_rebuilt
+            .packages
+            .get(key)
+            .expect("sequential rebuilt package");
+        let parallel_rebuilt_progress = parallel_rebuilt
+            .packages
+            .get(key)
+            .expect("parallel rebuilt package");
+        assert_eq!(
+            sequential_rebuilt_progress.name, sequential_progress.name,
+            "rebuild package name for {key}"
+        );
+        assert_eq!(
+            sequential_rebuilt_progress.version, sequential_progress.version,
+            "rebuild package version for {key}"
+        );
+        assert_eq!(
+            sequential_rebuilt_progress.attempts, sequential_progress.attempts,
+            "rebuild attempts for {key}"
+        );
+        assert_eq!(
+            sequential_rebuilt_progress.state, parallel_rebuilt_progress.state,
+            "sequential and parallel rebuilt state for {key}"
+        );
+        assert_eq!(
+            sequential_rebuilt_progress.attempts, parallel_rebuilt_progress.attempts,
+            "sequential and parallel rebuilt attempts for {key}"
+        );
+    }
+    assert_eq!(
+        sequential_rebuilt.attempt_history, sequential_state.attempt_history,
+        "event rebuild must preserve prior attempt history"
+    );
+    assert_eq!(
+        sequential_rebuilt.attempt_history, parallel_rebuilt.attempt_history,
+        "sequential and parallel rebuilt attempt history"
+    );
     assert!(sequential_events.iter().any(|event| {
         event.contains("base@1.0.0::PackageSkipped")
             && event.contains("resume: state already published")
