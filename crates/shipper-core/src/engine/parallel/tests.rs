@@ -6373,6 +6373,9 @@ enum ModeParityScenario {
     ReadinessTimeoutThenVisible,
     PermanentFailure,
     AlreadyPublishedInState,
+    AmbiguousResolvesPublished,
+    AmbiguousRetriesWhenNotPublished,
+    AmbiguousStillUnknown,
     StillUnknownResume,
     EventWriteFailure,
 }
@@ -6399,6 +6402,18 @@ const MODE_PARITY_CORPUS: &[ModeParityCase] = &[
     ModeParityCase {
         name: "already_published_in_state",
         scenario: ModeParityScenario::AlreadyPublishedInState,
+    },
+    ModeParityCase {
+        name: "ambiguous_resolves_published",
+        scenario: ModeParityScenario::AmbiguousResolvesPublished,
+    },
+    ModeParityCase {
+        name: "ambiguous_retries_when_not_published",
+        scenario: ModeParityScenario::AmbiguousRetriesWhenNotPublished,
+    },
+    ModeParityCase {
+        name: "ambiguous_still_unknown",
+        scenario: ModeParityScenario::AmbiguousStillUnknown,
     },
     ModeParityCase {
         name: "still_unknown_resume",
@@ -6457,6 +6472,42 @@ fn mode_parity_routes(
             BTreeMap::new(),
             0,
         ),
+        ModeParityScenario::AmbiguousResolvesPublished => (
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                // Initial visibility check, first ambiguous reconciliation,
+                // then the second reconciliation observes visibility.
+                vec![
+                    (404, "{}".to_string()),
+                    (404, "{}".to_string()),
+                    (200, "{}".to_string()),
+                ],
+            )]),
+            3,
+        ),
+        ModeParityScenario::AmbiguousRetriesWhenNotPublished => (
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                // Initial visibility check, one reconciliation per attempt,
+                // then the final visibility check after exhaustion.
+                vec![
+                    (404, "{}".to_string()),
+                    (404, "{}".to_string()),
+                    (404, "{}".to_string()),
+                    (404, "{}".to_string()),
+                ],
+            )]),
+            4,
+        ),
+        ModeParityScenario::AmbiguousStillUnknown => (
+            BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                // Initial visibility check and the single reconciliation
+                // query both fail closed as StillUnknown.
+                vec![(500, "{}".to_string()), (500, "{}".to_string())],
+            )]),
+            2,
+        ),
         ModeParityScenario::StillUnknownResume => (
             BTreeMap::from([(
                 "/api/v1/crates/demo/0.1.0".to_string(),
@@ -6474,6 +6525,9 @@ fn mode_parity_seed_state(ws: &PlannedWorkspace, scenario: ModeParityScenario) -
         ModeParityScenario::CleanPublish
         | ModeParityScenario::ReadinessTimeoutThenVisible
         | ModeParityScenario::PermanentFailure => init_state_for_workspace(ws),
+        ModeParityScenario::AmbiguousResolvesPublished
+        | ModeParityScenario::AmbiguousRetriesWhenNotPublished
+        | ModeParityScenario::AmbiguousStillUnknown => init_state_for_workspace(ws),
         ModeParityScenario::AlreadyPublishedInState => {
             init_state_with_checkpoint(ws, &pkg_key("demo", "0.1.0"), PackageState::Published, 1)
         }
@@ -6500,6 +6554,15 @@ fn mode_parity_cargo_env<'a>(
         | ModeParityScenario::AlreadyPublishedInState => vec![
             ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
             ("SHIPPER_CARGO_EXIT", Some("0")),
+            ("SHIPPER_CARGO_STDERR", Some("")),
+            ("SHIPPER_CARGO_STDOUT", Some("")),
+        ],
+        ModeParityScenario::AmbiguousResolvesPublished
+        | ModeParityScenario::AmbiguousRetriesWhenNotPublished
+        | ModeParityScenario::AmbiguousStillUnknown => vec![
+            ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
+            ("SHIPPER_CARGO_ARGS_LOG", Some(cargo_args_log)),
+            ("SHIPPER_CARGO_EXIT", Some("1")),
             ("SHIPPER_CARGO_STDERR", Some("")),
             ("SHIPPER_CARGO_STDOUT", Some("")),
         ],
@@ -6551,11 +6614,24 @@ fn run_mode_parity_case(
     let mut opts = default_opts(state_dir.clone());
     opts.parallel.enabled = parallel;
     opts.readiness.enabled = matches!(scenario, ModeParityScenario::ReadinessTimeoutThenVisible);
-    opts.max_attempts = if matches!(scenario, ModeParityScenario::ReadinessTimeoutThenVisible) {
+    opts.max_attempts = if matches!(
+        scenario,
+        ModeParityScenario::ReadinessTimeoutThenVisible
+            | ModeParityScenario::AmbiguousResolvesPublished
+            | ModeParityScenario::AmbiguousRetriesWhenNotPublished
+    ) {
         2
     } else {
         1
     };
+    if matches!(
+        scenario,
+        ModeParityScenario::AmbiguousResolvesPublished
+            | ModeParityScenario::AmbiguousRetriesWhenNotPublished
+            | ModeParityScenario::AmbiguousStillUnknown
+    ) {
+        opts.readiness.enabled = false;
+    }
     if matches!(scenario, ModeParityScenario::ReadinessTimeoutThenVisible) {
         opts.base_delay = Duration::ZERO;
         opts.max_delay = Duration::ZERO;
@@ -6834,6 +6910,76 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
                 );
             }
         }
+        ModeParityScenario::AmbiguousResolvesPublished => {
+            assert!(seq.ok, "{}: visible ambiguity should succeed", case.name);
+            assert_semantic_event_sequences_match(seq, par, case.name);
+            let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
+            assert!(
+                matches!(pkg.state, PackageState::Published),
+                "{}: expected Published after reconciliation, got {:?}",
+                case.name,
+                pkg.state
+            );
+            for (mode, outcome) in [("seq", seq), ("par", par)] {
+                assert_eq!(
+                    cargo_invocation_count(outcome),
+                    2,
+                    "{} {mode}: visible ambiguity must retry Cargo once",
+                    case.name
+                );
+                assert_reconciled_event(outcome, "Published", mode, case.name);
+            }
+        }
+        ModeParityScenario::AmbiguousRetriesWhenNotPublished => {
+            assert!(!seq.ok, "{}: unresolved ambiguity should fail", case.name);
+            assert_semantic_event_sequences_match(seq, par, case.name);
+            let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
+            assert!(
+                matches!(
+                    pkg.state,
+                    PackageState::Failed {
+                        class: ErrorClass::Ambiguous,
+                        ..
+                    }
+                ),
+                "{}: expected Failed/Ambiguous, got {:?}",
+                case.name,
+                pkg.state
+            );
+            for (mode, outcome) in [("seq", seq), ("par", par)] {
+                assert_eq!(
+                    cargo_invocation_count(outcome),
+                    2,
+                    "{} {mode}: not-published ambiguity must retry exactly once",
+                    case.name
+                );
+                assert_reconciled_event(outcome, "NotPublished", mode, case.name);
+            }
+        }
+        ModeParityScenario::AmbiguousStillUnknown => {
+            assert!(
+                !seq.ok,
+                "{}: StillUnknown must stop with an error",
+                case.name
+            );
+            assert_semantic_event_sequences_match(seq, par, case.name);
+            let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
+            assert!(
+                matches!(pkg.state, PackageState::Ambiguous { .. }),
+                "{}: expected Ambiguous after StillUnknown, got {:?}",
+                case.name,
+                pkg.state
+            );
+            for (mode, outcome) in [("seq", seq), ("par", par)] {
+                assert_eq!(
+                    cargo_invocation_count(outcome),
+                    1,
+                    "{} {mode}: StillUnknown must not blind-retry Cargo",
+                    case.name
+                );
+                assert_reconciled_event(outcome, "StillUnknown", mode, case.name);
+            }
+        }
         ModeParityScenario::StillUnknownResume => {
             assert!(!seq.ok, "{}: StillUnknown should err", case.name);
             let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
@@ -6911,6 +7057,100 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
         assert_mode_parity_rebuild(seq, case.scenario, &format!("{}:seq", case.name));
         assert_mode_parity_rebuild(par, case.scenario, &format!("{}:par", case.name));
     }
+}
+
+fn cargo_invocation_count(outcome: &ModeRunOutcome) -> usize {
+    fs::read_to_string(&outcome.cargo_args_log)
+        .map(|contents| {
+            contents
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn assert_semantic_event_sequences_match(
+    seq: &ModeRunOutcome,
+    par: &ModeRunOutcome,
+    case_name: &str,
+) {
+    let seq_events = semantic_event_sequence(&seq.events_path, case_name, "seq");
+    let par_events = semantic_event_sequence(&par.events_path, case_name, "par");
+    assert_eq!(
+        seq_events, par_events,
+        "{case_name}: sequential and parallel semantic event sequences differ"
+    );
+}
+
+fn semantic_event_sequence(
+    path: &Path,
+    case_name: &str,
+    mode: &str,
+) -> Vec<(String, serde_json::Value)> {
+    events::EventLog::read_from_file(path)
+        .unwrap_or_else(|e| panic!("{case_name} {mode}: read events: {e}"))
+        .all_events()
+        .iter()
+        .map(|event| {
+            let mut event_type = serde_json::to_value(&event.event_type)
+                .unwrap_or_else(|e| panic!("{case_name} {mode}: serialize event: {e}"));
+            strip_nondeterministic_event_fields(&mut event_type);
+            (event.package.clone(), event_type)
+        })
+        .collect()
+}
+
+fn strip_nondeterministic_event_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for field in ["duration_ms", "elapsed_ms", "next_attempt_at", "until"] {
+                fields.remove(field);
+            }
+            for child in fields.values_mut() {
+                strip_nondeterministic_event_fields(child);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                strip_nondeterministic_event_fields(value);
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
+}
+
+fn assert_reconciled_event(outcome: &ModeRunOutcome, expected: &str, mode: &str, case_name: &str) {
+    let persisted = events::EventLog::read_from_file(&outcome.events_path)
+        .unwrap_or_else(|e| panic!("{case_name} {mode}: read events: {e}"));
+    let found = persisted.all_events().iter().any(|event| match expected {
+        "Published" => matches!(
+            &event.event_type,
+            EventType::PublishReconciled {
+                outcome: shipper_types::ReconciliationOutcome::Published { .. }
+            }
+        ),
+        "NotPublished" => matches!(
+            &event.event_type,
+            EventType::PublishReconciled {
+                outcome: shipper_types::ReconciliationOutcome::NotPublished { .. }
+            }
+        ),
+        "StillUnknown" => matches!(
+            &event.event_type,
+            EventType::PublishReconciled {
+                outcome: shipper_types::ReconciliationOutcome::StillUnknown { .. }
+            }
+        ),
+        _ => false,
+    });
+    assert!(
+        found,
+        "{case_name} {mode}: expected PublishReconciled outcome {expected}"
+    );
 }
 
 #[test]

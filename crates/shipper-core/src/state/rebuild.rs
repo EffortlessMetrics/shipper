@@ -200,14 +200,14 @@ fn apply_event(
                 );
             }
             if let Some(progress) = ensure_event_package(packages, event, event.timestamp) {
-                progress.state = match class {
-                    ErrorClass::Ambiguous => PackageState::Ambiguous {
-                        message: message.clone(),
-                    },
-                    _ => PackageState::Failed {
-                        class: class.clone(),
-                        message: message.clone(),
-                    },
+                // Preserve the explicit PackageFailed state, including an
+                // ambiguous failure that was safely retried after a
+                // NotPublished reconciliation. A StillUnknown outcome has
+                // its own PublishReconciled event and projects to Ambiguous
+                // below, so rebuild does not need to infer that state here.
+                progress.state = PackageState::Failed {
+                    class: class.clone(),
+                    message: message.clone(),
                 };
                 progress.last_updated_at = event.timestamp;
             }
@@ -1235,7 +1235,7 @@ mod tests {
                     "all",
                     EventType::PlanCreated {
                         plan_id: "plan-123".to_string(),
-                        package_count: 3,
+                        package_count: 4,
                     },
                 ),
                 event(
@@ -1344,6 +1344,14 @@ mod tests {
                         },
                     },
                 ),
+                event(
+                    6,
+                    "exhausted@1.0.0",
+                    EventType::PackageFailed {
+                        class: ErrorClass::Ambiguous,
+                        message: "safe retry exhausted".to_string(),
+                    },
+                ),
             ],
         );
 
@@ -1358,6 +1366,13 @@ mod tests {
             state.packages["unknown@1.0.0"].state,
             PackageState::Ambiguous {
                 message: "registry unavailable".to_string()
+            }
+        );
+        assert_eq!(
+            state.packages["exhausted@1.0.0"].state,
+            PackageState::Failed {
+                class: ErrorClass::Ambiguous,
+                message: "safe retry exhausted".to_string(),
             }
         );
     }
