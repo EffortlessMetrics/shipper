@@ -148,7 +148,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-nextest
 
@@ -242,7 +242,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-nextest
 
@@ -394,7 +394,7 @@ jobs:
           components: rust-src
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-fuzz
 
