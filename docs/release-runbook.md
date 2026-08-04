@@ -47,10 +47,19 @@ The authoritative order for a given release is whatever `shipper plan` prints fo
 
 1. **CI is green on `main`.** Every lane in the latest `CI` run for `main` must show success (`gh run list --workflow=ci.yml --branch=main --limit=1`). `architecture-guard` has a `paths:` trigger gate — if it hasn't re-posted a status since the last `crates/shipper/src/**` commit, verify the workflow file on `main` still has the `--include='*.rs'` filter (false-red guard from #85).
 2. **Rehearsal is green.** `gh workflow run release.yml --ref main --field mode=rehearse` completed successfully. The plan ID in the uploaded `shipper-rehearse-<run_id>` artifact must match the plan ID from a local `shipper plan` on the same SHA.
-3. **No mainline changes since the rehearsal.** Any commit to `main` after the rehearsal invalidates the plan ID. If mainline moved, re-rehearse.
-4. **Version is bumped and committed.** `cargo metadata --format-version 1 | jq -r '.workspace_default_members[0]' | ...` → every publishable crate in `Cargo.toml` reads the intended `vX.Y.Z`. `CHANGELOG.md` has an entry for the new version (not `[Unreleased]`).
-5. **crates.io is healthy.** Open [status.crates.io](https://status.crates.io/) immediately before starting. If the **git index** is running behind but the **sparse index** is healthy, that's OK — the workflow uses `--readiness-method both` and will use the sparse index path. If the **sparse index** itself is reporting incidents, abort and wait.
-6. **Auth is present.**
+3. **Binary matrix is green.** For the approved SHA, run the non-publishing binary check and retain all four artifacts:
+
+   ```bash
+   gh workflow run release.yml --ref main \
+     --field mode=binaries \
+     --field ref=<approved-sha>
+   ```
+
+   This exercises Linux x64, Intel macOS, arm64 macOS, and Windows x64 without publishing crates or creating a GitHub Release. Confirm each job's runner/target evidence and archive before proceeding.
+4. **No mainline changes since the rehearsal.** Any commit to `main` after the rehearsal or binary check invalidates the proof. If mainline moved, rerun both checks.
+5. **Version is bumped and committed.** `cargo metadata --format-version 1 | jq -r '.workspace_default_members[0]' | ...` → every publishable crate in `Cargo.toml` reads the intended `vX.Y.Z`. `CHANGELOG.md` has an entry for the new version (not `[Unreleased]`).
+6. **crates.io is healthy.** Open [status.crates.io](https://status.crates.io/) immediately before starting. If the **git index** is running behind but the **sparse index** is healthy, that's OK — the workflow uses `--readiness-method both` and will use the sparse index path. If the **sparse index** itself is reporting incidents, abort and wait.
+7. **Auth is present.**
    - **Token fallback (primary path today).** `CARGO_REGISTRY_TOKEN` repo secret must be set with publish scope for every crate in the plan. Trusted Publishing is wired in `release.yml` but not yet configured per-crate on crates.io — the OIDC step has `continue-on-error: true` and cleanly falls through to the token. Until Trusted Publishing is registered for every crate (see below), the token is what's actually doing the auth.
    - **Trusted Publishing (target path).** When you're ready to switch, follow the one-time-registration checklist in [`how-to/run-in-github-actions.md`](./how-to/run-in-github-actions.md#token-vs-trusted-publishing). Every crate in the plan must be registered as a trusted publisher for this repo + `release.yml` + `release` environment before the next tag push, or you'll mid-train 401 on the unregistered ones. Rehearse with the `release` environment bound (the workflow already does) to prove the scope wiring before going live.
 
