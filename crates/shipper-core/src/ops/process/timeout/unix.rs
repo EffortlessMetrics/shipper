@@ -20,6 +20,7 @@ use rustix::process::{
 };
 
 use super::super::capture::{CaptureBuffer, CaptureMode};
+use super::super::interruption::InterruptionLease;
 use super::super::{
     CaptureLoss, CaptureStatus, CapturedCommandOutput, CleanupFailure, CommandOutput,
 };
@@ -60,11 +61,38 @@ pub(super) fn run_supervised(
     let child = command
         .spawn()
         .with_context(|| format!("failed to spawn command: {program}"))?;
-    let mut child = OwnedGroup::new(child);
+    Ok(supervise_group(
+        &mut OwnedGroup::new(child),
+        program,
+        started,
+        execution_deadline,
+        timeout,
+        capture,
+        interruption_lease,
+    ))
+}
+
+fn supervise_group(
+    child: &mut OwnedGroup,
+    program: &str,
+    started: Instant,
+    execution_deadline: Option<Instant>,
+    timeout: Option<Duration>,
+    capture: CaptureMode,
+    interruption_lease: Option<InterruptionLease>,
+) -> CapturedCommandOutput {
+    let (mut cleanup_deadline, mut cleanup_failure) = if child.pid.is_none() {
+        // We own the Child, but have no usable group identity. Only attempt
+        // direct-child termination, before any reap, and retain a safety hold
+        // even if the direct child and both pipes are cleaned up.
+        let deadline = Instant::now() + CLEANUP_ALLOWANCE;
+        let _ = child.child.kill();
+        (Some(deadline), Some(CleanupFailure::ChildStatus))
+    } else {
+        (None, None)
+    };
     let mut stdout = PipeCapture::new(child.child.stdout.take(), capture);
     let mut stderr = PipeCapture::new(child.child.stderr.take(), capture);
-    let mut cleanup_deadline = None;
-    let mut cleanup_failure = None;
     let mut group_signal_failed = false;
     let mut group_gone = false;
     let mut exit_code = -1;
@@ -119,23 +147,27 @@ pub(super) fn run_supervised(
                     cleanup_failure.get_or_insert(CleanupFailure::Reap);
                 }
             }
-            if child.reaped && !group_gone {
+            if child.reaped
+                && !group_gone
+                && let Some(pid) = child.pid
+            {
                 // Only observe after reaping: a cached PGID is no longer a safe
                 // destructive target. Reuse can conservatively cause a hold,
                 // but must never cause us to signal a different invocation.
-                group_gone = matches!(
-                    test_kill_process_group(child.pid),
-                    Err(rustix::io::Errno::SRCH)
-                );
+                group_gone = matches!(test_kill_process_group(pid), Err(rustix::io::Errno::SRCH));
             }
-            if child.reaped && group_gone && stdout.finished() && stderr.finished() {
+            if child.reaped
+                && (group_gone || child.pid.is_none())
+                && stdout.finished()
+                && stderr.finished()
+            {
                 break;
             }
             if Instant::now() >= deadline {
                 if !child.reaped {
                     cleanup_failure.get_or_insert(CleanupFailure::Reap);
                 }
-                if !group_gone {
+                if !group_gone && child.pid.is_some() {
                     cleanup_failure.get_or_insert(if group_signal_failed {
                         CleanupFailure::GroupSignal
                     } else {
@@ -162,12 +194,12 @@ pub(super) fn run_supervised(
         }
     }
 
-    if timed_out {
+    if let (true, Some(timeout)) = (timed_out, timeout) {
         stderr.buffer.push(
             format!(
                 "\n{} timed out after {}",
                 program,
-                humantime::format_duration(timeout.expect("execution deadline requires timeout"))
+                humantime::format_duration(timeout)
             )
             .as_bytes(),
         );
@@ -179,7 +211,7 @@ pub(super) fn run_supervised(
     // signal can arrive after the last observation above but before handoff;
     // the caller must still own the deferral when it observes that request.
     // Interrupted/uncertain outcomes retain it through evidence persistence.
-    Ok(CapturedCommandOutput {
+    CapturedCommandOutput {
         output: CommandOutput {
             exit_code,
             stdout,
@@ -194,7 +226,7 @@ pub(super) fn run_supervised(
         cleanup_failure,
         interrupted,
         interruption_lease,
-    })
+    }
 }
 
 struct PipeCapture<R> {
@@ -227,13 +259,18 @@ impl<R: Read + AsFd> PipeCapture<R> {
         let mut chunk = [0; READ_BYTES];
         let mut made_progress = false;
         for _ in 0..READS_PER_TURN {
-            match stream.read(&mut chunk) {
-                Ok(0) => {
+            let read = stream.read(&mut chunk).and_then(|len| {
+                chunk
+                    .get(..len)
+                    .ok_or_else(|| ErrorKind::InvalidData.into())
+            });
+            match read {
+                Ok([]) => {
                     self.stream = None;
                     break;
                 }
-                Ok(len) => {
-                    self.buffer.push(&chunk[..len]);
+                Ok(bytes) => {
+                    self.buffer.push(bytes);
                     made_progress = true;
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => break,
@@ -261,7 +298,7 @@ impl<R: Read + AsFd> PipeCapture<R> {
 
 struct OwnedGroup {
     child: Child,
-    pid: Pid,
+    pid: Option<Pid>,
     identity_pinned: bool,
     signalled: bool,
     reaped: bool,
@@ -269,15 +306,22 @@ struct OwnedGroup {
 
 impl OwnedGroup {
     fn new(child: Child) -> Self {
-        // A spawned child cannot be PID 0/1 or exceed the signed native PID
-        // range. In particular, never pass 1 to kill_process_group: -1 targets
-        // every permitted process rather than an invocation-owned group.
-        let raw = i32::try_from(child.id()).expect("child PID fits native pid_t");
-        assert!(raw > 1, "spawned child must have an ordinary PID");
+        let id = child.id();
+        Self::with_id(child, id)
+    }
+
+    fn with_id(child: Child, id: u32) -> Self {
+        // Never pass 1 to kill_process_group: -1 targets every permitted
+        // process rather than an invocation-owned group. Keep Child ownership
+        // even if its native group identifier cannot be established.
+        let pid = i32::try_from(id)
+            .ok()
+            .filter(|&raw| raw > 1)
+            .and_then(Pid::from_raw);
         Self {
             child,
-            pid: Pid::from_raw(raw).expect("positive child PID"),
-            identity_pinned: true,
+            pid,
+            identity_pinned: pid.is_some(),
             signalled: false,
             reaped: false,
         }
@@ -285,7 +329,7 @@ impl OwnedGroup {
 
     fn observe_exit(&self) -> rustix::io::Result<Option<i32>> {
         waitid(
-            WaitId::Pid(self.pid),
+            WaitId::Pid(self.pid.ok_or(rustix::io::Errno::INVAL)?),
             WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
         )
         .map(|status| status.map(|status| status.exit_status().unwrap_or(-1)))
@@ -297,7 +341,7 @@ impl OwnedGroup {
         if INJECT_GROUP_SIGNAL_ERROR.swap(false, std::sync::atomic::Ordering::SeqCst) {
             return Err(rustix::io::Errno::PERM);
         }
-        kill_process_group(self.pid, Signal::KILL)
+        kill_process_group(self.pid.ok_or(rustix::io::Errno::INVAL)?, Signal::KILL)
     }
 
     fn try_reap(&mut self) -> std::io::Result<()> {
@@ -338,5 +382,99 @@ impl Drop for OwnedGroup {
         // occur after this reap. Normal execution already polls through its
         // cleanup allowance and exposes an unsuccessful reap to the caller.
         let _ = self.try_reap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::BorrowedFd;
+
+    use super::*;
+
+    #[test]
+    fn unavailable_group_identity_reaps_direct_child_and_retains_hold() {
+        for invalid_id in [0, 1, u32::MAX] {
+            // Inject an unavailable group identity, not a different child.
+            // This direct-only fixture exits on its own if cleanup regresses.
+            let child = Command::new("/bin/sleep")
+                .arg("6")
+                .process_group(0)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut group = OwnedGroup::with_id(child, invalid_id);
+            assert!(group.pid.is_none());
+            let result = supervise_group(
+                &mut group,
+                "/bin/sleep",
+                Instant::now(),
+                None,
+                None,
+                CaptureMode::PublishTail(2),
+                None,
+            );
+
+            assert!(
+                group.reaped,
+                "the direct child must be reaped for {invalid_id}"
+            );
+            assert!(!group.signalled, "there was no usable group identity");
+            assert_eq!(result.cleanup_failure, Some(CleanupFailure::ChildStatus));
+            assert_eq!(result.output.exit_code, -1);
+            assert!(!result.output.timed_out);
+            assert!(result.capture.is_complete());
+        }
+    }
+
+    struct ScriptedPipe {
+        fd: File,
+        counts: std::vec::IntoIter<usize>,
+    }
+
+    impl AsFd for ScriptedPipe {
+        fn as_fd(&self) -> BorrowedFd<'_> {
+            self.fd.as_fd()
+        }
+    }
+
+    impl Read for ScriptedPipe {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            buf.fill(b'X');
+            Ok(self.counts.next().unwrap_or(0))
+        }
+    }
+
+    fn scripted_pipe(counts: Vec<usize>) -> PipeCapture<ScriptedPipe> {
+        PipeCapture::new(
+            Some(ScriptedPipe {
+                fd: tempfile::tempfile().unwrap(),
+                counts: counts.into_iter(),
+            }),
+            CaptureMode::PublishTail(2),
+        )
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn invalid_pipe_read_closes_stream_and_marks_capture_lost() {
+        let mut pipe = scripted_pipe(vec![5, READ_BYTES + 1]);
+        assert!(pipe.drain_turn());
+        assert!(pipe.finished());
+        assert_eq!(
+            pipe.buffer.finish(),
+            (String::new(), Some(CaptureLoss::Read))
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn full_chunk_and_short_followup_preserve_complete_capture() {
+        let mut pipe = scripted_pipe(vec![READ_BYTES, 3]);
+        assert!(pipe.drain_turn());
+        assert!(pipe.finished());
+        assert_eq!(pipe.buffer.finish(), ("X".repeat(READ_BYTES + 3), None));
     }
 }
