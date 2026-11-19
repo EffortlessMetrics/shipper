@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 import zipfile
 
@@ -28,6 +29,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/release.yml"
 VERSION = "0.5.0"
+TOOLCHAIN = tomllib.loads((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))["toolchain"]["channel"]
 TARGETS = {
     "x86_64-unknown-linux-gnu": ("tar.gz", "Linux", "x86_64", "shipper"),
     "x86_64-apple-darwin": ("tar.gz", "Darwin", "x86_64", "shipper"),
@@ -133,7 +135,8 @@ class BinaryProof(unittest.TestCase):
         helper = cls.repo / "scripts/release/verify_binary.py"
         helper.parent.mkdir(parents=True)
         shutil.copyfile(ROOT / "scripts/release/verify_binary.py", helper)
-        checked(["git", "add", "Cargo.lock", "scripts"], cwd=cls.repo, env=cls.env)
+        shutil.copyfile(ROOT / "rust-toolchain.toml", cls.repo / "rust-toolchain.toml")
+        checked(["git", "add", "Cargo.lock", "rust-toolchain.toml", "scripts"], cwd=cls.repo, env=cls.env)
         checked(["git", "commit", "--quiet", "-m", "bounded source fixture"], cwd=cls.repo, env=cls.env)
         cls.sha = checked(["git", "rev-parse", "HEAD"], cwd=cls.repo, env=cls.env)
         cls.tree = checked(["git", "rev-parse", "HEAD^{tree}"], cwd=cls.repo, env=cls.env)
@@ -192,7 +195,8 @@ class BinaryProof(unittest.TestCase):
             "lockfile_sha256": self.lock_digest, "artifact": archive.name,
             "archive_sha256": sha256(archive.read_bytes()), "executable_sha256": sha256(data),
             "host": {"system": TARGETS[target][1], "machine": TARGETS[target][2]},
-            "toolchain": {"rustc_verbose": f"rustc synthetic fixture\nhost: {target}", "cargo": "cargo synthetic fixture"},
+            "toolchain": {"rustc_verbose": f"rustc {TOOLCHAIN} (fixture)\nhost: {target}\nrelease: {TOOLCHAIN}",
+                          "cargo": f"cargo {TOOLCHAIN} (fixture)"},
             "checks": {
                 "version": {"result": "success", "exit_code": 0, "stdout": f"shipper {VERSION}"},
                 "help": {"result": "success", "exit_code": 0, "stdout_sha256": "a" * 64},
@@ -355,6 +359,18 @@ class BinaryProof(unittest.TestCase):
                 self.write_receipt(archive, changed)
                 self.assert_refused(self.aggregate(), message)
 
+    def test_aggregate_rejects_rust_or_cargo_version_drift(self):
+        target, (archive, receipt) = next(iter(self.aggregate_fixtures().items()))
+        for field, value in [
+            ("rustc_verbose", f"rustc 1.100.0 (fixture)\nhost: {target}\nrelease: 1.100.0"),
+            ("cargo", "cargo 1.100.0 (fixture)"),
+        ]:
+            with self.subTest(field=field):
+                changed = copy.deepcopy(receipt)
+                changed["toolchain"][field] = value
+                self.write_receipt(archive, changed)
+                self.assert_refused(self.aggregate(), f"toolchain evidence must match {TOOLCHAIN}")
+
     def test_aggregate_rejects_tampered_archive_even_with_updated_checksum(self):
         archive, _ = next(iter(self.aggregate_fixtures().values()))
         archive.write_bytes(archive.read_bytes() + b"tamper")
@@ -372,6 +388,9 @@ class BinaryProof(unittest.TestCase):
     def test_workflow_requires_locked_build_and_native_smoke_before_upload(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         build = text.split("  build-binaries:", 1)[1].split("  verify-binaries:", 1)[0]
+        self.assertIn(f'RUSTUP_TOOLCHAIN: "{TOOLCHAIN}"', build)
+        self.assertIn("toolchain: ${{ env.RUSTUP_TOOLCHAIN }}", build)
+        self.assertLess(build.index("name: Install Rust"), build.index("name: Record runner and target"))
         self.assertIn("cargo build --locked --release --target", build)
         self.assertLess(build.index("name: Smoke packaged release executable"), build.index("name: Upload artifact"))
         self.assertNotIn("continue-on-error", build)

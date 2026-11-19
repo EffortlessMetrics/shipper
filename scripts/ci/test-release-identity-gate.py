@@ -1,4 +1,4 @@
-"""Run both tag-only identity reads with their production xtask validator, offline.
+"""Exercise production release auth evidence and tag-only identity steps offline.
 
 The workflow run block and step environment are consumed directly. Git is real;
 the GitHub API and cargo metadata have bounded fixtures. The cargo shim only
@@ -188,12 +188,117 @@ def test(workflow, xtask):
     print("Passed 17 actual-step cases: both authenticated tag reads, twelve failed reads, two removed bindings, non-tag dispatch.")
 
 
+def test_auth_evidence(workflow):
+    jobs = ("publish-crates-io", "release-rehearse", "release-resume")
+    expressions = {
+        "SHIPPER_RELEASE_AUTH_ACTION_OUTCOME": "${{ steps.auth.outcome }}",
+        "SHIPPER_RELEASE_AUTH_TOKEN_MINTED": "${{ steps.auth.outputs.token != '' }}",
+        "SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED": "${{ secrets.CARGO_REGISTRY_TOKEN != '' }}",
+        "SHIPPER_RELEASE_AUTH_RUN_ID": "${{ github.run_id }}",
+        "SHIPPER_RELEASE_AUTH_RUN_ATTEMPT": "${{ github.run_attempt }}",
+        "SHIPPER_RELEASE_AUTH_EVENT_COMMIT": "${{ github.sha }}",
+        "APPROVED_SHA": "${{ needs.release-identity-gate.outputs.approved_sha }}",
+        "APPROVED_TREE": "${{ needs.release-identity-gate.outputs.approved_tree }}",
+    }
+    sentinel = "dummy-sensitive-fixture-value-never-emitted"
+    count = 0
+    with tempfile.TemporaryDirectory(prefix="shipper-release-auth-") as temp:
+        root = Path(temp)
+        env = {"PATH": os.environ["PATH"], "HOME": temp, "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C"}
+        checked(["git", "init", "--quiet"], root, env)
+        for version in ("event", "approved"):
+            (root / "version").write_text(version)
+            checked(["git", "add", "version"], root, env)
+            checked(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                     "commit", "-qm", version], root, env)
+        event = checked(["git", "rev-parse", "HEAD^"], root, env)
+        sha = checked(["git", "rev-parse", "HEAD"], root, env)
+        tree = checked(["git", "rev-parse", "HEAD^{tree}"], root, env)
+        event_tree = checked(["git", "rev-parse", "HEAD^^{tree}"], root, env)
+        checked(["git", "checkout", "--quiet", "--detach", sha], root, env)
+        assert event != sha and event_tree != tree
+
+        def run(script, cwd, inputs):
+            state = cwd / ".shipper"
+            state.mkdir(exist_ok=True)
+            (state / "state.json").write_text("unrelated-state")
+            evidence = state / "auth-evidence.json"
+            evidence.write_text('{"run_id":"predecessor"}')
+            result = subprocess.run(["bash", "--noprofile", "--norc", "-c", script], cwd=cwd,
+                                    env={**env, "CARGO_REGISTRY_TOKEN": sentinel, **inputs},
+                                    text=True, capture_output=True, timeout=10)
+            assert sentinel not in result.stdout + result.stderr
+            assert (state / "state.json").read_text() == "unrelated-state"
+            assert {path.name for path in state.iterdir()} <= {"state.json", "auth-evidence.json"}
+            text = evidence.read_text() if evidence.exists() else None
+            assert text is None or sentinel not in text
+            return result, json.loads(text) if text is not None else None
+
+        for name in jobs:
+            job = re.search(r"(?ms)^  " + re.escape(name) + r":\n(.*?)(?=^  [\w-]+:|\Z)", workflow)[1]
+            mint = job.index("      - name: Mint crates.io token (Trusted Publishing)")
+            emitter = job.index("      - name: Record release auth evidence")
+            assert job.index("cargo xtask release-identity") < mint < emitter, name
+            step = job[emitter:].split("\n      - ", 1)[0]
+            before, body = step.split("        run: |\n", 1)
+            assert "        if: always()" in before, name
+            assert dict(re.findall(r"^          ([A-Z_]+): (.+)$", before, re.M)) == expressions, name
+            if name == "release-resume":
+                assert "steps.auth-evidence.outcome != 'success' && '!.shipper/auth-evidence.json'" in job
+            script = "\n".join(line[10:] for line in body.splitlines() if line.startswith("          "))
+            common = {"APPROVED_SHA": sha, "APPROVED_TREE": tree,
+                      "SHIPPER_RELEASE_AUTH_EVENT_COMMIT": event,
+                      "SHIPPER_RELEASE_AUTH_RUN_ID": "99", "SHIPPER_RELEASE_AUTH_RUN_ATTEMPT": "2"}
+            for selected, outcome, minted, fallback in [
+                ("trusted_publishing", "success", "true", "true"),
+                ("fallback_secret", "failure", "false", "true"),
+                ("missing", "", "", ""),
+            ]:
+                inputs = {**common, "SHIPPER_RELEASE_AUTH_ACTION_OUTCOME": outcome,
+                          "SHIPPER_RELEASE_AUTH_TOKEN_MINTED": minted,
+                          "SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED": fallback}
+                result, receipt = run(script, root, inputs)
+                assert result.returncode == 0, (name, selected, result.stderr)
+                assert (receipt["job"], receipt["commit"], receipt["tree"], receipt["workflow_event_commit"],
+                        receipt["run_id"], receipt["run_attempt"], receipt["selected_token_source"]) == (
+                            name, sha, tree, event, "99", "2", selected)
+                assert receipt["schema_version"] == "shipper.release_auth_evidence.v1"
+                assert receipt["auth_action"]["outcome"] == outcome
+                assert receipt["auth_action"]["token_minted"] == (minted == "true")
+                assert receipt["fallback"] == {"configured": fallback == "true", "used": selected == "fallback_secret"}
+                count += 1
+            for field, wrong in [("APPROVED_SHA", event), ("APPROVED_TREE", event_tree)]:
+                for value in (None, wrong):
+                    inputs = dict(common, SHIPPER_RELEASE_AUTH_ACTION_OUTCOME="skipped")
+                    if value is None:
+                        del inputs[field]
+                    else:
+                        inputs[field] = value
+                    result, receipt = run(script, root, inputs)
+                    assert result.returncode != 0 and "does not match approval" in result.stdout, (name, field, value)
+                    assert receipt is None, (name, field, value)
+                    count += 1
+
+        # Exercise a missing actual HEAD outside the detached checkout.
+        with tempfile.TemporaryDirectory(prefix="shipper-release-auth-no-git-") as empty:
+            result, receipt = run(script, Path(empty), common)
+            assert result.returncode != 0 and receipt is None
+            count += 1
+    print(f"Passed {count} actual auth-emitter cases for checkout attribution, fallback and stale receipts.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--xtask", type=Path, required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--xtask", type=Path)
+    mode.add_argument("--auth-only", action="store_true")
     parser.add_argument("--workflow", type=Path, default=Path(".github/workflows/release.yml"))
     args = parser.parse_args()
-    test(args.workflow.read_text(encoding="utf-8"), args.xtask.resolve(strict=True))
+    workflow = args.workflow.read_text(encoding="utf-8")
+    test_auth_evidence(workflow)
+    if args.xtask is not None:
+        test(workflow, args.xtask.resolve(strict=True))
 
 
 if __name__ == "__main__":

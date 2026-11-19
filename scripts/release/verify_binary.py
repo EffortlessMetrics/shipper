@@ -28,6 +28,7 @@ TARGETS = {
     "x86_64-pc-windows-msvc": ("zip", "Windows", "x86_64", "shipper.exe"),
 }
 SCHEMA = "shipper.release_binary_smoke.v1"
+RELEASE_TOOLCHAIN = "1.95.0"
 MAX_PAYLOAD = 256 * 1024 * 1024
 SMOKE_PACKAGE = {"name": "shipper-packaged-smoke-fixture", "version": "0.0.0", "dependencies": []}
 SMOKE_REGISTRY = {"name": "crates-io", "api_base": "https://crates.io"}
@@ -254,10 +255,26 @@ def offline_plan(executable, scratch):
             "plan_id": report["plan_id"], "stdout_sha256": digest(output.encode())}
 
 
+def verify_toolchain(toolchain, target):
+    require(isinstance(toolchain, dict) and isinstance(toolchain.get("rustc_verbose"), str)
+            and isinstance(toolchain.get("cargo"), str),
+            f"{target}: actual toolchain evidence missing")
+    lines = toolchain["rustc_verbose"].splitlines()
+    require(f"host: {target}" in lines, f"{target}: Rust toolchain host does not match native target")
+    require([line for line in lines if line.startswith("release: ")] == [f"release: {RELEASE_TOOLCHAIN}"]
+            and toolchain["cargo"].split()[:2] == ["cargo", RELEASE_TOOLCHAIN],
+            f"{target}: Rust and Cargo toolchain evidence must match {RELEASE_TOOLCHAIN}")
+
+
 def smoke(archive, target, sha, tree, version, output):
     validate_approval(sha, tree, version)
     host = host_identity(target)
     lock_digest = source_identity(sha, tree)
+    toolchain = {
+        "rustc_verbose": command(["rustc", "-vV"], "actual Rust toolchain read"),
+        "cargo": command(["cargo", "--version"], "actual Cargo toolchain read"),
+    }
+    verify_toolchain(toolchain, target)
     archive_digest = sha256_file(archive)
     data, mode = archive_payload(archive, target)
     with tempfile.TemporaryDirectory(prefix="shipper-packaged-smoke-") as scratch:
@@ -273,9 +290,6 @@ def smoke(archive, target, sha, tree, version, output):
         require(all(word in help_output for word in ["Usage:", "shipper", "plan", "publish", "resume"]),
                 "archive-extracted help is missing the supported CLI entry points")
         plan_check = offline_plan(executable, Path(scratch))
-    rustc = command(["rustc", "-vV"], "actual Rust toolchain read")
-    cargo = command(["cargo", "--version"], "actual Cargo toolchain read")
-    require(f"host: {target}" in rustc.splitlines(), f"Rust toolchain host does not match native target {target}")
     require(source_identity(sha, tree) == lock_digest, "approved Cargo.lock changed during smoke")
     require(sha256_file(archive) == archive_digest, "archive changed during smoke")
     receipt = {
@@ -283,7 +297,7 @@ def smoke(archive, target, sha, tree, version, output):
         "source_sha": sha, "source_tree": tree, "approved_version": version,
         "lockfile_sha256": lock_digest, "artifact": archive.name,
         "archive_sha256": archive_digest, "executable_sha256": digest(data),
-        "host": host, "toolchain": {"rustc_verbose": rustc, "cargo": cargo},
+        "host": host, "toolchain": toolchain,
         "checks": {
             "version": {"result": "success", "exit_code": 0, "stdout": observed_version},
             "help": {"result": "success", "exit_code": 0, "stdout_sha256": digest(help_output.encode())},
@@ -317,11 +331,7 @@ def aggregate(artifacts, sha, tree, version, output):
         require(receipt.get("executable_sha256") == digest(data), f"{target}: extracted executable digest mismatch")
         require(receipt.get("host") == {"system": TARGETS[target][1], "machine": TARGETS[target][2]},
                 f"{target}: native host evidence mismatch")
-        toolchain = receipt.get("toolchain", {})
-        require(isinstance(toolchain, dict) and isinstance(toolchain.get("rustc_verbose"), str)
-                and f"host: {target}" in toolchain["rustc_verbose"].splitlines()
-                and isinstance(toolchain.get("cargo"), str) and toolchain["cargo"].startswith("cargo "),
-                f"{target}: actual toolchain evidence missing")
+        verify_toolchain(receipt.get("toolchain"), target)
         checks = receipt.get("checks", {})
         require(isinstance(checks, dict)
                 and checks.get("version") == {"result": "success", "exit_code": 0, "stdout": f"shipper {version}"},

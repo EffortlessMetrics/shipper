@@ -1,0 +1,6 @@
+kind: fixed
+body: Attribute release authentication evidence to the approved checkout commit and tree and prevent a resumed attempt from uploading its predecessor's auth receipt as current evidence.
+time: 2026-11-19T04:32:52Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed
