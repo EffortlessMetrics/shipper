@@ -5,6 +5,8 @@ on:
   pull_request:
     paths:
       - ".github/workflows/live-runner-interruption-rehearsal.yml"
+      - "scripts/ci/check-live-interruption-routing.py"
+      - "scripts/ci/check-full-ci-hosted.py"
       - "crates/shipper-cli/tests/e2e_rehearse.rs"
       - "crates/shipper-core/src/engine/**"
       - "crates/shipper-core/src/state/**"
@@ -15,12 +17,17 @@ permissions:
 jobs:
   interrupt:
     name: Interrupt and upload .shipper
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: &self_hosted >-
+      github.repository != 'EffortlessMetrics/shipper-swarm' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
-    steps:
+    steps: &interrupt_steps
       - uses: actions/checkout@v7.0.1
+
+      - name: Check artifact rehearsal routing
+        run: python3 scripts/ci/check-live-interruption-routing.py --test
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -32,8 +39,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-live-interruption-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-live-interruption-
+          key: ${{ runner.environment == 'github-hosted' && 'hosted-' || '' }}${{ runner.os }}-cargo-live-interruption-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'hosted-' || '' }}${{ runner.os }}-cargo-live-interruption-
 
       - name: Create interrupted .shipper artifact
         env:
@@ -53,12 +60,12 @@ jobs:
 
   resume:
     name: Download .shipper and resume
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: *self_hosted
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     needs: interrupt
-    steps:
+    steps: &resume_steps
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
@@ -71,8 +78,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-live-interruption-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-live-interruption-
+          key: ${{ runner.environment == 'github-hosted' && 'hosted-' || '' }}${{ runner.os }}-cargo-live-interruption-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'hosted-' || '' }}${{ runner.os }}-cargo-live-interruption-
 
       - name: Prepare rehearsal root
         run: |
@@ -99,3 +106,22 @@ jobs:
           path: ${{ runner.temp }}/shipper-live-interruption/.shipper/
           include-hidden-files: true
           retention-days: 30
+
+  # Swarm's path-triggered merge proof must not wait for unavailable cx43
+  # allocation. Keep the release-authority repository's existing route intact.
+  interrupt-hosted:
+    name: Interrupt and upload .shipper (GitHub-hosted)
+    if: &swarm_hosted >-
+      github.repository == 'EffortlessMetrics/shipper-swarm' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps: *interrupt_steps
+
+  resume-hosted:
+    name: Download .shipper and resume (GitHub-hosted)
+    if: *swarm_hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: interrupt-hosted
+    steps: *resume_steps

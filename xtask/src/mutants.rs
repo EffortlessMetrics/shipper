@@ -58,18 +58,18 @@ pub fn mutants_pr(args: &Args) -> Result<()> {
         );
     }
 
-    if !cargo_mutants_available() {
-        println!("{CARGO_MUTANTS_INSTALL_HINT}");
-        println!("`cargo xtask mutants-pr` exiting advisory-success (no cargo-mutants binary).");
-        return Ok(());
-    }
-
     let changed = changed_rust_files(&args.base)?;
-    if changed.is_empty() {
+    let Some(cargo_arguments) = cargo_mutants_arguments(&changed, args.dry_run) else {
         println!(
             "no Rust source files changed vs {}; nothing to mutate.",
             args.base
         );
+        return Ok(());
+    };
+
+    if !cargo_mutants_available() {
+        println!("{CARGO_MUTANTS_INSTALL_HINT}");
+        println!("`cargo xtask mutants-pr` exiting advisory-success (no cargo-mutants binary).");
         return Ok(());
     }
 
@@ -83,13 +83,7 @@ pub fn mutants_pr(args: &Args) -> Result<()> {
     }
 
     let mut cmd = Command::new("cargo");
-    cmd.arg("mutants").arg("--no-shuffle");
-    if args.dry_run {
-        cmd.arg("--list");
-    }
-    for f in &changed {
-        cmd.arg("--file").arg(f);
-    }
+    cmd.args(cargo_arguments);
 
     let status = cmd.status().context("spawning `cargo mutants`")?;
     if !status.success() {
@@ -100,6 +94,32 @@ pub fn mutants_pr(args: &Args) -> Result<()> {
         bail!("`cargo mutants` exited with status {}", status);
     }
     Ok(())
+}
+
+fn cargo_mutants_arguments(changed: &[String], dry_run: bool) -> Option<Vec<String>> {
+    if changed.is_empty() {
+        // Never construct a workspace-wide cargo-mutants command without file
+        // filters. This also keeps the no-Rust path ahead of the availability
+        // probe, so an empty PR scope invokes no cargo-mutants process.
+        return None;
+    }
+    let mut arguments = vec![
+        "mutants".to_string(),
+        "--no-shuffle".to_string(),
+        // `--file` limits mutation to the PR's changed production files, but
+        // cargo-mutants still discovers targets from Cargo's selected package
+        // set. The workspace default members exclude crates such as
+        // shipper-config, so select the workspace before applying file filters.
+        "--workspace".to_string(),
+    ];
+    if dry_run {
+        arguments.push("--list".to_string());
+    }
+    for file in changed {
+        arguments.push("--file".to_string());
+        arguments.push(file.clone());
+    }
+    Some(arguments)
 }
 
 fn cargo_mutants_available() -> bool {
@@ -149,6 +169,7 @@ fn changed_rust_files(base: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::ensure;
 
     #[test]
     fn install_hint_mentions_cargo_install() {
@@ -186,5 +207,45 @@ mod tests {
             err.to_string().contains("requires --changed"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn non_default_member_keeps_workspace_and_exact_file_scope() -> Result<()> {
+        let file = "crates/shipper-config/src/runtime_options/registry.rs".to_string();
+        let arguments = cargo_mutants_arguments(std::slice::from_ref(&file), true)
+            .context("non-default member should produce a mutation command")?;
+
+        ensure!(arguments.contains(&"--workspace".to_string()));
+        ensure!(arguments.contains(&"--list".to_string()));
+        ensure!(arguments.windows(2).any(|pair| pair == ["--file", &file]));
+        ensure!(
+            arguments.iter().filter(|arg| *arg == "--file").count() == 1,
+            "changed-file filtering must stay exact"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn default_member_keeps_workspace_and_exact_file_scope() -> Result<()> {
+        let file = "crates/shipper-cli/src/lib.rs".to_string();
+        let arguments = cargo_mutants_arguments(std::slice::from_ref(&file), false)
+            .context("default member should produce a mutation command")?;
+
+        ensure!(arguments.contains(&"--workspace".to_string()));
+        ensure!(!arguments.contains(&"--list".to_string()));
+        ensure!(arguments.windows(2).any(|pair| pair == ["--file", &file]));
+        ensure!(
+            arguments.iter().filter(|arg| *arg == "--file").count() == 1,
+            "workspace selection must not broaden the file filter"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_changed_set_builds_no_cargo_mutants_command() -> Result<()> {
+        let arguments = cargo_mutants_arguments(&[], false);
+
+        ensure!(arguments.is_none());
+        Ok(())
     }
 }

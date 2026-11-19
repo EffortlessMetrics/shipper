@@ -1,0 +1,7 @@
+kind: changed
+body: Make `shipper doctor` report explicit readiness, check counts, and the first safe next action in human and JSON output. The next action now carries the reason it is the next step, and any check that could not be evaluated is named rather than left as an unattributed count.
+time: 2026-08-06T04:35:00Z
+custom:
+  Audience: CLI users and CI operators
+  Importance: Detailed
+  PR: 278

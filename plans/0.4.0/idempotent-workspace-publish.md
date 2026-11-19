@@ -1,6 +1,6 @@
 # Plan: Idempotent Workspace Publish
 
-Status: accepted
+Status: implemented
 Owner: EffortlessMetrics
 Created: 2026-05-19
 Milestone: 0.4.0

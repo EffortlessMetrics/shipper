@@ -1,0 +1,6 @@
+kind: fixed
+body: Bound Cargo publish diagnostic retention and explicitly omit incomplete output, preserving complete generic output and requiring registry reconciliation before retrying an unsuccessful publish with lost diagnostics.
+time: 2026-10-29T00:56:53Z
+custom:
+  Audience: Mixed
+  Importance: Headline

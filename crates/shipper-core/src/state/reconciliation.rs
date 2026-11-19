@@ -14,8 +14,19 @@ use shipper_types::{
 use super::events::EventLog;
 use super::execution_state;
 
+#[cfg(test)]
+#[path = "reconciliation/test_hooks_tests.rs"]
+pub(crate) mod test_hooks;
+
 pub const RECONCILIATION_SCHEMA_VERSION: &str = "shipper.reconciliation.v1";
 
+/// Derive and replace the report from a stable authoritative event snapshot.
+///
+/// The caller must exclude event appends and competing report writers for the
+/// whole call, including removal of an obsolete report. Engine package workers
+/// hold their shared event-log mutex; finalization calls after joining workers
+/// under invocation ownership. This low-level API does not acquire those gates
+/// itself or add a cross-process or power-loss durability guarantee.
 pub fn write_report_from_events(
     state_dir: &Path,
     plan_id: &str,
@@ -53,7 +64,11 @@ pub fn write_report_from_events(
         records,
     };
 
+    #[cfg(test)]
+    test_hooks::observe(state_dir, test_hooks::WritePhase::Snapshot, &report);
     execution_state::write_reconciliation_report(state_dir, &report)?;
+    #[cfg(test)]
+    test_hooks::observe(state_dir, test_hooks::WritePhase::Replaced, &report);
     Ok(Some(report))
 }
 

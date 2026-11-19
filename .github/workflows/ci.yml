@@ -3,13 +3,25 @@ name: CI
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+    inputs:
+      runner_route:
+        description: 'Full-CI route. Hosted is an explicit, potentially expensive proof run.'
+        type: choice
+        required: false
+        default: self-hosted
+        options:
+          - self-hosted
+          - github-hosted
   schedule:
     # Nightly quick fuzz and elevated property tests
     - cron: '0 3 * * 0'
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.repository == 'EffortlessMetrics/shipper-swarm' && github.event_name == 'workflow_dispatch' && inputs.runner_route == 'github-hosted' && '-manual-hosted' || '' }}
   cancel-in-progress: true
 
 env:
@@ -23,10 +35,12 @@ permissions:
 jobs:
   lint:
     name: Lint (fmt + clippy)
+    if: &default_runners >-
+      ${{ github.event_name != 'pull_request' && !(github.repository == 'EffortlessMetrics/shipper-swarm' && github.event_name == 'workflow_dispatch' && inputs.runner_route == 'github-hosted') }}
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
-    steps:
+    steps: &lint_steps
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
@@ -41,8 +55,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -80,10 +94,11 @@ jobs:
     # target/policy/ as a `policy-reports` artifact regardless of
     # pass/fail (`if: always()`). See docs/policy/NON_RUST_ROLLOUT.md.
     name: Policy
+    if: *default_runners
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
-    steps:
+    steps: &policy_steps
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
@@ -96,8 +111,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-policy-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-policy-
+          key: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-policy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-policy-
+
+      - name: Verify manual full-CI routing contract
+        run: python3 scripts/ci/check-full-ci-hosted.py --test
 
       - name: check-file-policy (blocking-allowlist)
         run: cargo xtask check-file-policy --mode blocking-allowlist
@@ -138,10 +156,11 @@ jobs:
 
   test:
     name: Tests (nextest)
+    if: *default_runners
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
-    steps:
+    steps: &test_steps
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
@@ -159,8 +178,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-
 
       - name: Run tests
         run: cargo nextest run --workspace --all-features --profile ci
@@ -186,10 +205,11 @@ jobs:
 
   install-smoke:
     name: Install Smoke
+    if: *default_runners
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
-    steps:
+    steps: &install_smoke_steps
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
@@ -202,8 +222,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-install-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-install-
+          key: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-install-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-install-
 
       - name: Install shipper facade crate
         run: |
@@ -230,12 +250,13 @@ jobs:
     # It intentionally does NOT run on pull_request to keep developer
     # feedback fast; if you want a specific PR to exercise it, use the
     # workflow_dispatch trigger on the PR's branch.
-    if: github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: >-
+      ${{ github.event_name != 'pull_request' && !(github.repository == 'EffortlessMetrics/shipper-swarm' && github.event_name == 'workflow_dispatch' && inputs.runner_route == 'github-hosted') && (github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     timeout-minutes: 90
-    steps:
+    steps: &crypto_proptests_heavy_steps
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
@@ -253,8 +274,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-crypto-heavy-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-crypto-heavy-
+          key: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-crypto-heavy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-crypto-heavy-
 
       - name: Run shipper-encrypt proptests at full strength
         run: cargo nextest run -p shipper-encrypt --all-features --profile ci
@@ -272,14 +293,16 @@ jobs:
 
   msrv:
     name: MSRV Check
+    if: *default_runners
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
-    steps:
+    steps: &msrv_steps
       - uses: actions/checkout@v7.0.1
+        id: msrv-checkout
 
       - name: Install Rust (MSRV)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: 1.95.0
 
@@ -290,18 +313,34 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-msrv-
+          key: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-msrv-
 
-      - name: Check with MSRV
-        run: cargo check --workspace
+      - name: Check locked workspace with Rust 1.95.0
+        env:
+          CHECKOUT_SHA: ${{ steps.msrv-checkout.outputs.commit }}
+        run: |
+          set -euo pipefail
+          printf 'checkout_sha=%s\n' "$CHECKOUT_SHA"
+          [[ -n "$CHECKOUT_SHA" && "$CHECKOUT_SHA" == "$GITHUB_SHA" ]]
+          sha256sum Cargo.lock
+          RUSTC=$(rustup which --toolchain 1.95.0 rustc)
+          export RUSTC CARGO_BUILD_RUSTC="$RUSTC"
+          export RUSTC_WRAPPER="" RUSTC_WORKSPACE_WRAPPER=""
+          export CARGO_BUILD_RUSTC_WRAPPER="" CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=""
+          rustc_version=$("$RUSTC" -vV)
+          printf '%s\n' "$rustc_version"
+          [[ $'\n'"$rustc_version"$'\n' == *$'\nrelease: 1.95.0\n'* ]]
+          cargo +1.95.0 -vV
+          cargo +1.95.0 check --workspace --locked
 
   security:
     name: Security Audit
+    if: *default_runners
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
-    steps:
+    steps: &security_steps
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
@@ -324,10 +363,11 @@ jobs:
 
   docs:
     name: Documentation
+    if: *default_runners
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
-    steps:
+    steps: &docs_steps
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
@@ -340,8 +380,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-docs-
+          key: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-docs-
 
       - name: Build documentation
         run: cargo doc --workspace --no-deps --document-private-items
@@ -350,11 +390,12 @@ jobs:
 
   bdd:
     name: BDD Tests
+    if: *default_runners
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
     needs: [lint]
-    steps:
+    steps: &bdd_steps
       - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
 
@@ -365,8 +406,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-
 
       - name: Run publish BDD tests
         run: cargo test -p shipper-cli --test bdd_publish -- --nocapture
@@ -379,12 +420,13 @@ jobs:
 
   fuzz-smoke:
     name: Fuzz Smoke (PR)
-    if: github.event_name != 'schedule'
+    if: >-
+      ${{ github.event_name != 'pull_request' && !(github.repository == 'EffortlessMetrics/shipper-swarm' && github.event_name == 'workflow_dispatch' && inputs.runner_route == 'github-hosted') && (github.event_name != 'schedule') }}
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     needs: [lint]
-    steps:
+    steps: &fuzz_smoke_steps
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust nightly
@@ -406,8 +448,8 @@ jobs:
             ~/.cargo/git
             target
             fuzz/target
-          key: ${{ runner.os }}-fuzz-${{ hashFiles('**/Cargo.lock', 'fuzz/Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-fuzz-
+          key: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-fuzz-${{ hashFiles('**/Cargo.lock', 'fuzz/Cargo.toml') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-fuzz-
 
       - name: Run fuzz targets briefly
         env:
@@ -421,15 +463,16 @@ jobs:
 
   cross-platform:
     name: Target Check (${{ matrix.target }})
+    if: *default_runners
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-medium, trusted-pr]
-    strategy:
+    strategy: &target_strategy
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-    steps:
+    steps: &cross_platform_steps
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
@@ -447,8 +490,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
+          key: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Check target
         run: cargo check --workspace --target ${{ matrix.target }}
@@ -458,12 +501,13 @@ jobs:
     # Keep release-profile compile proof available on main and manual dispatch,
     # but out of the default PR and nightly critical paths. Tag-time release
     # binaries are built by release.yml.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: >-
+      ${{ github.event_name != 'pull_request' && !(github.repository == 'EffortlessMetrics/shipper-swarm' && github.event_name == 'workflow_dispatch' && inputs.runner_route == 'github-hosted') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     needs: [lint, test]
-    steps:
+    steps: &release_build_steps
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
@@ -476,8 +520,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-release-
+          key: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.environment == 'github-hosted' && 'manual-hosted-' || '' }}${{ runner.os }}-cargo-release-
 
       - name: Build release
         run: cargo build --release
@@ -488,3 +532,97 @@ jobs:
           name: shipper-linux-x86_64
           path: target/release/shipper
           retention-days: 7
+
+  # Manual proof reuses each original job's exact steps and target matrix.
+  # The default group/label routes above remain the push/schedule/default path.
+
+  lint-hosted:
+    name: Lint (fmt + clippy) (manual hosted)
+    if: &manual_hosted >-
+      ${{ github.repository == 'EffortlessMetrics/shipper-swarm' && github.event_name == 'workflow_dispatch' && inputs.runner_route == 'github-hosted' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps: *lint_steps
+
+  # Reuse the canonical policy steps, without admitting other full-CI jobs on PRs.
+  policy-hosted:
+    name: Policy (review-ready or manual hosted)
+    if: >-
+      ${{ (github.repository == 'EffortlessMetrics/shipper-swarm' && github.event_name == 'workflow_dispatch' && inputs.runner_route == 'github-hosted') || (github.repository == 'EffortlessMetrics/shipper-swarm' && github.event_name == 'pull_request' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps: *policy_steps
+
+  test-hosted:
+    name: Tests (nextest) (manual hosted)
+    if: *manual_hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps: *test_steps
+
+  install-smoke-hosted:
+    name: Install Smoke (manual hosted)
+    if: *manual_hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps: *install_smoke_steps
+
+  crypto-proptests-heavy-hosted:
+    name: Crypto Proptests (full strength) (manual hosted)
+    if: *manual_hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps: *crypto_proptests_heavy_steps
+
+  msrv-hosted:
+    name: MSRV Check (manual hosted)
+    if: *manual_hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps: *msrv_steps
+
+  security-hosted:
+    name: Security Audit (manual hosted)
+    if: *manual_hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps: *security_steps
+
+  docs-hosted:
+    name: Documentation (manual hosted)
+    if: *manual_hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps: *docs_steps
+
+  bdd-hosted:
+    name: BDD Tests (manual hosted)
+    if: *manual_hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    needs: [lint-hosted]
+    steps: *bdd_steps
+
+  fuzz-smoke-hosted:
+    name: Fuzz Smoke (PR) (manual hosted)
+    if: *manual_hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [lint-hosted]
+    steps: *fuzz_smoke_steps
+
+  cross-platform-hosted:
+    name: Target Check (${{ matrix.target }}) (manual hosted)
+    if: *manual_hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy: *target_strategy
+    steps: *cross_platform_steps
+
+  release-build-hosted:
+    name: Release Build (manual hosted)
+    if: *manual_hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    needs: [lint-hosted, test-hosted]
+    steps: *release_build_steps

@@ -394,6 +394,429 @@ fn doctor_reports_missing_token() {
     registry.join();
 }
 
+#[test]
+fn doctor_warns_but_does_not_pass_missing_auth_for_explicit_loopback_rehearsal() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+    let state_dir = td.path().join("doctor-state");
+    let registry = spawn_registry(1);
+
+    let output = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--registry")
+        .arg("isolated-rehearsal")
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_ISOLATED_REHEARSAL_TOKEN")
+        .env_remove("ACTIONS_ID_TOKEN_REQUEST_URL")
+        .env_remove("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stdout.contains("[warning] registry auth is not proven for this loopback rehearsal"),
+        "status={:?}\nstdout={stdout}\nstderr={stderr}",
+        output.status.code()
+    );
+    assert!(
+        stdout.contains("auth_type: NONE FOUND (selected-registry token missing)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("live_auth_proven: false"), "{stdout}");
+    assert!(!stdout.contains("crates.io auth is missing"), "{stdout}");
+    assert!(!stdout.contains("[passed] registry auth"), "{stdout}");
+    assert!(!stdout.contains("cargo login"), "{stdout}");
+    assert!(!stdout.contains("crates-io-auth-action"), "{stdout}");
+    assert!(
+        !state_dir.exists(),
+        "doctor must not create state or release evidence at {}",
+        state_dir.display()
+    );
+
+    registry.join();
+}
+
+#[test]
+fn doctor_json_matches_human_loopback_auth_warning_without_exposing_other_tokens() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+    let state_dir = td.path().join("doctor-json-state");
+    let registry = spawn_registry(1);
+    let secret = "unrelated-secret-sentinel";
+
+    let output = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--registry")
+        .arg("isolated-rehearsal")
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--format")
+        .arg("json")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env("CARGO_REGISTRIES_UNRELATED_TOKEN", secret)
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_ISOLATED_REHEARSAL_TOKEN")
+        .env_remove("ACTIONS_ID_TOKEN_REQUEST_URL")
+        .env_remove("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(!stdout.contains(secret), "stdout leaked token: {stdout}");
+    assert!(!stderr.contains(secret), "stderr leaked token: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|error| {
+        panic!(
+            "invalid JSON: {error}; status={:?}; stdout={stdout}; stderr={stderr}",
+            output.status.code()
+        )
+    });
+    let auth_findings = json
+        .pointer("/reports/0/auth/findings")
+        .and_then(serde_json::Value::as_array)
+        .expect("auth findings array");
+    let finding = auth_findings
+        .iter()
+        .find(|finding| {
+            finding.get("id").and_then(serde_json::Value::as_str)
+                == Some("registry-auth-not-proven")
+        })
+        .expect("loopback auth warning");
+    assert_eq!(
+        finding.get("status").and_then(serde_json::Value::as_str),
+        Some("warning")
+    );
+    assert_eq!(
+        finding.get("severity").and_then(serde_json::Value::as_str),
+        Some("warning")
+    );
+    let next_steps = finding
+        .get("try_next")
+        .and_then(serde_json::Value::as_array)
+        .expect("try_next array");
+    assert!(
+        next_steps.iter().all(|step| {
+            step.as_str().is_some_and(|step| {
+                !step.contains("cargo login") && !step.contains("crates-io-auth-action")
+            })
+        }),
+        "{stdout}"
+    );
+    assert!(
+        finding
+            .get("evidence")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|evidence| evidence.contains("live_auth_proven: false")),
+        "{stdout}"
+    );
+    assert!(
+        !state_dir.exists(),
+        "doctor must not create state or release evidence at {}",
+        state_dir.display()
+    );
+
+    registry.join();
+}
+
+#[test]
+fn doctor_uses_selected_registry_token_without_exposing_it() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+    let registry = spawn_registry(1);
+    let secret = "selected-registry-secret-sentinel";
+    let state_dir = td.path().join("doctor-token-state");
+
+    let output = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--registry")
+        .arg("isolated-rehearsal")
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--format")
+        .arg("json")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env("CARGO_REGISTRIES_ISOLATED_REHEARSAL_TOKEN", secret)
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("ACTIONS_ID_TOKEN_REQUEST_URL")
+        .env_remove("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(!stdout.contains(secret), "stdout leaked token: {stdout}");
+    assert!(!stderr.contains(secret), "stderr leaked token: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid doctor JSON");
+    assert_eq!(
+        json.pointer("/reports/0/auth/auth_type")
+            .and_then(serde_json::Value::as_str),
+        Some("token (detected)")
+    );
+    assert!(
+        json.pointer("/reports/0/auth/findings")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty),
+        "{stdout}"
+    );
+    assert!(
+        !state_dir.exists(),
+        "unexpected state: {}",
+        state_dir.display()
+    );
+
+    registry.join();
+}
+
+#[test]
+fn doctor_keeps_non_crates_oidc_postures_blocked_and_registry_neutral() {
+    for (case, oidc_url, oidc_token, expected_id, expected_auth_type) in [
+        (
+            "complete",
+            Some("https://oidc.example.test/request"),
+            Some("oidc-secret-sentinel-complete"),
+            "selected-registry-auth-not-proven",
+            "selected-registry auth unproven (OIDC environment detected)",
+        ),
+        (
+            "partial",
+            Some("https://oidc.example.test/request"),
+            None,
+            "selected-registry-auth-environment-incomplete",
+            "selected-registry auth unproven (incomplete environment)",
+        ),
+    ] {
+        let td = tempdir().expect("tempdir");
+        create_workspace(td.path());
+        write_file(
+            &td.path().join(".github/workflows/release.yml"),
+            "# unrelated crates.io release authority\n# rust-lang/crates-io-auth-action@v1\n",
+        );
+        fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+        let registry = spawn_registry(1);
+        let state_dir = td.path().join(format!("doctor-oidc-{case}-state"));
+        let mut command = loopback_shipper_cmd();
+        command
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--registry")
+            .arg("isolated-rehearsal")
+            .arg("--api-base")
+            .arg(&registry.base_url)
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("--format")
+            .arg("json")
+            .arg("doctor")
+            .env("CARGO_HOME", td.path().join("cargo-home"))
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_ISOLATED_REHEARSAL_TOKEN");
+        match oidc_url {
+            Some(value) => {
+                command.env("ACTIONS_ID_TOKEN_REQUEST_URL", value);
+            }
+            None => {
+                command.env_remove("ACTIONS_ID_TOKEN_REQUEST_URL");
+            }
+        }
+        match oidc_token {
+            Some(value) => {
+                command.env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", value);
+            }
+            None => {
+                command.env_remove("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
+            }
+        }
+
+        let output = command.assert().success().get_output().clone();
+        let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+        let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+        assert!(!stdout.contains("crates.io"), "case={case}: {stdout}");
+        assert!(
+            !stdout.contains("crates-io-auth-action"),
+            "case={case}: {stdout}"
+        );
+        assert!(!stdout.contains("cargo login"), "case={case}: {stdout}");
+        if let Some(secret) = oidc_token {
+            assert!(!stdout.contains(secret), "case={case}: {stdout}");
+            assert!(!stderr.contains(secret), "case={case}: {stderr}");
+        }
+        let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid doctor JSON");
+        assert_eq!(
+            json.pointer("/reports/0/auth/auth_type")
+                .and_then(serde_json::Value::as_str),
+            Some(expected_auth_type),
+            "case={case}: {stdout}"
+        );
+        let auth_findings = json
+            .pointer("/reports/0/auth/findings")
+            .and_then(serde_json::Value::as_array)
+            .expect("auth findings array");
+        assert!(
+            auth_findings.iter().any(|finding| {
+                finding.get("id").and_then(serde_json::Value::as_str) == Some(expected_id)
+                    && finding.get("status").and_then(serde_json::Value::as_str) == Some("blocked")
+            }),
+            "case={case}: {stdout}"
+        );
+        assert!(
+            !state_dir.exists(),
+            "case={case}: unexpected state at {}",
+            state_dir.display()
+        );
+        registry.join();
+
+        let human_registry = spawn_registry(1);
+        let human_state_dir = td.path().join(format!("doctor-oidc-{case}-human-state"));
+        let mut human = loopback_shipper_cmd();
+        human
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--registry")
+            .arg("isolated-rehearsal")
+            .arg("--api-base")
+            .arg(&human_registry.base_url)
+            .arg("--state-dir")
+            .arg(&human_state_dir)
+            .arg("doctor")
+            .env("CARGO_HOME", td.path().join("cargo-home"))
+            .env_remove("CARGO_REGISTRY_TOKEN")
+            .env_remove("CARGO_REGISTRIES_ISOLATED_REHEARSAL_TOKEN");
+        match oidc_url {
+            Some(value) => {
+                human.env("ACTIONS_ID_TOKEN_REQUEST_URL", value);
+            }
+            None => {
+                human.env_remove("ACTIONS_ID_TOKEN_REQUEST_URL");
+            }
+        }
+        match oidc_token {
+            Some(value) => {
+                human.env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", value);
+            }
+            None => {
+                human.env_remove("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
+            }
+        }
+        let human_output = human.assert().success().get_output().clone();
+        let human_stdout = String::from_utf8(human_output.stdout).expect("utf8 human stdout");
+        let human_stderr = String::from_utf8(human_output.stderr).expect("utf8 human stderr");
+        assert!(
+            human_stdout.contains(&format!("auth_type: {expected_auth_type}")),
+            "case={case}: {human_stdout}"
+        );
+        assert!(
+            !human_stdout.contains("trusted (detected)"),
+            "case={case}: {human_stdout}"
+        );
+        assert!(
+            !human_stdout.contains("crates.io"),
+            "case={case}: {human_stdout}"
+        );
+        if let Some(secret) = oidc_token {
+            assert!(
+                !human_stdout.contains(secret),
+                "case={case}: {human_stdout}"
+            );
+            assert!(
+                !human_stderr.contains(secret),
+                "case={case}: {human_stderr}"
+            );
+        }
+        assert!(
+            !human_state_dir.exists(),
+            "case={case}: unexpected state at {}",
+            human_state_dir.display()
+        );
+        human_registry.join();
+    }
+}
+
+#[test]
+fn doctor_does_not_infer_rehearsal_auth_from_a_loopback_endpoint_or_name() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let endpoint = format!(
+        "https://127.0.0.1:{}",
+        listener.local_addr().expect("address").port()
+    );
+    drop(listener);
+    let state_dir = td.path().join("doctor-missing-posture-state");
+
+    let output = shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--registry")
+        .arg("looks-like-a-rehearsal")
+        .arg("--api-base")
+        .arg(endpoint)
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--format")
+        .arg("json")
+        .arg("doctor")
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_LOOKS_LIKE_A_REHEARSAL_TOKEN")
+        .env_remove("ACTIONS_ID_TOKEN_REQUEST_URL")
+        .env_remove("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid doctor JSON");
+    let auth_findings = json
+        .pointer("/reports/0/auth/findings")
+        .and_then(serde_json::Value::as_array)
+        .expect("auth findings array");
+    assert!(
+        auth_findings.iter().any(|finding| {
+            finding.get("id").and_then(serde_json::Value::as_str) == Some("registry-auth-missing")
+                && finding.get("status").and_then(serde_json::Value::as_str) == Some("blocked")
+        }),
+        "{stdout}"
+    );
+    assert!(
+        auth_findings.iter().all(|finding| {
+            finding.get("id").and_then(serde_json::Value::as_str)
+                != Some("registry-auth-not-proven")
+        }),
+        "{stdout}"
+    );
+    assert!(
+        !state_dir.exists(),
+        "unexpected state: {}",
+        state_dir.display()
+    );
+}
+
 /// 5. Doctor shows workspace info when run in a workspace
 #[test]
 fn doctor_shows_workspace_info() {
@@ -423,6 +846,7 @@ fn doctor_shows_workspace_info() {
 
 /// 6. Doctor reports .shipper directory status (not yet created)
 #[test]
+#[serial_test::serial]
 fn doctor_reports_shipper_directory_status() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
@@ -443,9 +867,14 @@ fn doctor_reports_shipper_directory_status() {
         .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
         .assert()
         .success()
-        .stdout(contains("state_dir_exists: false (will be created)"));
+        .stdout(contains(
+            "state_dir_exists: false (prospective; write access is unverified)",
+        ))
+        .stdout(contains("state-dir-not-created"))
+        .stdout(contains("Unknown: state directory"));
 
     registry.join();
+    assert!(!td.path().join(".shipper").exists());
 }
 
 /// 7. Doctor reports state file if present (.shipper dir exists with state.json)

@@ -23,9 +23,21 @@ The Coverage workflow runs on:
 
 - Push to `main`
 - `workflow_dispatch` (manual trigger)
-- PRs labeled `coverage` or `full-ci`
+- Code-changing PR events where `coverage` or `full-ci` is already present
 
-Runs are conditional on the label check, so ordinary PRs do not trigger coverage.
+Runs are conditional on the label check, so ordinary PRs do not trigger
+coverage. Applying a label alone deliberately does not emit a coverage run or
+cancel the authoritative code-change run. The next opened, synchronize, or
+reopened event evaluates the label. For an immediate refresh, dispatch the
+workflow independently; `workflow_dispatch` is unconditional and does not
+consume the label.
+
+Canonical label metadata lives in `policy/ci-trigger-labels.toml`. Maintainers
+can run `cargo xtask ci-labels check` for offline source agreement and
+`cargo xtask ci-labels check-live --repo EffortlessMetrics/shipper-swarm` for a
+read-only live drift check. Live creation/update requires the explicit
+`cargo xtask ci-labels sync --repo EffortlessMetrics/shipper-swarm --apply`
+path.
 
 ## Durable receipts
 

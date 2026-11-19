@@ -437,26 +437,53 @@ fn lock_contention_second_acquire_fails() {
 }
 
 // ===========================================================================
-// 5. Lock with stale timeout auto-cleanup
+// 5. Orphaned ownership recovery and conservative legacy recovery
 // ===========================================================================
 
 #[test]
-#[allow(unused_mut)]
-fn lock_stale_timeout_allows_reacquire() {
+#[serial]
+fn lock_orphaned_owned_metadata_allows_reacquire() {
+    let td = tempdir().expect("tempdir");
+    let state_dir = td.path().join(".shipper");
+    let lock_path = shipper_core::lock::lock_path(&state_dir, None);
+    let predecessor =
+        shipper_core::lock::LockFile::acquire(&state_dir, None).expect("acquire predecessor");
+    predecessor.set_plan_id("stale-plan").expect("set plan_id");
+    let mut record: serde_json::Value =
+        serde_json::from_slice(&fs::read(&lock_path).expect("read predecessor")).unwrap();
+    predecessor.release().expect("release predecessor");
+
+    // Restore genuine owned metadata after its OS ownership has ended. The
+    // old timestamp is not itself recovery authority: the current protocol
+    // and successful acquisition of its unowned sidecar establish abandonment.
+    record["acquired_at"] = "2020-01-01T00:00:00Z".into();
+    let retained = serde_json::to_vec_pretty(&record).unwrap();
+    fs::write(&lock_path, &retained).expect("restore orphaned metadata");
+    assert!(shipper_core::lock::LockFile::acquire(&state_dir, None).is_err());
+    assert_eq!(fs::read(&lock_path).unwrap(), retained);
+
+    let successor = shipper_core::lock::LockFile::acquire_with_timeout(
+        &state_dir,
+        None,
+        Duration::from_mins(1),
+    )
+    .expect("recover orphaned owned metadata");
+    successor
+        .set_plan_id("recovered-plan")
+        .expect("update successor");
+    let info = shipper_core::lock::LockFile::read_lock_info(&state_dir, None).unwrap();
+    assert_eq!(info.plan_id.as_deref(), Some("recovered-plan"));
+    assert!(shipper_core::lock::LockFile::acquire(&state_dir, None).is_err());
+    successor.release().expect("release successor");
+    assert!(!lock_path.exists());
+}
+
+#[test]
+#[serial]
+fn lock_old_foreign_metadata_requires_explicit_force() {
     let td = tempdir().expect("tempdir");
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir");
-
-    // Create a lock then release the handle (drop releases it)
-    {
-        let mut lock = shipper_core::lock::LockFile::acquire(&state_dir, None).expect("acquire");
-        lock.set_plan_id("stale-plan").expect("set plan_id");
-        // Intentionally don't release â€” lock file remains but process holds it
-        // For testing, we manually write a stale lock file
-        lock.release().expect("release");
-    }
-
-    // Write a fake stale lock with a very old timestamp
     let lock_path = shipper_core::lock::lock_path(&state_dir, None);
     let stale_info = serde_json::json!({
         "pid": 99999,
@@ -464,21 +491,40 @@ fn lock_stale_timeout_allows_reacquire() {
         "acquired_at": "2020-01-01T00:00:00Z",
         "plan_id": "ancient-plan"
     });
-    fs::write(
-        &lock_path,
-        serde_json::to_string_pretty(&stale_info).unwrap(),
-    )
-    .expect("write stale");
+    let retained = serde_json::to_vec_pretty(&stale_info).unwrap();
+    fs::write(&lock_path, &retained).expect("write foreign legacy record");
 
-    // acquire_with_timeout should remove the stale lock and succeed
-    let mut lock = shipper_core::lock::LockFile::acquire_with_timeout(
+    let error = shipper_core::lock::LockFile::acquire_with_timeout(
         &state_dir,
         None,
         Duration::from_mins(1),
     )
-    .expect("acquire with timeout");
+    .expect_err("age alone cannot establish that a foreign owner is absent");
+    assert!(format!("{error:#}").contains("age does not authorize replacement"));
+    assert_eq!(fs::read(&lock_path).unwrap(), retained);
+
+    // Force is the explicit quiescence assumption for an unknown legacy
+    // publisher. It must still win the OS guard and retain ownership.
+    let lock = shipper_core::lock::LockFile::acquire_with_timeout_and_force(
+        &state_dir,
+        None,
+        Duration::from_mins(1),
+        true,
+    )
+    .expect("explicit force can recover unknown metadata after winning the guard");
     assert!(shipper_core::lock::LockFile::is_locked(&state_dir, None).expect("locked"));
+    assert!(
+        shipper_core::lock::LockFile::acquire_with_timeout_and_force(
+            &state_dir,
+            None,
+            Duration::ZERO,
+            true,
+        )
+        .is_err(),
+        "force cannot bypass actual ownership"
+    );
     lock.release().expect("release");
+    assert!(!lock_path.exists());
 }
 
 // ===========================================================================

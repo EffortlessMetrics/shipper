@@ -101,6 +101,29 @@ fn resume_help() {
 }
 
 #[test]
+fn resume_help_explains_mode_specific_resume_selection() {
+    let output = shipper_cmd()
+        .args(["resume", "--help"])
+        .output()
+        .expect("failed to run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let normalized = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for required in [
+        "sequential uses the named package and later plan entries",
+        "parallel uses its whole dependency level and later levels",
+        "In sequential mode, `--resume-from` selects the named package and later plan entries",
+        "In parallel mode, it selects the target's whole dependency level and later levels",
+        "an earlier same-level sibling can therefore block retry-budget admission",
+    ] {
+        assert!(
+            normalized.contains(required),
+            "resume help must explain mode-specific selection `{required}`:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn preflight_help() {
     let output = shipper_cmd()
         .args(["preflight", "--help"])
@@ -132,7 +155,13 @@ fn doctor_help() {
 
 #[test]
 fn first_run_help_omits_release_execution_controls() {
-    let help_cases: &[&[&str]] = &[&["--help"], &["plan", "--help"], &["doctor", "--help"]];
+    let help_cases: &[&[&str]] = &[
+        &["--help"],
+        &["plan", "--help"],
+        &["doctor", "--help"],
+        &["plan-yank", "--help"],
+        &["fix-forward", "--help"],
+    ];
 
     for args in help_cases {
         let output = shipper_cmd().args(*args).output().expect("failed to run");
@@ -178,10 +207,76 @@ fn publish_help_keeps_release_execution_controls() {
 }
 
 #[test]
+fn publish_help_requires_evidence_before_resume_after_ambiguity() {
+    let output = shipper_cmd()
+        .args(["publish", "--help"])
+        .output()
+        .expect("failed to run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let normalized = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    let recovery = normalized
+        .split_once("If a run stops")
+        .map(|(_, recovery)| recovery)
+        .and_then(|recovery| {
+            recovery
+                .split_once(" EXAMPLES:")
+                .map(|(recovery, _)| recovery)
+        })
+        .expect("publish help must retain a distinct interruption-recovery paragraph");
+
+    for required in [
+        "shipper status --durable",
+        "same manifest, singular `--registry`, and state directory",
+        "`--registries` or `--all-registries`",
+        "matching singular `--registry` and registry-specific state directory",
+        "`--durable` rejects multi-registry selectors",
+        "same state directory selected",
+        "shipper inspect-events",
+        "shipper inspect-receipt",
+        "finalized receipt exists",
+        "typed retained-evidence posture explicitly authorizes it",
+        "reconciliation outcome `StillUnknown`",
+        "durable status `unknown`",
+        "reconciliation.json",
+    ] {
+        assert!(
+            recovery.contains(required),
+            "publish help missing evidence-first boundary {required:?}; got:\n{stdout}"
+        );
+    }
+
+    let ambiguity = recovery
+        .find("ambiguous registry response")
+        .expect("recovery paragraph must name ambiguous registry responses");
+    let inspect = recovery
+        .find("inspect retained evidence")
+        .expect("recovery paragraph must direct evidence inspection");
+    let conditional_resume = recovery
+        .find("Resume only when")
+        .expect("recovery paragraph must make resume conditional");
+    assert!(
+        ambiguity < inspect && inspect < conditional_resume,
+        "publish help must order ambiguity before inspection before conditional resume:\n{recovery}"
+    );
+
+    let lower_recovery = recovery.to_ascii_lowercase();
+    assert!(
+        !lower_recovery.contains("rerun")
+            && !recovery.contains("`shipper publish`")
+            && !recovery.contains("`shipper resume`")
+            && lower_recovery.matches("publish").count() == 1
+            && lower_recovery.matches("resume").count() == 1,
+        "publish help must not add an unconditional rerun, publish, or resume imperative:\n{recovery}"
+    );
+}
+
+#[test]
 fn hidden_release_controls_remain_parseable_for_compatibility() {
     for args in [
         &["--allow-dirty", "plan", "--help"][..],
         &["plan", "--allow-dirty", "--help"][..],
+        &["plan-yank", "--allow-dirty", "--help"][..],
+        &["fix-forward", "--allow-dirty", "--help"][..],
     ] {
         let output = shipper_cmd().args(args).output().expect("failed to run");
         assert!(
@@ -266,6 +361,7 @@ fn no_subcommand_guides_to_first_commands_and_exits_two() {
         "shipper plan",
         "shipper preflight",
         "shipper publish",
+        "inspect retained evidence and follow its typed next action",
         "Usage: shipper [OPTIONS] <COMMAND>",
     ] {
         assert!(
@@ -273,6 +369,12 @@ fn no_subcommand_guides_to_first_commands_and_exits_two() {
             "first-run guidance missing {expected:?}; got:\n{stderr}"
         );
     }
+    assert!(
+        !stderr.contains("shipper status --durable")
+            && !stderr.contains("rerun")
+            && !stderr.contains("shipper resume"),
+        "first-run guidance must remain selector-agnostic and avoid unconditional retry commands:\n{stderr}"
+    );
 }
 
 #[test]

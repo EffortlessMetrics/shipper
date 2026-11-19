@@ -1194,6 +1194,46 @@ Proof commands: cargo xtask policy-report
     }
 
     #[test]
+    fn checked_in_support_claims_preserve_tier_and_lifecycle_boundaries() {
+        // Run against the REAL document, not just synthetic table strings.
+        // A bad layout previously passed workspace tests because the document
+        // contract CLI (a distinct command) was not run by Rust-small.
+        let checked = include_str!("../../docs/status/SUPPORT_TIERS.md");
+        let allowed = BTreeSet::from([
+            "stable".to_string(),
+            "stable/internal".to_string(),
+            "advisory".to_string(),
+            "experimental".to_string(),
+            "planned".to_string(),
+        ]);
+        assert_eq!(support_tier_model_values(checked), allowed);
+        assert!(
+            support_tier_claim_tier_findings(checked).is_empty(),
+            "checked-in support document must not classify evidence prose as claim tiers"
+        );
+
+        // Negative controls: inserting the audit table inside Claim Map must
+        // make its prose values invalid, while collapsing lifecycle into Tier
+        // Model must not be accepted as maturity vocabulary.
+        assert!(checked.contains("## Development Evidence\n"));
+        let misplaced_claims = checked.replacen("## Development Evidence", "## Claim Map", 1);
+        assert!(
+            support_tier_claim_tier_findings(&misplaced_claims)
+                .iter()
+                .any(|finding| finding.code == "support_tiers_invalid_claim_tier"),
+            "a misplaced audit table must fail the existing claim validator"
+        );
+
+        assert!(checked.contains("## Release Lifecycle\n"));
+        let merged_tiers = checked.replacen("## Release Lifecycle\n", "", 1);
+        assert_ne!(
+            support_tier_model_values(&merged_tiers),
+            allowed,
+            "lifecycle labels must not become maturity tiers"
+        );
+    }
+
+    #[test]
     fn markdown_table_rows_skip_each_table_header_in_section() {
         let raw = "\
 # Support Tiers

@@ -1,0 +1,6 @@
+kind: added
+body: Emit a typed, secret-safe JSON stderr envelope for publish plan-build and engine errors returned before a receipt is finalized.
+time: 2026-08-14T20:55:00Z
+custom:
+  Audience: Operators
+  Importance: Detailed

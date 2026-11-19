@@ -1,0 +1,6 @@
+kind: changed
+body: Make opt-in coverage and mutation labels source-owned and auditable without changing their advisory workflow behavior.
+time: 2026-08-21T12:15:00Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

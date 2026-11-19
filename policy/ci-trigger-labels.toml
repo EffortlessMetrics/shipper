@@ -1,0 +1,63 @@
+schema_version = "1.0"
+policy = "ci-trigger-labels"
+repository = "EffortlessMetrics/shipper-swarm"
+owner = "release/ci"
+status = "active"
+
+# Colors are presentation-only. Names, descriptions, and lane membership are
+# the operator contract consumed by `cargo xtask ci-labels`.
+
+[[label]]
+name = "coverage"
+color = "0e8a16"
+description = "Advisory coverage eligibility on the next code-changing PR event"
+owner = "release/ci"
+maintainer_controlled = true
+advisory = true
+broad_ci = false
+
+[[label.binding]]
+workflow = ".github/workflows/coverage.yml"
+job = "coverage"
+activation = "next-code-event"
+accepted_pr_actions = ["opened", "reopened", "synchronize"]
+same_repository = true
+
+[[label]]
+name = "full-ci"
+color = "5319e7"
+description = "Advisory mutation now plus coverage on the next code-changing PR event"
+owner = "release/ci"
+maintainer_controlled = true
+advisory = true
+broad_ci = false
+
+[[label.binding]]
+workflow = ".github/workflows/coverage.yml"
+job = "coverage"
+activation = "next-code-event"
+accepted_pr_actions = ["opened", "reopened", "synchronize"]
+same_repository = true
+
+[[label.binding]]
+workflow = ".github/workflows/mutation.yml"
+job = "mutants-pr"
+activation = "label-event"
+accepted_pr_actions = ["opened", "reopened", "synchronize", "labeled"]
+same_repository = true
+
+[[label]]
+name = "mutation"
+color = "b60205"
+description = "Immediately trigger advisory PR-scoped mutation testing on label apply"
+owner = "release/ci"
+maintainer_controlled = true
+advisory = true
+broad_ci = false
+
+[[label.binding]]
+workflow = ".github/workflows/mutation.yml"
+job = "mutants-pr"
+activation = "label-event"
+accepted_pr_actions = ["opened", "reopened", "synchronize", "labeled"]
+same_repository = true

@@ -9,10 +9,10 @@
 //! `SHIPPER_GIT_BIN` override variants live in [`super::bin_override`].
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result};
 
+use super::repository_command;
 use crate::types::GitContext;
 
 /// Default-path porcelain cleanliness check with the ORIGINAL `shipper-git`
@@ -26,9 +26,8 @@ use crate::types::GitContext;
 /// `git status failed:` prefix for CLI backward-compatibility.
 #[allow(dead_code)]
 pub(super) fn is_git_clean(path: &Path) -> Result<bool> {
-    let output = Command::new("git")
+    let output = repository_command(path, "git")
         .args(["status", "--porcelain"])
-        .current_dir(path)
         .output()
         .context("failed to run git status")?;
 
@@ -45,9 +44,8 @@ pub(super) fn is_git_clean(path: &Path) -> Result<bool> {
 
 /// Check if `path` is inside a git repository.
 pub(super) fn is_git_repo(path: &Path) -> bool {
-    Command::new("git")
+    repository_command(path, "git")
         .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(path)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -55,9 +53,8 @@ pub(super) fn is_git_repo(path: &Path) -> bool {
 
 /// Get the current git commit hash.
 pub(super) fn get_commit_hash(path: &Path) -> Result<String> {
-    let output = Command::new("git")
+    let output = repository_command(path, "git")
         .args(["rev-parse", "HEAD"])
-        .current_dir(path)
         .output()
         .context("failed to run git rev-parse")?;
 
@@ -74,9 +71,8 @@ pub(super) fn get_commit_hash(path: &Path) -> Result<String> {
 
 /// Get the current branch name. Returns `Ok(None)` for detached HEAD.
 pub(super) fn get_branch(path: &Path) -> Result<Option<String>> {
-    let output = Command::new("git")
+    let output = repository_command(path, "git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(path)
         .output()
         .context("failed to run git rev-parse")?;
 
@@ -96,9 +92,8 @@ pub(super) fn get_branch(path: &Path) -> Result<Option<String>> {
 
 /// Get the current exact-match tag, if any.
 pub(super) fn get_tag(path: &Path) -> Result<Option<String>> {
-    let output = Command::new("git")
+    let output = repository_command(path, "git")
         .args(["describe", "--exact-match", "--tags"])
-        .current_dir(path)
         .output()
         .context("failed to run git describe")?;
 
@@ -153,9 +148,8 @@ pub(super) fn has_tag_for_commit(path: &Path) -> bool {
 /// Get the list of changed files (staged + unstaged), parsed from `git status --porcelain`.
 #[allow(dead_code)]
 pub(super) fn get_changed_files(path: &Path) -> Result<Vec<String>> {
-    let output = Command::new("git")
+    let output = repository_command(path, "git")
         .args(["status", "--porcelain"])
-        .current_dir(path)
         .output()
         .context("failed to run git status")?;
 
@@ -181,9 +175,8 @@ pub(super) fn get_changed_files(path: &Path) -> Result<Vec<String>> {
 /// Get the URL configured for a named remote.
 #[allow(dead_code)]
 pub(super) fn get_remote_url(path: &Path, remote: &str) -> Result<Option<String>> {
-    let output = Command::new("git")
+    let output = repository_command(path, "git")
         .args(["remote", "get-url", remote])
-        .current_dir(path)
         .output()
         .context("failed to run git remote")?;
 

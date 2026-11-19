@@ -1,0 +1,81 @@
+# Changie configuration for Shipper's PR-time change-fragment ledger.
+#
+# Changie is deliberately enforced by the repository-owned local pre-commit
+# hook, not by GitHub Actions. The hook validates the staged index and supports
+# a reasoned local exemption for genuinely non-user-facing changes inside
+# normally user-facing paths; it is a shift-left authoring aid, not merge
+# authority. Release notes and CHANGELOG.md remain reviewed release artifacts.
+#
+# Version selection is a deliberate release decision. There are no automatic
+# semver bump mappings in this file.
+
+changesDir: .changes
+unreleasedDir: unreleased
+headerPath: header.tpl.md
+changelogPath: CHANGELOG.md
+versionExt: md
+
+# Nanosecond precision avoids filename collisions under parallel agent work.
+fragmentFileFormat: '{{.Kind}}-{{.Time.Format "20060102-150405.000000000"}}'
+versionFileFormat: '{{.VersionNoPrefix}}.md'
+versionFormat: '## [{{.VersionNoPrefix}}] - {{.Time.Format "2006-01-02"}}'
+
+# Keep-a-Changelog ordering, with migration/security first and internal work
+# intentionally demoted to the final section.
+kinds:
+  - label: Breaking and migration
+    key: breaking
+  - label: Security
+    key: security
+  - label: Added
+    key: added
+  - label: Changed
+    key: changed
+  - label: Fixed
+    key: fixed
+  - label: Deprecated
+    key: deprecated
+  - label: Removed
+    key: removed
+  - label: Maintenance
+    key: maintenance
+
+body:
+  minLength: 12
+  maxLength: 240
+
+# Editorial metadata stays in the fragment so release preparation can promote
+# headline changes, retain detailed changes, and demote maintenance without
+# forcing those labels into the rendered changelog line.
+custom:
+  - key: Audience
+    label: Primary audience
+    type: enum
+    enumOptions:
+      - Operators
+      - Embedders
+      - Maintainers
+      - Mixed
+  - key: Importance
+    label: Release-note importance
+    type: enum
+    enumOptions:
+      - Headline
+      - Detailed
+      - Maintenance
+  - key: PR
+    label: Pull request number (optional; may be added after the PR is opened)
+    type: int
+    minInt: 1
+    optional: true
+
+changeFormat: '- {{.Body}}{{if .Custom.PR}} ([#{{.Custom.PR}}](https://github.com/EffortlessMetrics/shipper-swarm/pull/{{.Custom.PR}})){{end}}'
+kindFormat: '### {{.Kind}}'
+
+newlines:
+  afterChangelogHeader: 1
+  beforeChangelogVersion: 0
+  afterVersion: 1
+  beforeKind: 1
+  afterKind: 1
+  endOfVersion: 1

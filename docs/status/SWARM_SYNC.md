@@ -29,7 +29,7 @@ Use `EffortlessMetrics/shipper` for:
 - emergency hotfixes, when explicitly declared
 
 Use `EffortlessMetrics/shipper-swarm` for routine feature work, refactors,
-tests, and normal development PRs.
+tests, Changie fragments, changelog preparation, and normal development PRs.
 
 ## Sync Policy
 
@@ -52,6 +52,49 @@ git push -u origin sync/shipper-swarm-YYYY-MM-DD
 Open the PR in `EffortlessMetrics/shipper` and merge it with a merge commit.
 Do not use squash merge or rebase merge.
 
+## Release-Candidate Promotion Contract
+
+For a release promotion, first freeze and prove an exact merged
+`shipper-swarm/main` candidate. Record its commit and tree in a copied
+[`release-preparation-checklist.md`](../release/release-preparation-checklist.md).
+Normal swarm merges pause at that point.
+
+Before pushing the sync branch, prove:
+
+```bash
+test "$(git rev-parse swarm/main)" = "$SWARM_SHA"
+test "$(git rev-parse "$SWARM_SHA^{tree}")" = "$SWARM_TREE"
+git merge-base --is-ancestor origin/main "$SWARM_SHA"
+
+test "$(git rev-parse HEAD^{tree})" = \
+  "$SWARM_TREE"
+```
+
+The SHA and tree checks prove that the fetched swarm ref is still the recorded
+frozen candidate. The ancestry check proves release-authority main is an
+ancestor of that candidate. The final check proves the non-fast-forward
+promotion merge did not change the candidate tree.
+
+A conflict, manual content edit, or tree mismatch is not an acceptable
+promotion repair. Stop, reconcile release-authority changes back into swarm,
+freeze and prove a new swarm candidate, and promote again.
+
+The release record must distinguish:
+
+- frozen swarm SHA and tree;
+- promotion merge SHA and tree;
+- approved release-authority SHA and tree after any separately reviewed
+  release-only change;
+- tag SHA;
+- rehearsal, binary, publish, resume, and final artifact identities.
+
+A promotion merge is not publication authorization. Continue with the
+[release operator runbook](../release-runbook.md), rerun the full gate in
+`EffortlessMetrics/shipper`, and tag only when the checklist is complete on the
+exact approved release-authority SHA.
+
+## Backfill After Promotion and Release
+
 After a swarm-sync PR lands, fast-forward `shipper-swarm/main` to the new
 `shipper/main` merge commit before continuing normal swarm development:
 
@@ -62,6 +105,10 @@ git fetch swarm --prune
 git merge-base --is-ancestor swarm/main origin/main
 git push swarm origin/main:main
 ```
+
+This backfill should include any final release-authority-only commits that are
+part of the approved source history. Record the final source SHA in the release
+checklist.
 
 If the merge-base check fails, stop the fast-forward path and use the
 source-backfill path below. Do not force push, squash, or rebase the sync

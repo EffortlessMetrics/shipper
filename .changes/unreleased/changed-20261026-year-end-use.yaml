@@ -1,0 +1,6 @@
+kind: changed
+body: Align the roadmap and delivery checkpoints with observed package-release use by the end of 2026, and qualify recovery, reconciliation, and live-reporting claims with their open production defects.
+time: 2026-10-26T19:30:00Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

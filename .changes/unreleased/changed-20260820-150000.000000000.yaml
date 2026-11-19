@@ -1,0 +1,6 @@
+kind: changed
+body: Add a mutually exclusive `status --durable` mode that reports fail-closed human and `shipper.status.durable.v1` guidance from authoritative local run evidence without querying a registry or publishing.
+time: 2026-08-20T15:00:00Z
+custom:
+  Audience: Operators
+  Importance: Detailed

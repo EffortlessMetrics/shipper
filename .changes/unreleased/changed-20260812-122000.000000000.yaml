@@ -1,0 +1,7 @@
+kind: changed
+body: Make `shipper plan` state in human and JSON output that it performed no publication and report a typed, context-preserving preflight action without inferring terminal completion from package count alone.
+time: 2026-08-12T12:20:00Z
+custom:
+  Audience: Operators
+  Importance: Detailed
+  PR: 295

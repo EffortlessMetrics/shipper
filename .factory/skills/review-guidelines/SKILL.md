@@ -1,5 +1,8 @@
 # Droid Review Guidelines for shipper
 
+> **Status: retired / restoration-only.** No Factory Droid workflow currently
+> consumes this file. Codex and Claude use their active provider-native skills.
+
 These reviews are primarily consumed by follow-up coding agents, not by a human reading every comment manually.
 
 Optimize for structured, durable review records. Do not optimize for a low comment count.
@@ -28,12 +31,15 @@ Before reviewing, use:
 - docs/ci/*
 - .factory/rules/droid-review.md
 - docs/agent-context/review-invariants.md
+- docs/agent-context/review-currentness.md
+
+The shared currentness document defines semantics only. This Factory skill is a historical restoration input, not current executable authority; Claude and Codex use their own complete native review skills.
 
 ## Product contract
 
 shipper is a reliable, resumable Rust workspace publishing tool. It owns the gap that `cargo publish` and `cargo 1.90`'s multi-package workspace support do not cover: proving readiness, surviving interruptions, reconciling ambiguous registry outcomes, narrating progress, hardening secrets and identity, and producing an audit receipt suitable for incident response.
 
-The product is organized as nine competencies: Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics. The largest open safety gap is Reconcile — when `cargo publish` exits ambiguously, shipper currently retries instead of reconciling against the registry.
+The product is organized as nine competencies: Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics. Reconcile is stable and must not regress: an ambiguous `cargo publish` outcome is checked against registry truth and stops on `StillUnknown` rather than blind-retrying.
 
 Review primarily for:
 
@@ -50,6 +56,25 @@ Review primarily for:
 - preflight / publish / resume / reconcile contract surfaces;
 - CI lane routing and policy ledgers (clippy, no-panic, file-policy, workflow allowlist).
 
+## Exact review subject
+
+Before reviewing, reload and record:
+
+```text
+repository
+PR number
+head SHA
+base ref and base SHA
+merge-base SHA
+synthetic merge/check commit, when CI evaluates one
+Factory skill/rules/model configuration identity
+relevant tool, schema, fixture, configuration, and receipt identities
+```
+
+Head identity alone is insufficient. Base or merge-base movement can change the effective candidate without changing the head. If an identity cannot be resolved, the review is `NOT_PROVEN`; do not infer it from branch names or earlier output.
+
+Reviewer identity alone does not create independence. State whether the reviewer authored or repaired the current head, what live evidence was reloaded, which external repository controls were used, what correlated-failure risks remain, and whether the review is author-side or independent.
+
 ## Review posture
 
 A useful review identifies concrete failure modes or records concrete inspection.
@@ -58,7 +83,11 @@ Do not suppress actionable findings because there are many of them. Suppress onl
 
 Default to the publishing-safety lens. A small style nit on a CLI flag is less important than a missed retry classification on an HTTP 5xx response, a missed event-write before a destructive step, or a missed token-redaction path.
 
+Inspect every changed file and follow relevant owners, callers, consumers, schemas, fixtures, packages, docs, workflows, and release surfaces beyond the diff. Try to falsify supplied proof with realistic wrong implementations, historical defect controls, failure/refusal/stale/opposite-direction cases, schema/validator disagreement, and removal experiments where proportionate.
+
 ## Inline comment format
+
+Before posting, list current threads and avoid duplicates. Prefer one bounded review containing exact-line inline comments anchored to the reviewed head commit. Use a top-level finding only when it is cross-cutting or cannot be anchored.
 
 ```
 [P0|P1|P2] Short title
@@ -68,6 +97,7 @@ Why here:
 Fix direction:
 Validation:
 Confidence:
+Evidence: Observed | Reported | Not verified
 ```
 
 Priority scale:
@@ -76,7 +106,7 @@ Priority scale:
 - `P1` — meaningful risk or contract violation. Worth fixing before merge.
 - `P2` — durable cleanup, documentation gap, or follow-up. Acceptable to defer with a tracking note.
 
-`Validation:` should name a real local check (e.g., `cargo test -p shipper-core resume_after_429`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`, `cargo xtask check-pr` once xtask lands), not a generic phrase like "run tests".
+`Validation:` should name a real local check (e.g., `cargo test -p shipper-core resume_after_429`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`), not a generic phrase like "run tests".
 
 `Confidence:` should be one of `high`, `medium`, `low`, with one short reason if `medium` or `low`.
 
@@ -87,21 +117,22 @@ If no actionable findings are emitted, the review summary must include:
 ```
 No actionable findings emitted.
 
+Reviewed subject:
 Inspected surfaces:
-Checks performed:
-Why no comments:
+Challenge passes:
+Existing-finding disposition:
 Residual risk:
 Validation signal:
   Observed:
   Reported:
   Not verified:
+Independence posture:
+Candidate result: REVIEW_CURRENT
 ```
 
 `Inspected surfaces:` names the actual files, modules, or invariants examined (e.g., `crates/shipper-core/src/engine/publish.rs:: retry classification`, `events.jsonl write ordering before cargo publish`, `release.yml msrv-gate alignment with Cargo.toml`).
 
-`Why no comments:` explains *why* the diff cleared this lens. "No publish-state or registry-truth changes; only docs", "Pure dependency patch bump; no source touched", etc.
-
-`Residual risk:` names what could still fail in production despite the clean review (e.g., "registry-side ambiguity remains; this PR does not address Reconcile").
+`Residual risk:` names what could still fail in production despite the clean review.
 
 ## Evidence provenance
 
@@ -113,13 +144,35 @@ Every claim should be marked:
 
 Do not treat the PR body as independently verified fact. A `Reported:` claim that the test suite passes is not a substitute for inspecting the test that was changed.
 
+A rate-limited, skipped, failed, cancelled, malformed, placeholder, or unavailable review is unavailable evidence, not a clean review. Zero unresolved threads does not prove that review occurred.
+
+## Candidate result
+
+Return one substantive result, separately from CI and mergeability:
+
+```text
+REVIEW_CURRENT
+CHANGES_REQUIRED
+NOT_PROVEN
+BLOCKED_BY_PREREQUISITE
+SUPERSEDED_OR_CLOSE
+```
+
+`REVIEW_CURRENT` is not `INTEGRATION_READY` and is never publication authorization.
+
 ## Repair-queue posture
 
 Droid review output is consumed by follow-up coding agents as a queue of repairs.
 
 - Use stable, copyable identifiers (file paths, function names, line ranges) so a follow-up agent can find the site.
 - Prefer one finding per failure mode over a single comment that lumps three issues together.
-- When a finding's fix is unclear, prefer `Fix direction:` over a speculative patch. The follow-up agent will write the fix; the reviewer's job is to bound it.
+- When a finding's fix is unclear, prefer `Fix direction:` over a speculative patch.
+- Consolidate valid findings for one writer.
+- A valid finding receives a reply naming the fixing commit and focused proof, or an evidence-backed rejection, before resolution.
+- Blanket automated thread resolution is forbidden.
+- After repair, re-review affected findings, semantic dimensions, and repair-created edge cases. Do not reuse review evidence for semantics changed by head/base/merge-base/rules/configuration movement.
+
+Every PR in a stack receives its own review. A parent synthesis can inspect cross-PR contracts only after child candidate results exist; it cannot become batch approval.
 
 ## Notification hygiene
 

@@ -2,36 +2,31 @@
 source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: normalize_output(&stdout)
 ---
-# GitHub Actions workflow snippet for Shipper
-# Add these steps to your workflow file
-
-# Restore Shipper State (cache for faster restores)
-- name: Restore Shipper State
-  uses: actions/cache@v3
-  with:
-    path: <STATE_DIR>/
-    key: shipper-${{ github.sha }}
-    restore-keys: |
-      shipper-
-
-# Restore Shipper State (artifact for resumability)
-- name: Restore Shipper State Artifact
-  uses: actions/download-artifact@v4
-  with:
-    name: shipper-state
-    path: <STATE_DIR>/
-  continue-on-error: true
-
-# Run shipper publish (will resume if state exists)
-- name: Publish Crates
-  run: shipper publish --quiet
+# GitHub Actions steps for a fresh, approved Shipper publication.
+# Insert under jobs.publish.steps; this is not a complete workflow file.
+# The Cargo workspace must be at the checkout root. Install Shipper first.
+# Use preflight --preflight-only; select retained-artifact recovery separately.
+- name: Publish crates from fresh evidence
+  shell: bash
+  working-directory: ${{ github.workspace }}
   env:
+    SHIPPER_STATE_DIR: "<STATE_DIR>"
     CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+  run: |
+    if [ -e "$SHIPPER_STATE_DIR" ] || [ -L "$SHIPPER_STATE_DIR" ]; then
+      retained=$(find -L "$SHIPPER_STATE_DIR" /( -name state.json -o -name events.jsonl -o -name receipt.json -o -name reconciliation.json /) -print -quit)
+      if [ -n "$retained" ]; then
+        printf '%s/n' 'Retained release evidence is present. Inspect the selected source artifact and choose an approved recovery operation before publishing.' >&2
+        exit 1
+      fi
+    fi
+    shipper publish --quiet --state-dir "$SHIPPER_STATE_DIR"
 
-# Save Shipper State (even if publish fails)
-- name: Save Shipper State
+- name: Retain Shipper evidence
   if: always()
-  uses: actions/upload-artifact@v3
+  uses: actions/upload-artifact@v7
   with:
-    name: shipper-state
-    path: <STATE_DIR>/
+    name: shipper-state-${{ github.run_id }}-${{ github.run_attempt }}
+    path: "<STATE_DIR>/"
+    include-hidden-files: true
+    if-no-files-found: error

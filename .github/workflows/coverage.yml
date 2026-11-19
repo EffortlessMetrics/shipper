@@ -10,8 +10,14 @@ on:
       - "fuzz/**"
       - ".github/workflows/coverage.yml"
       - "codecov.yml"
+  # Label changes intentionally do not launch or cancel coverage. Add the
+  # `coverage`/`full-ci` label, then let the next code-changing PR event
+  # evaluate it. workflow_dispatch is an independent unconditional path.
+  # Canonical label metadata is source-owned by
+  # policy/ci-trigger-labels.toml; `cargo xtask ci-labels check-live` detects
+  # a missing or drifted live taxonomy without changing workflow behavior.
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
     branches: [main]
     paths:
       - "Cargo.toml"

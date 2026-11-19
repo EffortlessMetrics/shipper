@@ -23,7 +23,7 @@ pub(in crate::doctor) fn check(
     ws: &plan::PlannedWorkspace,
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
-) -> Result<Vec<Finding>> {
+) -> Result<ConnectivityCheck> {
     reporter.info("checking registry connectivity...");
     let check = inspect(ws, opts)?;
     if let Some(error) = &check.registry_error {
@@ -31,7 +31,7 @@ pub(in crate::doctor) fn check(
     }
     println!("registry_reachable: {}", check.registry_reachable);
     println!("index_base: {}", check.index_base);
-    Ok(check.findings)
+    Ok(check)
 }
 
 pub(in crate::doctor) fn inspect(

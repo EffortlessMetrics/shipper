@@ -1,0 +1,6 @@
+kind: fixed
+body: Reject unsupported retry.per_error class policies before execution effects. Remove previously inert class entries and use global retry settings; omitted or empty per_error retains existing retry behavior.
+time: 2026-10-29T23:00:00Z
+custom:
+  Audience: Mixed
+  Importance: Detailed

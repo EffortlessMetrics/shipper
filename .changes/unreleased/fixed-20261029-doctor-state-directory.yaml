@@ -1,0 +1,6 @@
+kind: fixed
+body: Make doctor reject non-directory state paths, explain missing or unobservable paths, and probe effective directory access while preserving retained evidence. Keep text and JSON findings and summaries consistent.
+time: 2026-10-29T08:00:00Z
+custom:
+  Audience: Operators
+  Importance: Detailed

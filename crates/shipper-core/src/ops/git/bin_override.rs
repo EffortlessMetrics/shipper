@@ -17,9 +17,10 @@
 
 use std::env;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+
+use super::repository_command;
 
 /// Resolve the git program to invoke: `$SHIPPER_GIT_BIN` if set, else `"git"`.
 pub(super) fn git_program() -> String {
@@ -30,10 +31,9 @@ pub(super) fn git_program() -> String {
 ///
 /// Implemented via `git rev-parse --git-dir`, matching the historical shim.
 pub(super) fn is_repo_root(repo_root: &Path, git_program: &str) -> bool {
-    Command::new(git_program)
+    repository_command(repo_root, git_program)
         .arg("rev-parse")
         .arg("--git-dir")
-        .current_dir(repo_root)
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false)
@@ -44,10 +44,9 @@ pub(super) fn is_repo_root(repo_root: &Path, git_program: &str) -> bool {
 /// Error text preserves the double `git status failed:` prefix that the CLI
 /// snapshot tests assert against (see `cleanliness.rs` module doc).
 pub(super) fn local_is_git_clean(repo_root: &Path, git_program: &str) -> Result<bool> {
-    let out = Command::new(git_program)
+    let out = repository_command(repo_root, git_program)
         .arg("status")
         .arg("--porcelain")
-        .current_dir(repo_root)
         .output()
         .context("failed to execute git status; is git installed?")?;
 
@@ -63,10 +62,9 @@ pub(super) fn local_is_git_clean(repo_root: &Path, git_program: &str) -> Result<
 
 /// Get the current commit SHA via the overridden git program.
 pub(super) fn get_git_commit(repo_root: &Path, git_program: &str) -> Option<String> {
-    let output = Command::new(git_program)
+    let output = repository_command(repo_root, git_program)
         .arg("rev-parse")
         .arg("HEAD")
-        .current_dir(repo_root)
         .output()
         .ok()?;
 
@@ -83,11 +81,10 @@ pub(super) fn get_git_commit(repo_root: &Path, git_program: &str) -> Option<Stri
 /// behavior: `git rev-parse --abbrev-ref HEAD` → if output is literally
 /// `HEAD`, report `None`.
 pub(super) fn get_git_branch(repo_root: &Path, git_program: &str) -> Option<String> {
-    let output = Command::new(git_program)
+    let output = repository_command(repo_root, git_program)
         .arg("rev-parse")
         .arg("--abbrev-ref")
         .arg("HEAD")
-        .current_dir(repo_root)
         .output()
         .ok()?;
 
@@ -101,11 +98,10 @@ pub(super) fn get_git_branch(repo_root: &Path, git_program: &str) -> Option<Stri
 
 /// Get the tag for the current commit via the overridden git program.
 pub(super) fn get_git_tag(repo_root: &Path, git_program: &str) -> Option<String> {
-    let output = Command::new(git_program)
+    let output = repository_command(repo_root, git_program)
         .arg("describe")
         .arg("--tags")
         .arg("--exact-match")
-        .current_dir(repo_root)
         .output()
         .ok()?;
 
@@ -118,10 +114,9 @@ pub(super) fn get_git_tag(repo_root: &Path, git_program: &str) -> Option<String>
 
 /// Dirty-flag probe via the overridden git program.
 pub(super) fn get_git_dirty_status(repo_root: &Path, git_program: &str) -> Option<bool> {
-    let output = Command::new(git_program)
+    let output = repository_command(repo_root, git_program)
         .arg("status")
         .arg("--porcelain")
-        .current_dir(repo_root)
         .output()
         .ok()?;
 

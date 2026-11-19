@@ -15,3 +15,6 @@ Plan summary:
   Plan artifact: .shipper/plan.txt (`shipper plan --format json` capture)
 
   1. deep-crate@1.0.0 (no workspace dependencies)
+
+Result: plan created; no packages were published
+Next: run preflight with the same manifest, package, configuration, and registry selection

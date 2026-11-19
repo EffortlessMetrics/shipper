@@ -1,11 +1,11 @@
-//! The `shipper` binary — thin wrapper over [`shipper_cli::run`].
+//! The `shipper` binary — thin wrapper over [`shipper_cli::run_process`].
 //!
 //! Keep this file small. All command-line logic lives in the
 //! `shipper-cli` crate; all engine logic lives in `shipper-core`. The
 //! `shipper` package exists as the install surface: a maintainer installs
 //! the facade crate and gets a binary named `shipper` that forwards here.
 fn main() -> std::process::ExitCode {
-    match shipper_cli::run() {
+    match shipper_cli::run_process() {
         Ok(code) => code,
         Err(e) => {
             shipper_cli::report_error(&e);

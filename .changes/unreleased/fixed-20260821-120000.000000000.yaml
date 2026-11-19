@@ -1,0 +1,6 @@
+kind: fixed
+body: Scope doctor auth guidance to the selected registry while keeping explicit loopback rehearsal auth unproven.
+time: 2026-08-21T12:00:00Z
+custom:
+  Audience: Operators
+  Importance: Detailed

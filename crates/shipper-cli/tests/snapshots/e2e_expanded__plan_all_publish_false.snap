@@ -17,3 +17,7 @@ Plan summary:
 Skipped packages:
   - internal-a@0.1.0 (publish = false)
   - internal-b@0.1.0 (publish = false)
+
+
+Result: plan created; no packages were published
+Next: run preflight with the same manifest, package, configuration, and registry selection

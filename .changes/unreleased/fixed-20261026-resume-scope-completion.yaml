@@ -1,0 +1,6 @@
+kind: fixed
+body: Keep resume-from results, progress, webhooks, and durable status truthful for the whole plan. Unfinished predecessors retain partial results and guidance; terminal predecessors permit success without fabricated receipts or attempts.
+time: 2026-10-26T18:00:00Z
+custom:
+  Audience: Operators
+  Importance: Detailed

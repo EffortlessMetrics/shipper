@@ -1,0 +1,7 @@
+kind: security
+body: Update serde_with to 3.22.0 for defense in depth against oversized collection size hints. Shipper does not use the affected duplicate-key or duplicate-value adapters and was not exposed.
+time: 2026-08-20T09:27:25Z
+custom:
+  Audience: Operators
+  Importance: Detailed
+  PR: 321

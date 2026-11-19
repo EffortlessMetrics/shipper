@@ -1,0 +1,6 @@
+kind: fixed
+body: Require retained evidence and a typed safe-resume posture before publish help recommends continuing a stopped or ambiguous run.
+time: 2026-08-21T06:32:00Z
+custom:
+  Audience: Operators
+  Importance: Critical

@@ -1,6 +1,15 @@
 # Droid Smoke Tests
 
-This file documents how to verify the Factory Droid workflows in shipper after a workflow change merges. Run the full sequence the first time, and the relevant subset after any change to `.github/workflows/droid*.yml`, `.factory/`, or `docs/agent-context/`.
+> **Status: retired / restoration-only.** The Factory Droid workflows do not
+> exist in the current repository, so this procedure cannot be run today and
+> none of its expected jobs are current evidence. Use it only after a separately
+> reviewed restoration recreates the workflows, authority records, credentials,
+> and runner controls.
+
+This file records how to verify the Factory Droid workflows after a future
+restoration. Run the full sequence the first time, and the relevant subset after
+any later change to `.github/workflows/droid*.yml`, `.factory/`, or
+`docs/agent-context/`.
 
 ## Prerequisites
 

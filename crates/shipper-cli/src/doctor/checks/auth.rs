@@ -4,7 +4,8 @@ use anyhow::Result;
 use serde::Serialize;
 
 use shipper_core::plan;
-use shipper_core::types::AuthType;
+use shipper_core::registry::{RegistryPolicy, ValidatedRegistry};
+use shipper_core::types::{AuthType, Registry, RuntimeOptions};
 
 use crate::doctor::findings::{Finding, FindingLevel};
 
@@ -14,38 +15,44 @@ pub(in crate::doctor) struct AuthCheck {
     pub findings: Vec<Finding>,
 }
 
-pub(in crate::doctor) fn check(ws: &plan::PlannedWorkspace) -> Result<Vec<Finding>> {
-    let check = inspect(ws)?;
+pub(in crate::doctor) fn check(
+    ws: &plan::PlannedWorkspace,
+    opts: &RuntimeOptions,
+) -> Result<AuthCheck> {
+    let check = inspect(ws, opts)?;
     println!("auth_type: {}", check.auth_type);
-    Ok(check.findings)
+    Ok(check)
 }
 
-pub(in crate::doctor) fn inspect(ws: &plan::PlannedWorkspace) -> Result<AuthCheck> {
+pub(in crate::doctor) fn inspect(
+    ws: &plan::PlannedWorkspace,
+    opts: &RuntimeOptions,
+) -> Result<AuthCheck> {
     let auth_type = shipper_core::auth::detect_auth_type(&ws.plan.registry.name)?;
     let auth_label = match auth_type {
         Some(AuthType::Token) => "token (detected)",
-        Some(AuthType::TrustedPublishing) => "trusted (detected)",
-        Some(AuthType::Unknown) => "unknown",
-        None => "NONE FOUND (set CARGO_REGISTRY_TOKEN)",
+        Some(AuthType::TrustedPublishing) if ws.plan.registry.name == "crates-io" => {
+            "trusted (detected)"
+        }
+        Some(AuthType::TrustedPublishing) => {
+            "selected-registry auth unproven (OIDC environment detected)"
+        }
+        Some(AuthType::Unknown) if ws.plan.registry.name == "crates-io" => "unknown",
+        Some(AuthType::Unknown) => "selected-registry auth unproven (incomplete environment)",
+        None if ws.plan.registry.name == "crates-io" => "NONE FOUND (set CARGO_REGISTRY_TOKEN)",
+        None => "NONE FOUND (selected-registry token missing)",
     };
 
     let mut findings = Vec::new();
     if auth_type.is_none() {
-        findings.push(Finding {
-            id: "registry-auth-missing",
-            severity: FindingLevel::Blocked,
-            status: FindingLevel::Blocked,
-            title: "crates.io auth is missing",
-            why_it_matters:
-                "ownership checks and live publish require registry credentials before Shipper can prove or execute a release",
-            evidence: trusted_publishing_evidence(auth_label, &ws.plan.registry.name),
-            try_next: vec![
-                "run `cargo login <token>` for local token auth",
-                "configure Trusted Publishing with `permissions: id-token: write` and `rust-lang/crates-io-auth-action@v1`",
-                "rerun `shipper doctor` and `shipper preflight`",
-            ],
-            docs: Some("docs/how-to/run-in-github-actions.md"),
-        });
+        findings.push(missing_auth_finding(ws, opts, auth_label));
+    } else if ws.plan.registry.name != "crates-io"
+        && matches!(
+            auth_type,
+            Some(AuthType::TrustedPublishing | AuthType::Unknown)
+        )
+    {
+        findings.push(non_crates_oidc_finding(ws, auth_type.as_ref(), auth_label));
     } else if auth_type == Some(AuthType::TrustedPublishing) {
         findings.push(Finding {
             id: "trusted-publishing-token-not-minted",
@@ -82,11 +89,133 @@ pub(in crate::doctor) fn inspect(ws: &plan::PlannedWorkspace) -> Result<AuthChec
             docs: Some("docs/how-to/run-in-github-actions.md"),
         });
     }
-    findings.extend(trusted_publishing_workflow_findings(ws, auth_type));
+    if ws.plan.registry.name == "crates-io" {
+        findings.extend(trusted_publishing_workflow_findings(ws, auth_type));
+    }
     Ok(AuthCheck {
         auth_type: auth_label,
         findings,
     })
+}
+
+fn non_crates_oidc_finding(
+    ws: &plan::PlannedWorkspace,
+    auth_type: Option<&AuthType>,
+    auth_label: &str,
+) -> Finding {
+    let trusted = auth_type == Some(&AuthType::TrustedPublishing);
+    let (id, title, why_it_matters) = if trusted {
+        (
+            "selected-registry-auth-not-proven",
+            "selected registry auth is not proven",
+            "OIDC request variables do not establish that the selected registry accepts that identity or that Cargo has a token for it",
+        )
+    } else {
+        (
+            "selected-registry-auth-environment-incomplete",
+            "selected registry auth environment is incomplete",
+            "partial OIDC request variables do not establish any usable authentication method for the selected registry",
+        )
+    };
+    Finding {
+        id,
+        severity: FindingLevel::Blocked,
+        status: FindingLevel::Blocked,
+        title,
+        why_it_matters,
+        evidence: trusted_publishing_evidence(auth_label, &ws.plan.registry.name),
+        try_next: vec![
+            "confirm the selected registry's supported authentication method with its operator",
+            "configure the selected registry token through Cargo's registry-specific token interface",
+            "rerun `shipper doctor` and `shipper preflight` for the same selected registry",
+        ],
+        docs: Some("docs/how-to/rehearse-against-an-alt-registry.md"),
+    }
+}
+
+fn missing_auth_finding(
+    ws: &plan::PlannedWorkspace,
+    opts: &RuntimeOptions,
+    auth_label: &str,
+) -> Finding {
+    let registry = &ws.plan.registry;
+    let selected_policy = opts.registry_policies.get(&registry.name);
+    let allow_loopback = selected_policy.is_some_and(|policy| policy.allow_loopback);
+    let loopback_endpoint = registry_uses_only_loopback_endpoints(registry);
+    let explicit_loopback_rehearsal = explicit_loopback_rehearsal(registry, allow_loopback);
+    let base_evidence = trusted_publishing_evidence(auth_label, &registry.name);
+    let posture_evidence = format!(
+        "{}; selected_registry_allow_loopback: {}; loopback_endpoint: {}; live_auth_proven: false",
+        base_evidence, allow_loopback, loopback_endpoint,
+    );
+
+    if explicit_loopback_rehearsal {
+        Finding {
+            id: "registry-auth-not-proven",
+            severity: FindingLevel::Warning,
+            status: FindingLevel::Warning,
+            title: "registry auth is not proven for this loopback rehearsal",
+            why_it_matters: "the selected registry explicitly permits loopback rehearsal traffic, but that trust choice does not prove anonymous access, live credentials, ownership, or publish authorization",
+            evidence: posture_evidence,
+            try_next: vec![
+                "continue only with the isolated loopback registry and an intercepted or fake Cargo process",
+                "treat this warning as rehearsal-only evidence, not proof that live registry auth is ready",
+                "run `shipper doctor` separately against the intended live registry before any live preflight or publish",
+            ],
+            docs: Some("docs/how-to/rehearse-against-an-alt-registry.md"),
+        }
+    } else {
+        let crates_io = registry.name == "crates-io";
+        Finding {
+            id: "registry-auth-missing",
+            severity: FindingLevel::Blocked,
+            status: FindingLevel::Blocked,
+            title: if crates_io {
+                "crates.io auth is missing"
+            } else {
+                "selected registry auth is missing"
+            },
+            why_it_matters: "ownership checks and live publish require registry credentials before Shipper can prove or execute a release",
+            evidence: if crates_io {
+                base_evidence
+            } else {
+                posture_evidence
+            },
+            try_next: if crates_io {
+                vec![
+                    "run `cargo login <token>` for local token auth",
+                    "configure Trusted Publishing with `permissions: id-token: write` and `rust-lang/crates-io-auth-action@v1`",
+                    "rerun `shipper doctor` and `shipper preflight`",
+                ]
+            } else {
+                vec![
+                    "configure a Cargo token for the selected registry",
+                    "confirm the selected registry's authentication and ownership requirements",
+                    "rerun `shipper doctor` and `shipper preflight`",
+                ]
+            },
+            docs: Some(if crates_io {
+                "docs/how-to/run-in-github-actions.md"
+            } else {
+                "docs/how-to/rehearse-against-an-alt-registry.md"
+            }),
+        }
+    }
+}
+
+fn explicit_loopback_rehearsal(registry: &Registry, allow_loopback: bool) -> bool {
+    registry.name != "crates-io"
+        && allow_loopback
+        && registry_uses_only_loopback_endpoints(registry)
+}
+
+fn registry_uses_only_loopback_endpoints(registry: &Registry) -> bool {
+    ValidatedRegistry::new(registry.clone(), RegistryPolicy::secure()).is_err()
+        && ValidatedRegistry::new(
+            registry.clone(),
+            RegistryPolicy::secure().with_loopback(true),
+        )
+        .is_ok()
 }
 
 fn trusted_publishing_evidence(auth_label: &str, registry_name: &str) -> String {
@@ -222,6 +351,48 @@ fn trusted_publishing_workflow_findings(
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn loopback_posture_requires_every_endpoint_to_be_loopback() {
+        let loopback = Registry {
+            name: "local".to_string(),
+            api_base: "http://127.0.0.1:8080".to_string(),
+            index_base: Some("http://127.0.0.1:8080/index".to_string()),
+        };
+        assert!(registry_uses_only_loopback_endpoints(&loopback));
+
+        let live = Registry {
+            name: "live".to_string(),
+            api_base: "https://registry.example.test".to_string(),
+            index_base: Some("https://index.example.test".to_string()),
+        };
+        assert!(!registry_uses_only_loopback_endpoints(&live));
+
+        let mixed = Registry {
+            name: "mixed".to_string(),
+            api_base: "http://127.0.0.1:8080".to_string(),
+            index_base: Some("https://index.example.test".to_string()),
+        };
+        assert!(!registry_uses_only_loopback_endpoints(&mixed));
+    }
+
+    #[test]
+    fn loopback_endpoint_or_name_never_implies_rehearsal_auth_posture() {
+        let mut registry = Registry {
+            name: "local".to_string(),
+            api_base: "http://127.0.0.1:8080".to_string(),
+            index_base: Some("http://127.0.0.1:8080/index".to_string()),
+        };
+        assert!(!explicit_loopback_rehearsal(&registry, false));
+
+        registry.name = "crates-io".to_string();
+        assert!(!explicit_loopback_rehearsal(&registry, true));
+
+        registry.name = "local".to_string();
+        registry.api_base = "https://registry.example.test".to_string();
+        registry.index_base = Some("https://index.example.test".to_string());
+        assert!(!explicit_loopback_rehearsal(&registry, true));
+    }
 
     #[test]
     #[serial]

@@ -7,3 +7,7 @@ plan_id: <PLAN_ID>
 core-lib@0.2.0: missing
 mid-lib@0.3.0: missing
 top-app@0.4.0: missing
+
+Result: not published
+Publication performed: no
+Next: run preflight in the same workspace and registry context before publishing

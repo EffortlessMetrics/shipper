@@ -1,0 +1,6 @@
+kind: fixed
+body: Ensure targeted PR mutation checks discover changed Rust files in non-default workspace members without broadening beyond those files.
+time: 2026-08-21T17:49:15Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

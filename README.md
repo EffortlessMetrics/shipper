@@ -25,163 +25,142 @@
   <a href="#license"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" /></a>
 </p>
 
-Shipper publishes missing `name@version` pairs in dependency order, skips versions already on the registry, verifies visibility, records evidence, and resumes cleanly after interruption.
+Shipper publishes the missing `name@version` pairs in a Rust workspace, in
+dependency order. It verifies registry visibility before advancing, records
+durable evidence, and can resume an interrupted run without blindly uploading
+the same version again.
 
-## The problem
+## Why Shipper
 
-`cargo publish --workspace` works when every package version is new. It gets awkward when CI reruns after a partial publish, when some versions already exist, or when Cargo exits ambiguously after an upload.
+`cargo publish --workspace` is non-atomic. A run can stop after publishing only
+part of a workspace, and a client timeout does not prove whether an upload
+succeeded. Shipper owns that narrow operational gap:
 
-Most teams either script registry checks themselves or adopt heavier release automation that also decides versions, changelogs, tags, and releases.
+- versions, changelogs, and tags are already chosen;
+- existing versions are skipped only after registry confirmation;
+- ambiguous Cargo results are reconciled against registry truth;
+- a `StillUnknown` result stops for operator action instead of blind retry;
+- events, state, and receipts explain what happened and support safe recovery.
 
-Shipper is the narrow tool for the middle: versions are already chosen, and you need CI-safe workspace publishing.
-
-## What works
-
-- **Idempotent workspace publish**: skips already-published `name@version` pairs and publishes missing versions in dependency order.
-- **Preflight proof**: checks local readiness, registry reachability, auth signals, dry-run status, ownership where possible, and registry pacing.
-- **Resumable execution**: persists state after each step so interrupted runs can continue without blind duplicate publish attempts.
-- **Ambiguous-result reconciliation**: checks registry truth before retrying after unclear Cargo outcomes.
-- **Evidence packet**: records state, events, receipts, and reconciliation artifacts for CI, operators, and future remediation.
-- **Bounded remediation**: yank planning, fix-forward planning, dry-run artifacts, and guarded fake-Cargo execution are proof-backed surfaces; live crates.io yank and fix-forward execution remain deliberately bounded.
+Shipper does not choose versions, generate changelogs, create tags, or publish
+GitHub Releases. Use it with the release-planning workflow you already trust.
 
 ## Install
 
-The stable 0.4.0 install path is:
+Install the latest version currently exposed by the public registry:
 
 ```bash
 cargo install shipper --locked
 ```
 
-For a reproducible 0.4.0 install, pin the version:
+The retained public-install evidence available when this source snapshot was
+prepared covers 0.4.0. Pin that verified baseline for a reproducible install:
 
 ```bash
 cargo install shipper --version 0.4.0 --locked
 ```
 
-The public crates.io install path was smoke-tested after `v0.4.0` published.
-`docs/status/SUPPORT_TIERS.md` remains the source of truth for install-support
-status.
+The unversioned command resolves whatever version the registry exposes when it
+runs; source text alone does not prove that a candidate was published. This
+snapshot was prepared for 0.5.0 before its public result existed. See the live
+registry/release and [support tiers](docs/status/SUPPORT_TIERS.md) for the exact
+stable, internal, advisory, and planned boundaries.
 
-For local checkout validation before a release, use the same facade crate:
+To exercise the current candidate from a checkout:
 
 ```bash
-cargo install --path crates/shipper --locked
-shipper --help
+cargo run -p shipper -- --help
 ```
 
-## First useful run
+## First useful path
 
-| Job | Start here |
+Start with reversible evidence before the irreversible publish step:
+
+```bash
+shipper doctor      # diagnose workspace, auth, and registry posture
+shipper plan        # show the dependency-ordered publication graph
+shipper preflight   # assess readiness as PROVEN / NOT PROVEN / FAILED
+shipper publish     # publish missing versions and retain evidence
+```
+
+After a run:
+
+```bash
+shipper status          # registry-aware status view
+shipper inspect-events  # chronological event detail
+shipper inspect-receipt # summarized retained evidence
+shipper resume          # continue only after the retained evidence agrees
+```
+
+The 0.5.0 candidate also provides `shipper status --durable`, a local,
+registry-bypassing view derived from retained evidence. It fails closed when
+identity, evidence, or liveness is inconclusive; an old or missing lock is not
+by itself permission to resume. The current command surface is always
+`shipper --help` and `shipper <command> --help`.
+
+## Evidence and recovery
+
+A run writes its evidence under `.shipper/` (or the configured state
+directory):
+
+| Artifact | Authority |
 |---|---|
-| Publish missing workspace crate versions | [docs/how-to/publish-missing-workspace-crates.md](docs/how-to/publish-missing-workspace-crates.md) |
-| Run in GitHub Actions | [docs/how-to/run-in-github-actions.md](docs/how-to/run-in-github-actions.md) |
-| Recover after interruption | [docs/tutorials/recover-from-interruption.md](docs/tutorials/recover-from-interruption.md) |
-| Inspect what happened | [docs/how-to/inspect-state-and-receipts.md](docs/how-to/inspect-state-and-receipts.md) |
-| Diagnose auth / environment | `shipper doctor` |
-| Embed Shipper in a Rust tool | [crates/shipper-core/README.md](crates/shipper-core/README.md) |
-
-## Status at a glance
-
-The README is a front door, not the source of truth. Current release posture, supported claims, CI evidence, and remediation readiness live in status docs.
-
-| Area | Source |
-|---|---|
-| Release posture | [docs/release/](docs/release/) |
-| Supported claims | [docs/status/SUPPORT_TIERS.md](docs/status/SUPPORT_TIERS.md) |
-| Idempotent workspace publish | [docs/how-to/publish-missing-workspace-crates.md](docs/how-to/publish-missing-workspace-crates.md) |
-| JSON evidence contracts | [docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md](docs/specs/SHIPPER-SPEC-0004-json-evidence-contracts.md) |
-| Operator visibility / survive proof | [docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md](docs/specs/SHIPPER-SPEC-0005-release-operator-visibility-and-survive-proof.md) |
-| Auth evidence / Trusted Publishing | [docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md](docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md) |
-| Receipt-driven remediation | [docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md](docs/specs/SHIPPER-SPEC-0008-receipt-driven-remediation.md) |
-
-## Evidence packet
-
-A publish run leaves an evidence packet under `.shipper/`:
-
-| Artifact | Purpose |
-|---|---|
-| `state.json` | Resumable progress projection. |
-| `events.jsonl` | Append-only release event log / black-box recorder. |
-| `receipt.json` | Final release receipt. |
+| `events.jsonl` | Append-only authoritative truth. |
+| `state.json` | Resumable projection of the events. |
+| `receipt.json` | Derived end-of-run summary. |
 | `reconciliation.json` | Registry-truth evidence for ambiguous outcomes. |
-| `auth-evidence.json` | Workflow auth/fallback evidence when release workflow records it. |
-| `remediation-plan.json` | Receipt-driven containment/fix-forward plan from `shipper remediate --dry-run`. |
 
-## Crate surface
+If these sources disagree, stop and investigate; events win, and drift is a
+bug. Start with the [inspection guide](docs/how-to/inspect-state-and-receipts.md)
+or the [interruption recovery tutorial](docs/tutorials/recover-from-interruption.md).
 
-Most users install `shipper`. Embedders depend on `shipper-core`.
+## Crate roles
 
-| Need | Crate |
+Most users install `shipper`. The workspace keeps the product facade, command
+adapter, and reusable engine separate:
+
+| Crate | Role |
 |---|---|
-| Install the product CLI | [`shipper`](crates/shipper/README.md) |
-| Use the CLI adapter directly | [`shipper-cli`](crates/shipper-cli/README.md) |
-| Embed the release engine | [`shipper-core`](crates/shipper-core/README.md) |
-| Shared serializable types | `shipper-types` |
-| Registry/index helpers | `shipper-registry`, `shipper-sparse-index` |
-| Config/runtime helpers | `shipper-config`, `shipper-duration`, `shipper-retry` |
-| Evidence / safety helpers | `shipper-output-sanitizer`, `shipper-cargo-failure`, `shipper-encrypt`, `shipper-webhook` |
+| [`shipper`](crates/shipper/README.md) | Install facade, binary, and curated product-name library re-exports. |
+| [`shipper-cli`](crates/shipper-cli/README.md) | Clap command adapter, rendering, exit behavior, and `pub fn run()`. |
+| [`shipper-core`](crates/shipper-core/README.md) | Reusable publishing engine without CLI dependencies. |
+
+Direct `shipper-cli` embedding is specialized. Engine consumers should normally
+use `shipper-core` or the curated `shipper` re-exports.
 
 ## Documentation
 
-| Task | Link |
+| Need | Start here |
 |---|---|
-| Publish missing workspace crates | [docs/how-to/publish-missing-workspace-crates.md](docs/how-to/publish-missing-workspace-crates.md) |
-| Run in GitHub Actions | [docs/how-to/run-in-github-actions.md](docs/how-to/run-in-github-actions.md) |
-| Recover from interruption | [docs/tutorials/recover-from-interruption.md](docs/tutorials/recover-from-interruption.md) |
-| Inspect state and receipts | [docs/how-to/inspect-state-and-receipts.md](docs/how-to/inspect-state-and-receipts.md) |
-| CLI reference | [docs/reference/cli.md](docs/reference/cli.md) |
-| Configuration | [docs/configuration.md](docs/configuration.md) |
-| Failure modes | [docs/failure-modes.md](docs/failure-modes.md) |
-| Support tiers | [docs/status/SUPPORT_TIERS.md](docs/status/SUPPORT_TIERS.md) |
-| Roadmap | [ROADMAP.md](ROADMAP.md) |
-| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Agent workflow | [AGENTS.md](AGENTS.md) |
-
-## How this project is built
-
-Shipper uses a proof-first development conveyor: specs, plans, active goals, support-tier claims, focused PRs, CI evidence, and release artifacts.
-
-The short version: user-facing claims must point to proof. If a claim is advisory, the docs say so. If a release step is irreversible, Shipper records evidence before and after it.
-
-| Topic | Link |
-|---|---|
-| Source-of-truth stack | [docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md](docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md) |
-| Support tiers | [docs/status/SUPPORT_TIERS.md](docs/status/SUPPORT_TIERS.md) |
-| Active goal | [.shipper-meta/goals/active.toml](.shipper-meta/goals/active.toml) |
-| Agent workflow | [AGENTS.md](AGENTS.md) |
-| Contributor workflow | [CONTRIBUTING.md](CONTRIBUTING.md) |
-
-## Verification posture
-
-Shipper is built with strict Rust 1.95 policy rails, doc-contract checks, file/process/network policy ledgers, no-panic tracking, advisory ripr static mutation-exposure analysis, and release-readiness proof artifacts.
-
-See [docs/status/SUPPORT_TIERS.md](docs/status/SUPPORT_TIERS.md) and [docs/ci/](docs/ci/).
-
-## Security and release evidence
-
-Shipper redacts token values from release evidence. Release workflow auth evidence records observed auth mode and fallback state without storing secrets. Trusted Publishing remains a promoted default only after release evidence proves that path.
-
-See [docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md](docs/specs/SHIPPER-SPEC-0006-release-auth-evidence-and-trusted-publishing.md).
-
-## Project
-
-- [MISSION.md](MISSION.md) — mission, vision, audience
-- [ROADMAP.md](ROADMAP.md) — nine-competency thesis, current status
-- [CHANGELOG.md](CHANGELOG.md) — release history
-- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
+| Learn the documentation journey | [Documentation index](docs/README.md) |
+| Publish missing workspace crates | [Publishing guide](docs/how-to/publish-missing-workspace-crates.md) |
+| Run in GitHub Actions | [GitHub Actions guide](docs/how-to/run-in-github-actions.md) |
+| Recover after interruption | [Recovery tutorial](docs/tutorials/recover-from-interruption.md) |
+| Look up commands and flags | [CLI reference](docs/reference/cli.md) |
+| Configure Shipper | [Configuration reference](docs/configuration.md) |
+| Understand failure modes | [Failure modes](docs/failure-modes.md) |
+| Review 0.5 migration impact | [0.5.0 migration guide](docs/release/0.5.0-migration.md) |
+| Review the prepared release story | [0.5.0 release notes](RELEASE_NOTES_v0.5.0.md) |
+| Check supported claims | [Support tiers](docs/status/SUPPORT_TIERS.md) |
 
 ## Repository split
 
-Active development now targets
+Active development targets
 [`EffortlessMetrics/shipper-swarm`](https://github.com/EffortlessMetrics/shipper-swarm).
-The original [`EffortlessMetrics/shipper`](https://github.com/EffortlessMetrics/shipper)
-repository remains the release authority for crates.io publishing, release
-evidence, and signing credentials until that authority is deliberately moved.
+[`EffortlessMetrics/shipper`](https://github.com/EffortlessMetrics/shipper)
+remains the release authority for crates.io publishing, tags, release evidence,
+and signing credentials until that authority is deliberately moved.
 
-Do not add crates.io publish tokens, release signing secrets, or GitHub Release
-credentials to this repo. See
-[docs/how-to/shipper-swarm-migration-runbook.md](docs/how-to/shipper-swarm-migration-runbook.md)
-for the CI routing and trust-boundary proof.
+No tag, publication, GitHub Release, signing, deployment, or credential action
+is implied by source preparation in this repository.
+
+## Project
+
+- [Mission](MISSION.md)
+- [Roadmap](ROADMAP.md)
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 
 ## License
 

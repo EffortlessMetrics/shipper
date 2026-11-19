@@ -1,13 +1,29 @@
 //! Command execution with optional timeout.
 
-use std::io::Read;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Result, bail};
 
+use super::CapturedCommandOutput;
+use super::capture::CaptureMode;
+use super::interruption::InterruptionLease;
 use super::run::run_command_in_dir;
 use super::types::CommandOutput;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use unix::run_supervised;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::run_supervised;
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+mod legacy;
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+use legacy::run_supervised;
 
 /// Run a command with optional timeout and captured output.
 #[allow(dead_code)]
@@ -17,8 +33,6 @@ pub(crate) fn run_command_with_timeout(
     working_dir: &std::path::Path,
     timeout: Option<Duration>,
 ) -> Result<CommandOutput> {
-    let start = Instant::now();
-
     let Some(timeout_dur) = timeout else {
         let output = run_command_in_dir(program, args, working_dir)?;
         return Ok(CommandOutput {
@@ -30,63 +44,77 @@ pub(crate) fn run_command_with_timeout(
         });
     };
 
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .current_dir(working_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let captured = run_supervised(
+        program,
+        args,
+        working_dir,
+        Some(timeout_dur),
+        CaptureMode::Full,
+    )?;
+    if let Some(failure) = captured.cleanup_failure {
+        bail!("command cleanup incomplete: {}", failure.description());
+    }
+    if captured.interrupted || super::interruption::requested() {
+        return Err(super::interruption::Interrupted.into());
+    }
+    Ok(captured.output)
+}
 
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("failed to spawn command: {}", program))?;
+/// A supervisor proved that the invocation never launched Cargo. The error
+/// carries its lease through the caller's durable no-launch checkpoint.
+pub(crate) struct CommandNotLaunched(Option<InterruptionLease>);
 
-    let deadline = Instant::now() + timeout_dur;
-    loop {
-        match child
-            .try_wait()
-            .with_context(|| format!("failed to poll command: {}", program))?
-        {
-            Some(status) => {
-                return Ok(CommandOutput {
-                    exit_code: status.code().unwrap_or(-1),
-                    stdout: read_pipe(child.stdout.take()),
-                    stderr: read_pipe(child.stderr.take()),
-                    timed_out: false,
-                    duration: start.elapsed(),
-                });
-            }
-            None => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-
-                    let mut stderr = read_pipe(child.stderr.take());
-                    stderr.push_str(&format!(
-                        "\n{} timed out after {}",
-                        program,
-                        humantime::format_duration(timeout_dur)
-                    ));
-
-                    return Ok(CommandOutput {
-                        exit_code: -1,
-                        stdout: read_pipe(child.stdout.take()),
-                        stderr,
-                        timed_out: true,
-                        duration: start.elapsed(),
-                    });
-                }
-
-                std::thread::sleep(Duration::from_millis(100));
-            }
+impl CommandNotLaunched {
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    fn for_publish(
+        error: anyhow::Error,
+        capture: CaptureMode,
+        lease: Option<InterruptionLease>,
+    ) -> anyhow::Error {
+        if matches!(capture, CaptureMode::PublishTail(_)) {
+            return error.context(Self(lease));
         }
+        error
+    }
+
+    pub(crate) fn take_lease(&mut self) -> Option<InterruptionLease> {
+        self.0.take()
     }
 }
 
-fn read_pipe<R: Read>(stream: Option<R>) -> String {
-    let mut buffer = Vec::new();
-    if let Some(mut s) = stream {
-        let _ = s.read_to_end(&mut buffer);
+impl std::fmt::Debug for CommandNotLaunched {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommandNotLaunched")
+            .finish_non_exhaustive()
     }
-    String::from_utf8_lossy(&buffer).to_string()
 }
+
+impl std::fmt::Display for CommandNotLaunched {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("command was not launched")
+    }
+}
+
+/// Publish diagnostics opt into bounded retention; generic stdout stays complete.
+pub(crate) fn run_command_with_publish_capture(
+    program: &str,
+    args: &[&str],
+    working_dir: &std::path::Path,
+    timeout: Option<Duration>,
+    output_lines: usize,
+) -> Result<CapturedCommandOutput> {
+    run_supervised(
+        program,
+        args,
+        working_dir,
+        timeout,
+        CaptureMode::PublishTail(output_lines),
+    )
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod cleanup_tests;
+
+#[cfg(all(test, windows))]
+mod windows_tests;

@@ -16,7 +16,7 @@ pub(in crate::doctor) struct GitCheck {
     pub findings: Vec<Finding>,
 }
 
-pub(in crate::doctor) fn check(ws: &plan::PlannedWorkspace) -> Vec<Finding> {
+pub(in crate::doctor) fn check(ws: &plan::PlannedWorkspace) -> GitCheck {
     let check = inspect(ws);
     if check.is_repository {
         println!(
@@ -31,7 +31,7 @@ pub(in crate::doctor) fn check(ws: &plan::PlannedWorkspace) -> Vec<Finding> {
     } else {
         println!("git_context: not a git repository");
     }
-    check.findings
+    check
 }
 
 pub(in crate::doctor) fn inspect(ws: &plan::PlannedWorkspace) -> GitCheck {

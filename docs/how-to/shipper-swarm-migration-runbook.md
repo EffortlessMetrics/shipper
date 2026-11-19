@@ -194,7 +194,7 @@ repo=shipper-swarm
 workflow=em-ci-routed-rust
 run_id=${{ github.run_id }}
 router_target=cpx42|cx43|cx53|github
-router_reason=cpx42_idle|cx43_idle|cx53_idle|no_idle_runner|runner_token_missing|runner_token_unauthorized|runner_token_forbidden|runner_api_failed|parse_failed|fork_pr
+router_reason=cpx42_idle|cx43_idle|cx53_idle|no_idle_runner|bot_pr_github_fallback|runner_token_missing|runner_token_unauthorized|runner_token_forbidden|runner_api_failed|parse_failed|fork_pr
 ```
 
 ### Routing policy
@@ -305,20 +305,24 @@ Operator instruction to contributors:
 - Do not add publish/signing credentials.
 - Do not run real publish flows in swarm PR CI.
 
-Dependabot maintenance PRs stay in the swarm queue like any other PR, but their
-first bot-authored workflow run can fail before evaluation if the router or
-Droid cannot read selected repository secrets. In that case, do not broaden
-secret access and do not move release credentials into `shipper-swarm`.
+Dependabot maintenance PRs stay in the swarm queue like any other PR. Because
+bot-authored runs do not receive the runner-read secret, the router
+automatically selects the secret-free GitHub-hosted Rust-small lane with
+`router_reason=bot_pr_github_fallback` and `fallback_allowed=true`. Do not
+broaden secret access or move release credentials into `shipper-swarm`.
 
-Use this maintainer refresh procedure instead:
+Use a maintainer refresh only when the normalized gate actually fails or the
+candidate requires a repair:
 
 1. Confirm the bump is narrow and does not overlap an active human or agent PR.
 2. Run focused local validation, at minimum `cargo check --workspace --locked`
    for Cargo dependency bumps.
-3. Push a maintainer-authored refresh commit or recreate the bump on a trusted
-   same-repo branch.
-4. Merge only after the normal `Shipper Rust Small Result` and advisory review
-   signals are clean.
+3. Apply the required repair in a maintainer-authored commit or recreate the
+   bump on a trusted same-repo branch.
+4. Merge only after the normal `Shipper Rust Small Result` is successful and a
+   current substantive review through Codex, Claude, or a human reviewer is
+   clean. Advisory bot signals are supplemental when available and are not a
+   substitute for substantive review.
 
 If the same bump also opens in `EffortlessMetrics/shipper`, close the source
 repo PR as duplicate maintenance work. Accepted dependency updates flow back to

@@ -85,7 +85,7 @@ shipper-output-sanitizer = { path = "crates/shipper-output-sanitizer", version =
 serde = { version = "1.0.228", features = ["derive"] }
 proptest = "1.11.0"
 insta = { version = "1.47.2", features = ["yaml"] }
-serial_test = "3.4.0"
+serial_test = "4.0.1"
 
 [profile.release]
 strip = true

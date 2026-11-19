@@ -42,12 +42,8 @@ Proof explanation:
   Live-release evidence:
     - registry acceptance and post-publish visibility are recorded during publish/resume.
 
-What to do next:
------------------
-⚠ Preflight did not prove every release prerequisite.
-  - configure registry auth or Trusted Publishing if ownership is unverified
-  - rerun `shipper preflight`
-  - if you accept the uncertainty, run `shipper publish` with an explicit policy choice
+Result: preflight completed with advisory proof gaps; no packages were published
+Next: ownership cannot be verified before a first publish; review the advisory gaps, then deliberately publish or rehearse with the same selection
 --- stderr ---
 [info] initializing registry client...
 [info] running workspace dry-run verification...

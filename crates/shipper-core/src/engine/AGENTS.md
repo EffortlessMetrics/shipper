@@ -36,6 +36,11 @@ except `lib.rs` re-exports and `shipper-cli`.
   an engine-side polling loop.
 - `engine/reconcile.rs` - ambiguous-publish reconciliation against registry
   truth (`Published` / `NotPublished` / `StillUnknown`).
+- `engine/cleanup.rs` - observed process cleanup holds and their existing
+  event/state persistence boundary. Retained hold admission belongs to
+  `publish/admission.rs`; later-attempt admission belongs to `transition.rs`
+  under the same shared state lock. Registry reconciliation cannot clear a
+  local process hold. Rehearsal owns the existing invocation key throughout.
 - `engine/test_readiness.rs` - test-only reporter/event adapter for the
   engine-level readiness characterization tests.
 - `engine/parallel/` — wave-based parallel publish (was the standalone

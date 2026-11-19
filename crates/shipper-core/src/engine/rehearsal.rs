@@ -22,7 +22,7 @@ use crate::types::RuntimeOptions;
 ///    ran."
 ///
 /// 3. **No rehearsal receipt** (`rehearsal.json` is missing) → refuse.
-///    The operator needs to run `shipper rehearse` first.
+///    The operator needs an accepted rehearsal receipt first.
 ///
 /// 4. **Stale receipt** (receipt exists but `plan_id` mismatches the
 ///    current workspace's plan) → refuse. A workspace change between
@@ -58,7 +58,7 @@ pub(crate) fn enforce_gate(
         Some(r) => r,
         None => bail!(
             "rehearsal is required (rehearsal registry '{rehearsal_name}' is configured) but no rehearsal receipt was found at {}. \
-             Run `shipper rehearse --rehearsal-registry {rehearsal_name}` first, \
+             Run `shipper rehearse --registries {rehearsal_name} --rehearsal-registry {rehearsal_name}` first, \
              or pass --skip-rehearsal to override (not recommended).",
             rehearsal_path.display()
         ),
@@ -67,7 +67,7 @@ pub(crate) fn enforce_gate(
     if receipt.plan_id != ws.plan.plan_id {
         bail!(
             "rehearsal receipt is stale: rehearsal ran for plan_id {} but the current plan_id is {}. \
-             The workspace changed between rehearse and publish; re-run `shipper rehearse` against the current plan.",
+             The workspace changed between rehearse and publish; re-run `shipper rehearse --registries {rehearsal_name} --rehearsal-registry {rehearsal_name}` against the current plan.",
             receipt.plan_id,
             ws.plan.plan_id
         );
@@ -76,7 +76,7 @@ pub(crate) fn enforce_gate(
     if !receipt.passed {
         bail!(
             "rehearsal against '{}' did NOT pass for plan_id {}: {}. \
-             Fix the cause and re-run `shipper rehearse` before publishing.",
+             Fix the cause and re-run `shipper rehearse --registries {rehearsal_name} --rehearsal-registry {rehearsal_name}` before publishing.",
             receipt.registry,
             receipt.plan_id,
             receipt.summary

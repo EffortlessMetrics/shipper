@@ -1,0 +1,6 @@
+kind: maintenance
+body: Add an opt-in swarm-only recovery rehearsal that transfers the exact predecessor checkpoint across separate manual runs, retaining source, artifact, attempt and event-history evidence without registry publication.
+time: 2026-11-04T05:15:00Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

@@ -9,32 +9,50 @@ shipper workspace.
 
 | Type | Location | Runner | Purpose |
 |------|----------|--------|---------|
-| **Unit tests** | `#[cfg(test)] mod tests` in source files | `cargo test` / `cargo nextest` | Verify individual functions and modules |
+| **Unit tests** | `#[cfg(test)] mod tests` in source files | `cargo test --workspace` / `cargo nextest run --workspace` | Verify individual functions and modules |
 | **Integration tests** | `crates/shipper-cli/tests/e2e_*.rs`, `cli_e2e.rs` | `cargo test -p shipper-cli` | CLI end-to-end against mock registries |
 | **BDD tests** | `crates/shipper-cli/tests/bdd_*.rs` + `features/*.feature` | `cargo test -p shipper-cli --test bdd_publish` | Scenario-driven publish/resume/preflight |
-| **Snapshot tests** | `crates/shipper-cli/tests/cli_snapshots.rs` | `cargo test` + `cargo insta review` | Pin CLI help text and plan output |
-| **Property tests** | `crates/shipper/src/property_tests.rs` | `cargo test -p shipper` | Verify invariants hold for arbitrary inputs |
-| **Stress tests** | `crates/shipper/src/stress_tests.rs` | `cargo test -p shipper` | Concurrent state access and lock contention |
+| **Snapshot tests** | `crates/shipper-cli/tests/cli_snapshots.rs` and crate-local snapshot tests | `cargo test --workspace` + `cargo insta review` | Pin CLI help text, plans, and structured output |
+| **Property tests** | `crates/shipper-core/src/property_tests.rs` and inline modules throughout the workspace | `cargo test --workspace` | Verify invariants hold for arbitrary inputs |
+| **Stress tests** | `crates/shipper-core/src/stress_tests.rs` | `cargo test -p shipper-core --lib stress_tests` | Concurrent state access and lock contention |
 | **Fuzz tests** | `fuzz/fuzz_targets/*.rs` | `cargo fuzz run <target>` (nightly) | Find panics/crashes from malformed input |
-| **Mutation tests** | CI only | `cargo mutants` | Detect undertested code via code mutations |
-| **Doc tests** | Inline in source | `cargo test --doc` | Validate documentation examples |
+| **Mutation tests** | Selected crates or changed files | `cargo mutants` | Detect undertested code via code mutations |
+| **Doc tests** | Inline in source | `cargo test --workspace --doc` | Validate documentation examples |
 
 ---
 
 ## Running Tests
 
-### All tests (workspace)
+[Cargo.toml](../Cargo.toml) sets the root `default-members` to `shipper` and
+`shipper-cli`. Plain `cargo test` selects those packages' tests. Dependencies
+such as `shipper-core` are compiled, but their own test targets are not selected.
+Use `--workspace` to include the engine, support crates, and xtask. The `fuzz/`
+package is excluded from the product workspace and has its own commands below.
+
+### Workspace tests
 
 ```bash
-# Standard test runner
-cargo test --workspace --all-features
+# Standard runner: workspace tests and doc tests, with all features
+cargo test --workspace --all-features --locked
 
-# With nextest (recommended — used in CI)
-cargo nextest run --workspace --all-features
+# With nextest (used in CI); run doc tests separately
+cargo nextest run --workspace --all-features --locked
 
 # CI profile (retries, JUnit output)
-cargo nextest run --workspace --all-features --profile ci
+cargo nextest run --workspace --all-features --locked --profile ci
 ```
+
+Nextest runs test binaries; it does not replace the doc-test command below.
+These commands retain the runners' normal ignored-test filters.
+
+### Quick default-member check
+
+```bash
+cargo test --locked # shipper + shipper-cli only
+```
+
+Use this shortcut when those two packages are the intended scope. It does not
+establish workspace-wide test coverage.
 
 ### Specific crate
 
@@ -52,16 +70,16 @@ cargo test -p shipper-cargo-failure  # failure classifier
 cargo test --test cli_e2e -p shipper-cli
 
 # Substring match on test name
-cargo test -p shipper plan_determinism
+cargo test -p shipper-core --lib package_state_roundtrip
 
-# Exact test name
-cargo test -p shipper plan_determinism -- --exact
+# Exact fully qualified test name
+cargo test -p shipper-core --lib property_tests::tests::package_state_roundtrip -- --exact
 ```
 
 ### Doc tests
 
 ```bash
-cargo test --workspace --doc
+cargo test --workspace --doc --locked
 ```
 
 ### Snapshot tests
@@ -80,7 +98,8 @@ cargo insta review
 cargo insta accept
 ```
 
-Snapshot files live under `crates/shipper-cli/tests/snapshots/`.
+CLI integration snapshots live under `crates/shipper-cli/tests/snapshots/`;
+other crates also keep snapshots beside their tests.
 
 ### BDD tests
 
@@ -104,25 +123,36 @@ Feature files in `features/`:
 - `preflight_checks.feature` — preflight verification scenarios
 - `parallel_levels.feature` — parallel level grouping
 
-In CI, BDD tests run as a single job on the canonical build (see
-`.github/workflows/ci.yml`, `bdd` job). Earlier RCs ran a feature-flag
-matrix toggling `micro-*` backends; both the flags and the matrix were
-removed during decrating.
+The routed workspace nextest command includes the BDD integration binaries.
+The broader [CI workflow](../.github/workflows/ci.yml) also has a dedicated `bdd`
+job for `bdd_publish`, `bdd_resume`, and `e2e_rehearse`. Its explicit manual
+hosted route reuses those steps. Earlier RCs ran a feature-flag matrix toggling
+`micro-*` backends; both the flags and that matrix were removed during decrating.
 
 ### Property tests
 
 Property tests use [proptest](https://proptest-rs.github.io/proptest/) and live
-in `crates/shipper/src/property_tests.rs`. They verify invariants like
-serialization roundtrips, normalization idempotency, and delay bounds.
+in `crates/shipper-core/src/property_tests.rs` and inline test modules across
+the workspace. They verify invariants like serialization roundtrips,
+normalization idempotency, and delay bounds.
 
 ```bash
-cargo test -p shipper property_tests
+# Focus on the core property_tests module
+cargo test -p shipper-core --lib property_tests
 
-# Increase case count for deeper coverage
-PROPTEST_CASES=1000 cargo test -p shipper property_tests
+# Increase case count for that selected module
+PROPTEST_CASES=1000 cargo test -p shipper-core --lib property_tests
 ```
 
-CI runs with `PROPTEST_CASES=256`.
+This filter does not select property tests in other modules or crates; the
+workspace commands above include them. The
+[routed PR workflow](../.github/workflows/em-ci-routed-rust.yml) and the ordinary
+nextest step in [broad CI](../.github/workflows/ci.yml) set `PROPTEST_CASES=16`
+and `PROPTEST_MAX_SHRINK_ITERS=1000`. Broad CI's separate
+`crypto-proptests-heavy` job sets `PROPTEST_CASES=256` only for
+`cargo nextest run -p shipper-encrypt --all-features --profile ci`. That job
+does not establish a 256-case workspace run. Individual tests can also set
+their own proptest configuration.
 
 ### Fuzz tests
 
@@ -140,47 +170,28 @@ cargo fuzz list
 cargo fuzz run load_state -- -max_total_time=60
 
 # Run with a corpus directory
-cargo fuzz run load_state --corpus fuzz/corpus/load_state
+cargo fuzz run load_state fuzz/corpus/load_state
 ```
 
-Available fuzz targets:
-
-| Target | Tests |
-|--------|-------|
-| `load_state` | State file deserialization |
-| `state_load` | State loading (alternate path) |
-| `receipt_load` | Receipt loading |
-| `resolve_token` | Token resolution paths |
-| `schema_version` | Schema version parsing |
-| `policy_effects` | Policy evaluation |
-| `release_levels` | Level computation |
-| `redact_output` | Output sanitization |
-| `duration_codec` | Duration encode/decode |
-| `config_parse` | `.shipper.toml` parsing |
-| `config_runtime_adapter` | Config runtime adapter |
-| `cargo_failure_classifier` | Failure classification |
-| `engine_parallel_chunks` | Parallel chunking |
-| `execution_core` | Execution core logic |
-| `encrypt_decrypt` | Encryption roundtrip |
-| `retry_strategy` | Retry strategy evaluation |
-| `types_serialization` | Types serde roundtrip |
-| `sparse_index` | Sparse index parsing |
-| `webhook_payload` | Webhook payload handling |
-| `plan_builder` | Plan construction |
-| `git_context` | Git context parsing |
+Available targets are declared in [fuzz/Cargo.toml](../fuzz/Cargo.toml); use
+`cargo fuzz list` for the current names. CI compiles every declared fuzz binary,
+while the runtime campaigns select subsets described in
+[CI Integration](#ci-integration).
 
 Crashers are stored in `fuzz/artifacts/`, corpus seeds in `fuzz/corpus/`.
 
 ### Mutation tests
 
-Mutation testing uses [cargo-mutants](https://mutants.rs/) and runs weekly in CI.
+Mutation testing uses [cargo-mutants](https://mutants.rs/). The
+[mutation workflow](../.github/workflows/mutation.yml) has weekly/manual runs
+over selected crates and a separate label-gated PR lane over changed files.
 
 ```bash
 cargo install cargo-mutants
 
 # Run against the same crates as CI
 # Note: shipper-plan, shipper-policy, shipper-levels were removed during
-# decrating (PRs #54, #56) and are now modules inside shipper/.
+# decrating (PRs #54, #56) and are now modules inside shipper-core/.
 cargo mutants --no-shuffle \
   -p shipper-duration \
   -p shipper-types \
@@ -203,20 +214,25 @@ Results are written to `mutants.out/`.
 | `tempfile` | 3.x | Temporary directories for filesystem isolation |
 | `tiny_http` | 0.12 | In-process HTTP server for mock registries |
 | `insta` | 1.x (yaml feature) | Snapshot testing for CLI output |
-| `proptest` | 1.10 | Property-based / generative testing |
-| `serial_test` | 3.x | `#[serial]` attribute for test isolation |
+| `proptest` | 1.11 | Property-based / generative testing |
+| `serial_test` | 4.x | `#[serial]` attribute for test isolation |
 | `temp-env` | 0.3 | Safe scoped environment variable manipulation |
 | `serde_yaml` | 0.9 | YAML (de)serialization in BDD tests |
 
 ### Nextest profiles
 
-Configured in `.config/nextest.toml`:
+Configured in [`.config/nextest.toml`](../.config/nextest.toml):
 
-| Profile | Retries | Threads | Notes |
+| Profile | Retries after failure | Threads | Notes |
 |---------|---------|---------|-------|
 | `ci` | 2 (exponential, 1s delay) | `num-cpus` | JUnit XML at `target/nextest/ci/junit.xml` |
 | `stress` | 10 (fixed, 100ms delay) | 1 | For flaky-test investigation |
-| `nightly` | 3 (exponential, 2s delay) | `num-cpus` | Extended scheduled testing |
+| `nightly` | 3 (exponential, 2s delay) | `num-cpus` | Optional profile; select it explicitly |
+
+The `ci` profile sets `fail-fast=false`, so remaining tests continue after a
+failure. Retries apply to failed tests; successful tests are not repeated.
+`test-threads` controls concurrency, not a timeout. Profile names do not
+schedule runs; the current CI commands explicitly select `ci`.
 
 ```bash
 cargo nextest run --profile ci --workspace --all-features
@@ -398,35 +414,63 @@ open target/llvm-cov/html/index.html
 cargo llvm-cov --workspace --all-features
 ```
 
-CI uploads `lcov.info` to Codecov on every push to `main`.
+The [coverage workflow](../.github/workflows/coverage.yml) selects path-filtered
+main pushes, manual dispatch, and same-repository PRs carrying `coverage` or
+`full-ci` labels. It generates workspace coverage with `PROPTEST_CASES=16` and
+handles Codecov upload separately. Inspect that run and its artifacts before
+claiming coverage for a candidate.
 
 ---
 
 ## CI Integration
 
-CI is defined in `.github/workflows/ci.yml` and runs on every push to `main`
-and every pull request. The pipeline includes:
+The sources below define configured proof scopes. A configured job, queued run,
+or historical passing run is not evidence that the current candidate passed.
+Retain the source SHA, run ID, selected jobs, terminal results, and relevant
+artifacts when making a proof claim. The
+[Test Evidence Lanes](ci/test-evidence-lanes.md) document owns the detailed lane
+map and manual dispatch procedure.
 
-| Job | Runs on | What it does |
-|-----|---------|--------------|
-| **Lint** | ubuntu | `cargo fmt --check` + `cargo clippy -D warnings` |
-| **Tests** | ubuntu, windows, macos | `cargo nextest run` with `INSTA_UPDATE=no`, `PROPTEST_CASES=256` |
-| **Doc tests** | ubuntu, windows, macos | `cargo test --workspace --doc` |
-| **BDD** | ubuntu | BDD suites on the canonical build |
-| **MSRV** | ubuntu | `cargo check` with Rust 1.95 |
-| **Security** | ubuntu | `cargo audit` |
-| **Docs** | ubuntu | `cargo doc` with `-Dwarnings` |
-| **Coverage** | ubuntu | `cargo llvm-cov` → Codecov |
-| **Fuzz smoke** | ubuntu (PRs) | Each target for 60 seconds |
-| **Native target** | matrix | `cargo check` for x86_64 Linux on self-hosted runners |
-| **Release build** | ubuntu on main/dispatch | `cargo build --release` |
+### PR and broad CI lanes
 
-Additional scheduled workflows:
+| Lane and source | Trigger and runner | Configured proof |
+|---|---|---|
+| [Routed Rust Small](../.github/workflows/em-ci-routed-rust.yml) | Same-repository PRs, main pushes, merge groups, and manual dispatch; selected Linux self-hosted route or Ubuntu hosted fallback | Format, workspace check/Clippy, `cargo nextest run --workspace --locked --all-targets --all-features --profile ci`, workspace doc tests, `cargo package --workspace --locked --exclude xtask`, and CLI help smoke. The normalized result is `Shipper Rust Small Result`. |
+| [Broad CI](../.github/workflows/ci.yml) | Main pushes, manual dispatch, and Sunday 03:00 UTC; Linux self-hosted by default | Workspace nextest and doc tests, lint, policy, MSRV, security, docs, install smoke, BDD/recovery scenarios, and the target check. Ordinary nextest sets `PROPTEST_CASES=16`. |
+| Broad CI manual hosted route | Explicit `workflow_dispatch` with `runner_route=github-hosted` in `shipper-swarm`; Ubuntu 24.04 | Reuses all twelve broad-CI job step sets, including heavy crypto, fuzz smoke, and release-profile compilation. It is separate from the routed PR fallback. |
+| Broad CI heavy crypto | Main pushes, manual dispatch, and the weekly schedule | `shipper-encrypt` only, with `PROPTEST_CASES=256`. |
 
-| Workflow | Schedule | What it does |
-|----------|----------|--------------|
-| **Fuzz** (`.github/workflows/fuzz.yml`) | Nightly 3 AM UTC | Extended fuzzing, 5 min per target |
-| **Mutation** (`.github/workflows/mutation.yml`) | Weekly Sunday 4 AM UTC | `cargo mutants` on core crates |
+The hosted broad route was added by merged
+[PR #373](https://github.com/EffortlessMetrics/shipper-swarm/pull/373).
+[Issue #370](https://github.com/EffortlessMetrics/shipper-swarm/issues/370)
+tracks self-hosted execution availability. Neither route configuration nor a
+past successful dispatch proves that a new candidate has completed broad CI.
+
+### Fuzz and mutation scope
+
+| Source | Trigger | Configured proof |
+|---|---|---|
+| `fuzz-smoke` in [broad CI](../.github/workflows/ci.yml) | Main pushes and manual dispatch; skipped by the weekly schedule | Five targets (`load_state`, `resolve_token`, `schema_version`, `release_levels`, `redact_output`) with a 60-second budget each. `ci.yml` has no PR trigger. |
+| `check-targets` in [fuzz.yml](../.github/workflows/fuzz.yml) | Path-filtered PRs/main pushes, nightly schedule, and manual dispatch | Nightly Rust `cargo check --manifest-path fuzz/Cargo.toml --bins` compiles every declared fuzz binary. Compilation does not execute fuzz campaigns. |
+| `fuzz` in [fuzz.yml](../.github/workflows/fuzz.yml) | Nightly at 03:00 UTC and manual dispatch only | Default 300-second budget for each of six targets: `load_state`, `resolve_token`, `encrypt_decrypt`, `retry_strategy`, `types_serialization`, and `redact_output`. Manual `targets=all` selects this six-target set; explicit target names select a different set. |
+| [mutation.yml](../.github/workflows/mutation.yml) | Sunday 04:00 UTC or manual dispatch; separate same-repository PR lane gated by `mutation`/`full-ci` labels | Weekly/manual runs target `shipper-duration`, `shipper-types`, and `shipper-config`. The PR lane scopes mutation to changed files. |
+
+### Platform and release-build limits
+
+Workspace test and doc-test execution in both ordinary CI workflows is on
+Linux. The `cross-platform` job in `ci.yml` currently runs
+`cargo check --workspace --target x86_64-unknown-linux-gnu`; it does not execute
+tests or supply a Windows/macOS compile matrix. A cross-target compile check,
+when configured, would still be distinct from runtime tests on that platform.
+
+Broad CI's `release-build` runs `cargo build --release` for the default members
+on main pushes and manual dispatch, and uploads the Linux CLI artifact. It is
+skipped on the weekly schedule. The release authority's separate
+[`release.yml`](../.github/workflows/release.yml) configures native Linux,
+macOS (x86_64 and aarch64), and Windows binary builds plus packaged-executable
+smoke proof. Those jobs do not run a workspace test matrix on all those systems.
+Use the [support tiers](status/SUPPORT_TIERS.md) and exact-candidate release
+evidence for platform claims; these workflow definitions do not promote them.
 
 ---
 
@@ -437,7 +481,7 @@ Additional scheduled workflows:
 cargo nextest run --workspace --failure-output immediate
 
 # Verbose output for a single test
-cargo test -p shipper test_name -- --exact --nocapture
+cargo test -p shipper-core --lib property_tests::tests::package_state_roundtrip -- --exact --nocapture
 
 # Review snapshot diffs
 cargo insta review

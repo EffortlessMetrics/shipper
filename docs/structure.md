@@ -87,7 +87,7 @@ crates/shipper-core/src/
 │   ├── auth/             # Token resolution + OIDC detection (oidc.rs)
 │   ├── cargo/            # cargo subprocess invocation
 │   ├── git/              # Git working-tree checks
-│   ├── lock/             # File-based distributed lock
+│   ├── lock/             # Owned local OS file guard
 │   ├── process/          # Subprocess capture
 │   └── storage/          # Storage backend trait + filesystem impl
 ├── config.rs             # Internal config helpers

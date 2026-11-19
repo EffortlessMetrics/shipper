@@ -15,6 +15,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
+use anyhow::{Context, Result, ensure};
 use assert_cmd::Command;
 use predicates::str::contains;
 use serial_test::serial;
@@ -193,15 +194,21 @@ struct TestRegistry {
 
 impl TestRegistry {
     fn join(self) {
+        self.finish().expect("join server");
+    }
+
+    fn finish(self) -> Result<()> {
         self.stop.store(true, Ordering::Release);
-        self.handle.join().expect("join server");
-        assert_eq!(
-            self.request_count.load(Ordering::Acquire),
-            self.expected_requests,
-            "registry request count mismatch: expected {}, got {}",
-            self.expected_requests,
-            self.request_count.load(Ordering::Acquire)
+        self.handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("registry thread panicked"))?;
+        let observed = self.request_count.load(Ordering::Acquire);
+        ensure!(
+            observed == self.expected_requests,
+            "registry request count mismatch: expected {}, got {observed}",
+            self.expected_requests
         );
+        Ok(())
     }
 }
 
@@ -281,6 +288,38 @@ fn fast_resume_args(cmd: &mut Command, manifest: &Path, api_base: &str, state_di
         .arg("0ms")
         .arg("--state-dir")
         .arg(state_dir);
+}
+
+fn assert_sentinel_absent_from_output_and_artifacts(
+    output: &std::process::Output,
+    state_dir: &Path,
+    sentinel: &str,
+) {
+    for (surface, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+        let rendered = String::from_utf8_lossy(bytes);
+        assert!(
+            !rendered.contains(sentinel),
+            "secret leaked in {surface}: {rendered}"
+        );
+    }
+
+    let mut pending = vec![state_dir.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        for entry in fs::read_dir(&path).expect("read resume artifact directory") {
+            let entry = entry.expect("read resume artifact entry");
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                pending.push(entry_path);
+            } else {
+                let contents = fs::read(&entry_path).expect("read retained resume artifact");
+                assert!(
+                    !String::from_utf8_lossy(&contents).contains(sentinel),
+                    "secret leaked in {}",
+                    entry_path.display()
+                );
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -497,6 +536,7 @@ mod resume_completed_state {
     #[test]
     #[serial]
     fn given_all_published_state_when_resume_then_succeeds_without_publish() {
+        const SECRET_SENTINEL: &str = "RESUME_OUTCOME_SECRET_SENTINEL";
         let td = tempdir().expect("tempdir");
         create_single_crate_workspace(td.path());
         let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
@@ -527,6 +567,7 @@ mod resume_completed_state {
             .env("REAL_CARGO", &real_cargo)
             .env("SHIPPER_CARGO_BIN", &fake_cargo)
             .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+            .env("CARGO_REGISTRY_TOKEN", SECRET_SENTINEL)
             .assert()
             .success();
 
@@ -542,6 +583,7 @@ mod resume_completed_state {
 
         // When: resume with completed state
         let output = loopback_shipper_cmd()
+            .timeout(Duration::from_secs(20))
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -561,18 +603,90 @@ mod resume_completed_state {
             .env("REAL_CARGO", &real_cargo)
             .env("SHIPPER_CARGO_BIN", &fake_cargo)
             .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+            .env("CARGO_REGISTRY_TOKEN", SECRET_SENTINEL)
             .assert()
             .success()
             .get_output()
-            .stderr
             .clone();
 
         // Then: engine reports "already complete" for published packages
-        let stderr = String::from_utf8(output).expect("utf8");
+        let stderr = String::from_utf8(output.stderr.clone()).expect("utf8");
         assert!(
             stderr.contains("already complete"),
             "should report already complete, got stderr: {stderr}"
         );
+        let stdout = String::from_utf8(output.stdout.clone()).expect("utf8");
+        assert!(stdout.contains("Result: success"), "stdout: {stdout}");
+        assert!(stdout.contains("Safe to resume: yes"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Next: resume completed the publish run"),
+            "stdout: {stdout}"
+        );
+        assert!(stdout.contains("Evidence:"), "stdout: {stdout}");
+
+        let mut json_command = loopback_shipper_cmd();
+        fast_resume_args(
+            &mut json_command,
+            &td.path().join("Cargo.toml"),
+            &registry.base_url,
+            &state_dir,
+        );
+        let json_output = json_command
+            .timeout(Duration::from_secs(20))
+            .arg("--format")
+            .arg("json")
+            .arg("resume")
+            .env("PATH", &new_path)
+            .env("REAL_CARGO", &real_cargo)
+            .env("SHIPPER_CARGO_BIN", &fake_cargo)
+            .env("SHIPPER_FAKE_PUBLISH_EXIT", "0")
+            .env("CARGO_REGISTRY_TOKEN", SECRET_SENTINEL)
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        let envelope: serde_json::Value = serde_json::from_slice(&json_output.stdout)
+            .expect("completed resume stdout should be JSON");
+        assert_eq!(envelope["schema_version"], "shipper.resume.v1");
+        assert_eq!(envelope["execution_result"], "success");
+        assert_eq!(envelope["outcome"]["status"], "success");
+        assert_eq!(envelope["safe_to_resume"], true);
+        assert_eq!(
+            envelope["safe_to_resume"],
+            envelope["outcome"]["safe_to_resume"]["value"]
+        );
+        assert_eq!(envelope["outcome"]["next_action"]["kind"], "none_complete");
+        assert!(envelope["outcome"]["next_action"]["command"].is_null());
+
+        let final_state: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(state_dir.join("state.json")).expect("read final state"),
+        )
+        .expect("parse final state");
+        let receipt: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(state_dir.join("receipt.json")).expect("read final receipt"),
+        )
+        .expect("parse final receipt");
+        assert_eq!(final_state["plan_id"], receipt["plan_id"]);
+        assert_eq!(receipt["execution_result"], "success");
+        assert_eq!(
+            final_state["packages"]["demo@0.1.0"]["state"]["state"],
+            receipt["packages"][0]["state"]["state"]
+        );
+        let finished_results: Vec<String> = fs::read_to_string(state_dir.join("events.jsonl"))
+            .expect("read final events")
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("parse event"))
+            .filter(|event| event["event_type"]["type"] == "execution_finished")
+            .filter_map(|event| {
+                event["event_type"]["result"]
+                    .as_str()
+                    .map(ToOwned::to_owned)
+            })
+            .collect();
+        assert_eq!(finished_results.last().map(String::as_str), Some("success"));
+
+        assert_sentinel_absent_from_output_and_artifacts(&output, &state_dir, SECRET_SENTINEL);
+        assert_sentinel_absent_from_output_and_artifacts(&json_output, &state_dir, SECRET_SENTINEL);
 
         registry.join();
     }
@@ -583,17 +697,152 @@ mod resume_completed_state {
 // (feature line 26)
 // ----------------------------------------------------------------------------
 mod resume_plan_id_mismatch {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
     use super::*;
+
+    const SECRET_SENTINEL: &str = "RESUME_MISMATCH_SECRET_SENTINEL";
+
+    fn create_recording_publish_cargo(root: &Path) -> Result<(PathBuf, PathBuf)> {
+        let log = root.join("unexpected-publish-cargo-invocation.log");
+
+        #[cfg(windows)]
+        let executable = {
+            let path = root.join("recording-cargo.cmd");
+            fs::write(
+                &path,
+                "@echo off\r\n>>\"%SHIPPER_FAKE_INVOCATION_LOG%\" echo invoked\r\nexit /b 99\r\n",
+            )
+            .context("write Windows recording Cargo")?;
+            path
+        };
+
+        #[cfg(not(windows))]
+        let executable = {
+            use std::os::unix::fs::PermissionsExt;
+
+            let path = root.join("recording-cargo");
+            fs::write(
+                &path,
+                "#!/usr/bin/env sh\nprintf 'invoked\\n' >> \"$SHIPPER_FAKE_INVOCATION_LOG\"\nexit 99\n",
+            )
+            .context("write recording Cargo")?;
+            let mut permissions = fs::metadata(&path)
+                .context("read recording Cargo metadata")?
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).context("make recording Cargo executable")?;
+            path
+        };
+
+        Ok((executable, log))
+    }
+
+    fn collect_files(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
+        let mut files = BTreeMap::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(&directory)
+                .with_context(|| format!("read artifact directory {}", directory.display()))?
+            {
+                let entry = entry.context("read artifact entry")?;
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    let relative = path
+                        .strip_prefix(root)
+                        .with_context(|| format!("relativize artifact {}", path.display()))?
+                        .to_path_buf();
+                    files.insert(
+                        relative,
+                        fs::read(&path)
+                            .with_context(|| format!("read artifact {}", path.display()))?,
+                    );
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    fn run_mismatch(
+        root: &Path,
+        state_dir: &Path,
+        api_base: &str,
+        publish_cargo_bin: &Path,
+        publish_cargo_log: &Path,
+        format: Option<&str>,
+    ) -> Result<std::process::Output> {
+        let mut command = loopback_shipper_cmd();
+        command
+            .timeout(Duration::from_secs(20))
+            .arg("--manifest-path")
+            .arg(root.join("Cargo.toml"))
+            .arg("--api-base")
+            .arg(api_base)
+            .arg("--allow-dirty")
+            .arg("--state-dir")
+            .arg(state_dir)
+            .env("CARGO_REGISTRY_TOKEN", SECRET_SENTINEL)
+            .env("SHIPPER_CARGO_BIN", publish_cargo_bin)
+            .env("SHIPPER_FAKE_INVOCATION_LOG", publish_cargo_log);
+        if let Some(format) = format {
+            command.arg("--format").arg(format);
+        }
+        command
+            .arg("resume")
+            .output()
+            .context("run bounded resume mismatch process")
+    }
+
+    fn assert_mismatch_output(output: &std::process::Output, surface: &str) -> Result<()> {
+        ensure!(
+            output.status.code() == Some(1),
+            "{surface} mismatch exit was {:?}",
+            output.status.code()
+        );
+        ensure!(output.stdout.is_empty(), "{surface} stdout must be empty");
+        let stderr = String::from_utf8(output.stderr.clone())
+            .with_context(|| format!("decode {surface} stderr"))?;
+        ensure!(
+            stderr.contains("does not match current plan_id"),
+            "{surface} mismatch diagnostic"
+        );
+        ensure!(
+            stderr.contains("--force-resume"),
+            "{surface} force escape diagnostic"
+        );
+        for forbidden in [
+            "shipper.resume.v1",
+            "Result:",
+            "Safe to resume:",
+            "safe_to_resume",
+            "\"outcome\"",
+        ] {
+            ensure!(
+                !stderr.contains(forbidden),
+                "{surface} fabricated completed/safe claim: {forbidden}"
+            );
+        }
+        ensure!(
+            !stderr.contains(SECRET_SENTINEL),
+            "{surface} leaked secret sentinel"
+        );
+        Ok(())
+    }
 
     /// Given an existing state file with plan_id "abc123",
     /// And the current workspace generates a different plan_id,
     /// When I run "shipper resume",
     /// Then the exit code is non-zero and the error mentions plan_id.
     #[test]
-    fn given_mismatched_plan_id_when_resume_then_rejects_with_error() {
-        let td = tempdir().expect("tempdir");
+    #[serial]
+    fn given_mismatched_plan_id_when_resume_then_rejects_with_error() -> Result<()> {
+        let td = tempdir().context("create mismatch workspace")?;
         create_single_crate_workspace(td.path());
         let state_dir = td.path().join(".shipper");
+        let registry = spawn_registry(Vec::new(), 0);
 
         let mock_state = r#"{
             "state_version": "shipper.state.v1",
@@ -614,21 +863,65 @@ mod resume_plan_id_mismatch {
                     "last_updated_at": "2024-01-01T00:00:00Z"
                 }
             }
-        }"#;
-        write_state_json(&state_dir, mock_state);
+        }"#
+        .replace("https://crates.io", &registry.base_url)
+        .replace("https://index.crates.io", &registry.base_url);
+        write_state_json(&state_dir, &mock_state);
+        // Isolate plan-identity refusal with valid retained event evidence.
+        // An unreadable event log is an independent admission refusal, and a
+        // recognized cleanup hold must take precedence over plan identity.
+        let retained_event = shipper_core::types::PublishEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: shipper_core::types::EventType::PlanCreated {
+                plan_id: "intentionally-wrong-plan-id-12345".into(),
+                package_count: 1,
+            },
+            package: "all".into(),
+        };
+        fs::write(
+            state_dir.join("events.jsonl"),
+            format!("{}\n", serde_json::to_string(&retained_event)?),
+        )
+        .context("write pre-existing event evidence")?;
+        let state_before = collect_files(&state_dir)?;
+        let (publish_cargo_bin, publish_cargo_log) = create_recording_publish_cargo(td.path())?;
 
-        // When: resume with mismatched plan_id
-        loopback_shipper_cmd()
-            .arg("--manifest-path")
-            .arg(td.path().join("Cargo.toml"))
-            .arg("--allow-dirty")
-            .arg("--state-dir")
-            .arg(&state_dir)
-            .arg("resume")
-            .assert()
-            .failure()
-            .stderr(contains("does not match current plan_id"))
-            .stderr(contains("--force-resume"));
+        let human = run_mismatch(
+            td.path(),
+            &state_dir,
+            &registry.base_url,
+            &publish_cargo_bin,
+            &publish_cargo_log,
+            None,
+        )?;
+        let json = run_mismatch(
+            td.path(),
+            &state_dir,
+            &registry.base_url,
+            &publish_cargo_bin,
+            &publish_cargo_log,
+            Some("json"),
+        )?;
+
+        assert_mismatch_output(&human, "human")?;
+        assert_mismatch_output(&json, "JSON-requested")?;
+        registry.finish()?;
+        ensure!(
+            !publish_cargo_log.exists(),
+            "resume mismatch invoked publish Cargo"
+        );
+        ensure!(
+            collect_files(&state_dir)? == state_before,
+            "resume mismatch mutated state/events or created evidence"
+        );
+        for (path, contents) in collect_files(td.path())? {
+            ensure!(
+                !String::from_utf8_lossy(&contents).contains(SECRET_SENTINEL),
+                "secret sentinel leaked in {}",
+                path.display()
+            );
+        }
+        Ok(())
     }
 
     /// Given an existing state file with a wrong plan_id,
@@ -895,11 +1188,12 @@ mod state_updated_atomically {
         let td = tempdir().expect("tempdir");
         create_single_crate_workspace(td.path());
         let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
-        let state_dir = td.path().join(".shipper");
+        let configured_state_dir = Path::new(".shipper");
 
         let registry = spawn_registry(vec![404, 404, 200, 200], 3);
 
         loopback_shipper_cmd()
+            .current_dir(td.path())
             .arg("--manifest-path")
             .arg(td.path().join("Cargo.toml"))
             .arg("--api-base")
@@ -915,7 +1209,7 @@ mod state_updated_atomically {
             .arg("--base-delay")
             .arg("0ms")
             .arg("--state-dir")
-            .arg(&state_dir)
+            .arg(configured_state_dir)
             .arg("publish")
             .env("PATH", &new_path)
             .env("REAL_CARGO", &real_cargo)
@@ -930,9 +1224,11 @@ mod state_updated_atomically {
             &mut cmd,
             &td.path().join("Cargo.toml"),
             &registry.base_url,
-            &state_dir,
+            configured_state_dir,
         );
         let output = cmd
+            .current_dir(td.path())
+            .timeout(Duration::from_secs(20))
             .arg("--format")
             .arg("json")
             .arg("resume")
@@ -955,6 +1251,24 @@ mod state_updated_atomically {
         );
         assert_eq!(envelope["command"].as_str(), Some("resume"));
         assert_eq!(envelope["safe_to_resume"].as_bool(), Some(true));
+        assert_eq!(
+            envelope["safe_to_resume"], envelope["outcome"]["safe_to_resume"]["value"],
+            "legacy and typed resume posture agree for terminal success"
+        );
+        assert_eq!(envelope["outcome"]["status"].as_str(), Some("success"));
+        assert_eq!(
+            envelope["outcome"]["next_action"]["kind"].as_str(),
+            Some("none_complete")
+        );
+        assert!(
+            envelope["outcome"]["next_action"]["command"].is_null(),
+            "completed resume must not fabricate a command"
+        );
+        assert_eq!(
+            envelope["state_dir"].as_str(),
+            Some(".shipper"),
+            "configured relative state path is a stable legacy field"
+        );
         assert!(envelope["plan_id"].is_string(), "plan_id should be present");
         assert_eq!(envelope["published"].as_u64(), Some(1));
         assert_eq!(envelope["pending"].as_u64(), Some(0));

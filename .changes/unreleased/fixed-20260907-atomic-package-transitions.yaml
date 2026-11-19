@@ -1,0 +1,6 @@
+kind: fixed
+body: Keep parallel package events and their state updates within one persistence boundary, preventing spurious missing-event or package-identity failures during reconciliation, retries, and completion.
+time: 2026-09-08T02:07:35Z
+custom:
+  Audience: Mixed
+  Importance: Detailed

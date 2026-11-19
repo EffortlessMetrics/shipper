@@ -10,8 +10,10 @@
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
+mod authority_exceptions;
 mod check_file_policy;
 mod checks;
+mod ci_labels;
 mod clippy_checks;
 mod doc_contracts;
 mod file_policy;
@@ -19,7 +21,9 @@ mod mutants;
 mod no_panic;
 mod package_surface;
 mod policy_report;
+mod precommit;
 mod propose;
+mod release_identity;
 mod ripr;
 mod workflow_checks;
 
@@ -81,6 +85,10 @@ enum Command {
     #[command(name = "policy-report")]
     PolicyReport,
 
+    /// Validate the approved release source, package graph, and release notes.
+    #[command(name = "release-identity")]
+    ReleaseIdentity(Box<release_identity::ReleaseIdentityArgs>),
+
     /// Validate Clippy lint policy: MSRV alignment + workspace.lints coverage.
     #[command(name = "check-lint-policy")]
     CheckLintPolicy,
@@ -92,6 +100,14 @@ enum Command {
     /// Validate source-of-truth document contracts.
     #[command(name = "check-doc-contracts")]
     CheckDocContracts(DocContractsArgs),
+
+    /// Validate or synchronize the source-owned opt-in CI label taxonomy.
+    #[command(subcommand, name = "ci-labels")]
+    CiLabels(CiLabelsCommand),
+
+    /// Run or manage the repository-owned local pre-commit gate.
+    #[command(name = "precommit")]
+    Precommit(PrecommitArgs),
 
     /// Run the advisory ripr lane (`ripr pilot --root .`) — #182.
     ///
@@ -188,6 +204,53 @@ struct DocContractsArgs {
     mode: doc_contracts::Mode,
 }
 
+#[derive(Args, Debug)]
+struct PrecommitArgs {
+    /// Hook lifecycle action. With no action, validates the staged index.
+    #[command(subcommand)]
+    action: Option<PrecommitAction>,
+}
+
+#[derive(Subcommand, Debug)]
+enum PrecommitAction {
+    /// Validate the staged index and branch-local Changie disposition.
+    Run,
+    /// Install the repository-owned pre-commit dispatcher.
+    Install,
+    /// Report whether the effective hook is current.
+    Status,
+    /// Remove only a repository-owned current or stale hook.
+    Uninstall,
+}
+
+#[derive(Subcommand, Debug)]
+enum CiLabelsCommand {
+    /// Validate the manifest and workflow contract without network access.
+    Check,
+    /// Compare configured metadata to live GitHub labels without mutation.
+    #[command(name = "check-live")]
+    CheckLive(CiLabelsRepoArgs),
+    /// Create/update configured labels; requires the explicit --apply flag.
+    Sync(CiLabelsSyncArgs),
+}
+
+#[derive(Args, Debug)]
+struct CiLabelsSyncArgs {
+    /// Repository whose labels may be synchronized; must match policy.
+    #[arg(long)]
+    repo: String,
+    /// Confirm the bounded live GitHub label mutation.
+    #[arg(long)]
+    apply: bool,
+}
+
+#[derive(Args, Debug)]
+struct CiLabelsRepoArgs {
+    /// Repository to compare; must match the source-owned policy.
+    #[arg(long)]
+    repo: String,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -210,9 +273,21 @@ fn main() -> Result<()> {
         Command::CheckProcessPolicy(args) => workflow_checks::check_process_policy(args.mode)?,
         Command::CheckNetworkPolicy(args) => workflow_checks::check_network_policy(args.mode)?,
         Command::PolicyReport => policy_report::policy_report()?,
+        Command::ReleaseIdentity(args) => release_identity::validate(*args)?,
         Command::CheckLintPolicy => clippy_checks::check_lint_policy()?,
         Command::CheckClippyExceptions => clippy_checks::check_clippy_exceptions()?,
         Command::CheckDocContracts(args) => doc_contracts::check(args.mode)?,
+        Command::CiLabels(command) => match command {
+            CiLabelsCommand::Check => ci_labels::check()?,
+            CiLabelsCommand::CheckLive(args) => ci_labels::check_live(&args.repo)?,
+            CiLabelsCommand::Sync(args) => ci_labels::sync(&args.repo, args.apply)?,
+        },
+        Command::Precommit(args) => match args.action.unwrap_or(PrecommitAction::Run) {
+            PrecommitAction::Run => precommit::run()?,
+            PrecommitAction::Install => precommit::install()?,
+            PrecommitAction::Status => precommit::status()?,
+            PrecommitAction::Uninstall => precommit::uninstall()?,
+        },
         Command::RiprPr(args) => ripr::ripr_pr(&args)?,
         Command::RepoRiprBadgeArtifacts => ripr::repo_badge_artifacts()?,
         Command::MutantsPr(args) => mutants::mutants_pr(&args)?,

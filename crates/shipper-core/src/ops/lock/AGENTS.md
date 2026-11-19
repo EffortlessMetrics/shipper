@@ -4,56 +4,89 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 
 # Module: `crate::ops::lock`
 
-**Layer:** ops (layer 1, bottom)
-**Single responsibility:** Advisory file-based lock that prevents concurrent `shipper` runs from operating on the same workspace/state directory.
-**Was:** standalone crate `shipper-lock` (absorbed during decrating Phase 2).
+**Layer:** ops (layer 1, bottom).
+**Single responsibility:** Exclusive ownership for cooperating Shipper processes
+using one persistent OS-lock sidecar per existing workspace/state-directory key.
+The separate JSON record supplies advisory holder and process-identity evidence.
 
-The lock is a JSON file in the state directory (default `.shipper/lock`) that
-records the PID, hostname, `acquired_at` timestamp, and optional `plan_id` of
-the holder. Acquisition is via atomic `File::create` + `fs::rename` after a
-check-then-create. Release happens on `Drop` (best effort) or via
-`LockFile::release()`. A stale-lock timeout path (`acquire_with_timeout`) lets
-callers reclaim locks whose holders died without releasing.
+## Public and internal APIs
 
-## Public-to-crate API
+The public path is `shipper_core::lock`; core callers use `crate::lock`. The
+install-facing `shipper` facade does not re-export this module.
 
-Public module path: `shipper_core::lock`. Inside `shipper-core` itself, use
-`crate::lock`. The install-facing `shipper` facade does not re-export this
-module.
+- `LOCK_FILE`, `LockInfo`, and `lock_path` retain their existing public shapes.
+- `LockFile::acquire` refuses any retained metadata. `acquire_with_timeout`
+  permits conservative recovery. `acquire_with_timeout_and_force` adds an
+  explicit operator override for unknown metadata, subject to the rules below.
+- `release(&self)`, `set_plan_id(&self)`, and Drop serialize on the handle's
+  mutex. A released handle cannot modify a successor's record or release its
+  guard. The optional JSON ownership protocol and nonce are additive fields;
+  `LockInfo` remains readable by existing consumers.
+- `is_locked` reports advisory JSON presence only. It is not an ownership test
+  and a pre-check followed by acquisition is never an atomic admission rule.
+- Internal `LockReservation::acquire(state_dir, workspace_root, timeout, force)`
+  acquires the OS guard and captures `prior_contents()` without modifying JSON.
+  An unclaimed reservation's Drop preserves every predecessor byte. Orchestration
+  can reload retained artifacts under ownership, apply its admission policy,
+  then `claim(plan_id)` on the same handle.
+- `LockFile::read_owned_record` validates an active handle and its nonce without
+  attempting to relock that handle. Runtime liveness and upload admission remain
+  higher-layer decisions; this module does not import or decide them.
 
-- `LOCK_FILE` — default lock filename constant.
-- `LockInfo` — serde struct written to the lock file.
-- `LockFile` — RAII handle; `acquire`, `acquire_with_timeout`, `release`,
-  `set_plan_id`, `is_locked`, `read_lock_info`.
-- `lock_path(state_dir, workspace_root)` — resolves the concrete lock path,
-  with an optional `DefaultHasher`-derived suffix when `workspace_root` is
-  `Some` (so multiple workspaces sharing a state dir don't collide).
+## Ownership and recovery rules
 
-## Invariants & gotchas
+1. Every acquisition opens a fresh read/write handle to `<lock_path>.guard` and
+   calls safe `std::fs::File::try_lock`. Contention, unsupported locking, and all
+   other OS errors fail closed, including for force and clean.
+2. The sidecar is persistent. Never unlink, rename, replace, or truncate it during
+   acquisition, release, Drop, force, or cleanup. Removing its inode can create
+   two independently locked files at the same path. Do not clone a held handle
+   or call `try_lock` again on one that is already held.
+3. A same-host record with the recognized ownership protocol may be recovered
+   after acquiring the OS guard. Its age and still-running PID do not imply
+   continuing ownership of that released handle.
+4. Automatic legacy recovery requires the same hostname and known process scope,
+   a positive observation that the recorded process is absent, and a nonnegative
+   age strictly greater than the configured timeout. An exact boundary or future
+   timestamp is not stale. Missing process identity, mismatched scope, a failed
+   probe, corrupt JSON, unknown protocol, and foreign-host records stay unknown.
+   Malformed or duplicate additive ownership fields do not erase readable base
+   process identity; a positively live legacy holder still refuses force.
+5. Explicit force may override unknown metadata after winning the OS guard. The
+   operator assumes a noncooperating legacy or foreign publisher is quiescent.
+   Force never steals an actually held guard or a positively observed live
+   legacy holder. It does not override the engine's retained-state admission.
+6. JSON updates use an exclusive temporary file and rename while ownership is
+   held. Release removes JSON only when its nonce still matches. Missing,
+   corrupt, or replaced metadata is preserved. The private, uncloneable guard
+   explicitly unlocks before close, so a forked pre-exec child cannot prolong
+   released ownership through a temporary duplicate descriptor. Explicit release
+   reports unlock I/O failure; Drop is best effort, with close as fallback. The
+   lifecycle mutex remains held throughout cleanup and unlock. A released handle
+   cannot touch a new owner.
 
-- **Not a true atomic mutex.** `acquire` does a check-then-create which races
-  under concurrent contention. The engine relies on workspace-level cooperation,
-  not OS-level file locking. See `concurrent_acquire_only_one_succeeds` — at
-  least one thread is guaranteed to win, but more than one *may* succeed in a
-  tight race. Callers that need strict mutual exclusion should layer their own
-  guard on top (or switch to OS advisory locks — a deliberate future option).
-- **Write-then-rename** is used to publish the lock atomically inside a single
-  filesystem. `fsync` of the parent dir is attempted but ignored on failure.
-- **`Drop` is best-effort.** If the file is externally removed, `release`
-  silently succeeds; `set_plan_id` on a released lock returns an error.
-- **Stale-lock detection is wall-clock based.** `acquire_with_timeout`
-  compares `Utc::now() - acquired_at` to the configured timeout. A lock whose
-  age is *exactly* the timeout is NOT considered stale (strictly `>`). Corrupt
-  lock files are treated as stale by `acquire_with_timeout` but as errors by
-  plain `acquire`.
-- **`lock_path` hash is `DefaultHasher`.** Stable for a single Rust build but
-  NOT guaranteed across versions; collisions are extremely rare but possible.
-  This is fine for the workspace-disambiguation use case it serves.
+## Compatibility and proof limits
 
-## Architectural notes
+`lock_path` retains the existing `DefaultHasher` workspace key. Aliases,
+collisions, and cross-toolchain hash stability are unchanged limitations.
+The guarantee covers cooperating processes using the same key on a filesystem
+with supported OS locking. It is not a distributed-lock, network-filesystem,
+hostile external edit, old-binary, or power-loss durability guarantee. Linux
+process-identity observations are a separate conservative legacy-recovery aid;
+on unsupported platforms they remain unknown.
 
-- Layer-1 pure I/O. Must not import from `engine`, `plan`, `state`, or
-  `runtime` (enforced by `.github/workflows/architecture-guard.yml`).
-- No async. Synchronous filesystem calls only.
-- Dependencies: `anyhow`, `serde`, `serde_json`, `chrono`, `gethostname`.
+Keep deterministic thread and process rendezvous tests: retain winning handles
+until all contenders finish, require exactly one owner, cover abandonment, and
+exercise stale A after release against successor B and contender C. A test-only
+duplicate descriptor models pre-exec inheritance and proves that its later close
+cannot release a successor. Test refused
+cleanup and engine entry paths with byte-for-byte artifact preservation and no
+Cargo process. Native Windows and other filesystem behavior requires its own
+execution evidence; Linux proof cannot establish it.
 
+## Architectural constraints
+
+Layer-1 synchronous I/O only. Do not import `engine`, `plan`, `state`, or `runtime`.
+No unsafe code or new crate is needed. The implementation uses standard file
+locking plus existing `anyhow`, `serde`, `serde_json`, `chrono`, `gethostname`,
+and `rand` dependencies. Parent-directory sync remains best effort.

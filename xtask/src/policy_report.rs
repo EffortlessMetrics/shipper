@@ -129,7 +129,7 @@ pub fn policy_report() -> Result<()> {
 /// design).
 fn headline_for(area: &'static str, summary: &Value) -> Option<HeadlineRow> {
     let s = summary.as_object()?;
-    let metric_priority = [
+    const DEFAULT_PRIORITY: &[&str] = &[
         "unreceipted",
         "invalid_policy_refs",
         "unknown_total",
@@ -141,8 +141,19 @@ fn headline_for(area: &'static str, summary: &Value) -> Option<HeadlineRow> {
         "stale",
         "unused",
     ];
+    const PROFILE_PRIORITY: &[&str] = &[
+        "unknown_total",
+        "missing_fields",
+        "invalid_profiles",
+        "stale",
+        "orphaned",
+    ];
+    let metric_priority = match area {
+        "Process policy" | "Network policy" => PROFILE_PRIORITY,
+        _ => DEFAULT_PRIORITY,
+    };
     for metric in metric_priority {
-        if let Some(v) = s.get(metric).and_then(|v| v.as_u64())
+        if let Some(v) = s.get(*metric).and_then(|v| v.as_u64())
             && v > 0
         {
             return Some(HeadlineRow {
@@ -177,10 +188,14 @@ fn static_metric(name: &str) -> &'static str {
         "unreceipted" => "unreceipted",
         "invalid_policy_refs" => "invalid_policy_refs",
         "unknown_total" => "unknown_total",
+        "blocking_findings" => "blocking_findings",
+        "findings" => "findings",
         "violations" => "violations",
         "missing_fields" => "missing_fields",
+        "invalid_profiles" => "invalid_profiles",
         "expired" => "expired",
         "stale" => "stale",
+        "orphaned" => "orphaned",
         "unused" => "unused",
         _ => "other",
     }
@@ -258,4 +273,57 @@ fn today_iso() -> String {
         .date_naive()
         .format("%Y-%m-%d")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn profile_headline_preserves_lifecycle_priority() {
+        let cases = [
+            (
+                json!({"unknown_total": 1, "missing_fields": 2, "invalid_profiles": 3, "stale": 4, "orphaned": 5}),
+                "unknown_total",
+            ),
+            (
+                json!({"unknown_total": 0, "missing_fields": 2, "invalid_profiles": 3, "stale": 4, "orphaned": 5}),
+                "missing_fields",
+            ),
+            (
+                json!({"unknown_total": 0, "missing_fields": 0, "invalid_profiles": 3, "stale": 4, "orphaned": 5}),
+                "invalid_profiles",
+            ),
+            (
+                json!({"unknown_total": 0, "missing_fields": 0, "invalid_profiles": 0, "stale": 4, "orphaned": 5}),
+                "stale",
+            ),
+            (
+                json!({"unknown_total": 0, "missing_fields": 0, "invalid_profiles": 0, "stale": 0, "orphaned": 5}),
+                "orphaned",
+            ),
+        ];
+
+        for (summary, expected) in cases {
+            let headline = headline_for("Process policy", &summary).expect("headline row");
+            assert_eq!(headline.metric, expected);
+        }
+    }
+
+    #[test]
+    fn nonzero_profile_lifecycle_finding_is_not_clean() {
+        let summary = json!({
+            "workflows": 10,
+            "unknown_total": 0,
+            "missing_fields": 0,
+            "invalid_profiles": 0,
+            "stale": 0,
+            "orphaned": 1
+        });
+
+        let headline = headline_for("Network policy", &summary).expect("headline row");
+        assert_eq!(headline.metric, "orphaned");
+        assert_eq!(headline.value, 1);
+    }
 }

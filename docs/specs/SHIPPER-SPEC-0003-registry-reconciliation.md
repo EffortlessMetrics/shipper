@@ -6,8 +6,8 @@ Created: 2026-05-13
 Milestone: post-0.4.0
 Linked proposal: docs/proposals/SHIPPER-PROP-0002-registry-truth-and-reconciliation.md
 Linked specs:
-Linked ADRs:
-Linked plan:
+Linked ADRs: docs/adr/SHIPPER-ADR-0002-registry-truth-over-cargo-output.md
+Linked plan: plans/reconcile/implementation-plan.md
 Linked issues: #99, #102, #109
 Linked PRs:
 Support-tier impact: docs/status/SUPPORT_TIERS.md

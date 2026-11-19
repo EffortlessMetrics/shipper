@@ -11,6 +11,69 @@ use shipper_types::{
 
 use crate::{RegistryPolicy, ValidatedRegistry};
 
+/// A bounded readiness run ended without a conclusive final observation.
+///
+/// Existing polling methods retain their `anyhow::Result` signatures. Consumers
+/// may downcast this error to retain the actual poll count and earlier conclusive
+/// evidence. Failed probes are never represented by `visible: false` evidence.
+#[derive(Debug)]
+pub struct ReadinessObservationError {
+    attempts: u32,
+    evidence: Vec<ReadinessEvidence>,
+    reason: String,
+}
+
+impl ReadinessObservationError {
+    pub fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
+    pub fn evidence(&self) -> &[ReadinessEvidence] {
+        &self.evidence
+    }
+}
+
+impl std::fmt::Display for ReadinessObservationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "readiness observation remained unknown: {}", self.reason)
+    }
+}
+
+impl std::error::Error for ReadinessObservationError {}
+
+enum IndexFile {
+    Absent,
+    Fresh(String),
+    Cached(String),
+}
+
+#[derive(Debug)]
+struct OwnersHttpStatusError {
+    status: StatusCode,
+    crate_name: String,
+}
+
+impl std::fmt::Display for OwnersHttpStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.status {
+            StatusCode::NOT_FOUND => {
+                write!(
+                    f,
+                    "crate not found when querying owners: {}",
+                    self.crate_name
+                )
+            }
+            StatusCode::FORBIDDEN => write!(
+                f,
+                "forbidden when querying owners; token may be invalid or missing required scope"
+            ),
+            status => write!(f, "unexpected status while querying owners: {status}"),
+        }
+    }
+}
+
+impl std::error::Error for OwnersHttpStatusError {}
+
 #[derive(Debug, Clone)]
 pub struct RegistryClient {
     registry: Registry,
@@ -129,11 +192,11 @@ impl RegistryClient {
                 let parsed: OwnersResponse = resp.json().context("failed to parse owners JSON")?;
                 Ok(parsed)
             }
-            StatusCode::NOT_FOUND => bail!("crate not found when querying owners: {crate_name}"),
-            StatusCode::FORBIDDEN => bail!(
-                "forbidden when querying owners; token may be invalid or missing required scope"
-            ),
-            s => bail!("unexpected status while querying owners: {s}"),
+            status => Err(OwnersHttpStatusError {
+                status,
+                crate_name: crate_name.to_owned(),
+            }
+            .into()),
         }
     }
 
@@ -147,47 +210,48 @@ impl RegistryClient {
 
     /// Check if a crate version is visible via the sparse index.
     ///
-    /// Returns true if the version is found in the index, false otherwise.
-    /// Parse errors and network errors are treated as "not visible" rather than failures.
+    /// Returns true for a matching record and false for HTTP 404 or a valid
+    /// index lacking the version. Transport, cache and parsing failures are
+    /// unknown observations and return an error, never evidence of absence.
     pub fn check_index_visibility(&self, crate_name: &str, version: &str) -> Result<bool> {
         // Calculate the index path for the crate using the 2+2+N scheme
         let index_path = self.calculate_index_path(crate_name);
 
         // Fetch the index file content
-        let content = match self.fetch_index_file(&index_path) {
-            Ok(content) => content,
-            Err(_e) => {
-                // Network errors or missing files are treated as "not visible"
-                // This is graceful degradation - we don't want to fail the entire
-                // readiness check just because the index is temporarily unavailable
-                return Ok(false);
-            }
-        };
-
-        // Parse the JSON and check if version exists
-        match self.parse_version_from_index(&content, version) {
-            Ok(found) => Ok(found),
-            Err(_) => {
-                // Parse errors are treated as "not visible"
-                Ok(false)
+        match self.fetch_index_file(&index_path, true)? {
+            IndexFile::Fresh(content) => self.parse_version_from_index(&content, version),
+            IndexFile::Absent => Ok(false),
+            IndexFile::Cached(content) => {
+                if matches!(self.parse_version_from_index(&content, version), Ok(true)) {
+                    return Ok(true);
+                }
+                // Cache bytes and validators are stored independently. A 304
+                // cannot prove a cached negative is current after a partial
+                // cache write. Obtain a fresh observation before claiming
+                // absence; no second conditional response is accepted.
+                match self.fetch_index_file(&index_path, false)? {
+                    IndexFile::Fresh(content) => self.parse_version_from_index(&content, version),
+                    IndexFile::Absent => Ok(false),
+                    IndexFile::Cached(_) => {
+                        bail!("unconditional index request returned cached data")
+                    }
+                }
             }
         }
     }
 
     /// Calculate the index path for a crate using Cargo's sparse index scheme.
     ///
-    /// - 1 char  → `1/{name}`
-    /// - 2 chars → `2/{name}`
-    /// - 3 chars → `3/{name[0]}/{name}`
-    /// - 4+ chars → `{name[0..2]}/{name[2..4]}/{name}`
-    ///
-    /// All names are lowercased per Cargo convention.
+    /// Sharding is measured in Unicode scalar values after lowercasing. The
+    /// shared helper owns the layout contract; this adapter only delegates to
+    /// it before constructing cache and network paths. Registry-specific name
+    /// validation is intentionally separate.
     fn calculate_index_path(&self, crate_name: &str) -> String {
         shipper_sparse_index::sparse_index_path(crate_name)
     }
 
     /// Fetch the index file content from the registry.
-    fn fetch_index_file(&self, index_path: &str) -> Result<String> {
+    fn fetch_index_file(&self, index_path: &str, allow_cached: bool) -> Result<IndexFile> {
         let index_base = self.validated.index_base().as_str();
         let url = format!("{}/{}", index_base.trim_end_matches('/'), index_path);
 
@@ -195,11 +259,15 @@ impl RegistryClient {
         let etag_file = cache_file.as_ref().map(|f| f.with_extension("etag"));
 
         let mut request = self.http.get(&url);
+        let mut conditional_request = false;
 
-        if let Some(ref path) = etag_file
+        if allow_cached
+            && let Some(ref path) = etag_file
             && let Ok(etag) = std::fs::read_to_string(path)
+            && !etag.trim().is_empty()
         {
             request = request.header(reqwest::header::IF_NONE_MATCH, etag.trim());
+            conditional_request = true;
         }
 
         let resp = request.send().context("index request failed")?;
@@ -222,26 +290,28 @@ impl RegistryClient {
                         let _ = std::fs::write(etag_path, etag_val);
                     }
                 }
-                Ok(content)
+                Ok(IndexFile::Fresh(content))
             }
             StatusCode::NOT_MODIFIED => {
+                if !conditional_request {
+                    bail!("received 304 Not Modified without a cache validator")
+                }
                 if let Some(ref path) = cache_file {
-                    std::fs::read_to_string(path).context("failed to read cached index file")
+                    std::fs::read_to_string(path)
+                        .map(IndexFile::Cached)
+                        .context("failed to read cached index file")
                 } else {
                     bail!("received 304 Not Modified but no cache file available")
                 }
             }
-            StatusCode::NOT_FOUND => {
-                // The crate doesn't exist in the index yet
-                bail!("index file not found: {}", url)
-            }
+            StatusCode::NOT_FOUND => Ok(IndexFile::Absent),
             s => bail!("unexpected status while fetching index: {}", s),
         }
     }
 
     /// Parse the index content (line-delimited JSON) and check if the version exists.
     fn parse_version_from_index(&self, content: &str, version: &str) -> Result<bool> {
-        Ok(shipper_sparse_index::contains_version(content, version))
+        shipper_sparse_index::observe_version(content, version).map_err(Into::into)
     }
 
     /// Resolve index visibility for a readiness poll, honoring
@@ -266,7 +336,7 @@ impl RegistryClient {
                     e
                 )
             })?;
-            Ok(shipper_sparse_index::contains_version(&content, version))
+            self.parse_version_from_index(&content, version)
         } else {
             self.check_index_visibility(crate_name, version)
         }
@@ -274,35 +344,37 @@ impl RegistryClient {
 
     /// Attempt ownership verification for a crate.
     ///
-    /// Returns true if ownership is verified, false if verification fails or endpoint is unavailable.
-    /// This function implements graceful degradation - if the ownership check fails due to API
-    /// limitations, it returns false rather than an error.
+    /// Returns true when the owners response is valid, or false for an observed
+    /// HTTP 401, 403, or 404 response. Transport failures, malformed owners JSON,
+    /// and other HTTP statuses remain errors.
     pub fn verify_ownership(&self, crate_name: &str, token: &str) -> Result<bool> {
         match self.list_owners(crate_name, token) {
             Ok(_) => Ok(true),
-            Err(e) => {
-                // Graceful degradation: if the endpoint is unavailable or returns forbidden,
-                // return false rather than failing the entire preflight
-                let msg = format!("{e:#}");
-                if msg.contains("forbidden")
-                    || msg.contains("403")
-                    || msg.contains("unauthorized")
-                    || msg.contains("401")
-                    || msg.contains("not found")
-                    || msg.contains("404")
-                {
-                    Ok(false)
-                } else {
-                    Err(e)
-                }
+            Err(error)
+                if error
+                    .downcast_ref::<OwnersHttpStatusError>()
+                    .is_some_and(|error| {
+                        matches!(
+                            error.status,
+                            StatusCode::UNAUTHORIZED
+                                | StatusCode::FORBIDDEN
+                                | StatusCode::NOT_FOUND
+                        )
+                    }) =>
+            {
+                Ok(false)
             }
+            Err(error) => Err(error),
         }
     }
 
     /// Check if a version is visible with exponential backoff and jitter.
     ///
     /// Returns Ok((true, evidence)) if the version becomes visible within the timeout,
-    /// Ok((false, evidence)) if the timeout is exceeded, or Err on other failures.
+    /// Ok((false, evidence)) if the budget expires with conclusive absence, or
+    /// Err if the final observation is unknown or an event cannot be retained.
+    /// Earlier errors are tolerated while polling, but an earlier negative
+    /// observation cannot override a later failed observation.
     pub fn is_version_visible_with_backoff(
         &self,
         crate_name: &str,
@@ -376,45 +448,61 @@ impl RegistryClient {
 
             let jittered_delay = pending_delay;
 
-            // Check visibility based on method
-            // Errors are treated as "not visible" to allow backoff retries
-            let visible = match config.method {
-                ReadinessMethod::Api => self.version_exists(crate_name, version).unwrap_or(false),
-                ReadinessMethod::Index => self
-                    .visible_via_index(crate_name, version, config)
-                    .unwrap_or(false),
+            // Both authorities must establish absence in the same final poll;
+            // either authority can establish presence. Preference changes only
+            // query order, never the strength of the negative evidence.
+            let observation = match config.method {
+                ReadinessMethod::Api => self.version_exists(crate_name, version),
+                ReadinessMethod::Index => self.visible_via_index(crate_name, version, config),
                 ReadinessMethod::Both => {
-                    if config.prefer_index {
-                        match self.visible_via_index(crate_name, version, config) {
-                            Ok(true) => true,
-                            _ => self.version_exists(crate_name, version).unwrap_or(false),
-                        }
+                    let first = if config.prefer_index {
+                        self.visible_via_index(crate_name, version, config)
                     } else {
-                        match self.version_exists(crate_name, version) {
-                            Ok(true) => true,
-                            _ => self
-                                .visible_via_index(crate_name, version, config)
-                                .unwrap_or(false),
+                        self.version_exists(crate_name, version)
+                    };
+                    if matches!(first, Ok(true)) {
+                        Ok(true)
+                    } else {
+                        let second = if config.prefer_index {
+                            self.version_exists(crate_name, version)
+                        } else {
+                            self.visible_via_index(crate_name, version, config)
+                        };
+                        match second {
+                            Ok(true) => Ok(true),
+                            Ok(false) => first,
+                            Err(error) => Err(error),
                         }
                     }
                 }
             };
 
-            evidence.push(ReadinessEvidence {
-                attempt,
-                visible,
-                timestamp: Utc::now(),
-                delay_before: jittered_delay,
-            });
-            emit_event(readiness_poll_event(&package, attempt, visible))?;
-
-            if visible {
-                return Ok((true, evidence));
+            if let Ok(visible) = observation {
+                evidence.push(ReadinessEvidence {
+                    attempt,
+                    visible,
+                    timestamp: Utc::now(),
+                    delay_before: jittered_delay,
+                });
+                emit_event(readiness_poll_event(&package, attempt, visible))?;
+                if visible {
+                    return Ok((true, evidence));
+                }
             }
 
             // Check if we've exceeded max total wait
             if start.elapsed() >= config.max_total_wait {
-                return Ok((false, evidence));
+                return match observation {
+                    Ok(visible) => Ok((visible, evidence)),
+                    Err(error) => Err(ReadinessObservationError {
+                        attempts: attempt,
+                        evidence,
+                        // Display the contextual message only, not reqwest's
+                        // source chain containing URL/query material.
+                        reason: error.to_string(),
+                    }
+                    .into()),
+                };
             }
 
             // Calculate next delay with exponential backoff and jitter
@@ -890,8 +978,7 @@ mod tests {
         let invalid_json = "not valid json";
 
         let found = cli.parse_version_from_index(invalid_json, "1.0.0");
-        assert!(found.is_ok());
-        assert!(!found.unwrap());
+        assert!(found.is_err());
     }
 
     #[test]
@@ -952,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn check_index_visibility_returns_false_for_network_error() {
+    fn check_index_visibility_returns_unknown_for_network_error() {
         let closed_base = closed_loopback_url();
         let registry = Registry {
             name: "test".to_string(),
@@ -961,12 +1048,11 @@ mod tests {
         };
 
         let cli = test_registry_client(registry).expect("client");
-        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
-        assert!(!visible);
+        assert!(cli.check_index_visibility("demo", "1.0.0").is_err());
     }
 
     #[test]
-    fn check_index_visibility_returns_false_for_invalid_json() {
+    fn check_index_visibility_returns_unknown_for_invalid_json() {
         let (api_base, handle) = with_server(move |req| {
             let resp = Response::from_string("not valid json")
                 .with_status_code(StatusCode(200))
@@ -978,8 +1064,7 @@ mod tests {
         });
 
         let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
-        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
-        assert!(!visible);
+        assert!(cli.check_index_visibility("demo", "1.0.0").is_err());
         handle.join().expect("join");
     }
 
@@ -1091,7 +1176,7 @@ mod tests {
     // Additional index-based readiness tests
 
     #[test]
-    fn check_index_visibility_with_empty_index_returns_false() {
+    fn check_index_visibility_with_empty_index_returns_unknown() {
         let index_content = "";
 
         let (api_base, handle) = with_server(move |req| {
@@ -1105,8 +1190,7 @@ mod tests {
         });
 
         let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
-        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
-        assert!(!visible);
+        assert!(cli.check_index_visibility("demo", "1.0.0").is_err());
         handle.join().expect("join");
     }
 
@@ -1263,7 +1347,7 @@ mod tests {
     }
 
     #[test]
-    fn is_version_visible_with_backoff_handles_network_errors_gracefully() {
+    fn is_version_visible_with_backoff_preserves_network_errors_as_unknown() {
         let closed_base = closed_loopback_url();
         let registry = Registry {
             name: "test".to_string(),
@@ -1285,9 +1369,8 @@ mod tests {
         };
 
         let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &config);
-        assert!(result.is_ok());
-        let (visible, _evidence) = result.unwrap();
-        assert!(!visible);
+        let error = result.expect_err("network failures are unknown");
+        assert!(error.downcast_ref::<ReadinessObservationError>().is_some());
     }
 
     #[test]
@@ -1520,10 +1603,9 @@ mod tests {
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
             .expect("backoff");
         assert!(visible);
-        // First two attempts fail (500 → unwrap_or(false)), third succeeds
-        assert!(evidence.len() >= 3);
-        assert!(!evidence[0].visible);
-        assert!(!evidence[1].visible);
+        // Failed probes are not fabricated as successful negative evidence.
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].attempt, 3);
         assert!(evidence.last().unwrap().visible);
         handle.join().expect("join");
     }
@@ -1584,17 +1666,18 @@ mod tests {
             prefer_index: false,
         };
 
-        let (visible, evidence) = cli
+        let error = cli
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
-            .expect("backoff");
-        assert!(!visible);
-        assert!(evidence.len() >= 2);
-        assert!(evidence.iter().all(|e| !e.visible));
+            .expect_err("unknown probes cannot establish absence")
+            .downcast::<ReadinessObservationError>()
+            .expect("typed observation error");
+        assert!(error.attempts() >= 1);
+        assert!(error.evidence().is_empty());
         handle.join().expect("join");
     }
 
     #[test]
-    fn index_mode_parse_errors_treated_as_not_visible() {
+    fn index_mode_parse_errors_remain_unknown() {
         let (api_base, handle) = with_multi_server(
             move |req| {
                 req.respond(
@@ -1618,11 +1701,13 @@ mod tests {
             prefer_index: false,
         };
 
-        let (visible, evidence) = cli
+        let error = cli
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
-            .expect("backoff");
-        assert!(!visible);
-        assert!(evidence.iter().all(|e| !e.visible));
+            .expect_err("unknown probes cannot establish absence")
+            .downcast::<ReadinessObservationError>()
+            .expect("typed observation error");
+        assert!(error.attempts() >= 1);
+        assert!(error.evidence().is_empty());
         handle.join().expect("join");
     }
 
@@ -2128,8 +2213,8 @@ mod tests {
 
         let cli = test_registry_client(test_registry(api_base)).expect("client");
 
-        assert!(!cli.parse_version_from_index("", "1.0.0").unwrap());
-        assert!(!cli.parse_version_from_index("\n\n\n", "1.0.0").unwrap());
+        assert!(cli.parse_version_from_index("", "1.0.0").is_err());
+        assert!(cli.parse_version_from_index("\n\n\n", "1.0.0").is_err());
     }
 
     // ── Timeout handling tests ───────────────────────────────────────
@@ -2152,7 +2237,7 @@ mod tests {
     // ── Readiness edge-case tests: method-specific ───────────────────
 
     #[test]
-    fn api_mode_500_treated_as_not_visible_in_backoff() {
+    fn api_mode_500_remain_unknown_in_backoff() {
         let (api_base, handle) = with_multi_server(
             move |req| {
                 req.respond(Response::empty(StatusCode(500)))
@@ -2174,17 +2259,18 @@ mod tests {
             prefer_index: false,
         };
 
-        let (visible, evidence) = cli
+        let error = cli
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
-            .expect("backoff");
-        // 500 errors are treated as "not visible" by unwrap_or(false)
-        assert!(!visible);
-        assert!(evidence.iter().all(|e| !e.visible));
+            .expect_err("unknown probes cannot establish absence")
+            .downcast::<ReadinessObservationError>()
+            .expect("typed observation error");
+        assert!(error.attempts() >= 1);
+        assert!(error.evidence().is_empty());
         handle.join().expect("join");
     }
 
     #[test]
-    fn index_mode_502_treated_as_not_visible_in_backoff() {
+    fn index_mode_502_remain_unknown_in_backoff() {
         let (api_base, handle) = with_multi_server(
             move |req| {
                 req.respond(Response::empty(StatusCode(502)))
@@ -2206,11 +2292,13 @@ mod tests {
             prefer_index: false,
         };
 
-        let (visible, evidence) = cli
+        let error = cli
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
-            .expect("backoff");
-        assert!(!visible);
-        assert!(evidence.iter().all(|e| !e.visible));
+            .expect_err("unknown probes cannot establish absence")
+            .downcast::<ReadinessObservationError>()
+            .expect("typed observation error");
+        assert!(error.attempts() >= 1);
+        assert!(error.evidence().is_empty());
         handle.join().expect("join");
     }
 
@@ -2545,7 +2633,7 @@ mod tests {
     // ── Rate limiting (429) tests ────────────────────────────────────
 
     #[test]
-    fn rate_limit_429_treated_as_not_visible_in_api_backoff() {
+    fn rate_limit_429_remain_unknown_in_api_backoff() {
         let (api_base, handle) = with_multi_server(
             move |req| {
                 req.respond(Response::empty(StatusCode(429)))
@@ -2567,12 +2655,13 @@ mod tests {
             prefer_index: false,
         };
 
-        let (visible, evidence) = cli
+        let error = cli
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
-            .expect("backoff");
-        assert!(!visible);
-        assert!(evidence.len() >= 2);
-        assert!(evidence.iter().all(|e| !e.visible));
+            .expect_err("unknown probes cannot establish absence")
+            .downcast::<ReadinessObservationError>()
+            .expect("typed observation error");
+        assert!(error.attempts() >= 1);
+        assert!(error.evidence().is_empty());
         handle.join().expect("join");
     }
 
@@ -2611,9 +2700,8 @@ mod tests {
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
             .expect("backoff");
         assert!(visible);
-        assert!(evidence.len() >= 3);
-        assert!(!evidence[0].visible);
-        assert!(!evidence[1].visible);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].attempt, 3);
         assert!(evidence.last().unwrap().visible);
         handle.join().expect("join");
     }
@@ -2833,49 +2921,45 @@ mod tests {
         });
 
         let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
-        // check_index_visibility degrades gracefully on errors
-        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
-        assert!(!visible);
+        // An unexpected response cannot establish absence.
+        assert!(cli.check_index_visibility("demo", "1.0.0").is_err());
         handle.join().expect("join");
     }
 
     #[test]
-    fn check_index_visibility_returns_false_for_429() {
+    fn check_index_visibility_returns_unknown_for_429() {
         let (api_base, handle) = with_server(|req| {
             req.respond(Response::empty(StatusCode(429)))
                 .expect("respond");
         });
 
         let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
-        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
-        assert!(!visible);
+        assert!(cli.check_index_visibility("demo", "1.0.0").is_err());
         handle.join().expect("join");
     }
 
     #[test]
-    fn check_index_visibility_returns_false_for_503() {
+    fn check_index_visibility_returns_unknown_for_503() {
         let (api_base, handle) = with_server(|req| {
             req.respond(Response::empty(StatusCode(503)))
                 .expect("respond");
         });
 
         let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
-        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
-        assert!(!visible);
+        assert!(cli.check_index_visibility("demo", "1.0.0").is_err());
         handle.join().expect("join");
     }
 
     #[test]
-    fn index_with_304_not_modified_without_cache_returns_error_gracefully() {
+    fn index_with_304_not_modified_without_cache_returns_unknown() {
         let (api_base, handle) = with_server(|req| {
             req.respond(Response::empty(StatusCode(304)))
                 .expect("respond");
         });
 
-        // No cache dir set, so 304 should fail gracefully
+        // Without cached bytes, 304 cannot establish any observation.
         let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
-        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
-        assert!(!visible);
+        assert!(cli.check_index_visibility("demo", "1.0.0").is_err());
         handle.join().expect("join");
     }
 
@@ -2885,6 +2969,7 @@ mod tests {
         let cache_path = cache_dir.path().join("de").join("mo").join("demo");
         std::fs::create_dir_all(cache_path.parent().unwrap()).expect("mkdir");
         std::fs::write(&cache_path, "{\"vers\":\"2.0.0\"}\n").expect("write cache");
+        std::fs::write(cache_path.with_extension("etag"), "\"current\"").expect("validator");
 
         let (api_base, handle) = with_server(|req| {
             req.respond(Response::empty(StatusCode(304)))
@@ -3114,17 +3199,88 @@ mod tests {
     }
 
     #[test]
-    fn verify_ownership_propagates_network_error() {
-        // Non-existent address that doesn't match graceful-degradation patterns
-        let server = tiny_http::Server::http("127.0.0.1:0").expect("server");
+    fn verify_ownership_propagates_transport_error_with_misleading_url() {
+        let crate_name = "transport-401-403-404-forbidden-unauthorized";
+        let server = Server::http("127.0.0.1:0").expect("server");
         let addr = format!("http://{}", server.server_addr());
-        drop(server);
+        let handle = thread::spawn(move || {
+            let req = server
+                .recv_timeout(Duration::from_secs(5))
+                .expect("receive request")
+                .expect("request before deadline");
+            assert_eq!(req.url(), format!("/api/v1/crates/{crate_name}/owners"));
+            // Taking the raw writer avoids tiny_http's automatic 500 response.
+            // Connection: close makes this owned peer close without an HTTP response.
+            drop(req.into_writer());
+        });
 
-        let cli = test_registry_client(test_registry(addr)).expect("client");
-        // Connection refused produces an error that doesn't contain "forbidden"/"not found"
-        // so it should propagate rather than degrade gracefully
-        let result = cli.verify_ownership("demo", "token");
-        assert!(result.is_err());
+        let mut cli = test_registry_client(test_registry(addr)).expect("client");
+        cli.http = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .default_headers(reqwest::header::HeaderMap::from_iter([(
+                reqwest::header::CONNECTION,
+                reqwest::header::HeaderValue::from_static("close"),
+            )]))
+            .build()
+            .expect("bounded loopback client");
+        let result = cli.verify_ownership(crate_name, "token");
+        handle.join().expect("server join");
+
+        let err = result.expect_err("transport failure must not become an ownership result");
+        let source = err
+            .downcast_ref::<reqwest::Error>()
+            .expect("original transport error remains available");
+        assert!(source.status().is_none());
+        assert!(!source.is_timeout(), "the owned peer must close promptly");
+        assert_eq!(
+            source.url().expect("request URL").path(),
+            format!("/api/v1/crates/{crate_name}/owners")
+        );
+    }
+
+    #[test]
+    fn verify_ownership_propagates_decode_error_with_misleading_body() {
+        for message in [
+            "401",
+            "403",
+            "404",
+            "forbidden",
+            "unauthorized",
+            "not found",
+        ] {
+            let server = Server::http("127.0.0.1:0").expect("server");
+            let addr = format!("http://{}", server.server_addr());
+            let handle = thread::spawn(move || {
+                let req = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("receive request")
+                    .expect("request before deadline");
+                assert_eq!(req.url(), "/api/v1/crates/demo/owners");
+                req.respond(
+                    Response::from_string(format!(r#"{{"users":"{message}"}}"#))
+                        .with_status_code(StatusCode(200)),
+                )
+                .expect("respond");
+            });
+
+            let mut cli = test_registry_client(test_registry(addr)).expect("client");
+            cli.http = Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .expect("bounded loopback client");
+            let result = cli.verify_ownership("demo", "token");
+            handle.join().expect("server join");
+
+            let err =
+                result.expect_err("malformed owners JSON must not become an ownership result");
+            let source = err
+                .downcast_ref::<reqwest::Error>()
+                .expect("original decode error remains available");
+            assert!(source.is_decode(), "{err:#}");
+            assert!(source.status().is_none());
+        }
     }
 
     // ── Malformed index JSON edge cases ──────────────────────────────
@@ -3138,7 +3294,7 @@ mod tests {
 
         let cli = test_registry_client(test_registry(api_base)).expect("client");
         let content = "   \n  \n\t\n";
-        assert!(!cli.parse_version_from_index(content, "1.0.0").unwrap());
+        assert!(cli.parse_version_from_index(content, "1.0.0").is_err());
     }
 
     #[test]
@@ -3153,7 +3309,7 @@ mod tests {
 
         assert!(cli.parse_version_from_index(content, "1.0.0").unwrap());
         assert!(cli.parse_version_from_index(content, "2.0.0").unwrap());
-        assert!(!cli.parse_version_from_index(content, "3.0.0").unwrap());
+        assert!(cli.parse_version_from_index(content, "3.0.0").is_err());
     }
 
     #[test]
@@ -3166,7 +3322,7 @@ mod tests {
         let cli = test_registry_client(test_registry(api_base)).expect("client");
         // A JSON array is not valid JSONL format for sparse index
         let content = r#"[{"vers":"1.0.0"},{"vers":"2.0.0"}]"#;
-        assert!(!cli.parse_version_from_index(content, "1.0.0").unwrap());
+        assert!(cli.parse_version_from_index(content, "1.0.0").is_err());
     }
 
     #[test]
@@ -3343,11 +3499,14 @@ mod tests {
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
             .expect("backoff");
         assert!(visible);
-        assert!(evidence.len() >= 4);
+        assert_eq!(evidence.len(), 3);
+        assert_eq!(
+            evidence.iter().map(|poll| poll.attempt).collect::<Vec<_>>(),
+            vec![1, 3, 4]
+        );
         assert!(!evidence[0].visible);
         assert!(!evidence[1].visible);
-        assert!(!evidence[2].visible);
-        assert!(evidence.last().unwrap().visible);
+        assert!(evidence[2].visible);
         handle.join().expect("join");
     }
 
@@ -3770,7 +3929,7 @@ mod tests {
 
         let content = "{\"vers\":null}\n{\"vers\":\"1.0.0\"}\n";
         assert!(cli.parse_version_from_index(content, "1.0.0").unwrap());
-        assert!(!cli.parse_version_from_index(content, "null").unwrap());
+        assert!(cli.parse_version_from_index(content, "null").is_err());
     }
 
     #[test]
@@ -3785,7 +3944,7 @@ mod tests {
         // vers as a number instead of string; should not match "100"
         let content = "{\"vers\":100}\n{\"vers\":\"2.0.0\"}\n";
         assert!(cli.parse_version_from_index(content, "2.0.0").unwrap());
-        assert!(!cli.parse_version_from_index(content, "100").unwrap());
+        assert!(cli.parse_version_from_index(content, "100").is_err());
     }
 
     // ── Owner verification edge cases ────────────────────────────────
@@ -3996,16 +4155,15 @@ mod tests {
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
             .expect("backoff");
         assert!(visible);
-        assert!(evidence.len() >= 3);
-        // First two attempts fail, third succeeds
-        assert!(!evidence[0].visible);
-        assert!(!evidence[1].visible);
+        // Earlier failures do not become negative evidence.
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].attempt, 3);
         assert!(evidence.last().unwrap().visible);
         handle.join().expect("join");
     }
 
     #[test]
-    fn backoff_index_mode_with_server_errors_gracefully_degrades() {
+    fn backoff_index_mode_with_server_errors_remain_unknown() {
         let (api_base, handle) = with_multi_server(
             move |req| {
                 // All requests return 502
@@ -4030,12 +4188,13 @@ mod tests {
             prefer_index: false,
         };
 
-        let (visible, evidence) = cli
+        let error = cli
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
-            .expect("should not error");
-        assert!(!visible);
-        // Multiple attempts should have been made
-        assert!(evidence.len() >= 2);
+            .expect_err("unknown probes cannot establish absence")
+            .downcast::<ReadinessObservationError>()
+            .expect("typed observation error");
+        assert!(error.attempts() >= 1);
+        assert!(error.evidence().is_empty());
         handle.join().expect("join");
     }
 
@@ -4195,19 +4354,15 @@ mod tests {
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
             .expect("backoff");
         assert!(visible);
-        // Should have at least 5 attempts (4 rate-limited + 1 success)
-        assert!(
-            evidence.len() >= 5,
-            "expected >=5 attempts, got {}",
-            evidence.len()
-        );
-        assert!(evidence[..4].iter().all(|e| !e.visible));
+        // Four failed probes followed by one conclusive positive observation.
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].attempt, 5);
         assert!(evidence.last().unwrap().visible);
         handle.join().expect("join");
     }
 
     #[test]
-    fn rate_limit_429_continuous_causes_timeout() {
+    fn rate_limit_429_continuous_remains_unknown() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -4236,10 +4391,11 @@ mod tests {
             prefer_index: false,
         };
 
-        let (visible, evidence) = cli
+        let error = cli
             .is_version_visible_with_backoff("demo", "1.0.0", &config)
-            .expect("backoff");
-        assert!(!visible);
+            .expect_err("rate limits remain unknown")
+            .downcast::<ReadinessObservationError>()
+            .expect("typed error");
         // Should have retried multiple times
         let total_requests = request_count.load(Ordering::SeqCst);
         assert!(
@@ -4247,14 +4403,15 @@ mod tests {
             "expected at least 2 requests during rate limiting, got {}",
             total_requests
         );
-        assert!(evidence.iter().all(|e| !e.visible));
+        assert!(error.evidence().is_empty());
+        assert_eq!(error.attempts(), total_requests);
         handle.join().expect("join");
     }
 
     // ── 2. 500/502/503 retry classification ──────────────────────────
 
     #[test]
-    fn server_errors_500_502_503_all_classified_as_not_visible_in_backoff() {
+    fn server_errors_500_502_503_all_preserved_as_unknown_in_backoff() {
         for error_code in [500u16, 502, 503] {
             let (api_base, handle) = with_multi_server(
                 move |req| {
@@ -4277,18 +4434,13 @@ mod tests {
                 prefer_index: false,
             };
 
-            let (visible, evidence) = cli
+            let error = cli
                 .is_version_visible_with_backoff("demo", "1.0.0", &config)
-                .unwrap_or_else(|_| panic!("backoff with {error_code}"));
-            assert!(
-                !visible,
-                "{error_code} should be treated as not-visible in backoff"
-            );
-            assert!(
-                evidence.len() >= 2,
-                "{error_code} should trigger retries, got {} attempts",
-                evidence.len()
-            );
+                .expect_err("server errors cannot establish absence")
+                .downcast::<ReadinessObservationError>()
+                .expect("typed observation error");
+            assert!(error.attempts() >= 1);
+            assert!(error.evidence().is_empty());
             handle.join().expect("join");
         }
     }
@@ -4329,8 +4481,8 @@ mod tests {
                 .is_version_visible_with_backoff("demo", "1.0.0", &config)
                 .unwrap_or_else(|_| panic!("recovery after {error_code}"));
             assert!(visible, "should recover after transient {error_code} error");
-            assert!(evidence.len() >= 2);
-            assert!(!evidence[0].visible);
+            assert_eq!(evidence.len(), 1);
+            assert_eq!(evidence[0].attempt, 2);
             assert!(evidence.last().unwrap().visible);
             handle.join().expect("join");
         }
@@ -4955,13 +5107,15 @@ mod tests {
 
     /// 304 Not Modified with `cache_dir` set but the cached file is missing on
     /// disk. The internal `std::fs::read_to_string(path)` call produces an
-    /// error which is then caught by `check_index_visibility` and surfaced as
-    /// `Ok(false)` (graceful degradation). Exercises the
+    /// error which must remain unknown in `check_index_visibility`. Exercises the
     /// `failed to read cached index file` error path in `fetch_index_file`.
     #[test]
-    fn index_304_with_cache_dir_but_unreadable_file_returns_false() {
+    fn index_304_with_cache_dir_but_unreadable_file_returns_unknown() {
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        // Intentionally do NOT create the cache file on disk.
+        // Preserve a validator but intentionally omit the cached content.
+        let cache_path = cache_dir.path().join("de/mo/demo");
+        std::fs::create_dir_all(cache_path.parent().expect("parent")).expect("cache dir");
+        std::fs::write(cache_path.with_extension("etag"), "\"current\"").expect("validator");
 
         let (api_base, handle) = with_server(|req| {
             req.respond(Response::empty(StatusCode(304)))
@@ -4972,8 +5126,7 @@ mod tests {
             .expect("client")
             .with_cache_dir(cache_dir.path().to_path_buf());
 
-        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
-        assert!(!visible);
+        assert!(cli.check_index_visibility("demo", "1.0.0").is_err());
         handle.join().expect("join");
     }
 
@@ -5151,14 +5304,9 @@ mod tests {
         handle.join().expect("join");
     }
 
-    /// `verify_ownership` graceful-degradation when the underlying error
-    /// message contains the literal word "unauthorized" (lowercase). Built
-    /// directly via the 401 status path of `list_owners`, whose error
-    /// message contains "401" — which already matches one of the
-    /// substrings. This test pins the substring-matching behavior so that
-    /// future refactors keep the contract intact.
+    /// A real HTTP 401 response remains a graceful not-verified result.
     #[test]
-    fn verify_ownership_graceful_on_401_via_substring_match() {
+    fn verify_ownership_graceful_on_401_status() {
         let (api_base, handle) = with_server(|req| {
             req.respond(Response::empty(StatusCode(401)))
                 .expect("respond");
@@ -5285,12 +5433,8 @@ mod tests {
     }
 
     /// `is_version_visible_with_backoff` with `Both` method, `prefer_index =
-    /// true`, where the **index** Err path (404 → bail from fetch_index_file
-    /// before reaching parse) falls through to the API. This is subtly
-    /// different from `both_mode_api_succeeds_index_fails` because here the
-    /// 404 produces an Err from `fetch_index_file`, which
-    /// `check_index_visibility` swallows to `Ok(false)`, then the match
-    /// `Ok(true) => true; _ => ...` falls to the API call.
+    /// true`: a conclusive index 404 still queries the API, whose positive
+    /// observation takes precedence over the index's negative observation.
     #[test]
     fn both_mode_prefer_index_with_index_404_uses_api_fallback() {
         let (api_base, handle) = with_multi_server(
@@ -5300,7 +5444,7 @@ mod tests {
                     req.respond(Response::empty(StatusCode(200)))
                         .expect("respond");
                 } else {
-                    // Index returns 404 -> Err -> Ok(false) -> falls back to API.
+                    // A negative index observation still permits a positive API result.
                     req.respond(Response::empty(StatusCode(404)))
                         .expect("respond");
                 }
@@ -5330,11 +5474,8 @@ mod tests {
     }
 
     /// `is_version_visible_with_backoff` with `Both` and `prefer_index =
-    /// false`: the API call returns Err (5xx), which `unwrap_or(false)`
-    /// rejects, then the index fallback returns Ok(true). Tests the
-    /// `match self.version_exists(...) { Ok(true) => true, _ => index }`
-    /// branch where the API explicitly *errors* rather than returning
-    /// `Ok(false)`.
+    /// false`: a failed API observation does not prevent the index from
+    /// positively confirming publication.
     #[test]
     fn both_mode_prefer_api_with_api_500_uses_index_fallback() {
         let index_content = "{\"vers\":\"1.0.0\"}\n";
@@ -5343,7 +5484,7 @@ mod tests {
             move |req| {
                 let url = req.url().to_string();
                 if url.contains("/api/v1/crates/") {
-                    // 500 → bail → unwrap_or(false) → fall through to index.
+                    // The API is unknown; a positive index can still prove publication.
                     req.respond(Response::empty(StatusCode(500)))
                         .expect("respond");
                 } else {
@@ -5383,15 +5524,14 @@ mod tests {
     /// focused on the status-handling path rather than following a second
     /// destination.
     #[test]
-    fn fetch_index_file_unexpected_status_418_returns_false() {
+    fn fetch_index_file_unexpected_status_418_returns_unknown() {
         let (api_base, handle) = with_server(|req| {
             req.respond(Response::empty(StatusCode(418)))
                 .expect("respond");
         });
 
         let cli = test_registry_client(test_registry_with_index(api_base)).expect("client");
-        let visible = cli.check_index_visibility("demo", "1.0.0").expect("check");
-        assert!(!visible);
+        assert!(cli.check_index_visibility("demo", "1.0.0").is_err());
         handle.join().expect("join");
     }
 
@@ -5428,8 +5568,8 @@ mod tests {
         handle.join().expect("join");
     }
 
-    /// `list_owners` against an unexpected 3xx — exercises the
-    /// catch-all `s => bail!` arm of the owners endpoint.
+    /// `list_owners` against an unexpected 3xx exercises the owners endpoint's
+    /// catch-all HTTP status error.
     #[test]
     fn list_owners_errors_for_unexpected_304_not_modified() {
         let (api_base, handle) = with_server(|req| {
@@ -5813,5 +5953,317 @@ mod tests {
             .expect("backoff");
 
         assert_eq!(evidence[0].delay_before, Duration::ZERO);
+    }
+
+    #[test]
+    fn unknown_observation_http_failures_are_not_negative_evidence() {
+        for method in [ReadinessMethod::Api, ReadinessMethod::Index] {
+            for status in [401, 403, 429, 500, 502, 503] {
+                let server =
+                    spawn_counting_registry(vec![(status, "secret-response-sentinel".into())]);
+                let cli = counting_client(&server);
+                let mut cfg = readiness_config(method);
+                cfg.max_total_wait = Duration::ZERO;
+                let mut emitted = Vec::new();
+                let error = cli
+                    .is_version_visible_with_backoff_and_events(
+                        "demo",
+                        "1.0.0",
+                        &cfg,
+                        &mut |event| {
+                            emitted.push(event);
+                            Ok(())
+                        },
+                    )
+                    .expect_err("failed probe must remain unknown")
+                    .downcast::<ReadinessObservationError>()
+                    .expect("typed error");
+                assert_eq!(error.attempts(), 1);
+                assert!(error.evidence().is_empty());
+                assert!(
+                    emitted.is_empty(),
+                    "failed probe must not emit ReadinessPoll(false)"
+                );
+                assert!(!error.to_string().contains("secret-response-sentinel"));
+                assert!(!error.to_string().contains(&server.base_url));
+                assert_eq!(server.request_count(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_observation_both_requires_conclusive_absence_in_either_order() {
+        for prefer_index in [false, true] {
+            for statuses in [[500, 404], [404, 500], [404, 404], [500, 200]] {
+                let responses = statuses
+                    .into_iter()
+                    .map(|status| (status, r#"{"vers":"1.0.0"}"#.into()))
+                    .collect();
+                let server = spawn_counting_registry(responses);
+                let cli = counting_client(&server);
+                let mut cfg = readiness_config(ReadinessMethod::Both);
+                cfg.prefer_index = prefer_index;
+                cfg.max_total_wait = Duration::ZERO;
+                let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &cfg);
+                if statuses == [404, 404] {
+                    assert!(!result.expect("both authorities observed absence").0);
+                } else if statuses[1] == 200 {
+                    assert!(result.expect("one positive observation proves presence").0);
+                } else {
+                    assert!(
+                        result
+                            .expect_err("one failed authority leaves absence unknown")
+                            .downcast_ref::<ReadinessObservationError>()
+                            .is_some()
+                    );
+                }
+                assert_eq!(server.request_count(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_observation_last_poll_supersedes_earlier_negative_or_error() {
+        for statuses in [[404, 500], [500, 404]] {
+            let server = spawn_counting_registry(
+                statuses
+                    .into_iter()
+                    .map(|status| (status, "{}".into()))
+                    .collect(),
+            );
+            let cli = counting_client(&server);
+            let mut cfg = readiness_config(ReadinessMethod::Api);
+            // The second poll is the final observation even if the first poll
+            // succeeded. The generous first-request budget avoids timing races.
+            cfg.max_total_wait = Duration::from_millis(500);
+            cfg.max_delay = Duration::from_millis(600);
+            cfg.poll_interval = Duration::from_millis(600);
+            let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &cfg);
+            if statuses[1] == 500 {
+                let error = result
+                    .expect_err("stale absence must not override final failure")
+                    .downcast::<ReadinessObservationError>()
+                    .expect("typed error");
+                assert_eq!(error.attempts(), 2);
+                assert_eq!(error.evidence().len(), 1);
+                assert_eq!(error.evidence()[0].attempt, 1);
+                assert!(!error.evidence()[0].visible);
+            } else {
+                let (visible, evidence) =
+                    result.expect("final successful absence supersedes transient error");
+                assert!(!visible);
+                assert_eq!(evidence.len(), 1);
+                assert_eq!(evidence[0].attempt, 2);
+            }
+            assert_eq!(server.request_count(), 2);
+        }
+    }
+
+    #[test]
+    fn unknown_observation_local_index_failures_are_offline_and_inconclusive() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let server = spawn_counting_registry(vec![(404, "{}".into())]);
+        let cli = counting_client(&server);
+        for path in [td.path().join("missing"), td.path().to_path_buf()] {
+            let mut cfg = readiness_config(ReadinessMethod::Index);
+            cfg.index_path = Some(path);
+            cfg.max_total_wait = Duration::ZERO;
+            assert!(
+                cli.is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+                    .is_err()
+            );
+        }
+        let malformed = td.path().join("malformed");
+        std::fs::write(&malformed, "secret-response-sentinel").expect("fixture");
+        let mut cfg = readiness_config(ReadinessMethod::Index);
+        cfg.index_path = Some(malformed);
+        cfg.max_total_wait = Duration::ZERO;
+        let error = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+            .expect_err("invalid local index");
+        assert!(!error.to_string().contains("secret-response-sentinel"));
+        assert_eq!(server.request_count(), 0);
+    }
+
+    #[test]
+    fn unknown_observation_invalid_semver_is_not_absence_over_http_or_local_index() {
+        for content in [
+            r#"{"vers":""}"#,
+            r#"{"vers":"not-a-version"}"#,
+            "{\"vers\":\"0.9.0\"}\n{\"vers\":\"not-a-version\"}",
+            "{\"vers\":\"not-a-version\"}\n{\"vers\":\"0.9.0\"}",
+        ] {
+            for local in [false, true] {
+                let td = tempfile::tempdir().expect("local index");
+                let path = td.path().join("index");
+                std::fs::write(&path, content).expect("index fixture");
+                let server = spawn_counting_registry(vec![(200, content.into())]);
+                let cli = counting_client(&server);
+                let mut cfg = readiness_config(ReadinessMethod::Index);
+                cfg.max_total_wait = Duration::ZERO;
+                cfg.index_path = local.then_some(path);
+                let mut emitted = Vec::new();
+                let error = cli
+                    .is_version_visible_with_backoff_and_events(
+                        "demo",
+                        "1.0.0",
+                        &cfg,
+                        &mut |event| {
+                            emitted.push(event);
+                            Ok(())
+                        },
+                    )
+                    .expect_err("invalid version records must remain unknown")
+                    .downcast::<ReadinessObservationError>()
+                    .expect("typed observation error");
+                assert_eq!(error.attempts(), 1);
+                assert!(error.evidence().is_empty());
+                assert!(emitted.is_empty(), "no successful negative poll event");
+                assert!(!error.to_string().contains("not-a-version"));
+                assert_eq!(server.request_count(), usize::from(!local));
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_observation_invalid_semver_after_304_requires_conclusive_refresh() {
+        for invalid in ["", "not-a-version"] {
+            let cached = serde_json::json!({ "vers": invalid }).to_string();
+            for (fresh, expected) in [
+                (cached.clone(), None),
+                (r#"{"vers":"0.9.0"}"#.into(), Some(false)),
+                (r#"{"vers":"1.0.0"}"#.into(), Some(true)),
+            ] {
+                let td = tempfile::tempdir().expect("cache");
+                let path = td.path().join("de/mo/demo");
+                std::fs::create_dir_all(path.parent().expect("parent")).expect("cache dir");
+                std::fs::write(&path, &cached).expect("cached invalid version");
+                std::fs::write(path.with_extension("etag"), "\"validator\"").expect("etag");
+                let server = spawn_counting_registry(vec![(304, String::new()), (200, fresh)]);
+                let cli = counting_client(&server).with_cache_dir(td.path().to_path_buf());
+                let mut cfg = readiness_config(ReadinessMethod::Index);
+                cfg.max_total_wait = Duration::ZERO;
+                let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &cfg);
+                match expected {
+                    Some(expected_visible) => {
+                        let (visible, evidence) = result.expect("conclusive refreshed record");
+                        assert_eq!(visible, expected_visible);
+                        assert_eq!(evidence.len(), 1);
+                        assert_eq!(evidence[0].visible, expected_visible);
+                    }
+                    None => {
+                        let error = result
+                            .expect_err("invalid refreshed version must not prove absence")
+                            .downcast::<ReadinessObservationError>()
+                            .expect("typed observation error");
+                        assert_eq!(error.attempts(), 1);
+                        assert!(error.evidence().is_empty());
+                    }
+                }
+                assert_eq!(server.request_count(), 2, "one unconditional refresh");
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_observation_transport_timeout_is_not_absence() {
+        let server = Server::http("127.0.0.1:0").expect("server");
+        let base = format!("http://{}", server.server_addr());
+        let worker = thread::spawn(move || {
+            let request = server
+                .recv_timeout(Duration::from_secs(2))
+                .expect("request wait")
+                .expect("request");
+            thread::sleep(Duration::from_millis(100));
+            let _ = request.respond(Response::empty(StatusCode(404)));
+        });
+        let mut cli = test_registry_client(test_registry(base)).expect("client");
+        cli.http = Client::builder()
+            .timeout(Duration::from_millis(20))
+            .no_proxy()
+            .build()
+            .expect("bounded test client");
+        let mut cfg = readiness_config(ReadinessMethod::Api);
+        cfg.max_total_wait = Duration::ZERO;
+        let error = cli
+            .is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+            .expect_err("timeout must be unknown");
+        assert!(error.downcast_ref::<ReadinessObservationError>().is_some());
+        worker.join().expect("server");
+    }
+
+    #[test]
+    fn unknown_observation_cached_304_requires_validated_readable_records() {
+        for (body, validator, known_absent) in [
+            (Some(r#"{"vers":"0.9.0"}"#), true, true),
+            (Some("invalid response"), true, false),
+            (None, true, false),
+            (Some(r#"{"vers":"0.9.0"}"#), false, false),
+        ] {
+            let td = tempfile::tempdir().expect("cache");
+            let path = td.path().join("de/mo/demo");
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("cache dir");
+            if let Some(body) = body {
+                std::fs::write(&path, body).expect("cache body");
+            }
+            if validator {
+                std::fs::write(path.with_extension("etag"), "\"current\"").expect("etag");
+            }
+            let responses = if known_absent {
+                vec![(304, String::new()), (404, String::new())]
+            } else {
+                vec![(304, String::new())]
+            };
+            let server = spawn_counting_registry(responses);
+            let cli = counting_client(&server).with_cache_dir(td.path().to_path_buf());
+            let mut cfg = readiness_config(ReadinessMethod::Index);
+            cfg.max_total_wait = Duration::ZERO;
+            let result = cli.is_version_visible_with_backoff("demo", "1.0.0", &cfg);
+            if known_absent {
+                assert!(!result.expect("fresh negative after cached revalidation").0);
+            } else {
+                assert!(
+                    result.is_err(),
+                    "missing validator/content or invalid content is unknown"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_observation_cached_negative_cannot_hide_newly_visible_version() {
+        let td = tempfile::tempdir().expect("cache");
+        let path = td.path().join("de/mo/demo");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("cache dir");
+        // Simulate independently written cache files: old content with a newer
+        // validator. A 304 must not turn those stale bytes into absence proof.
+        std::fs::write(&path, r#"{"vers":"0.9.0"}"#).expect("old cache");
+        std::fs::write(path.with_extension("etag"), "\"new-version\"").expect("new validator");
+        let (base, worker) = with_multi_server(
+            |request| {
+                let conditional = request
+                    .headers()
+                    .iter()
+                    .any(|header| header.field.equiv("If-None-Match"));
+                let response = if conditional {
+                    Response::from_string("").with_status_code(StatusCode(304))
+                } else {
+                    Response::from_string(r#"{"vers":"1.0.0"}"#).with_status_code(StatusCode(200))
+                };
+                request.respond(response).expect("response");
+            },
+            2,
+        );
+        let cli = test_registry_client(test_registry_with_index(base))
+            .expect("client")
+            .with_cache_dir(td.path().to_path_buf());
+        let mut cfg = readiness_config(ReadinessMethod::Index);
+        cfg.max_total_wait = Duration::ZERO;
+        assert!(
+            cli.is_version_visible_with_backoff("demo", "1.0.0", &cfg)
+                .expect("fresh positive")
+                .0
+        );
+        worker.join().expect("server");
     }
 }

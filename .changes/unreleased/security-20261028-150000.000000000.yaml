@@ -1,0 +1,6 @@
+kind: security
+body: Keep webhook URLs, response bodies, and signing material out of sync and async transport errors and core warnings, while retaining HTTP status and safe failure categories.
+time: 2026-10-28T15:00:00Z
+custom:
+  Audience: Mixed
+  Importance: Detailed

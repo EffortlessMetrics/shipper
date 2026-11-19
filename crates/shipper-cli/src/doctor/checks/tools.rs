@@ -5,10 +5,12 @@ use std::process::Command;
 use serde::Serialize;
 use shipper_core::engine::Reporter;
 
-pub(in crate::doctor) fn check(reporter: &mut dyn Reporter) {
-    for check in inspect() {
-        print_tool_check(&check, reporter);
+pub(in crate::doctor) fn check(reporter: &mut dyn Reporter) -> Vec<ToolCheck> {
+    let checks = inspect();
+    for check in &checks {
+        print_tool_check(check, reporter);
     }
+    checks
 }
 
 #[derive(Debug, Serialize)]

@@ -1,0 +1,6 @@
+kind: fixed
+body: Attribute receipts to the selected workspace's Git repository and prevent inherited repository or index settings from changing source evidence or bypassing the dirty-worktree check.
+time: 2026-10-26T19:13:14Z
+custom:
+  Audience: Operators
+  Importance: Detailed

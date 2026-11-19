@@ -113,6 +113,7 @@ mod state_machine_tests {
             PackageState::Published => vec![], // Terminal state
             PackageState::Skipped { .. } => vec![], // Terminal state
             PackageState::Failed { .. } => vec![], // Terminal state
+            PackageState::CleanupIncomplete { .. } => vec![],
             PackageState::Ambiguous { .. } => vec![
                 PackageState::Published,
                 PackageState::Failed {

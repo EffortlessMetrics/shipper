@@ -1,64 +1,71 @@
 # shipper-core
 
-Lean engine library behind [Shipper](https://crates.io/crates/shipper).
+Reusable publishing engine behind [Shipper](https://crates.io/crates/shipper).
 
-`shipper-core` is the stable embedding surface for Shipper's workspace-publish engine. It has no CLI dependencies — no `clap`, no `indicatif`, no progress rendering — and is intended for Rust tools, CI frameworks, and tests that need to drive `cargo publish` with Shipper's safety guarantees but do not need the operator-facing CLI.
+`shipper-core` provides workspace planning, preflight, publish/resume
+orchestration, registry reconciliation, and durable evidence without pulling
+the Clap or terminal-UX dependency graph.
 
-## Use this crate when
+If you want the product CLI, install
+[`shipper`](https://crates.io/crates/shipper). If a wrapper needs the exact
+command adapter, use [`shipper-cli`](https://crates.io/crates/shipper-cli).
 
-You want deterministic publish planning, preflight, publish/resume orchestration, and state/receipt/event handling **without** pulling the clap and terminal-UX graph.
+## Engine responsibilities
 
-If you just want to run Shipper from a terminal or CI, install [`shipper`](https://crates.io/crates/shipper) instead.
+- **Plan** — build a deterministic dependency-ordered release plan with a
+  stable `plan_id`.
+- **Preflight** — check git, registry, dry-run, version, ownership, and policy
+  readiness.
+- **Publish and resume** — publish one crate at a time by default, or use
+  bounded opt-in parallelism for independent crates at the same dependency
+  level; verify visibility and persist progress after each package.
+- **Reconciliation** — classify ambiguous outcomes as `Published`,
+  `NotPublished`, or `StillUnknown`; never blind-retry `StillUnknown`.
+- **Durable evidence** — keep `events.jsonl` authoritative, `state.json` as its
+  resumable projection, `receipt.json` as a derived summary, and
+  `reconciliation.json` as registry-truth evidence for ambiguous outcomes.
+- **Bounded remediation** — plan containment and fix-forward actions without
+  implying a live registry mutation.
 
-## What lives here
+CLI arguments, progress rendering, human output, and command-owned JSON
+envelopes belong to `shipper-cli`.
 
-- **Plan** — deterministic dependency-ordered publish plan from `cargo_metadata`, with a stable `plan_id`.
-- **Preflight** — git cleanliness, registry reachability, dry-run, version-not-taken, optional ownership checks.
-- **Publish / resume** — per-crate `cargo publish` with retry/backoff, post-publish readiness verification, resumable state.
-- **Reconciliation** — ambiguous-outcome handling against registry truth (`Published` / `NotPublished` / `StillUnknown`).
-- **State / events / receipts** — append-only `events.jsonl` as truth, `state.json` as projection, `receipt.json` as summary.
-- **Remediation planning** — yank, reverse-topological containment, fix-forward planning.
-- **Rehearsal** — package + verify against an alternate registry before touching production.
+## Embedding shape
 
-## What does not live here
-
-- CLI parsing (`clap`) — in `shipper-cli`.
-- Progress rendering (`indicatif`) — in `shipper-cli`.
-- Install-facing docs and binary — in `shipper`.
-
-## Minimal shape
-
-```rust
+```rust,no_run
 use shipper_core::plan::build_plan;
 
-// See docs/ and the engine entry points for the full API.
-// The load-bearing pieces are:
-//   - shipper_core::plan   — build a ReleasePlan from a workspace
-//   - shipper_core::engine — run preflight / publish / resume
-//   - shipper_core::state  — read persisted execution state
-//   - shipper_core::store  — StateStore trait + filesystem impl
-//   - shipper_core::types  — domain types (specs, receipts, state, events)
-//   - shipper_core::config — load and merge `.shipper.toml`
+// Build a plan, then use the engine entry points that match your workflow.
 ```
+
+The main public modules cover planning, engine execution, types, configuration,
+state, and storage. The `shipper` facade re-exports a curated subset for
+consumers who prefer the product crate name.
+
+## Support boundary
+
+The public API is pre-1.0 and may change with documented migration guidance.
+The doc-hidden `shipper_core::cli_bridge` module is an additive, unsupported
+integration seam for `shipper-cli`; it is not a general embedding contract and
+is not re-exported by the `shipper` facade.
+
+Durable run liveness is deliberately fail-closed. The current affirmative
+probe is Linux-only and requires exact captured process identity. Unsupported,
+cross-host, missing, malformed, mismatched, or unreadable evidence remains
+unknown. Lock acquisition and age-based lock stealing are not made
+liveness-aware by the read-only observation surface.
+
+See the current [support tiers](https://github.com/EffortlessMetrics/shipper/blob/main/docs/status/SUPPORT_TIERS.md)
+and [0.5.0 migration guide](https://github.com/EffortlessMetrics/shipper/blob/v0.5.0/docs/release/0.5.0-migration.md)
+(which resolves only after release authority creates that tag).
 
 ## Architecture
 
 ```text
-shipper (install face)
-  -> shipper-cli (CLI adapter: clap, subcommands, output, pub fn run())
-       -> shipper-core (this crate — engine, no CLI deps)
+shipper (install facade and curated re-exports)
+  -> shipper-cli (Clap adapter, rendering, exit behavior)
+       -> shipper-core (this crate: engine, no CLI dependencies)
 ```
-
-## Related
-
-- Install face: <https://crates.io/crates/shipper>
-- CLI adapter: <https://crates.io/crates/shipper-cli>
-- Project README: <https://github.com/EffortlessMetrics/shipper#readme>
-- Architecture: <https://github.com/EffortlessMetrics/shipper/blob/main/docs/architecture.md>
-
-## Stability
-
-Pre-1.0. The public API will move; breaking changes are called out in [`CHANGELOG.md`](https://github.com/EffortlessMetrics/shipper/blob/main/CHANGELOG.md).
 
 ## License
 

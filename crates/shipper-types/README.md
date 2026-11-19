@@ -17,6 +17,15 @@ Core types for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
+## Dependency direction
+
+This is the domain-contract hub: behavior crates depend on it, not the reverse.
+It owns pure values, plans, events, state, receipts, and serialized contracts —
+never network clients, cryptographic execution, retry sleeps, environment
+access, or filesystem I/O. `cargo xtask package-surface` enforces the edges that
+have already been inverted; see [docs/architecture.md](../../docs/architecture.md)
+and issue #261.
+
 ## Development commands
 
 ```bash

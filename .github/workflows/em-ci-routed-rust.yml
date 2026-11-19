@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   workflow_dispatch:
     inputs:
@@ -37,7 +37,9 @@ permissions:
 jobs:
   route:
     name: Route Shipper Rust Small
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)
+    # Draft PRs are review-only. Ready-for-review dispatches the current
+    # required gate; push, merge-group and manual runs remain unchanged.
     # The router must be able to observe an empty self-hosted pool. Keeping
     # this bootstrap job on GitHub-hosted infrastructure prevents the exact
     # no-runner condition it is responsible for detecting from deadlocking
@@ -162,17 +164,29 @@ jobs:
               set_output(force_route, f"forced_{force_route}")
               sys.exit(0)
 
+          # Losing the runner-read token tells us nothing about the source we are
+          # about to build. For an already-trusted source the safe degradation is
+          # the GitHub-hosted lane: it runs the identical Rust-small gate on
+          # ubuntu-latest and consumes no repository secrets, so coverage is
+          # unchanged and the shared-infrastructure secret surface stays empty.
+          # Refusing it instead blocks every PR in the repository until an
+          # operator rotates a credential, which buys no safety. The reason is
+          # still reported verbatim and the result job prints a degraded-routing
+          # warning, so an expired token stays loud without holding the queue.
+          # Untrusted (fork) sources keep the hard failure: `trusted` is False
+          # there, so degraded_fallback is False too.
+          degraded_fallback = fallback_allowed or trusted
+
           if not token:
               # Repository secrets are masked for Dependabot/bot PRs, so the
               # runner read token is unavailable. For bot-authored PRs this is
               # the documented trust-bootstrap condition, not a misconfiguration:
               # route to the GitHub-hosted fallback (runs on ubuntu-latest, no
-              # repository secrets consumed) so the gate still runs. For human
-              # PRs keep the loud runner_token_missing hard-failure.
+              # repository secrets consumed) so the gate still runs.
               if bot_authored:
                   set_output("github", "bot_pr_github_fallback", True)
               else:
-                  set_output("github", "runner_token_missing", fallback_allowed)
+                  set_output("github", "runner_token_missing", degraded_fallback)
               sys.exit(0)
 
           try:
@@ -184,16 +198,16 @@ jobs:
               print(f"runner_api_error={exc}")
               status = getattr(exc, "code", None)
               if status == 401:
-                  set_output("github", "runner_token_unauthorized", fallback_allowed)
+                  set_output("github", "runner_token_unauthorized", degraded_fallback)
               elif status == 403:
-                  set_output("github", "runner_token_forbidden", fallback_allowed)
+                  set_output("github", "runner_token_forbidden", degraded_fallback)
               else:
-                  set_output("github", "runner_api_failed", fallback_allowed)
+                  set_output("github", "runner_api_failed", degraded_fallback)
               sys.exit(0)
 
           runners = payload.get("runners", [])
           if not isinstance(runners, list):
-              set_output("github", "parse_failed", fallback_allowed)
+              set_output("github", "parse_failed", degraded_fallback)
               sys.exit(0)
 
           target_labels = {
@@ -522,18 +536,34 @@ jobs:
       - rust_small_cpx42
       - rust_small_cx53
       - rust_small_github
-    if: |
-      always() &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: always()
+    # Keep the required check actively fail-closed for draft/fork PRs.
+    # GitHub treats a skipped required job as success, so skipping this
+    # normalizer would let a draft result masquerade as ready-PR proof.
+    # Ready-for-review re-runs the genuine producer and normalization.
     # Result normalization is a small, non-secret reporting step. It must
     # remain available when every optional self-hosted execution lane is
     # offline, otherwise branch protection can never observe the fallback.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Refuse draft PR without current Rust proof
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+        run: |
+          echo '::error::Draft PR is not qualified. Mark ready for review to run required Rust proof.'
+          exit 1
+
+      - name: Refuse untrusted fork PR without current Rust proof
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo '::error::Untrusted fork PR has no eligible trusted Rust proof.'
+          exit 1
+
       - uses: actions/checkout@v7.0.1
+        if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)
 
       - name: Normalize routed result
+        if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)
         env:
           TARGET: ${{ needs.route.outputs.target }}
           REASON: ${{ needs.route.outputs.reason }}

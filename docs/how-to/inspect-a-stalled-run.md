@@ -1,119 +1,134 @@
 # How to inspect a stalled or interrupted run
 
-Your CI log has been quiet for 10 minutes. Or the workflow got cancelled mid-publish. Or you're trying to figure out whether the train is still alive or genuinely hung. This guide is the triage path.
+Use this path when a workflow is quiet, a runner was cancelled, or you need to
+decide whether retained evidence supports resume. Do not infer safety from log
+silence, a lock's age, or `state.json` alone.
 
-> **Related:** [Inspect state, events, and receipts](inspect-state-and-receipts.md) covers the "what happened after the run" case. This doc is about the "is it alive right now?" and "what will resume do?" cases.
+## Triage: which surface answers which question?
 
-## Triage: which file answers which question?
-
-| Question | File | Command |
+| Question | Authority | Command |
 |---|---|---|
-| Is the train alive or hung? | `events.jsonl` (latest entries) | `tail -n 20 .shipper/events.jsonl \| jq -c '.'` |
-| What's the current crate? | `events.jsonl` (last `package_started`) | see below |
-| How long has it been waiting? | `events.jsonl` (last `retry_backoff_started`) | see below |
-| Which crates finished? | `events.jsonl` (published events) OR `state.json` | see below |
-| What's next when I resume? | `state.json` (packages with `state.state == "pending"`) | see below |
-| Why did it fail? | `events.jsonl` (last `package_failed` / `publish_reconciled.StillUnknown`) | see below |
+| What can local durable evidence prove? | correlated events/state/receipt/lock evidence | `shipper status --durable` |
+| What happened, and in what order? | `events.jsonl` | `shipper inspect-events` |
+| What was the last durable event? | `events.jsonl` | `shipper inspect-events` or raw `jq` |
+| Which packages are projected complete? | `state.json` projection | inspect `packages[].state.state` |
+| What did a terminal run summarize? | `receipt.json` | `shipper inspect-receipt` |
+| Why did ambiguity stop? | events plus `reconciliation.json` | inspect the retained paths |
 
-**Authority order**: `events.jsonl` > `state.json` > `receipt.json`. When they disagree, events win. Per [INVARIANTS.md](../INVARIANTS.md).
+Events are authoritative, state is a resumable projection, and a receipt is a
+derived terminal summary. When they disagree, stop and investigate.
 
-## "Is it alive?" — the 30-second check
-
-```bash
-# What was the last event, and how recent?
-jq -c '.' .shipper/events.jsonl | tail -1
-```
-
-If the last event is a `retry_backoff_started`, the run is alive and waiting. Check `next_attempt_at`:
+## 1. Start with the fail-closed durable view
 
 ```bash
-jq -c 'select(.event_type.type == "retry_backoff_started") | .event_type' .shipper/events.jsonl | tail -1
+shipper status --durable
 ```
 
-Expected output includes `next_attempt_at` (an ISO-8601 timestamp). If it's still in the future, the train is alive and scheduled to retry. If it's in the past by more than a few minutes, something may actually be stuck.
+This local mode bypasses registry access. It correlates the active event
+segment with plan, workspace, state, receipt, reconciliation, and lock
+identity. Its fail-closed status distinguishes `no_evidence`,
+`identity_mismatch`, `evidence_disagreement`, and `unknown`: respectively no
+durable run, mismatched source/plan/registry/evidence identity, contradictory
+evidence, or an unfinished run whose liveness cannot be established. None of
+those statuses authorizes resume.
+
+On Linux, `Live` requires an exact local boot, PID namespace, PID, and
+process-start match. `NotLive` means the matching-scope process was observed
+absent; it is not by itself a safe-resume verdict. Follow the reported rerun
+posture and reason.
+
+## 2. Read the latest authoritative events
 
 ```bash
-# Which crate are we currently working on?
-jq -r 'select(.event_type.type == "package_started") | .package' .shipper/events.jsonl | tail -1
+shipper inspect-events
+
+# Raw tail when jq is available
+jq -c '.' .shipper/events.jsonl | tail -20
 ```
 
-## "What's normal waiting?"
-
-crates.io's publish rate limits:
-
-- **Brand-new crates**: 5-crate burst, then 1 new crate per 10 minutes
-- **New versions of existing crates**: 30 per minute after a 30-burst
-
-If you're publishing 12 new crates, expect ~90-minute wall clock. Silence between retries of up to ~10 minutes is **normal**. If it's been 30+ minutes since the last event, investigate.
-
-`retry_backoff_started` events (added in [#91](https://github.com/EffortlessMetrics/shipper/issues/91)) now carry the full context — reason, attempt number, next-attempt time. A run that's correctly waiting on crates.io will emit these regularly.
-
-## "What did already publish successfully?"
+A `retry_backoff_started` event records why the run waited, its attempt, and
+`next_attempt_at`:
 
 ```bash
-# From events.jsonl (authoritative)
-jq -r 'select(.event_type.type == "package_published") | .package' .shipper/events.jsonl | sort -u
-
-# From state.json (projection, fast)
-jq -r '.packages[] | select(.state.state == "published") | .name' .shipper/state.json | sort -u
+jq -c 'select(.event_type.type == "retry_backoff_started") | .event_type' \
+  .shipper/events.jsonl | tail -1
 ```
 
-If these two lists disagree, events are truth. A mismatch triggers `StateEventDriftDetected` at end-of-run (added in [#93](https://github.com/EffortlessMetrics/shipper/issues/93)).
+A future timestamp explains the recorded wait; it does not independently
+prove that the process is alive. Registry limits and visibility delays can
+change, so prefer emitted evidence over hard-coded timing assumptions.
 
-## "What will resume do?"
-
-`shipper resume` reads `state.json`, validates the `plan_id` matches the current workspace, and continues from the first non-terminal package. Terminal states for resume: `Published`, `Skipped`. Non-terminal: `Pending`, `Failed`, `Ambiguous`.
+Find the latest package and authoritative publish outcomes with:
 
 ```bash
-# What's pending?
-jq -r '.packages[] | select(.state.state == "pending") | .name' .shipper/state.json
+jq -r 'select(.event_type.type == "package_started") | .package' \
+  .shipper/events.jsonl | tail -1
 
-# Anything ambiguous that will trigger resume-time reconciliation?
-jq -r '.packages[] | select(.state.state == "ambiguous") | "\(.name): \(.state.message)"' .shipper/state.json
-
-# Anything failed?
-jq -r '.packages[] | select(.state.state == "failed") | "\(.name): \(.state.message)"' .shipper/state.json
+jq -r 'select(.event_type.type == "package_published") | .package' \
+  .shipper/events.jsonl | sort -u
 ```
 
-On `Ambiguous` state, resume will reconcile against the registry *before* any cargo activity — see [why-shipper.md](../explanation/why-shipper.md#cargo-stdout-is-a-hint-the-registry-is-the-truth).
+## 3. Compare the state projection
 
-## "Why did it fail?"
+The package-state path is `packages[].state.state`, not
+`packages[].status`:
 
 ```bash
-# Last failure event with full context
-jq -c 'select(.event_type.type == "package_failed") | .event_type' .shipper/events.jsonl | tail -1
-
-# Reconciliation outcomes (in-flight or resume-time)
-jq -c 'select(.event_type.type == "publish_reconciled") | .event_type.outcome' .shipper/events.jsonl
+jq -r '.packages[] | "\(.name)@\(.version): \(.state.state)"' \
+  .shipper/state.json
 ```
 
-If you see `"outcome": {"outcome": "still_unknown"}`, the registry couldn't resolve the ambiguous publish — this is the one case where operator judgment is required. The `reason` field tells you what the reconciliation query errored with.
+A disagreement between this projection and `events.jsonl` is evidence drift,
+not a reason to edit state or force resume.
 
-## Common scenarios
-
-### Scenario: workflow was cancelled mid-publish
-
-1. Download the `shipper-state-final` artifact from the cancelled run (or `shipper-state-preflight` / `shipper-state-plan` if later stages never ran).
-2. Trigger the `release-resume` workflow_dispatch with `mode=resume` and `artifact_run_id=<cancelled-run-id>`.
-3. The resume job downloads the artifact, runs `shipper resume`, and continues.
-
-### Scenario: runner timed out after 6 hours
-
-Same procedure. The `.shipper/` artifact was uploaded at each stage (plan / preflight / final) so even a mid-publish timeout leaves the most recent state available.
-
-### Scenario: "how do I know it's really done?"
-
-Once the workflow completes successfully, the receipt is the audit artifact:
+## 4. Inspect failure and reconciliation evidence
 
 ```bash
-jq '.' .shipper/receipt.json | head -40
+jq -c 'select(.event_type.type == "package_failed") | .event_type' \
+  .shipper/events.jsonl | tail -1
+
+jq -c 'select(.event_type.type == "publish_reconciled") | .event_type' \
+  .shipper/events.jsonl
+
+jq '.' .shipper/reconciliation.json
 ```
 
-Per-package state, timestamps, attempt counts, and evidence (captured stdout/stderr, registry readiness checks) all land here. Keep it for audit.
+`reconciliation.json` is conditional. When an ambiguous Cargo result becomes
+`StillUnknown`, preserve it and investigate. Shipper deliberately supplies no
+retry command while registry truth is inconclusive.
+
+## 5. Decide whether resume is allowed
+
+Run `shipper resume` only when `status --durable` reports agreeing retained
+evidence and a safe rerun posture. Resume recomputes the plan and refuses a
+stored `plan_id` mismatch before it skips terminal packages or reconciles
+ambiguous outcomes. The plan ID covers the registry API base and ordered
+package names/versions; it does not bind source bytes, workspace path, or run
+identity.
+
+On Linux and macOS, an explicit absolute `SHIPPER_CARGO_BIN` path that
+is missing or inaccessible at the pre-spawn check can produce a
+`package_not_launched` event. A failed bare `cargo` lookup on `PATH` or an
+error returned by spawn does not produce that proof; an unresolved attempt
+still blocks retry. If Cargo is missing during CLI planning, the command
+normally stops before any publish attempt. Replacing Cargo cannot make an
+older ambiguous attempt safe to retry; keep its evidence and investigate.
+
+Do not use `--force-resume` as routine recovery. It overrides a plan guard and
+requires a separate operator risk decision.
+
+## CI interruption
+
+Download the complete `.shipper/` artifact and restore it beside the exact
+source checkout that produced it. Keep `events.jsonl`, `state.json`, optional
+`reconciliation.json`, the lock record, and any terminal `receipt.json`
+together. See [Run a Shipper release in GitHub Actions](run-in-github-actions.md)
+for artifact handling and the
+[safe recovery tutorial](../tutorials/recover-from-interruption.md) for a mock
+cross-job rehearsal.
 
 ## See also
 
-- [INVARIANTS.md](../INVARIANTS.md) — the truth/projection/summary contract
-- [inspect-state-and-receipts.md](inspect-state-and-receipts.md) — post-hoc inspection (what happened)
-- [state-files.md](../reference/state-files.md) — one-page cheat sheet
-- [Tutorial: Recover from an interrupted release](../tutorials/recover-from-interruption.md) — end-to-end walkthrough
+- [Inspect state, events, and receipts](inspect-state-and-receipts.md)
+- [State files reference](../reference/state-files.md)
+- [INVARIANTS.md](../INVARIANTS.md)

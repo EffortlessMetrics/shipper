@@ -1,0 +1,6 @@
+kind: maintenance
+body: Add independently invocable recovery rehearsal phases that retain cumulative attempts and reject a stale seed before continuation, without changing publication or Actions transport.
+time: 2026-11-02T21:00:00Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance

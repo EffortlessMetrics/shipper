@@ -1,0 +1,7 @@
+kind: fixed
+body: Make sparse-index path derivation total for Unicode crate names while preserving existing ASCII mappings and public signatures.
+time: 2026-08-12T12:00:00Z
+custom:
+  Audience: Mixed
+  Importance: Detailed
+  PR: 296

@@ -8,7 +8,7 @@ Start here, in this order:
   shipper doctor      check auth, git, tooling, and registry reachability
   shipper plan        preview the deterministic publish order
   shipper preflight   prove the release can finish before anything uploads
-  shipper publish     execute the plan — rerun (or `shipper resume`) to continue
+  shipper publish     execute the plan — after a stop, inspect retained evidence and follow its typed next action
 
 Usage: shipper [OPTIONS] <COMMAND>
 

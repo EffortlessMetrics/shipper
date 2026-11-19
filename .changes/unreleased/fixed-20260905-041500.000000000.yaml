@@ -1,0 +1,6 @@
+kind: fixed
+body: Restore the execution-state fuzz fixture, compile every fuzz target on relevant PRs, honor manual target selection, and fail fuzz jobs when cargo-fuzz fails even without a crash artifact.
+time: 2026-09-05T04:15:00Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

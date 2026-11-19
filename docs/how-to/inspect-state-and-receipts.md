@@ -9,6 +9,7 @@ questions → different file.
 
 | Question | File | Command |
 |---|---|---|
+| Is the retained run terminal, live, interrupted, or still unknown? | correlated local evidence | `shipper status --durable` |
 | Exactly what happened, and when? | `events.jsonl` | `shipper inspect-events` |
 | What's the current state (for resume)? | `state.json` | `cat .shipper/state.json` |
 | What was the final outcome + evidence? | `receipt.json` | `shipper inspect-receipt` |
@@ -17,6 +18,24 @@ questions → different file.
 | What would remediation do? | `remediation-plan.json` | `jq '.' .shipper/remediation-plan.json` |
 
 **Authority order:** events are truth, state is a projection, receipt is a summary. When they disagree, events win. See [INVARIANTS.md](../INVARIANTS.md).
+
+## Start with durable status after an interruption
+
+```bash
+shipper status --durable
+```
+
+This local, registry-bypassing mode correlates the authoritative event segment
+with state, receipt, reconciliation, plan, workspace, and lock evidence. For
+parseable evidence, disagreement gets its own fail-closed status; missing
+identity, cross-host liveness, or an unavailable process probe can remain
+`unknown`. A `NotLive` observation by itself is not permission to resume; use
+the reported rerun posture and reason.
+
+Corrupt JSON or JSONL is a command error, not an `unknown` status. Evidence
+loading stops before the durable envelope is rendered: the command exits `1`,
+keeps stdout empty, and reports the parse failure on stderr. Preserve the
+original file for diagnosis instead of expecting a rerun posture.
 
 ## Reading events
 
@@ -31,10 +50,20 @@ jq -c '.' .shipper/events.jsonl
 ```
 
 Each line is one JSON event with:
-- `timestamp` — RFC3339 UTC
+
+- `timestamp` — original RFC3339 UTC wall-clock observation time
 - `event_type.type` — variant name (`package_started`, `package_published`, `preflight_complete`, etc.)
 - `package` — "all" or "<name>@<version>"
 - Event-specific payload under `event_type.*`
+
+Events appear in append order, which is also replay order. Delayed workers and
+clock rollback can make a later line's timestamp earlier than a preceding
+line's timestamp, including within one package. Keep line order when tracing
+attempts, outcomes, and retries; sorting by `timestamp` changes the history.
+`shipper inspect-events --follow` prints newly appended events in the same
+order. Use `--format json` to retain the recorded timestamp precision. See the
+[ordering contract](../INVARIANTS.md#event-order-and-wall-clock-time) for the
+distinct live and rebuilt state timestamp semantics.
 
 ### Count events by type
 
@@ -109,15 +138,16 @@ If you want to sanity-check that events and state agree:
 
 ```bash
 # package_published events
-jq -r 'select(.event_type.type == "package_published") | .event_type.crate_name' .shipper/events.jsonl | sort > /tmp/events_published.txt
+jq -r 'select(.event_type.type == "package_published") | .package' .shipper/events.jsonl | sort > /tmp/events_published.txt
 
 # packages with state.state == "published"
-jq -r '.packages[] | select(.state.state == "published") | .name' .shipper/state.json | sort > /tmp/state_published.txt
+jq -r '.packages[] | select(.state.state == "published") | "\(.name)@\(.version)"' .shipper/state.json | sort > /tmp/state_published.txt
 
 diff /tmp/events_published.txt /tmp/state_published.txt
 ```
 
-They should match exactly. If they don't, events are authoritative. ([#93](https://github.com/EffortlessMetrics/shipper/issues/93) tracks an end-of-run consistency check that does this automatically.)
+They should match exactly. If they do not, events are authoritative and the
+disagreement must be investigated rather than papered over by resume.
 
 ## See also
 

@@ -85,6 +85,7 @@ pub struct ValidatedRegistry {
     api_base: Url,
     index_base: Url,
     credential_authority: RegistryAuthority,
+    index_authority: RegistryAuthority,
     policy: RegistryPolicy,
 }
 
@@ -94,6 +95,29 @@ pub struct RegistryAuthority {
     pub scheme: String,
     pub host: String,
     pub port: Option<u16>,
+}
+
+/// Structured result of comparing a rehearsal registry with the live target.
+///
+/// This comparison proves only separation of the configured registry names and
+/// normalized API/index authorities. It does not prove DNS, resolved-address,
+/// administrative, account, or namespace isolation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RehearsalRegistrySeparation {
+    /// The rehearsal and live registry names are identical.
+    pub name_conflict: bool,
+    /// At least one rehearsal API/index authority overlaps the live registry
+    /// family.
+    pub live_authority_conflict: bool,
+    /// At least one rehearsal API/index host belongs to the crates.io family.
+    pub crates_io_authority: bool,
+}
+
+impl RehearsalRegistrySeparation {
+    /// Return whether the configured identities are separated by every guard.
+    pub fn is_isolated(self) -> bool {
+        !self.name_conflict && !self.live_authority_conflict && !self.crates_io_authority
+    }
 }
 
 /// Return whether an index destination belongs to the same explicitly
@@ -144,6 +168,7 @@ impl ValidatedRegistry {
             api_base,
             index_base,
             credential_authority,
+            index_authority,
             policy,
         })
     }
@@ -162,6 +187,81 @@ impl ValidatedRegistry {
 
     pub fn credential_authority(&self) -> &RegistryAuthority {
         &self.credential_authority
+    }
+
+    pub fn index_authority(&self) -> &RegistryAuthority {
+        &self.index_authority
+    }
+
+    /// Compare this rehearsal registry with a validated live target.
+    ///
+    /// The built-in crates.io family is denied independently of the live
+    /// target. That known-domain rule intentionally covers `crates.io` and
+    /// every `.crates.io` subdomain without attempting generic public-suffix
+    /// inference. Other registries conflict only when a normalized API/index
+    /// pair belongs to the same trusted family, including effective ports.
+    pub fn rehearsal_separation_from(
+        &self,
+        live: &ValidatedRegistry,
+    ) -> RehearsalRegistrySeparation {
+        let rehearsal_authorities = [&self.credential_authority, &self.index_authority];
+        let live_authorities = [&live.credential_authority, &live.index_authority];
+
+        let live_authority_conflict = rehearsal_authorities.iter().any(|rehearsal| {
+            live_authorities
+                .iter()
+                .any(|live| registry_families_overlap(rehearsal, live))
+        });
+        let crates_io_authority = rehearsal_authorities
+            .iter()
+            .any(|authority| is_crates_io_family(authority));
+
+        RehearsalRegistrySeparation {
+            name_conflict: self.display.name == live.display.name,
+            live_authority_conflict,
+            crates_io_authority,
+        }
+    }
+
+    /// Reject a rehearsal identity that is not separated from the live target.
+    ///
+    /// The diagnostic contains sanitized names and normalized authorities only.
+    pub fn ensure_rehearsal_isolated_from(&self, live: &ValidatedRegistry) -> Result<()> {
+        let separation = self.rehearsal_separation_from(live);
+        if separation.is_isolated() {
+            return Ok(());
+        }
+
+        let mut reasons = Vec::new();
+        if separation.name_conflict {
+            reasons.push("registry name matches the live target".to_string());
+        }
+        if separation.live_authority_conflict {
+            reasons.push(format!(
+                "configured API/index authority overlaps the live target ({})",
+                live.sanitized_authorities()
+            ));
+        }
+        if separation.crates_io_authority {
+            reasons
+                .push("configured API/index authority belongs to the crates.io family".to_string());
+        }
+
+        bail!(
+            "rehearsal registry '{}' is not isolated from live registry '{}': {}; rehearsal authorities: {}",
+            self.display.name,
+            live.display.name,
+            reasons.join("; "),
+            self.sanitized_authorities()
+        )
+    }
+
+    fn sanitized_authorities(&self) -> String {
+        format!(
+            "api={}, index={}",
+            authority_string(&self.credential_authority),
+            authority_string(&self.index_authority)
+        )
     }
 
     pub fn policy(&self) -> RegistryPolicy {
@@ -215,11 +315,17 @@ impl ValidatedRegistry {
             allow_private: self.policy.allow_private,
             allow_loopback: self.policy.allow_loopback,
             credential_authority: authority_string(&self.credential_authority),
-            index_authority: authority_for(&self.index_base)
-                .map(|authority| authority_string(&authority))
-                .unwrap_or_else(|_| "unknown".to_string()),
+            index_authority: authority_string(&self.index_authority),
         }
     }
+}
+
+fn registry_families_overlap(left: &RegistryAuthority, right: &RegistryAuthority) -> bool {
+    authorities_share_trusted_domain(left, right) || authorities_share_trusted_domain(right, left)
+}
+
+fn is_crates_io_family(authority: &RegistryAuthority) -> bool {
+    authority.host == "crates.io" || authority.host.ends_with(".crates.io")
 }
 
 fn explicit_index_base<'a>(registry: &'a Registry, api_base: &Url) -> Result<&'a str> {
@@ -441,6 +547,22 @@ mod tests {
         }
     }
 
+    fn named_registry(name: &str, api_base: &str, index_base: &str) -> Registry {
+        Registry {
+            name: name.to_string(),
+            api_base: api_base.to_string(),
+            index_base: Some(index_base.to_string()),
+        }
+    }
+
+    fn validated(name: &str, api_base: &str, index_base: &str) -> ValidatedRegistry {
+        ValidatedRegistry::new(
+            named_registry(name, api_base, index_base),
+            RegistryPolicy::secure(),
+        )
+        .expect("valid registry")
+    }
+
     #[test]
     fn secure_defaults_require_https_and_explicit_index() {
         let err = ValidatedRegistry::new(
@@ -547,6 +669,129 @@ mod tests {
         );
         let json = serde_json::to_string(&evidence).expect("json");
         assert!(!json.contains("token"));
+    }
+
+    #[test]
+    fn rehearsal_separation_normalizes_case_default_ports_and_paths() {
+        let live = validated(
+            "live",
+            "https://REGISTRY.example/api/v1",
+            "https://index.registry.example/catalog",
+        );
+        let rehearsal = validated(
+            "rehearsal",
+            "https://registry.example:443/a/different/path",
+            "https://index.registry.example:443/another/path",
+        );
+
+        let separation = rehearsal.rehearsal_separation_from(&live);
+        assert!(!separation.name_conflict);
+        assert!(separation.live_authority_conflict);
+        assert!(!separation.crates_io_authority);
+        assert!(!separation.is_isolated());
+    }
+
+    #[test]
+    fn rehearsal_separation_checks_every_api_index_pair_symmetrically() {
+        let live = validated(
+            "live",
+            "https://registry.example/api",
+            "https://index.registry.example/index",
+        );
+        let rehearsal = validated(
+            "rehearsal",
+            "https://index.registry.example/upload",
+            "https://index.registry.example/index",
+        );
+
+        assert!(
+            rehearsal
+                .rehearsal_separation_from(&live)
+                .live_authority_conflict
+        );
+    }
+
+    #[test]
+    fn rehearsal_separation_rejects_every_literal_crates_io_family_host() {
+        let live = validated(
+            "live",
+            "https://registry.example/api",
+            "https://index.registry.example/index",
+        );
+
+        for (api, index) in [
+            ("https://crates.io/api", "https://index.crates.io/index"),
+            (
+                "https://rehearsal.crates.io:444/api",
+                "https://index.rehearsal.crates.io:444/index",
+            ),
+        ] {
+            let rehearsal = validated("rehearsal", api, index);
+            let separation = rehearsal.rehearsal_separation_from(&live);
+            assert!(separation.crates_io_authority, "api={api}");
+            assert!(!separation.is_isolated(), "api={api}");
+        }
+    }
+
+    #[test]
+    fn rehearsal_separation_retains_name_guard_and_accepts_distinct_loopback_ports() {
+        let live_same_name = validated(
+            "shared-name",
+            "https://live.example/api",
+            "https://index.live.example/index",
+        );
+        let rehearsal_same_name = validated(
+            "shared-name",
+            "https://rehearsal.example/api",
+            "https://index.rehearsal.example/index",
+        );
+        let name_conflict = rehearsal_same_name.rehearsal_separation_from(&live_same_name);
+        assert!(name_conflict.name_conflict);
+        assert!(!name_conflict.live_authority_conflict);
+
+        let live = ValidatedRegistry::new(
+            named_registry(
+                "live",
+                "http://127.0.0.1:18080/api",
+                "http://127.0.0.1:18080/index",
+            ),
+            RegistryPolicy::rehearsal(),
+        )
+        .expect("loopback live fixture");
+        let rehearsal = ValidatedRegistry::new(
+            named_registry(
+                "rehearsal",
+                "http://127.0.0.1:18081/api",
+                "http://127.0.0.1:18081/index",
+            ),
+            RegistryPolicy::rehearsal(),
+        )
+        .expect("loopback rehearsal fixture");
+        assert!(rehearsal.rehearsal_separation_from(&live).is_isolated());
+    }
+
+    #[test]
+    fn rehearsal_isolation_diagnostic_classifies_name_authority_and_crates_io_together() {
+        let live = validated(
+            "crates-io",
+            "https://crates.io/api",
+            "https://index.crates.io/index",
+        );
+        let rehearsal = validated(
+            "crates-io",
+            "https://crates.io/other-path",
+            "https://index.crates.io/other-index-path",
+        );
+
+        let error = rehearsal
+            .ensure_rehearsal_isolated_from(&live)
+            .expect_err("every conflict must fail");
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("registry name matches"));
+        assert!(diagnostic.contains("authority overlaps"));
+        assert!(diagnostic.contains("crates.io family"));
+        assert!(diagnostic.contains("https://crates.io:443"));
+        assert!(!diagnostic.contains("other-path"));
     }
 
     #[test]

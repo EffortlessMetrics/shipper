@@ -20,7 +20,7 @@ covered_by = [
   "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
 ]
 created = "2026-05-11"
-review_after = "2026-08-11"
+review_after = "2026-11-12"
 
 [[file]]
 path = "Cargo.lock"
@@ -34,7 +34,7 @@ covered_by = [
   "Security Audit job in CI",
 ]
 created = "2026-05-11"
-review_after = "2026-08-11"
+review_after = "2026-11-12"
 
 [[glob]]
 pattern = "crates/*/Cargo.toml"
@@ -45,7 +45,7 @@ owner = "rust/dependencies"
 reason = "Per-crate manifests for every workspace member."
 covered_by = ["cargo check --workspace --locked"]
 created = "2026-05-11"
-review_after = "2026-08-11"
+review_after = "2026-11-12"
 
 [[file]]
 path = "fuzz/Cargo.toml"
@@ -56,7 +56,7 @@ owner = "fuzz/tests"
 reason = "cargo-fuzz harness manifest. Excluded from the default workspace."
 covered_by = ["cargo fuzz (manual)"]
 created = "2026-05-11"
-review_after = "2026-08-11"
+review_after = "2026-11-12"
 
 [[file]]
 path = "xtask/Cargo.toml"
@@ -67,4 +67,4 @@ owner = "rust/build"
 reason = "Internal xtask crate manifest. publish = false; not on crates.io."
 covered_by = ["cargo check -p xtask --locked"]
 created = "2026-05-11"
-review_after = "2026-08-11"
+review_after = "2026-11-12"

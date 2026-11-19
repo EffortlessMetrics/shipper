@@ -38,6 +38,7 @@ fuzz_target!(|input: (Vec<u8>, Vec<u8>, u8, bool)| {
         registry: Registry::crates_io(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        attempt_history: Vec::new(),
         packages: BTreeMap::from([(
             key.clone(),
             PackageProgress {

@@ -1,6 +1,7 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use chrono::{DateTime, Utc};
 
 use crate::engine::Reporter;
@@ -9,9 +10,42 @@ use crate::state::events;
 use crate::state::execution_state as state;
 use crate::types::{
     AuthEvidence, EnvironmentFingerprint, EventType, ExecutionResult, ExecutionState, GitContext,
-    PackageReceipt, PackageState, PublishEvent, Receipt, RuntimeOptions,
+    PackageReceipt, PackageState, PublishEvent, Receipt, ReleasePlan, RuntimeOptions,
 };
 use crate::webhook::{self, WebhookEvent};
+
+/// Complete the evidence for a typed recoverable stop without claiming a
+/// finished run or writing a receipt. Other failure classes keep their owner.
+pub(in crate::engine) fn record_recoverable_stop(
+    error: anyhow::Error,
+    state_dir: &Path,
+    events_path: &Path,
+    event_log: &mut events::EventLog,
+    state: &ExecutionState,
+    reporter: &mut dyn Reporter,
+) -> Result<anyhow::Error> {
+    let Some(stop) = error.downcast_ref::<crate::engine::PublishRecoverableStopError>() else {
+        return Ok(error);
+    };
+    let package = stop.package.clone();
+    event_log.record(PublishEvent {
+        timestamp: Utc::now(),
+        event_type: EventType::ExecutionStopped {
+            reason: crate::types::ControlledStopReason::NotPublishedRetryBudgetExhausted,
+        },
+        package: package.clone(),
+    });
+    event_log.write_to_file(events_path)?;
+    record_consistency_drift(events_path, state, event_log, reporter);
+    let evidence_consistent =
+        crate::engine::controlled_stop_evidence_consistent(state_dir, events_path, state);
+    Ok(crate::engine::PublishRecoverableStopError {
+        message: format!("{error:#}"),
+        package,
+        evidence_consistent,
+    }
+    .into())
+}
 
 pub(in crate::engine) fn record_consistency_drift(
     events_path: &Path,
@@ -47,7 +81,13 @@ pub(in crate::engine) fn finish_sequential_run(
     environment: EnvironmentFingerprint,
     auth_evidence: AuthEvidence,
 ) -> Result<Receipt> {
-    let exec_result = sequential_execution_result(&receipts);
+    verify_execution_receipt_scope(
+        &ws.plan,
+        opts.resume_from.as_deref(),
+        opts.parallel.enabled,
+        &receipts,
+    )?;
+    let exec_result = whole_plan_execution_result(&ws.plan, state);
     event_log.record(PublishEvent {
         timestamp: Utc::now(),
         event_type: EventType::ExecutionFinished {
@@ -57,9 +97,7 @@ pub(in crate::engine) fn finish_sequential_run(
     });
     event_log.write_to_file(events_path)?;
 
-    send_completion_webhook(ws, opts, state, &exec_result);
-
-    write_receipt(
+    let receipt = write_receipt(
         ws,
         state_dir,
         state,
@@ -69,8 +107,10 @@ pub(in crate::engine) fn finish_sequential_run(
         environment,
         auth_evidence,
         events_path,
-        exec_result,
-    )
+        exec_result.clone(),
+    )?;
+    send_completion_webhook(ws, opts, state, &exec_result);
+    Ok(receipt)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -87,7 +127,13 @@ pub(in crate::engine) fn finish_parallel_run(
     environment: EnvironmentFingerprint,
     auth_evidence: AuthEvidence,
 ) -> Result<Receipt> {
-    let exec_result = parallel_execution_result(&receipts);
+    verify_execution_receipt_scope(
+        &ws.plan,
+        opts.resume_from.as_deref(),
+        opts.parallel.enabled,
+        &receipts,
+    )?;
+    let exec_result = whole_plan_execution_result(&ws.plan, state);
     event_log.record(PublishEvent {
         timestamp: Utc::now(),
         event_type: EventType::ExecutionFinished {
@@ -97,9 +143,7 @@ pub(in crate::engine) fn finish_parallel_run(
     });
     event_log.write_to_file(events_path)?;
 
-    send_completion_webhook(ws, opts, state, &exec_result);
-
-    write_receipt(
+    let receipt = write_receipt(
         ws,
         state_dir,
         state,
@@ -109,8 +153,10 @@ pub(in crate::engine) fn finish_parallel_run(
         environment,
         auth_evidence,
         events_path,
-        exec_result,
-    )
+        exec_result.clone(),
+    )?;
+    send_completion_webhook(ws, opts, state, &exec_result);
+    Ok(receipt)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -140,6 +186,7 @@ fn write_receipt(
         execution_result,
     };
 
+    crate::state::consistency::verify_plan_completion(&ws.plan, state, &receipt)?;
     let reconciliation_report = crate::state::reconciliation::write_report_from_events(
         state_dir,
         &ws.plan.plan_id,
@@ -156,26 +203,65 @@ fn write_receipt(
     Ok(receipt)
 }
 
-fn sequential_execution_result(receipts: &[PackageReceipt]) -> ExecutionResult {
-    if receipts
-        .iter()
-        .all(|r| is_successful_terminal_state(&r.state))
-    {
+fn whole_plan_execution_result(plan: &ReleasePlan, state: &ExecutionState) -> ExecutionResult {
+    if plan.packages.iter().all(|package| {
+        state
+            .packages
+            .get(&crate::runtime::execution::pkg_key(
+                &package.name,
+                &package.version,
+            ))
+            .is_some_and(|progress| is_successful_terminal_state(&progress.state))
+    }) {
         ExecutionResult::Success
     } else {
         ExecutionResult::PartialFailure
     }
 }
 
-fn parallel_execution_result(receipts: &[PackageReceipt]) -> ExecutionResult {
-    if receipts
-        .iter()
-        .all(|r| is_successful_terminal_state(&r.state))
-    {
-        ExecutionResult::Success
+/// A receipt covers exactly the packages admitted by this scheduler's scope.
+/// Omitted prefixes keep their original state and attempt history; their
+/// disposition still contributes to the whole-plan result above.
+fn verify_execution_receipt_scope(
+    plan: &ReleasePlan,
+    resume_from: Option<&str>,
+    parallel: bool,
+    receipts: &[PackageReceipt],
+) -> Result<()> {
+    let key = |package: &crate::types::PlannedPackage| {
+        crate::runtime::execution::pkg_key(&package.name, &package.version)
+    };
+    let expected: BTreeSet<String> = if parallel {
+        let levels = plan.group_by_levels();
+        let start = crate::engine::parallel::parallel_resume_start_level(&levels, resume_from)
+            .ok_or_else(|| anyhow::anyhow!("validated resume target has no publish level"))?;
+        levels
+            .iter()
+            .skip(start)
+            .flat_map(|level| level.packages.iter().map(key))
+            .collect()
     } else {
-        ExecutionResult::PartialFailure
-    }
+        plan.packages
+            .iter()
+            .skip_while(|package| resume_from.is_some_and(|name| package.name != name))
+            .map(key)
+            .collect()
+    };
+    let actual: BTreeSet<String> = receipts
+        .iter()
+        .map(|package| crate::runtime::execution::pkg_key(&package.name, &package.version))
+        .collect();
+    ensure!(
+        actual.len() == receipts.len(),
+        "duplicate package in execution receipt"
+    );
+    ensure!(
+        actual == expected,
+        "execution receipt does not cover the selected publish scope; missing: {:?}; unexpected: {:?}",
+        expected.difference(&actual).collect::<Vec<_>>(),
+        actual.difference(&expected).collect::<Vec<_>>(),
+    );
+    Ok(())
 }
 
 fn is_successful_terminal_state(state: &PackageState) -> bool {
@@ -224,22 +310,71 @@ fn send_completion_webhook(
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use super::*;
+    use crate::types::{ErrorClass, PackageEvidence, PackageProgress, PlannedPackage, Registry};
+    use std::collections::BTreeMap;
 
-    use super::{
-        is_successful_terminal_state, parallel_execution_result, sequential_execution_result,
-    };
-    use crate::types::{ExecutionResult, PackageEvidence, PackageReceipt, PackageState};
+    fn plan() -> ReleasePlan {
+        ReleasePlan {
+            plan_version: "1".into(),
+            plan_id: "whole-plan-completion".into(),
+            created_at: Utc::now(),
+            registry: Registry::crates_io(),
+            packages: ["base", "a", "z"]
+                .into_iter()
+                .map(|name| PlannedPackage {
+                    name: name.into(),
+                    version: "0.1.0".into(),
+                    manifest_path: PathBuf::from(format!("{name}/Cargo.toml")),
+                    regime: None,
+                })
+                .collect(),
+            dependencies: BTreeMap::from([
+                ("a".into(), vec!["base".into()]),
+                ("z".into(), vec!["base".into()]),
+            ]),
+        }
+    }
 
-    fn receipt(state: PackageState) -> PackageReceipt {
-        let now = Utc::now();
+    fn state(plan: &ReleasePlan) -> ExecutionState {
+        ExecutionState {
+            state_version: "shipper.state.v2".into(),
+            plan_id: plan.plan_id.clone(),
+            registry: plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            attempt_history: vec![],
+            packages: plan
+                .packages
+                .iter()
+                .map(|package| {
+                    (
+                        format!("{}@{}", package.name, package.version),
+                        PackageProgress {
+                            name: package.name.clone(),
+                            version: package.version.clone(),
+                            attempts: 0,
+                            state: PackageState::Skipped {
+                                reason: "already published".into(),
+                            },
+                            last_updated_at: Utc::now(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn receipt(name: &str) -> PackageReceipt {
         PackageReceipt {
-            name: "demo".to_string(),
-            version: "0.1.0".to_string(),
-            attempts: 1,
-            state,
-            started_at: now,
-            finished_at: now,
+            name: name.into(),
+            version: "0.1.0".into(),
+            attempts: 0,
+            state: PackageState::Skipped {
+                reason: "already published".into(),
+            },
+            started_at: Utc::now(),
+            finished_at: Utc::now(),
             duration_ms: 0,
             evidence: PackageEvidence {
                 attempts: vec![],
@@ -252,33 +387,89 @@ mod tests {
     }
 
     #[test]
-    fn sequential_uploaded_receipt_is_not_terminal_success() {
-        let receipts = [receipt(PackageState::Uploaded)];
-
+    fn whole_plan_completion_requires_every_planned_package_to_be_terminal() {
+        let plan = plan();
+        let mut state = state(&plan);
+        for prefix in [
+            PackageState::Pending,
+            PackageState::Uploaded,
+            PackageState::Failed {
+                class: ErrorClass::Retryable,
+                message: "retry".into(),
+            },
+            PackageState::Failed {
+                class: ErrorClass::Permanent,
+                message: "blocked".into(),
+            },
+            PackageState::Failed {
+                class: ErrorClass::Ambiguous,
+                message: "unknown".into(),
+            },
+            PackageState::Ambiguous {
+                message: "unknown".into(),
+            },
+        ] {
+            state.packages.get_mut("base@0.1.0").expect("base").state = prefix;
+            assert_eq!(
+                whole_plan_execution_result(&plan, &state),
+                ExecutionResult::PartialFailure
+            );
+        }
+        for prefix in [
+            PackageState::Published,
+            PackageState::Skipped {
+                reason: "already published".into(),
+            },
+        ] {
+            state.packages.get_mut("base@0.1.0").expect("base").state = prefix;
+            assert_eq!(
+                whole_plan_execution_result(&plan, &state),
+                ExecutionResult::Success
+            );
+        }
+        state.packages.remove("base@0.1.0");
         assert_eq!(
-            sequential_execution_result(&receipts),
+            whole_plan_execution_result(&plan, &state),
             ExecutionResult::PartialFailure
         );
     }
 
     #[test]
-    fn parallel_uploaded_receipt_is_not_terminal_success() {
-        let receipts = [receipt(PackageState::Uploaded)];
-
-        assert_eq!(
-            parallel_execution_result(&receipts),
-            ExecutionResult::PartialFailure
+    fn receipt_scope_matches_sequential_suffix_and_parallel_whole_level() {
+        let plan = plan();
+        verify_execution_receipt_scope(&plan, Some("z"), false, &[receipt("z")])
+            .expect("sequential suffix");
+        verify_execution_receipt_scope(&plan, Some("z"), true, &[receipt("a"), receipt("z")])
+            .expect("parallel level");
+        for parallel in [false, true] {
+            assert!(
+                verify_execution_receipt_scope(&plan, Some("z"), parallel, &[]).is_err(),
+                "missing selected receipt must fail"
+            );
+            assert!(
+                verify_execution_receipt_scope(
+                    &plan,
+                    Some("z"),
+                    parallel,
+                    &[receipt("z"), receipt("z")]
+                )
+                .is_err(),
+                "duplicates must fail"
+            );
+        }
+        assert!(
+            verify_execution_receipt_scope(&plan, Some("z"), true, &[receipt("z")]).is_err(),
+            "parallel same-level sibling cannot disappear"
         );
-    }
-
-    #[test]
-    fn completion_metrics_count_uploaded_as_failure() {
-        let receipts = [receipt(PackageState::Uploaded)];
-        let failure_count = receipts
-            .iter()
-            .filter(|receipt| !is_successful_terminal_state(&receipt.state))
-            .count();
-
-        assert_eq!(failure_count, 1);
+        assert!(
+            verify_execution_receipt_scope(
+                &plan,
+                Some("z"),
+                false,
+                &[receipt("base"), receipt("z")]
+            )
+            .is_err(),
+            "prefix must not gain a fabricated receipt"
+        );
     }
 }

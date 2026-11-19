@@ -45,7 +45,8 @@ cargo run -p shipper-cli -- <command>   # equivalent; same code path
 cargo install --path crates/shipper --locked
 
 # Tests
-cargo test                                         # all workspace tests
+cargo test --workspace --all-features --locked      # workspace tests + doc tests
+cargo test --locked                                # quick default-member tests
 cargo test -p shipper-core                         # engine crate
 cargo test -p shipper-cli                          # CLI adapter crate
 cargo test -p shipper                              # façade (integration tests)
@@ -57,7 +58,25 @@ cargo test --test cli_e2e -p shipper-cli           # CLI integration tests only
 cargo fmt --all
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Local staged-tree and changelog authoring
+changie new                                        # add a release-note fragment
+cargo precommit                                    # validate staged index + fragment
+cargo precommit install                            # install repository-owned hook
+cargo precommit status
+cargo precommit uninstall
 ```
+
+At the workspace root, plain `cargo test` selects only the `shipper` and
+`shipper-cli` default members. Use `--workspace` to include the engine, support
+crates, and xtask tests. See [Testing Guide](docs/testing.md) for command scope
+and the configured CI evidence lanes.
+
+For GitHub Actions edits, run `jactionlint --profile correctness --no-online --shellcheck=""`
+from the repo root. If the uv-installed command is not on PATH, use
+`uvx --from jactionlint==2.5.0 jactionlint` with the same arguments; do not replace
+workflow linting with a YAML parse. This matches the existing routing guard's
+explicitly disabled ShellCheck integration. See [CONTRIBUTING.md](CONTRIBUTING.md#github-actions-validation).
 
 ## Architecture
 
@@ -97,7 +116,7 @@ Written to `.shipper/` (configurable via `--state-dir`):
 - `state.json` — resumable execution state (schema-versioned). **Projection** of events.
 - `receipt.json` — audit receipt with evidence (stdout/stderr, exit codes, git context, environment fingerprint). **Summary** derived at end-of-run.
 - `events.jsonl` — append-only event log. **Authoritative truth.**
-- `lock` — distributed lock preventing concurrent publishes
+- `lock` (or `lock_<workspace-hash>`) — advisory holder metadata; the persistent `.guard` sidecar provides local OS ownership for cooperating invocations
 
 ### Events-as-truth invariant
 
@@ -107,7 +126,7 @@ In `state.json`, package status is at `.packages[].state.state`, not `.packages[
 
 ## Product context
 
-[**MISSION.md**](MISSION.md) is the north star — mission, vision, audience, and the nine convictions that produce every design decision. Read it before scoping non-trivial work.
+[**MISSION.md**](MISSION.md) is the north star — mission, vision, audience, beliefs, and the nine convictions that produce every design decision. Read it before scoping non-trivial work.
 
 Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is what Cargo still doesn't do, organized as nine competencies: **Prove, Survive, Reconcile, Narrate, Remediate, Harden, Profile, Integrate, Ergonomics**. See [ROADMAP.md](ROADMAP.md) and master tracking issue [#109](https://github.com/EffortlessMetrics/shipper/issues/109). **Reconcile is now stable:** ambiguous `cargo publish` outcomes must reconcile against registry truth and stop on `StillUnknown` instead of blind-retrying. The current open proof lane is Trusted Publishing default evidence; keep fallback/default claims bounded by `.shipper-meta/goals/active.toml` and [docs/status/SUPPORT_TIERS.md](docs/status/SUPPORT_TIERS.md).
 
@@ -122,14 +141,37 @@ Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is wha
 - Configuration can be set via `.shipper.toml` in workspace root; CLI flags override config file values. Config sections: `[policy]`, `[verify]`, `[readiness]`, `[output]`, `[lock]`, `[retry]`, `[flags]`, `[parallel]`, `[registry]`. Ownership/git settings live in `[flags]`, not a separate `[preflight]` section.
 - `config init` uses `-o`/`--output`; `config validate` uses `-p`/`--path`.
 - `prefer_index` and `index_path` (readiness) are config-file-only settings with no CLI flags.
+- User-visible, compatibility, security, recovery, and operational changes carry a Changie fragment under `.changes/unreleased/`. The repository-owned local pre-commit hook validates the staged index; Changie is intentionally not a CI gate.
+- Test-only and internal changes are exempt by path. For an exceptional behavior-preserving edit inside a normally user-facing path, use `SHIPPER_PRECOMMIT_CHANGELOG_EXEMPT` with a substantive reason of at least 12 characters and repeat that reason in the PR.
+- The tracked changelog through 0.5.0 is the pre-Changie baseline. Do not run `changie merge` until the focused baseline-migration PR proves a lossless round trip; never batch 0.5.0 again. See [docs/how-to/manage-changelog-fragments.md](docs/how-to/manage-changelog-fragments.md).
 
 ## Automated review
 
-Factory Droid runs automated review and security review on same-repo PRs and on the `@droid` mention. Review output is treated as a repair queue consumed by follow-up coding agents, not as a human approval signal.
+Factory Droid is retired. The `droid`, `droid-review`, and `droid-security-scan` workflows were removed, so no automatic review, `@droid` mention handling, or scheduled security scan runs. The references below are retained as history for anyone restoring the lane.
 
-- [`.factory/skills/review-guidelines/SKILL.md`](.factory/skills/review-guidelines/SKILL.md) — the active review skill: product contract, finding format, no-naked-LGTM record, evidence provenance, notification hygiene.
-- [`.factory/rules/droid-review.md`](.factory/rules/droid-review.md) — the compact rule version: clean-review requirements, priority surfaces, repo lenses.
-- [`docs/agent-context/review-invariants.md`](docs/agent-context/review-invariants.md) — durable product, CI, and Droid-workflow invariants a reviewer can rely on.
-- [`docs/agent-context/droid-smoke-tests.md`](docs/agent-context/droid-smoke-tests.md) — how to verify the Droid workflows after a change.
+- [`.factory/skills/review-guidelines/SKILL.md`](.factory/skills/review-guidelines/SKILL.md) — retired review guidance retained as a restoration record.
+- [`.factory/rules/droid-review.md`](.factory/rules/droid-review.md) — retired compact rules retained as a restoration record.
+- [`docs/agent-context/review-invariants.md`](docs/agent-context/review-invariants.md) — current shared invariants plus an explicitly retired Droid configuration record.
+- [`docs/agent-context/droid-smoke-tests.md`](docs/agent-context/droid-smoke-tests.md) — restoration-only verification procedure; it is not runnable against the current workflow inventory.
 
-When changing `.github/workflows/droid*.yml`, `.factory/`, or `docs/agent-context/`, follow the smoke-test procedure and update `review-invariants.md` if any invariant changes.
+The `droid*.yml` workflows no longer exist. If the lane is ever restored, follow the smoke-test procedure and update `review-invariants.md` first — and note that the Droid action mints its GitHub token via OIDC, so the job needs `id-token: write` plus a matching authority-exception record.
+
+## Codex durable-goal delivery
+
+When the user asks to work issue by issue, PR by PR, finish an umbrella issue, or deliver a durable multi-PR outcome, invoke `.agents/skills/deliver-goal`. It must route every related candidate through `.agents/skills/finish-pr` and its complete challenge, substantive review, live-integration, and merge-reconciliation lifecycle before producing campaign-level synthesis.
+
+## Codex pull-request convergence
+
+When a candidate implementation is assembled, or the user asks to finish, land, carry through, prepare, or merge a PR, invoke the Codex-native route in this order:
+
+```text
+.agents/skills/finish-pr
+→ .agents/skills/final-challenge
+→ .agents/skills/review-pr
+→ .agents/skills/verify-live-ci
+→ .agents/skills/merge-reconcile
+```
+
+A direct request to review, check, or assess merge readiness invokes `.agents/skills/review-pr` even when CI is already green. Green CI, mergeability, an approval, a bot summary, or zero unresolved threads cannot substitute for the substantive candidate judgment. Repairs require affected challenge, proof, and re-review before live integration is evaluated again.
+
+The provider-native skill is the executable authority. [`docs/agent-context/review-currentness.md`](docs/agent-context/review-currentness.md) defines shared semantics only and must not replace the complete procedure in `.agents/skills/review-pr/SKILL.md`. Factory Droid is retired: its workflows were removed and no Droid review lane runs. Codex convergence is the review route.

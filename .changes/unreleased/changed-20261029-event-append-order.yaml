@@ -1,0 +1,6 @@
+kind: changed
+body: Clarify append-order event replay and original wall-clock timestamps, including last-appended rebuilt updated_at, clock rollback, and inspect-events ordering without changing runtime behavior.
+time: 2026-10-29T06:34:57Z
+custom:
+  Audience: Mixed
+  Importance: Detailed

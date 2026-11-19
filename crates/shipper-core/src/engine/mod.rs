@@ -7,8 +7,9 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
 use crate::cargo;
+use crate::ops::auth;
 use crate::plan::PlannedWorkspace;
-use crate::registry::{RegistryClient, RegistryPolicy};
+use crate::registry::{RegistryClient, RegistryPolicy, ValidatedRegistry};
 #[cfg(test)]
 use crate::runtime::environment;
 #[cfg(test)]
@@ -33,6 +34,10 @@ use crate::types::{
 #[cfg(test)]
 use crate::types::{Finishability, PreflightPackage};
 
+#[doc(hidden)]
+pub use crate::ops::process::interruption::PublishInterruption;
+
+mod cleanup;
 pub(crate) mod execute_package;
 mod preflight;
 mod publish;
@@ -47,22 +52,189 @@ use crate::types::{
     AttemptEvidence, PackageReceipt, PublishRegime, ReadinessEvidence, ReconciliationOutcome,
 };
 pub use preflight::PreflightRunOptions;
+pub(crate) use publish::bootstrap::validate_resume_target;
 #[cfg(test)]
 use test_readiness::verify_published;
+
+/// Typed identity for a publish attempt whose registry reconciliation remained
+/// inconclusive after durable evidence was written.
+///
+/// This is public only so the separate CLI adapter can preserve the safe-stop
+/// posture without parsing error prose. It is not a completed receipt.
+#[doc(hidden)]
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct PublishStillUnknownError {
+    message: String,
+    reconciliation_written: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub(crate) struct PublishRecoverableStopError {
+    message: String,
+    package: String,
+    evidence_consistent: bool,
+}
+
+/// A local cleanup hold must survive adapter error classification and cannot
+/// be converted into registry reconciliation or a retry-ceiling suggestion.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub(crate) struct PublishCleanupIncompleteError {
+    message: String,
+}
+
+/// Inspect retained cleanup safety before adapter convenience checks. The
+/// engine repeats this check through its owned shared admission boundary.
+#[doc(hidden)]
+pub fn validate_publish_cleanup_safety(state_dir: &Path) -> Result<()> {
+    publish::admission::validate_cleanup_safety(state_dir).context(PublishAdmissionError)
+}
+
+/// Typed context for an invocation refused before publish execution is admitted.
+#[derive(Debug, thiserror::Error)]
+#[error("publish admission was refused")]
+pub(crate) struct PublishAdmissionError;
+
+/// Preserve admission identity across the separate CLI adapter without parsing prose.
+#[doc(hidden)]
+pub fn is_publish_admission_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<PublishAdmissionError>().is_some()
+}
+
+#[derive(Debug)]
+struct ResumeRetryBudgetError {
+    package: String,
+    current_attempts: u32,
+    requested_max_attempts: u32,
+    minimum_max_attempts: Option<u32>,
+}
+
+impl std::fmt::Display for ResumeRetryBudgetError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "resume retry ceiling exhausted for {}: persisted attempts {}, requested --max-attempts {}",
+            self.package, self.current_attempts, self.requested_max_attempts
+        )?;
+        match self.minimum_max_attempts {
+            Some(minimum) => write!(
+                formatter,
+                "; use --max-attempts {minimum} or greater to permit another attempt"
+            ),
+            None => formatter.write_str(
+                "; persisted attempts cannot be increased within the supported retry-ceiling range",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResumeRetryBudgetError {}
+
+/// CLI-facing identity for a resume rejected before mutation because its
+/// cumulative per-package retry ceiling cannot permit another attempt.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResumeRetryBudgetClassification {
+    pub package: String,
+    pub current_attempts: u32,
+    pub requested_max_attempts: u32,
+    pub minimum_max_attempts: Option<u32>,
+}
+
+#[doc(hidden)]
+pub fn classify_resume_retry_budget(
+    error: &anyhow::Error,
+) -> Option<ResumeRetryBudgetClassification> {
+    error
+        .downcast_ref::<ResumeRetryBudgetError>()
+        .map(|budget| ResumeRetryBudgetClassification {
+            package: budget.package.clone(),
+            current_attempts: budget.current_attempts,
+            requested_max_attempts: budget.requested_max_attempts,
+            minimum_max_attempts: budget.minimum_max_attempts,
+        })
+}
+
+/// CLI-facing classification for publish stops whose safety posture must not
+/// be inferred from human-readable error text.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublishStopClassification {
+    CleanupIncomplete,
+    Interrupted,
+    StillUnknown { reconciliation_written: bool },
+    RecoverableNotPublished { evidence_consistent: bool },
+}
+
+#[doc(hidden)]
+pub fn classify_publish_stop(error: &anyhow::Error) -> Option<PublishStopClassification> {
+    if error
+        .downcast_ref::<PublishCleanupIncompleteError>()
+        .is_some()
+    {
+        return Some(PublishStopClassification::CleanupIncomplete);
+    }
+    if error
+        .downcast_ref::<crate::ops::process::interruption::Interrupted>()
+        .is_some()
+    {
+        return Some(PublishStopClassification::Interrupted);
+    }
+    if let Some(still_unknown) = error.downcast_ref::<PublishStillUnknownError>() {
+        return Some(PublishStopClassification::StillUnknown {
+            reconciliation_written: still_unknown.reconciliation_written,
+        });
+    }
+    error
+        .downcast_ref::<PublishRecoverableStopError>()
+        .map(
+            |recoverable| PublishStopClassification::RecoverableNotPublished {
+                evidence_consistent: recoverable.evidence_consistent,
+            },
+        )
+}
+
+fn controlled_stop_evidence_consistent(
+    state_dir: &Path,
+    events_path: &Path,
+    state: &ExecutionState,
+) -> bool {
+    let reconciliation_path = state::reconciliation_path(state_dir);
+    let Ok(raw) = std::fs::read_to_string(reconciliation_path) else {
+        return false;
+    };
+    let Ok(report) = serde_json::from_str::<shipper_types::ReconciliationReport>(&raw) else {
+        return false;
+    };
+    crate::state::consistency::verify_controlled_stop_consistency(events_path, state, Some(&report))
+        .is_ok()
+}
+
+impl PublishStillUnknownError {
+    #[doc(hidden)]
+    pub fn reconciliation_written(&self) -> bool {
+        self.reconciliation_written
+    }
+}
 
 pub trait Reporter {
     fn info(&mut self, msg: &str);
     fn warn(&mut self, msg: &str);
     fn error(&mut self, msg: &str);
 
-    /// Narrate a retry-backoff wait to the operator and block until the wait
-    /// has elapsed. Called once per retry backoff site after the
-    /// [`EventType::RetryBackoffStarted`] event has been recorded. The default
-    /// implementation preserves the pre-#103 behavior (a single `warn()` line
-    /// then `thread::sleep(delay)`); richer UIs (e.g., the CLI) override it to
-    /// render a live countdown during the wait window. Overrides MUST block
-    /// for the full `delay` before returning â€” the engine relies on this
-    /// method to own the retry sleep. See #103 and #91.
+    /// Narrate the remaining retry-backoff wait after the
+    /// [`EventType::RetryBackoffStarted`] event has been recorded. Both
+    /// schedulers forward this callback on the host thread while the package
+    /// worker owns the actual retry sleep. `delay` is the time remaining on
+    /// that same monotonic wait when the callback is delivered.
+    ///
+    /// The default implementation warns once and sleeps for `delay`; richer
+    /// UIs may render a countdown or return immediately. Callback duration
+    /// does not authorize, extend, or restart the worker's retry delay. A slow
+    /// callback can delay later narration while the worker retains control of
+    /// retry admission and durable transitions.
     #[allow(clippy::too_many_arguments)]
     fn retry_wait(
         &mut self,
@@ -92,12 +264,60 @@ pub(crate) fn policy_effects(opts: &RuntimeOptions) -> crate::runtime::policy::P
     crate::runtime::policy::policy_effects(opts)
 }
 
+pub(in crate::engine) fn require_strict_ownership_token(
+    effects: &crate::runtime::policy::PolicyEffects,
+    token: Option<&str>,
+) -> Result<()> {
+    if effects.strict_ownership && token.is_none_or(str::is_empty) {
+        bail!(
+            "strict ownership requested but no token found (set CARGO_REGISTRY_TOKEN or run cargo login)"
+        );
+    }
+    Ok(())
+}
+
+pub(in crate::engine) fn enforce_strict_ownership_for_registry(
+    registry_name: &str,
+    effects: &crate::runtime::policy::PolicyEffects,
+) -> Result<()> {
+    if !effects.strict_ownership {
+        return Ok(());
+    }
+    let token = auth::resolve_token(registry_name)?;
+    require_strict_ownership_token(effects, token.as_deref())
+}
+
+/// Validate strict-ownership token presence for every registry selected for a
+/// publish command before any registry-specific execution begins.
+///
+/// This is exposed for the CLI adapter's atomic multi-registry boundary. The
+/// publish bootstrap invokes it again defensively before engine side effects.
+#[doc(hidden)]
+pub fn prevalidate_publish_registry_tokens(
+    ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
+) -> Result<()> {
+    let effects = policy_effects(opts);
+    if opts.registries.is_empty() {
+        return enforce_strict_ownership_for_registry(&ws.plan.registry.name, &effects);
+    }
+    for registry in &opts.registries {
+        enforce_strict_ownership_for_registry(&registry.name, &effects)?;
+    }
+    Ok(())
+}
+
 fn init_registry_client(
     registry: Registry,
     state_dir: &Path,
     opts: &RuntimeOptions,
 ) -> Result<RegistryClient> {
     let cache_dir = state_dir.join("cache");
+    let policy = registry_policy(&registry, opts);
+    RegistryClient::with_policy(registry, policy).map(|c| c.with_cache_dir(cache_dir))
+}
+
+fn registry_policy(registry: &Registry, opts: &RuntimeOptions) -> RegistryPolicy {
     let allow_private = opts
         .registry_policies
         .get(&registry.name)
@@ -106,10 +326,17 @@ fn init_registry_client(
         .registry_policies
         .get(&registry.name)
         .is_some_and(|policy| policy.allow_loopback);
-    let policy = RegistryPolicy::secure()
+    RegistryPolicy::secure()
         .with_private(allow_private)
-        .with_loopback(allow_loopback);
-    RegistryClient::with_policy(registry, policy).map(|c| c.with_cache_dir(cache_dir))
+        .with_loopback(allow_loopback)
+}
+
+fn validated_registry_identity(
+    registry: Registry,
+    opts: &RuntimeOptions,
+) -> Result<ValidatedRegistry> {
+    let policy = registry_policy(&registry, opts);
+    ValidatedRegistry::new(registry, policy)
 }
 
 #[cfg(test)]
@@ -207,13 +434,14 @@ pub fn run_preflight_in_place_with_options(
     reporter: &mut dyn Reporter,
     run_opts: PreflightRunOptions,
 ) -> Result<PreflightReport> {
+    crate::config::validate_per_error_config(&opts.retry_per_error)?;
     preflight::run(ws, opts, reporter, run_opts)
 }
 
 /// Execute the publish operation for all packages in the workspace.
 ///
 /// This is the main publishing function that:
-/// 1. Acquires a distributed lock to prevent concurrent publishes
+/// 1. Acquires an owned local filesystem guard to prevent cooperating concurrent publishes
 /// 2. Checks git cleanliness (if configured)
 /// 3. Initializes or resumes from existing state
 /// 4. Publishes each package in dependency order
@@ -254,7 +482,39 @@ pub fn run_publish(
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
 ) -> Result<Receipt> {
-    publish::bootstrap::validate_resume_target(ws, opts)?;
+    run_publish_with_state(ws, opts, reporter).map(|outcome| outcome.receipt)
+}
+
+/// A completed invocation's receipt and the full-plan state verified with it.
+///
+/// `--resume-from` can omit earlier packages from the receipt. Callers rendering
+/// whole-plan progress should use this snapshot, rather than rereading mutable
+/// state after the execution lock has been released.
+pub struct PublishRunOutcome {
+    pub receipt: Receipt,
+    pub state: ExecutionState,
+}
+
+/// Run publish and retain the final state snapshot used to verify its receipt.
+pub fn run_publish_with_state(
+    ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
+    reporter: &mut dyn Reporter,
+) -> Result<PublishRunOutcome> {
+    run_publish_with_state_requirement(ws, opts, reporter, false)
+}
+
+fn run_publish_with_state_requirement(
+    ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
+    reporter: &mut dyn Reporter,
+    require_existing_state: bool,
+) -> Result<PublishRunOutcome> {
+    crate::ops::process::interruption::check()?;
+    crate::config::validate_per_error_config(&opts.retry_per_error)?;
+    let state_dir = resolve_state_dir(&ws.workspace_root, &opts.state_dir);
+    let require_existing_state =
+        publish::admission::precheck(ws, opts, &state_dir, require_existing_state)?;
     let publish::bootstrap::PublishBootstrap {
         state_dir,
         _lock,
@@ -266,18 +526,31 @@ pub fn run_publish(
         mut event_log,
         state: mut st,
         run_started,
-    } = publish::bootstrap::prepare_publish_run(ws, opts, reporter)?;
+    } = publish::bootstrap::prepare_publish_run(ws, opts, reporter, require_existing_state)?;
 
     publish::notify_publish_started(ws, opts);
 
     // Check for parallel mode
     if opts.parallel.enabled {
-        let parallel_receipts = crate::engine::parallel::run_publish_parallel_without_start(
+        let parallel_receipts = match crate::engine::parallel::run_publish_parallel_without_start(
             ws, opts, &mut st, &state_dir, &reg, reporter,
-        )?;
+        ) {
+            Ok(receipts) => receipts,
+            Err(error) => {
+                return Err(publish::finalize::record_recoverable_stop(
+                    error,
+                    &state_dir,
+                    &events_path,
+                    &mut event_log,
+                    &st,
+                    reporter,
+                )?);
+            }
+        };
 
         publish::finalize::record_consistency_drift(&events_path, &st, &mut event_log, reporter);
-        return publish::finalize::finish_parallel_run(
+        crate::ops::process::interruption::check()?;
+        let receipt = publish::finalize::finish_parallel_run(
             ws,
             opts,
             &state_dir,
@@ -289,10 +562,11 @@ pub fn run_publish(
             git_context,
             environment,
             auth_evidence,
-        );
+        )?;
+        return Ok(PublishRunOutcome { receipt, state: st });
     }
 
-    let receipts = execute_package::run_sequential_scheduler(
+    let receipts = match execute_package::run_sequential_scheduler(
         ws,
         opts,
         &mut st,
@@ -301,9 +575,22 @@ pub fn run_publish(
         &mut event_log,
         &events_path,
         reporter,
-    )?;
+    ) {
+        Ok(receipts) => receipts,
+        Err(error) => {
+            return Err(publish::finalize::record_recoverable_stop(
+                error,
+                &state_dir,
+                &events_path,
+                &mut event_log,
+                &st,
+                reporter,
+            )?);
+        }
+    };
     publish::finalize::record_consistency_drift(&events_path, &st, &mut event_log, reporter);
-    publish::finalize::finish_sequential_run(
+    crate::ops::process::interruption::check()?;
+    let receipt = publish::finalize::finish_sequential_run(
         ws,
         opts,
         &state_dir,
@@ -315,7 +602,8 @@ pub fn run_publish(
         git_context,
         environment,
         auth_evidence,
-    )
+    )?;
+    Ok(PublishRunOutcome { receipt, state: st })
 }
 
 /// Resume a previously interrupted publish operation.
@@ -358,15 +646,73 @@ pub fn run_resume(
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
 ) -> Result<Receipt> {
-    let workspace_root = &ws.workspace_root;
-    let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
-    if state::load_state(&state_dir)?.is_none() {
-        bail!(
-            "no existing state found in {}; run shipper publish first",
-            state_dir.display()
-        );
+    run_resume_with_state(ws, opts, reporter).map(|outcome| outcome.receipt)
+}
+
+/// Resume and retain the final state snapshot used to verify its receipt.
+pub fn run_resume_with_state(
+    ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
+    reporter: &mut dyn Reporter,
+) -> Result<PublishRunOutcome> {
+    run_publish_with_state_requirement(ws, opts, reporter, true)
+}
+
+fn reject_exhausted_resume_retry_ceiling(
+    ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
+    state: &ExecutionState,
+) -> Result<()> {
+    let reject_package = |package: &shipper_types::PlannedPackage| -> Result<()> {
+        let key = pkg_key(&package.name, &package.version);
+        let Some(progress) = state.packages.get(&key) else {
+            return Ok(());
+        };
+        if matches!(
+            progress.state,
+            PackageState::Failed {
+                class: ErrorClass::Retryable,
+                ..
+            }
+        ) && progress.attempts >= opts.max_attempts
+        {
+            Err(ResumeRetryBudgetError {
+                package: key,
+                current_attempts: progress.attempts,
+                requested_max_attempts: opts.max_attempts,
+                minimum_max_attempts: progress.attempts.checked_add(1),
+            }
+            .into())
+        } else {
+            Ok(())
+        }
+    };
+
+    if opts.parallel.enabled {
+        let levels = ws.plan.group_by_levels();
+        let start_level = crate::engine::parallel::parallel_resume_start_level(
+            &levels,
+            opts.resume_from.as_deref(),
+        )
+        .ok_or_else(|| anyhow::anyhow!("validated resume target has no publish level"))?;
+        for level in levels.iter().skip(start_level) {
+            for package in &level.packages {
+                reject_package(package)?;
+            }
+        }
+    } else {
+        let mut reached_resume_target = opts.resume_from.is_none();
+        for package in &ws.plan.packages {
+            if !reached_resume_target {
+                reached_resume_target = opts.resume_from.as_deref() == Some(package.name.as_str());
+                if !reached_resume_target {
+                    continue;
+                }
+            }
+            reject_package(package)?;
+        }
     }
-    run_publish(ws, opts, reporter)
+    Ok(())
 }
 
 /// Outcome of a rehearsal run. Sufficient for callers (CLI, future hard gate)
@@ -413,6 +759,8 @@ pub fn run_rehearsal(
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
 ) -> Result<RehearsalOutcome> {
+    crate::ops::process::interruption::check()?;
+    crate::config::validate_per_error_config(&opts.retry_per_error)?;
     let rehearsal_name = opts
         .rehearsal_registry
         .as_ref()
@@ -446,21 +794,29 @@ pub fn run_rehearsal(
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "rehearsal registry '{rehearsal_name}' is not configured. \
-             Add it to [[registries]] in .shipper.toml or pass --registries."
+             Add it to [[registries.registries]] in .shipper.toml and select it with --registries."
             )
         })?;
 
-    if rehearsal_reg.name == ws.plan.registry.name {
-        bail!(
-            "rehearsal registry '{}' must differ from the live target; \
-             pick a sandbox registry (e.g. kellnr, a fresh crates-io test account, \
-             or a throwaway alternate-registry entry)",
-            rehearsal_reg.name
-        );
-    }
+    let mut rehearsal_opts = opts.clone();
+    let rehearsal_policy = rehearsal_opts
+        .registry_policies
+        .entry(rehearsal_reg.name.clone())
+        .or_insert_with(RegistryTrustOptions::secure);
+    rehearsal_policy.allow_loopback = true;
+    let live_identity = validated_registry_identity(ws.plan.registry.clone(), opts)
+        .context("invalid live registry identity for rehearsal isolation")?;
+    let rehearsal_identity = validated_registry_identity(rehearsal_reg.clone(), &rehearsal_opts)
+        .context("invalid rehearsal registry identity")?;
+    rehearsal_identity.ensure_rehearsal_isolated_from(&live_identity)?;
 
     let workspace_root = &ws.workspace_root;
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
+    validate_publish_cleanup_safety(&state_dir)?;
+    let reservation = publish::admission::reserve_rehearsal(ws, opts, &state_dir)?;
+    let _lock = reservation
+        .claim(Some(&ws.plan.plan_id))
+        .context(PublishAdmissionError)?;
     std::fs::create_dir_all(&state_dir)
         .with_context(|| format!("failed to create state dir {}", state_dir.display()))?;
     let events_path = events::events_path(&state_dir);
@@ -485,12 +841,6 @@ pub fn run_rehearsal(
     event_log.write_to_file(&events_path)?;
     event_log.clear();
 
-    let mut rehearsal_opts = opts.clone();
-    let rehearsal_policy = rehearsal_opts
-        .registry_policies
-        .entry(rehearsal_reg.name.clone())
-        .or_insert_with(RegistryTrustOptions::secure);
-    rehearsal_policy.allow_loopback = true;
     let rehearsal_client =
         init_registry_client(rehearsal_reg.clone(), &state_dir, &rehearsal_opts)?;
     event_log.record(PublishEvent {
@@ -507,11 +857,12 @@ pub fn run_rehearsal(
     let mut first_failure: Option<String> = None;
 
     for p in &ws.plan.packages {
+        crate::ops::process::interruption::check()?;
         let pkg_label = format!("{}@{}", p.name, p.version);
         reporter.info(&format!("rehearsing {pkg_label} â†’ {rehearsal_name}"));
         let start = Instant::now();
 
-        let out = cargo::cargo_publish(
+        let captured = cargo::cargo_publish_with_capture(
             workspace_root,
             &p.name,
             &rehearsal_reg.name,
@@ -520,9 +871,49 @@ pub fn run_rehearsal(
             opts.output_lines,
             None,
         )?;
+        if let Some(failure) = captured.cleanup_failure {
+            let message = cleanup::message(failure);
+            reporter.error(&message);
+            return Err(cleanup::stop_rehearsal(
+                &mut event_log,
+                &events_path,
+                &pkg_label,
+                message,
+            ));
+        }
+        if captured.interrupted || crate::ops::process::interruption::requested() {
+            event_log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::RehearsalPackageFailed {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    class: ErrorClass::Ambiguous,
+                    message: "publication interrupted; process cleanup confirmed; registry outcome is unknown".into(),
+                },
+                package: pkg_label.clone(),
+            });
+            event_log
+                .write_to_file(&events_path)
+                .context(crate::ops::process::interruption::Interrupted)?;
+            return Err(crate::ops::process::interruption::Interrupted.into());
+        }
+        let capture_complete = captured.capture.is_complete();
+        let out = captured.output;
+        if !capture_complete {
+            reporter.warn(
+                "rehearsal Cargo diagnostic capture was incomplete; diagnostic tails omitted",
+            );
+        }
 
         if out.exit_code != 0 {
-            let (class, msg) = classify_cargo_failure(&out.stderr_tail, &out.stdout_tail);
+            let (class, msg) = if !capture_complete {
+                (
+                    ErrorClass::Ambiguous,
+                    "cargo publish diagnostic capture was incomplete".to_string(),
+                )
+            } else {
+                classify_cargo_failure(&out.stderr_tail, &out.stdout_tail)
+            };
             reporter.error(&format!(
                 "rehearsal failed for {pkg_label}: {msg}\nstderr tail:\n{}",
                 out.stderr_tail
@@ -542,6 +933,9 @@ pub fn run_rehearsal(
             first_failure = Some(format!("{pkg_label}: {msg}"));
             break;
         }
+
+        drop(captured._interruption_lease);
+        crate::ops::process::interruption::check()?;
 
         // Post-publish visibility check on the rehearsal registry. Reuse
         // `version_exists` â€” same mechanism live publish trusts.
@@ -776,6 +1170,17 @@ pub(crate) fn init_state(ws: &PlannedWorkspace, state_dir: &Path) -> Result<Exec
 
 #[cfg(test)]
 mod tests {
+    mod capture_reconciliation;
+    mod cleanup_hold;
+    mod file_sync;
+    mod live_retry;
+    mod lock_ownership;
+    mod per_error_refusal;
+    mod reconciliation_concurrency;
+    mod retained_admission;
+    mod retained_retryable;
+    mod timeout_reconciliation;
+
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -1236,9 +1641,16 @@ mod tests {
     #[test]
     #[serial]
     fn verify_published_returns_false_on_timeout() {
+        let server = spawn_registry_server(
+            std::collections::BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![(404, "{}".to_string())],
+            )]),
+            1,
+        );
         let reg = test_registry_client(Registry {
             name: "crates-io".to_string(),
-            api_base: "http://127.0.0.1:9".to_string(),
+            api_base: server.base_url.clone(),
             index_base: None,
         })
         .expect("client");
@@ -1259,7 +1671,7 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let events_path = td.path().join("events.jsonl");
         let mut event_log = events::EventLog::new();
-        let (ok, _evidence) = verify_published(
+        let (ok, evidence) = verify_published(
             &reg,
             "demo",
             "0.1.0",
@@ -1271,6 +1683,64 @@ mod tests {
         )
         .expect("verify");
         assert!(!ok);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].attempt, 1);
+        assert!(!evidence[0].visible);
+        let events = events::EventLog::read_from_file(&events_path).expect("events");
+        assert!(events.all_events().iter().any(|event| matches!(
+            event.event_type,
+            EventType::ReadinessTimeout { max_wait_ms: 0 }
+        )));
+        assert!(
+            !events
+                .all_events()
+                .iter()
+                .any(|event| matches!(event.event_type, EventType::ReadinessError { .. }))
+        );
+        assert_eq!(server.seen.lock().expect("requests").len(), 1);
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn verify_published_keeps_unavailable_registry_unknown() {
+        let reg = test_registry_client(Registry {
+            name: "crates-io".to_string(),
+            api_base: "http://127.0.0.1:9".to_string(),
+            index_base: None,
+        })
+        .expect("client");
+        let mut config = default_opts(PathBuf::from(".shipper")).readiness;
+        config.max_total_wait = Duration::ZERO;
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        let error = verify_published(
+            &reg,
+            "demo",
+            "0.1.0",
+            &config,
+            &mut CollectingReporter::default(),
+            &mut events::EventLog::new(),
+            &events_path,
+            "demo@0.1.0",
+        )
+        .expect_err("unavailable transport cannot establish absence");
+        assert!(
+            error
+                .downcast_ref::<shipper_registry::ReadinessObservationError>()
+                .is_some()
+        );
+        let events = events::EventLog::read_from_file(&events_path).expect("events");
+        assert!(
+            events
+                .all_events()
+                .iter()
+                .any(|event| matches!(event.event_type, EventType::ReadinessError { .. }))
+        );
+        assert!(!events.all_events().iter().any(|event| matches!(
+            event.event_type,
+            EventType::ReadinessTimeout { .. } | EventType::ReadinessPoll { visible: false, .. }
+        )));
     }
 
     /// The polling loop itself now lives in `shipper-registry`, but the
@@ -1452,6 +1922,101 @@ mod tests {
                 assert!(
                     format!("{err:#}").contains("strict ownership requested but no token found")
                 );
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn run_publish_rejects_missing_strict_token_before_state_for_both_schedulers() {
+        let td = tempdir().expect("tempdir");
+        let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+        temp_env::with_vars(
+            [
+                (
+                    "CARGO_HOME",
+                    Some(td.path().join("cargo-home").display().to_string()),
+                ),
+                ("CARGO_REGISTRY_TOKEN", None::<String>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<String>),
+            ],
+            || {
+                for parallel in [false, true] {
+                    let state_dir = td.path().join(if parallel {
+                        "parallel-state"
+                    } else {
+                        "sequential-state"
+                    });
+                    let mut opts = default_opts(state_dir.clone());
+                    opts.strict_ownership = true;
+                    opts.skip_ownership_check = false;
+                    opts.parallel.enabled = parallel;
+
+                    let mut reporter = CollectingReporter::default();
+                    let error = run_publish(&ws, &opts, &mut reporter).expect_err("must fail");
+                    assert!(
+                        format!("{error:#}")
+                            .contains("strict ownership requested but no token found")
+                    );
+                    assert!(
+                        !state_dir.exists(),
+                        "strict token gate must run before {parallel:?} scheduler state"
+                    );
+                    assert!(reporter.infos.is_empty());
+                    assert!(reporter.warns.is_empty());
+                    assert!(reporter.errors.is_empty());
+                }
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn strict_token_gate_preserves_token_policy_and_skip_opposites() {
+        let td = tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                (
+                    "CARGO_HOME",
+                    Some(td.path().join("cargo-home").display().to_string()),
+                ),
+                ("CARGO_REGISTRY_TOKEN", Some("test-token".to_string())),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<String>),
+            ],
+            || {
+                let mut opts = default_opts(PathBuf::from(".shipper"));
+                opts.strict_ownership = true;
+                let effects = policy_effects(&opts);
+                assert!(require_strict_ownership_token(&effects, Some("test-token")).is_ok());
+            },
+        );
+
+        temp_env::with_vars(
+            [
+                (
+                    "CARGO_HOME",
+                    Some(td.path().join("empty-cargo-home").display().to_string()),
+                ),
+                ("CARGO_REGISTRY_TOKEN", None::<String>),
+                ("CARGO_REGISTRIES_CRATES_IO_TOKEN", None::<String>),
+            ],
+            || {
+                for policy in [
+                    crate::types::PublishPolicy::Balanced,
+                    crate::types::PublishPolicy::Fast,
+                ] {
+                    let mut opts = default_opts(PathBuf::from(".shipper"));
+                    opts.policy = policy;
+                    opts.strict_ownership = true;
+                    let effects = policy_effects(&opts);
+                    assert!(!effects.strict_ownership);
+                    assert!(require_strict_ownership_token(&effects, None).is_ok());
+                }
+
+                let mut skip_only = default_opts(PathBuf::from(".shipper"));
+                skip_only.skip_ownership_check = true;
+                skip_only.strict_ownership = false;
+                assert!(require_strict_ownership_token(&policy_effects(&skip_only), None).is_ok());
             },
         );
     }
@@ -2619,9 +3184,10 @@ mod tests {
         });
     }
 
-    #[test]
-    #[serial]
-    fn sequential_ambiguous_publish_still_unknown_stops_without_retry() {
+    fn assert_sequential_not_published_controlled_stop(
+        max_attempts: u32,
+        expected_registry_requests: usize,
+    ) {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
@@ -2640,61 +3206,574 @@ mod tests {
             let server = spawn_registry_server(
                 std::collections::BTreeMap::from([(
                     "/api/v1/crates/demo/0.1.0".to_string(),
-                    vec![(404, "{}".to_string()), (500, "{}".to_string())],
+                    std::iter::repeat_n((404, "{}".to_string()), expected_registry_requests)
+                        .collect(),
                 )]),
-                2,
+                expected_registry_requests,
             );
             let ws = planned_workspace(td.path(), server.base_url.clone());
             let state_dir = td.path().join(".shipper");
             let mut opts = default_opts(state_dir.clone());
-            opts.max_attempts = 2;
+            opts.max_attempts = max_attempts;
             opts.readiness.enabled = false;
 
             let mut reporter = CollectingReporter::default();
-            let err = run_publish(&ws, &opts, &mut reporter).expect_err("publish should stop");
-            let msg = format!("{err:#}");
+            let error = run_publish(&ws, &opts, &mut reporter).expect_err("controlled stop");
             assert!(
-                msg.contains("reconciliation inconclusive"),
-                "expected inconclusive error, got: {msg}"
+                error
+                    .downcast_ref::<PublishRecoverableStopError>()
+                    .is_some(),
+                "typed stop identity lost: {error:#}"
             );
-            assert!(
-                reporter
-                    .errors
-                    .iter()
-                    .any(|msg| msg.contains("reconciliation outcome: StillUnknown")
-                        && msg.contains("stop before blind retry")),
-                "errors: {:?}",
-                reporter.errors
-            );
-
-            let cargo_invocations = std::fs::read_to_string(&cargo_log)
-                .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
-                .unwrap_or(0);
-            assert_eq!(cargo_invocations, 1, "must not retry after StillUnknown");
-
             let state = state::load_state(&state_dir)
                 .expect("load state")
                 .expect("state exists");
-            let progress = state.packages.get("demo@0.1.0").expect("package");
-            assert!(
-                matches!(progress.state, PackageState::Ambiguous { .. }),
-                "expected Ambiguous state, got {:?}",
-                progress.state
+            assert!(matches!(
+                state.packages.get("demo@0.1.0").map(|p| &p.state),
+                Some(PackageState::Failed {
+                    class: ErrorClass::Retryable,
+                    ..
+                })
+            ));
+            assert!(!state::receipt_path(&state_dir).exists());
+            let event_log =
+                events::EventLog::read_from_file(&events::events_path(&state_dir)).expect("events");
+            assert!(matches!(
+                event_log.all_events().last().map(|event| &event.event_type),
+                Some(EventType::ExecutionStopped {
+                    reason: shipper_types::ControlledStopReason::NotPublishedRetryBudgetExhausted
+                })
+            ));
+            let reconciliation: shipper_types::ReconciliationReport = serde_json::from_str(
+                &std::fs::read_to_string(state::reconciliation_path(&state_dir))
+                    .expect("reconciliation report"),
+            )
+            .expect("parse reconciliation report");
+            crate::state::consistency::verify_controlled_stop_consistency(
+                &events::events_path(&state_dir),
+                &state,
+                Some(&reconciliation),
+            )
+            .expect("controlled stop is consistent");
+            let cargo_invocations = std::fs::read_to_string(&cargo_log)
+                .map(|raw| raw.lines().filter(|line| !line.trim().is_empty()).count())
+                .unwrap_or(0);
+            assert_eq!(
+                cargo_invocations, max_attempts as usize,
+                "must dispatch Cargo exactly once per allowed attempt"
             );
-
-            let events_path = events::events_path(&state_dir);
-            let events = events::EventLog::read_from_file(&events_path).expect("events");
-            assert!(events.all_events().iter().any(|e| {
-                matches!(
-                    &e.event_type,
-                    EventType::PublishReconciled {
-                        outcome: ReconciliationOutcome::StillUnknown { .. }
-                    }
-                )
-            }));
-
             server.join();
         });
+    }
+
+    #[test]
+    #[serial]
+    fn sequential_not_published_budget_exhaustion_records_controlled_stop() {
+        assert_sequential_not_published_controlled_stop(1, 2);
+    }
+
+    #[test]
+    #[serial]
+    fn sequential_repeated_not_published_exhaustion_records_one_controlled_stop() {
+        assert_sequential_not_published_controlled_stop(2, 3);
+    }
+
+    #[test]
+    #[serial]
+    fn resume_consumes_consistent_controlled_stop_and_finalizes_receipt() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let cargo_log = td.path().join("cargo-calls.log");
+        let server = spawn_registry_server(
+            std::collections::BTreeMap::from([(
+                "/api/v1/crates/demo/0.1.0".to_string(),
+                vec![
+                    (404, "{}".to_string()),
+                    (404, "{}".to_string()),
+                    // Resume checks retained retryable work before another upload.
+                    (404, "{}".to_string()),
+                    (200, "{}".to_string()),
+                ],
+            )]),
+            4,
+        );
+        let ws = planned_workspace(td.path(), server.base_url.clone());
+        let state_dir = td.path().join(".shipper");
+        let mut opts = default_opts(state_dir.clone());
+        opts.max_attempts = 1;
+        opts.readiness.enabled = false;
+
+        let mut first_env = fake_program_env_vars(&bin);
+        first_env.extend([
+            ("SHIPPER_CARGO_EXIT", Some("1".to_string())),
+            ("SHIPPER_CARGO_STDERR", Some(String::new())),
+            ("SHIPPER_CARGO_STDOUT", Some(String::new())),
+            (
+                "SHIPPER_CARGO_ARGS_LOG",
+                Some(cargo_log.to_string_lossy().to_string()),
+            ),
+        ]);
+        temp_env::with_vars(first_env, || {
+            let mut reporter = CollectingReporter::default();
+            run_publish(&ws, &opts, &mut reporter).expect_err("controlled stop");
+        });
+
+        let reconciliation_path = state::reconciliation_path(&state_dir);
+        let reconciliation_before =
+            std::fs::read(&reconciliation_path).expect("reconciliation before marker negatives");
+        let mut report: crate::types::ReconciliationReport =
+            serde_json::from_slice(&reconciliation_before)
+                .expect("parse reconciliation for marker negatives");
+        let mut other = report
+            .records
+            .first()
+            .cloned()
+            .expect("controlled-stop reconciliation record");
+        other.package = "other@1.0.0".to_string();
+        other.name = "other".to_string();
+        other.version = "1.0.0".to_string();
+        other.outcome = ReconciliationOutcome::StillUnknown {
+            attempts: 1,
+            elapsed_ms: 1,
+            reason: "other package remains ambiguous".to_string(),
+        };
+        other.operator_action = crate::types::ReconciliationOperatorAction::OperatorActionRequired;
+        report.records.push(other);
+        state::write_reconciliation_report(&state_dir, &report)
+            .expect("write mixed reconciliation for marker negatives");
+
+        let controlled_events_path = events::events_path(&state_dir);
+        let complete_events =
+            std::fs::read_to_string(&controlled_events_path).expect("complete events");
+        let mut event_lines = complete_events.lines().collect::<Vec<_>>();
+        let removed = event_lines.pop().expect("controlled-stop marker line");
+        assert!(removed.contains("execution_stopped"));
+        std::fs::write(
+            &controlled_events_path,
+            format!("{}\n", event_lines.join("\n")),
+        )
+        .expect("remove marker for negative");
+        let markerless_events_before =
+            std::fs::read(&controlled_events_path).expect("markerless events before rejection");
+        let state_before_rejection =
+            std::fs::read(state::state_path(&state_dir)).expect("state before rejection");
+        let cargo_before_rejection = std::fs::read(&cargo_log).expect("cargo log before rejection");
+        let markerless_error = run_resume(&ws, &opts, &mut CollectingReporter::default())
+            .expect_err("markerless derived posture must be rejected");
+        assert!(
+            format!("{markerless_error:#}").contains("lacks the current controlled-stop marker")
+        );
+        assert_eq!(
+            std::fs::read(state::state_path(&state_dir)).expect("state after rejection"),
+            state_before_rejection,
+            "rejected resume must not mutate state"
+        );
+        assert_eq!(
+            std::fs::read(&controlled_events_path).expect("events after markerless rejection"),
+            markerless_events_before,
+            "markerless rejection must not mutate events"
+        );
+        assert_eq!(
+            std::fs::read(&cargo_log).expect("cargo log after rejection"),
+            cargo_before_rejection,
+            "rejected resume must not dispatch Cargo"
+        );
+        std::fs::write(&controlled_events_path, complete_events)
+            .expect("restore controlled-stop marker");
+
+        let complete_events =
+            std::fs::read_to_string(&controlled_events_path).expect("restored events");
+        let mut reordered = complete_events.lines().collect::<Vec<_>>();
+        let marker = reordered.pop().expect("controlled-stop marker");
+        reordered.insert(1, marker);
+        std::fs::write(
+            &controlled_events_path,
+            format!("{}\n", reordered.join("\n")),
+        )
+        .expect("write reordered marker");
+        let reordered_events_before =
+            std::fs::read(&controlled_events_path).expect("reordered events before rejection");
+        let reordered_error = run_resume(&ws, &opts, &mut CollectingReporter::default())
+            .expect_err("non-terminal marker must be rejected");
+        assert!(
+            format!("{reordered_error:#}").contains("controlled-stop"),
+            "unexpected reordered-marker error: {reordered_error:#}"
+        );
+        assert_eq!(
+            std::fs::read(state::state_path(&state_dir)).expect("state after reordered rejection"),
+            state_before_rejection,
+            "reordered marker rejection must not mutate state"
+        );
+        assert_eq!(
+            std::fs::read(&controlled_events_path).expect("events after reordered rejection"),
+            reordered_events_before,
+            "reordered marker rejection must not mutate events"
+        );
+        assert_eq!(
+            std::fs::read(&cargo_log).expect("cargo log after reordered rejection"),
+            cargo_before_rejection,
+            "reordered marker rejection must not dispatch Cargo"
+        );
+        std::fs::write(&controlled_events_path, &complete_events)
+            .expect("restore terminal marker after reordered negative");
+        std::fs::write(&reconciliation_path, &reconciliation_before)
+            .expect("restore reconciliation after marker negatives");
+
+        let mut corrupt_identity: crate::types::ReconciliationReport =
+            serde_json::from_slice(&reconciliation_before)
+                .expect("parse reconciliation for identity negative");
+        let mut duplicate = corrupt_identity
+            .records
+            .last()
+            .cloned()
+            .expect("controlled-stop reconciliation record");
+        duplicate.name = "forged-package-name".to_string();
+        corrupt_identity.records.push(duplicate);
+        state::write_reconciliation_report(&state_dir, &corrupt_identity)
+            .expect("write corrupt duplicate identity");
+        let stopped_state = state::load_state(&state_dir)
+            .expect("load stopped state")
+            .expect("stopped state exists");
+        assert!(
+            !controlled_stop_evidence_consistent(
+                &state_dir,
+                &controlled_events_path,
+                &stopped_state
+            ),
+            "corrupt duplicate identity must not authorize the initial stop envelope or durable status"
+        );
+        let corrupt_state_before =
+            std::fs::read(state::state_path(&state_dir)).expect("state before identity rejection");
+        let corrupt_events_before =
+            std::fs::read(&controlled_events_path).expect("events before identity rejection");
+        let corrupt_cargo_before =
+            std::fs::read(&cargo_log).expect("cargo log before identity rejection");
+        let corrupt_error = run_resume(&ws, &opts, &mut CollectingReporter::default())
+            .expect_err("corrupt duplicate identity must reject resume");
+        assert!(
+            format!("{corrupt_error:#}").contains("reconciliation package identity disagrees"),
+            "unexpected corrupt-identity error: {corrupt_error:#}"
+        );
+        assert_eq!(
+            std::fs::read(state::state_path(&state_dir)).expect("state after identity rejection"),
+            corrupt_state_before,
+            "identity rejection must not mutate state"
+        );
+        assert_eq!(
+            std::fs::read(&controlled_events_path).expect("events after identity rejection"),
+            corrupt_events_before,
+            "identity rejection must not mutate events"
+        );
+        assert_eq!(
+            std::fs::read(&cargo_log).expect("cargo log after identity rejection"),
+            corrupt_cargo_before,
+            "identity rejection must not dispatch Cargo"
+        );
+        std::fs::write(&reconciliation_path, &reconciliation_before)
+            .expect("restore reconciliation after identity negative");
+
+        let reconciliation_before =
+            std::fs::read(&reconciliation_path).expect("reconciliation before cross-run negative");
+        let mut cross_run: serde_json::Value = serde_json::from_slice(&reconciliation_before)
+            .expect("parse reconciliation for cross-run negative");
+        cross_run["plan_id"] = serde_json::Value::String("different-run-plan".to_string());
+        std::fs::write(
+            &reconciliation_path,
+            serde_json::to_vec_pretty(&cross_run).expect("serialize cross-run reconciliation"),
+        )
+        .expect("write cross-run reconciliation");
+        let _cross_run_error = run_resume(&ws, &opts, &mut CollectingReporter::default())
+            .expect_err("cross-run reconciliation must be rejected");
+        assert_eq!(
+            std::fs::read(state::state_path(&state_dir)).expect("state after cross-run rejection"),
+            state_before_rejection,
+            "cross-run rejection must not mutate state"
+        );
+        assert_eq!(
+            std::fs::read(&cargo_log).expect("cargo log after cross-run rejection"),
+            cargo_before_rejection,
+            "cross-run rejection must not dispatch Cargo"
+        );
+        std::fs::write(&reconciliation_path, reconciliation_before)
+            .expect("restore reconciliation after cross-run negative");
+
+        #[cfg(target_os = "linux")]
+        {
+            let live_lock = crate::lock::LockFile::acquire(&state_dir, Some(&ws.workspace_root))
+                .expect("acquire matching live lock");
+            live_lock
+                .set_plan_id(&ws.plan.plan_id)
+                .expect("set matching live-lock plan");
+            let live_error = run_resume(&ws, &opts, &mut CollectingReporter::default())
+                .expect_err("matching live publisher must block resume");
+            assert!(format!("{live_error:#}").contains("still live"));
+            assert_eq!(
+                std::fs::read(state::state_path(&state_dir))
+                    .expect("state after matching live-lock rejection"),
+                state_before_rejection,
+                "live-lock rejection must not mutate state"
+            );
+            assert_eq!(
+                std::fs::read(&cargo_log).expect("cargo log after live-lock rejection"),
+                cargo_before_rejection,
+                "live-lock rejection must not dispatch Cargo"
+            );
+            drop(live_lock);
+        }
+
+        let budget_state_before =
+            std::fs::read(state::state_path(&state_dir)).expect("state before budget rejection");
+        let budget_events_before =
+            std::fs::read(&controlled_events_path).expect("events before budget rejection");
+        let budget_reconciliation_before =
+            std::fs::read(&reconciliation_path).expect("reconciliation before budget rejection");
+        let budget_cargo_before =
+            std::fs::read(&cargo_log).expect("cargo log before budget rejection");
+        let mut invalid_target_opts = opts.clone();
+        invalid_target_opts.resume_from = Some("missing-package".to_string());
+        let invalid_target_error = run_resume(
+            &ws,
+            &invalid_target_opts,
+            &mut CollectingReporter::default(),
+        )
+        .expect_err("invalid resume target must precede budget admission");
+        assert!(
+            format!("{invalid_target_error:#}")
+                .contains("resume-from package 'missing-package' not found")
+        );
+        assert_eq!(
+            std::fs::read(state::state_path(&state_dir))
+                .expect("state after invalid-target rejection"),
+            budget_state_before
+        );
+        assert_eq!(
+            std::fs::read(&controlled_events_path).expect("events after invalid-target rejection"),
+            budget_events_before
+        );
+        assert_eq!(
+            std::fs::read(&reconciliation_path)
+                .expect("reconciliation after invalid-target rejection"),
+            budget_reconciliation_before
+        );
+        assert_eq!(
+            std::fs::read(&cargo_log).expect("cargo after invalid-target rejection"),
+            budget_cargo_before
+        );
+        let budget_error = run_resume(&ws, &opts, &mut CollectingReporter::default())
+            .expect_err("same cumulative retry ceiling must reject before mutation");
+        assert_eq!(
+            classify_resume_retry_budget(&budget_error),
+            Some(ResumeRetryBudgetClassification {
+                package: "demo@0.1.0".to_string(),
+                current_attempts: 1,
+                requested_max_attempts: 1,
+                minimum_max_attempts: Some(2),
+            })
+        );
+        assert_eq!(
+            std::fs::read(state::state_path(&state_dir)).expect("state after budget rejection"),
+            budget_state_before,
+            "budget rejection must not mutate state"
+        );
+        assert_eq!(
+            std::fs::read(&controlled_events_path).expect("events after budget rejection"),
+            budget_events_before,
+            "budget rejection must not append a new run segment"
+        );
+        assert_eq!(
+            std::fs::read(&reconciliation_path).expect("reconciliation after budget rejection"),
+            budget_reconciliation_before,
+            "budget rejection must not mutate reconciliation evidence"
+        );
+        assert_eq!(
+            std::fs::read(&cargo_log).expect("cargo log after budget rejection"),
+            budget_cargo_before,
+            "budget rejection must not dispatch Cargo"
+        );
+        assert!(!state::receipt_path(&state_dir).exists());
+        let stopped_state = state::load_state(&state_dir)
+            .expect("load state after budget rejection")
+            .expect("stopped state exists after budget rejection");
+        crate::state::consistency::verify_controlled_stop_consistency(
+            &controlled_events_path,
+            &stopped_state,
+            Some(
+                &serde_json::from_slice(&budget_reconciliation_before)
+                    .expect("parse reconciliation after budget rejection"),
+            ),
+        )
+        .expect("budget rejection must preserve controlled-stop authorization");
+
+        let mut resume_env = fake_program_env_vars(&bin);
+        resume_env.extend([
+            ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+            (
+                "SHIPPER_CARGO_ARGS_LOG",
+                Some(cargo_log.to_string_lossy().to_string()),
+            ),
+        ]);
+        temp_env::with_vars(resume_env, || {
+            let mut reporter = CollectingReporter::default();
+            let mut resume_opts = opts.clone();
+            resume_opts.max_attempts = 2;
+            let receipt = run_resume(&ws, &resume_opts, &mut reporter).expect("resume succeeds");
+            assert!(matches!(receipt.execution_result, ExecutionResult::Success));
+        });
+
+        let final_state = state::load_state(&state_dir)
+            .expect("load final state")
+            .expect("final state exists");
+        assert!(matches!(
+            final_state
+                .packages
+                .get("demo@0.1.0")
+                .map(|progress| &progress.state),
+            Some(PackageState::Published)
+        ));
+        assert!(state::receipt_path(&state_dir).exists());
+        let events =
+            events::EventLog::read_from_file(&events::events_path(&state_dir)).expect("events");
+        assert_eq!(
+            events
+                .all_events()
+                .iter()
+                .filter(|event| matches!(event.event_type, EventType::ExecutionStarted))
+                .count(),
+            2,
+            "resume must create a new run segment"
+        );
+        let cargo_invocations = std::fs::read_to_string(&cargo_log)
+            .map(|raw| raw.lines().filter(|line| !line.trim().is_empty()).count())
+            .unwrap_or(0);
+        assert_eq!(cargo_invocations, 2, "one initial attempt and one resume");
+        server.join();
+    }
+
+    #[test]
+    #[serial]
+    fn enabled_reconciliation_still_unknown_stops_publish_and_resume_in_both_modes() {
+        for (parallel, method, index_response) in [
+            (false, crate::types::ReadinessMethod::Api, "unused index"),
+            (true, crate::types::ReadinessMethod::Api, "unused index"),
+            (
+                false,
+                crate::types::ReadinessMethod::Index,
+                "secret-response-sentinel",
+            ),
+            (
+                false,
+                crate::types::ReadinessMethod::Index,
+                r#"{"vers":""}"#,
+            ),
+            (
+                true,
+                crate::types::ReadinessMethod::Index,
+                r#"{"vers":"not-a-version"}"#,
+            ),
+        ] {
+            let td = tempdir().expect("tempdir");
+            let bin = td.path().join("bin");
+            write_fake_tools(&bin);
+            let cargo_log = td.path().join("cargo-calls.log");
+            let mut env_vars = fake_program_env_vars(&bin);
+            env_vars.extend([
+                ("SHIPPER_CARGO_EXIT", Some("1".to_string())),
+                ("SHIPPER_CARGO_STDERR", Some(String::new())),
+                ("SHIPPER_CARGO_STDOUT", Some(String::new())),
+                (
+                    "SHIPPER_CARGO_ARGS_LOG",
+                    Some(cargo_log.to_string_lossy().to_string()),
+                ),
+            ]);
+            temp_env::with_vars(env_vars, || {
+                let server = spawn_registry_server(
+                    std::collections::BTreeMap::from([
+                        (
+                            "/api/v1/crates/demo/0.1.0".into(),
+                            vec![(404, "{}".into()), (500, "secret-response-sentinel".into())],
+                        ),
+                        ("/de/mo/demo".into(), vec![(200, index_response.into())]),
+                    ]),
+                    3,
+                );
+                let ws = planned_workspace(td.path(), server.base_url.clone());
+                let state_dir = td.path().join(".shipper");
+                let mut opts = default_opts(state_dir.clone());
+                opts.parallel.enabled = parallel;
+                opts.max_attempts = 2;
+                opts.readiness.enabled = true;
+                opts.readiness.method = method;
+                opts.readiness.max_total_wait = Duration::ZERO;
+                opts.readiness.initial_delay = Duration::ZERO;
+
+                for resume in [false, true] {
+                    let mut reporter = CollectingReporter::default();
+                    let result = if resume {
+                        run_resume(&ws, &opts, &mut reporter)
+                    } else {
+                        run_publish(&ws, &opts, &mut reporter)
+                    };
+                    let error = result.expect_err("unknown observation must stop");
+                    assert!(
+                        error.downcast_ref::<PublishStillUnknownError>().is_some(),
+                        "{error:#}"
+                    );
+                    assert!(
+                        reporter.errors.iter().any(|message| {
+                            message.contains("reconciliation outcome: StillUnknown")
+                                && message.contains("stop before blind retry")
+                        }),
+                        "{:?}",
+                        reporter.errors
+                    );
+                    assert!(!format!("{error:#}").contains("secret-response-sentinel"));
+                    let cargo_invocations = std::fs::read_to_string(&cargo_log)
+                        .expect("cargo log")
+                        .lines()
+                        .filter(|line| !line.trim().is_empty())
+                        .count();
+                    assert_eq!(
+                        cargo_invocations, 1,
+                        "neither scheduler nor resume may blind-retry"
+                    );
+                    let retained = state::load_state(&state_dir)
+                        .expect("load state")
+                        .expect("state");
+                    let package = retained.packages.get("demo@0.1.0").expect("package");
+                    assert!(matches!(package.state, PackageState::Ambiguous { .. }));
+                    assert_eq!(package.attempts, 1);
+                    assert!(
+                        !state::receipt_path(&state_dir).exists(),
+                        "no success receipt"
+                    );
+                    let report: crate::types::ReconciliationReport = serde_json::from_slice(
+                        &std::fs::read(state::reconciliation_path(&state_dir)).expect("report"),
+                    )
+                    .expect("report JSON");
+                    assert!(matches!(
+                        report.records.last().expect("record").outcome,
+                        ReconciliationOutcome::StillUnknown { attempts: 1, .. }
+                    ));
+                    let log = events::EventLog::read_from_file(&events::events_path(&state_dir))
+                        .expect("events");
+                    assert!(log.all_events().iter().any(|event| matches!(
+                        event.event_type,
+                        EventType::PublishReconciled {
+                            outcome: ReconciliationOutcome::StillUnknown { attempts: 1, .. }
+                        }
+                    )));
+                    assert!(!log.all_events().iter().any(|event| matches!(
+                        event.event_type,
+                        EventType::PublishReconciled {
+                            outcome: ReconciliationOutcome::NotPublished { .. }
+                        }
+                    )));
+                }
+                assert_eq!(server.seen.lock().expect("requests").len(), 3);
+                server.join();
+            });
+        }
     }
 
     #[test]
@@ -3070,6 +4149,110 @@ mod tests {
         assert_eq!(completed["success_count"], 2);
         assert_eq!(completed["skipped_count"], 0);
         assert_eq!(completed["failure_count"], 0);
+        assert_eq!(completed["result"], "success");
+    }
+
+    #[test]
+    #[serial]
+    fn run_publish_resume_scope_webhook_reports_whole_plan_partial_result() {
+        for parallel in [false, true] {
+            let td = tempdir().expect("tempdir");
+            let bin = td.path().join("bin");
+            write_fake_tools(&bin);
+            let cargo_log = td.path().join("cargo.log");
+            let webhook_server = Server::http("127.0.0.1:0").expect("webhook server");
+            let webhook_url = format!("http://{}", webhook_server.server_addr());
+            let (completed_tx, completed_rx) = std::sync::mpsc::sync_channel(1);
+            let webhook_handle = thread::spawn(move || {
+                while let Ok(Some(mut request)) =
+                    webhook_server.recv_timeout(Duration::from_secs(3))
+                {
+                    let mut body = String::new();
+                    std::io::Read::read_to_string(request.as_reader(), &mut body)
+                        .expect("webhook body");
+                    let payload: serde_json::Value =
+                        serde_json::from_str(&body).expect("webhook JSON");
+                    request
+                        .respond(Response::from_string("ok"))
+                        .expect("respond");
+                    let legacy = payload
+                        .get("extra")
+                        .and_then(|extra| extra.get("legacy"))
+                        .or_else(|| payload.get("legacy"));
+                    if let Some(completed) =
+                        legacy.filter(|value| value["event"] == "publish_completed")
+                    {
+                        completed_tx
+                            .send(completed.clone())
+                            .expect("completion receiver");
+                        break;
+                    }
+                }
+            });
+            let mut env_vars = fake_program_env_vars(&bin);
+            env_vars.extend([
+                ("SHIPPER_CARGO_EXIT", Some("71".into())),
+                (
+                    "SHIPPER_CARGO_ARGS_LOG",
+                    Some(cargo_log.display().to_string()),
+                ),
+            ]);
+            temp_env::with_vars(env_vars, || {
+                let registry = spawn_registry_server(
+                    BTreeMap::from([(
+                        "/api/v1/crates/beta/0.1.0".into(),
+                        vec![(200, "{}".into())],
+                    )]),
+                    1,
+                );
+                let mut ws = planned_workspace(td.path(), registry.base_url.clone());
+                ws.plan.packages = ["alpha", "beta"]
+                    .into_iter()
+                    .map(|name| PlannedPackage {
+                        name: name.into(),
+                        version: "0.1.0".into(),
+                        manifest_path: td.path().join(name).join("Cargo.toml"),
+                        regime: None,
+                    })
+                    .collect();
+                ws.plan.dependencies = BTreeMap::from([("beta".into(), vec!["alpha".into()])]);
+                let mut opts = default_opts(td.path().join(".shipper"));
+                opts.parallel.enabled = parallel;
+                opts.resume_from = Some("beta".into());
+                opts.webhook = crate::webhook::WebhookConfig {
+                    url: webhook_url,
+                    ..Default::default()
+                };
+                let mut reporter = CollectingReporter::default();
+                let outcome =
+                    run_publish_with_state(&ws, &opts, &mut reporter).expect("scoped publish");
+                assert_eq!(
+                    outcome.receipt.execution_result,
+                    ExecutionResult::PartialFailure
+                );
+                assert_eq!(outcome.receipt.packages.len(), 1);
+                assert_eq!(
+                    outcome.state.packages["alpha@0.1.0"].state,
+                    PackageState::Pending
+                );
+                assert_eq!(outcome.state.packages["alpha@0.1.0"].attempts, 0);
+                assert!(
+                    fs::read_to_string(&cargo_log)
+                        .unwrap_or_default()
+                        .is_empty()
+                );
+                registry.join();
+            });
+            let completed = completed_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("completion webhook");
+            webhook_handle.join().expect("webhook worker");
+            assert_eq!(completed["result"], "partial_failure");
+            assert_eq!(completed["total_packages"], 2);
+            assert_eq!(completed["success_count"], 0);
+            assert_eq!(completed["skipped_count"], 1);
+            assert_eq!(completed["failure_count"], 1);
+        }
     }
 
     #[test]
@@ -3152,37 +4335,109 @@ mod tests {
 
     #[test]
     #[serial]
-    fn run_publish_treats_500_as_not_visible_during_readiness() {
-        // With the readiness-driven verify, 500 errors are treated as "not visible"
-        // (graceful degradation). The publish succeeds via cargo but readiness times out,
-        // leading to an ambiguous failure on the final registry check.
-        let td = tempdir().expect("tempdir");
-        let bin = td.path().join("bin");
-        write_fake_tools(&bin);
-        let mut env_vars = fake_program_env_vars(&bin);
-        env_vars.extend([("SHIPPER_CARGO_EXIT", Some("0".to_string()))]);
-        temp_env::with_vars(env_vars, || {
-            let server = spawn_registry_server(
-                std::collections::BTreeMap::from([(
-                    "/api/v1/crates/demo/0.1.0".to_string(),
-                    vec![
-                        (404, "{}".to_string()),
-                        (500, "{}".to_string()),
-                        (404, "{}".to_string()),
-                    ],
-                )]),
-                3,
-            );
-            let ws = planned_workspace(td.path(), server.base_url.clone());
-            let mut opts = default_opts(PathBuf::from(".shipper"));
-            opts.max_attempts = 1;
-            opts.readiness.max_total_wait = Duration::from_millis(0);
-
-            let mut reporter = CollectingReporter::default();
-            let err = run_publish(&ws, &opts, &mut reporter).expect_err("must fail");
-            assert!(format!("{err:#}").contains("failed"));
-            server.join();
-        });
+    fn readiness_success_reports_actual_polls_after_errors_in_publish_and_uploaded_resume() {
+        for (parallel, resume_uploaded) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let td = tempdir().expect("tempdir");
+            let bin = td.path().join("bin");
+            write_fake_tools(&bin);
+            let cargo_log = td.path().join("cargo.log");
+            let mut env_vars = fake_program_env_vars(&bin);
+            env_vars.extend([
+                ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+                (
+                    "SHIPPER_CARGO_ARGS_LOG",
+                    Some(cargo_log.to_string_lossy().to_string()),
+                ),
+            ]);
+            temp_env::with_vars(env_vars, || {
+                let mut statuses = vec![404];
+                if resume_uploaded {
+                    statuses.push(500);
+                }
+                statuses.extend([500, 500, 200]);
+                let expected_requests = statuses.len();
+                let server = spawn_registry_server(
+                    std::collections::BTreeMap::from([(
+                        "/api/v1/crates/demo/0.1.0".to_string(),
+                        statuses
+                            .into_iter()
+                            .map(|status| (status, "{}".to_string()))
+                            .collect(),
+                    )]),
+                    expected_requests,
+                );
+                let ws = planned_workspace(td.path(), server.base_url.clone());
+                let state_dir = td.path().join(".shipper");
+                let mut opts = default_opts(state_dir.clone());
+                opts.parallel.enabled = parallel;
+                opts.max_attempts = 1;
+                if resume_uploaded {
+                    opts.readiness.max_total_wait = Duration::ZERO;
+                    run_publish(&ws, &opts, &mut CollectingReporter::default()).expect_err(
+                        "successful upload with unknown readiness must retain Uploaded",
+                    );
+                    let retained = state::load_state(&state_dir).expect("load").expect("state");
+                    assert!(matches!(
+                        retained.packages["demo@0.1.0"].state,
+                        PackageState::Uploaded
+                    ));
+                    assert!(!state::receipt_path(&state_dir).exists());
+                }
+                opts.readiness.max_total_wait = Duration::from_secs(2);
+                let receipt = if resume_uploaded {
+                    run_resume(&ws, &opts, &mut CollectingReporter::default())
+                } else {
+                    run_publish(&ws, &opts, &mut CollectingReporter::default())
+                }
+                .expect("transient errors recover to visible");
+                assert!(matches!(receipt.execution_result, ExecutionResult::Success));
+                let evidence = &receipt.packages[0].evidence.readiness_checks;
+                assert_eq!(
+                    evidence.len(),
+                    1,
+                    "only the successful third poll is conclusive"
+                );
+                assert_eq!(evidence[0].attempt, 3);
+                assert!(evidence[0].visible);
+                let log = events::EventLog::read_from_file(&events::events_path(&state_dir))
+                    .expect("events");
+                let completions = log
+                    .all_events()
+                    .iter()
+                    .filter_map(|event| match event.event_type {
+                        EventType::ReadinessComplete { attempts, .. } => Some(attempts),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    completions,
+                    vec![3],
+                    "terminal event must report actual polls, not evidence length"
+                );
+                assert!(
+                    !log.all_events().iter().any(|event| matches!(
+                        event.event_type,
+                        EventType::ReadinessPoll { visible: false, .. }
+                    )),
+                    "failed probes must not fabricate negative observations"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&cargo_log)
+                        .expect("cargo log")
+                        .lines()
+                        .count(),
+                    1,
+                    "Uploaded resume verifies without invoking Cargo again"
+                );
+                assert_eq!(
+                    server.seen.lock().expect("requests").len(),
+                    expected_requests
+                );
+                server.join();
+            });
+        }
     }
 
     #[test]
@@ -3343,23 +4598,92 @@ mod tests {
         );
     }
 
+    fn assert_unverified_accepted_upload(state_dir: &Path, key: &str, cargo_log: &Path) {
+        let state = state::load_state(state_dir).expect("load").expect("exists");
+        let package = state.packages.get(key).expect("package");
+        assert_eq!(package.state, PackageState::Uploaded);
+        assert_eq!(package.attempts, 1);
+        let history: Vec<_> = state
+            .attempt_history
+            .iter()
+            .filter(|attempt| attempt.package == package.name && attempt.version == package.version)
+            .collect();
+        let [accepted] = history.as_slice() else {
+            panic!("expected a single accepted attempt for {key}");
+        };
+        assert_eq!(accepted.attempt, 1);
+        assert!(accepted.error_class.is_none());
+        assert!(accepted.next_attempt_at.is_none());
+        let calls = fs::read_to_string(cargo_log).expect("mock Cargo calls");
+        assert_eq!(
+            calls
+                .lines()
+                .filter(|call| {
+                    call.split_whitespace().next() == Some("publish")
+                        && call.split_whitespace().any(|arg| arg == package.name)
+                })
+                .count(),
+            1
+        );
+        let path = crate::state::events::events_path(state_dir);
+        let log = crate::state::events::EventLog::read_from_file(&path).expect("events");
+        let events = log.all_events();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.package == key
+                    && matches!(event.event_type, EventType::PackageUploaded))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| event.package == key
+            && matches!(event.event_type, EventType::ReadinessTimeout { .. })));
+        assert!(!events.iter().any(|event| event.package == key
+            && matches!(event.event_type, EventType::PackagePublished { .. })));
+        assert!(!events.iter().any(|event| matches!(
+            event.event_type,
+            EventType::ExecutionFinished {
+                result: ExecutionResult::Success
+            }
+        )));
+        let replay = crate::state::rebuild::rebuild_state_from_events(
+            &path,
+            crate::state::rebuild::StateRebuildOptions::new(state.registry.clone()),
+        )
+        .expect("replay events");
+        assert_eq!(replay.packages[key].state, PackageState::Uploaded);
+        assert_eq!(replay.attempt_history, state.attempt_history);
+    }
+
     #[test]
     #[serial]
-    fn run_publish_marks_ambiguous_failure_after_success_without_registry_visibility() {
+    fn run_publish_retains_accepted_upload_without_registry_visibility() {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
+        let cargo_log = td.path().join("cargo.log");
         with_test_env(
             &bin,
-            vec![("SHIPPER_CARGO_EXIT", Some("0".to_string()))],
+            vec![
+                ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+                (
+                    "SHIPPER_CARGO_ARGS_LOG",
+                    Some(cargo_log.to_string_lossy().into_owned()),
+                ),
+            ],
             || {
-                // 3 requests: initial version_exists, readiness check, final chance check
+                // Initial visibility remains absent; the next invocation can verify it.
                 let server = spawn_registry_server(
                     std::collections::BTreeMap::from([(
                         "/api/v1/crates/demo/0.1.0".to_string(),
-                        vec![(404, "{}".to_string()), (404, "{}".to_string())],
+                        vec![
+                            (404, "{}".to_string()),
+                            (404, "{}".to_string()),
+                            (404, "{}".to_string()),
+                            (200, "{}".to_string()),
+                        ],
                     )]),
-                    3,
+                    4,
                 );
                 let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
@@ -3368,19 +4692,22 @@ mod tests {
 
                 let mut reporter = CollectingReporter::default();
                 let err = run_publish(&ws, &opts, &mut reporter).expect_err("must fail");
-                assert!(format!("{err:#}").contains("failed"));
+                assert!(format!("{err:#}").contains("version not observed on registry"));
 
-                let st = state::load_state(&td.path().join(".shipper"))
-                    .expect("load")
-                    .expect("exists");
-                let pkg = st.packages.get("demo@0.1.0").expect("pkg");
-                assert!(matches!(
-                    pkg.state,
-                    PackageState::Failed {
-                        class: ErrorClass::Ambiguous,
-                        ..
-                    }
-                ));
+                assert_unverified_accepted_upload(
+                    &td.path().join(".shipper"),
+                    "demo@0.1.0",
+                    &cargo_log,
+                );
+                let original_calls = fs::read(&cargo_log).expect("initial mock Cargo calls");
+                let receipt = run_resume(&ws, &opts, &mut CollectingReporter::default())
+                    .expect("positive visibility can finish the accepted upload");
+                assert_eq!(receipt.packages[0].state, PackageState::Published);
+                assert_eq!(receipt.packages[0].attempts, 1);
+                assert_eq!(
+                    fs::read(&cargo_log).expect("resumed mock Cargo calls"),
+                    original_calls
+                );
                 server.join();
             },
         );
@@ -3504,6 +4831,121 @@ mod tests {
         let mut reporter = CollectingReporter::default();
         let err = run_resume(&ws, &opts, &mut reporter).expect_err("must fail");
         assert!(format!("{err:#}").contains("no existing state found"));
+    }
+
+    #[test]
+    fn resume_retry_ceiling_reports_first_blocker_in_plan_order() {
+        let td = tempdir().expect("tempdir");
+        let mut ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
+        let mut first = ws.plan.packages[0].clone();
+        first.name = "zeta".to_string();
+        let mut second = first.clone();
+        second.name = "alpha".to_string();
+        ws.plan.packages = vec![first, second];
+
+        let failed = |name: &str, attempts| PackageProgress {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            attempts,
+            state: PackageState::Failed {
+                class: ErrorClass::Retryable,
+                message: "registry confirmed NotPublished".to_string(),
+            },
+            last_updated_at: Utc::now(),
+        };
+        let mut state = ExecutionState {
+            state_version: crate::state::execution_state::CURRENT_STATE_VERSION.to_string(),
+            plan_id: ws.plan.plan_id.clone(),
+            registry: ws.plan.registry.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            attempt_history: Vec::new(),
+            packages: BTreeMap::from([
+                ("alpha@0.1.0".to_string(), failed("alpha", 1)),
+                ("zeta@0.1.0".to_string(), failed("zeta", 3)),
+            ]),
+        };
+        let mut opts = default_opts(PathBuf::from(".shipper"));
+        opts.max_attempts = 1;
+
+        let error = reject_exhausted_resume_retry_ceiling(&ws, &opts, &state)
+            .expect_err("both packages exhaust the requested ceiling");
+        assert_eq!(
+            classify_resume_retry_budget(&error),
+            Some(ResumeRetryBudgetClassification {
+                package: "zeta@0.1.0".to_string(),
+                current_attempts: 3,
+                requested_max_attempts: 1,
+                minimum_max_attempts: Some(4),
+            }),
+            "the plan order, not state-map order, owns deterministic reporting"
+        );
+
+        opts.resume_from = Some("alpha".to_string());
+        let selected_error = reject_exhausted_resume_retry_ceiling(&ws, &opts, &state)
+            .expect_err("the selected package also exhausts the ceiling");
+        assert_eq!(
+            classify_resume_retry_budget(&selected_error),
+            Some(ResumeRetryBudgetClassification {
+                package: "alpha@0.1.0".to_string(),
+                current_attempts: 1,
+                requested_max_attempts: 1,
+                minimum_max_attempts: Some(2),
+            }),
+            "packages before --resume-from must not participate in admission"
+        );
+
+        let evidence_paths = [
+            td.path().join("state.json"),
+            td.path().join("events.jsonl"),
+            td.path().join("reconciliation.json"),
+            td.path().join("cargo-and-registry.log"),
+        ];
+        for (index, path) in evidence_paths.iter().enumerate() {
+            std::fs::write(path, format!("parallel-admission-sentinel-{index}"))
+                .expect("write admission sentinel");
+        }
+        let evidence_before = evidence_paths
+            .iter()
+            .map(|path| std::fs::read(path).expect("read admission sentinel"))
+            .collect::<Vec<_>>();
+        opts.parallel.enabled = true;
+        let same_level_error = reject_exhausted_resume_retry_ceiling(&ws, &opts, &state)
+            .expect_err("parallel resume selects the target's entire dependency level");
+        assert_eq!(
+            classify_resume_retry_budget(&same_level_error),
+            Some(ResumeRetryBudgetClassification {
+                package: "zeta@0.1.0".to_string(),
+                current_attempts: 3,
+                requested_max_attempts: 1,
+                minimum_max_attempts: Some(4),
+            }),
+            "the earlier exhausted sibling in the selected level must block deterministically"
+        );
+        for (path, before) in evidence_paths.iter().zip(evidence_before) {
+            assert_eq!(
+                std::fs::read(path).expect("read sentinel after parallel rejection"),
+                before,
+                "parallel admission rejection must precede state, event, reconciliation, Cargo, and registry mutation"
+            );
+        }
+
+        opts.resume_from = None;
+        opts.parallel.enabled = false;
+        opts.max_attempts = u32::MAX;
+        let zeta = state.packages.get_mut("zeta@0.1.0").expect("zeta progress");
+        zeta.attempts = u32::MAX;
+        let overflow_error = reject_exhausted_resume_retry_ceiling(&ws, &opts, &state)
+            .expect_err("the maximum representable ceiling cannot increase");
+        assert_eq!(
+            classify_resume_retry_budget(&overflow_error),
+            Some(ResumeRetryBudgetClassification {
+                package: "zeta@0.1.0".to_string(),
+                current_attempts: u32::MAX,
+                requested_max_attempts: u32::MAX,
+                minimum_max_attempts: None,
+            })
+        );
     }
 
     #[test]
@@ -4714,13 +6156,13 @@ mod tests {
                 ),
             ],
             || {
-                // All registry checks return 404 so the package is never found
+                // Three negative version probes (precheck + two reconciliations)
+                // and one crate-exists probe keep retry evidence conclusive.
                 let server = spawn_registry_server(
                     std::collections::BTreeMap::from([
                         (
                             "/api/v1/crates/demo/0.1.0".to_string(),
                             vec![
-                                (404, "{}".to_string()),
                                 (404, "{}".to_string()),
                                 (404, "{}".to_string()),
                                 (404, "{}".to_string()),
@@ -4731,11 +6173,12 @@ mod tests {
                             vec![(200, "{}".to_string())],
                         ),
                     ]),
-                    5,
+                    4,
                 );
                 let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.max_attempts = 2;
+                opts.readiness.max_total_wait = Duration::ZERO;
                 opts.base_delay = Duration::from_millis(0);
                 opts.max_delay = Duration::from_millis(0);
 
@@ -4781,6 +6224,7 @@ mod tests {
                         .iter()
                         .any(|event| matches!(event.event_type, EventType::PublishWaiting { .. }))
                 );
+                assert_eq!(server.seen.lock().expect("requests").len(), 4);
                 server.join();
             },
         );
@@ -5119,9 +6563,8 @@ mod tests {
     }
 
     #[test]
-    fn run_publish_force_skips_lock_timeout() {
-        // When force=true, lock_timeout is set to ZERO. This test verifies
-        // the opts are respected without blocking.
+    fn run_publish_force_without_predecessor_preserves_completed_state() {
+        // Explicit force is accepted when no other invocation owns the guard.
         let td = tempdir().expect("tempdir");
         let ws = planned_workspace(td.path(), "http://127.0.0.1:9".to_string());
         let state_dir = td.path().join(".shipper");
@@ -5707,7 +7150,7 @@ mod tests {
                 ),
             ],
             || {
-                // 3 attempts * (version check + registry fallback) + final check = many 404s
+                // Initial precheck + three post-failure checks + one final poll.
                 let server = spawn_registry_server(
                     std::collections::BTreeMap::from([(
                         "/api/v1/crates/demo/0.1.0".to_string(),
@@ -5724,6 +7167,7 @@ mod tests {
                 let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.max_attempts = 3;
+                opts.readiness.max_total_wait = Duration::ZERO;
                 opts.base_delay = Duration::from_millis(0);
                 opts.max_delay = Duration::from_millis(0);
 
@@ -5751,6 +7195,7 @@ mod tests {
                     }
                     _ => unreachable!("unreachable due guard above"),
                 }
+                assert_eq!(server.seen.lock().expect("requests").len(), 5);
                 server.join();
             },
         );
@@ -6116,9 +7561,16 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
+        let cargo_log = td.path().join("cargo.log");
         with_test_env(
             &bin,
-            vec![("SHIPPER_CARGO_EXIT", Some("0".to_string()))],
+            vec![
+                ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+                (
+                    "SHIPPER_CARGO_ARGS_LOG",
+                    Some(cargo_log.to_string_lossy().into_owned()),
+                ),
+            ],
             || {
                 // cargo succeeds, but registry never shows the version
                 let server = spawn_registry_server(
@@ -6141,11 +7593,11 @@ mod tests {
                 let err = run_publish(&ws, &opts, &mut reporter).expect_err("must fail");
                 assert!(format!("{err:#}").contains("failed"));
 
-                let st = state::load_state(&td.path().join(".shipper"))
-                    .expect("load")
-                    .expect("exists");
-                let pkg = st.packages.get("demo@0.1.0").expect("pkg");
-                assert!(matches!(pkg.state, PackageState::Failed { .. }));
+                assert_unverified_accepted_upload(
+                    &td.path().join(".shipper"),
+                    "demo@0.1.0",
+                    &cargo_log,
+                );
                 server.join();
             },
         );
@@ -6158,9 +7610,16 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
+        let cargo_log = td.path().join("cargo.log");
         with_test_env(
             &bin,
-            vec![("SHIPPER_CARGO_EXIT", Some("0".to_string()))],
+            vec![
+                ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+                (
+                    "SHIPPER_CARGO_ARGS_LOG",
+                    Some(cargo_log.to_string_lossy().into_owned()),
+                ),
+            ],
             || {
                 // alpha: 404 then 200 (publishes ok)
                 // beta: 404 then always 404 (readiness never passes)
@@ -6204,11 +7663,10 @@ mod tests {
                     "alpha should be Published, got {:?}",
                     alpha.state
                 );
-                let beta = st.packages.get("beta@2.0.0").expect("beta");
-                assert!(
-                    matches!(beta.state, PackageState::Failed { .. }),
-                    "beta should be Failed, got {:?}",
-                    beta.state
+                assert_unverified_accepted_upload(
+                    &td.path().join(".shipper"),
+                    "beta@2.0.0",
+                    &cargo_log,
                 );
                 server.join();
             },
@@ -6657,6 +8115,7 @@ mod tests {
                 ),
             ],
             || {
+                // Initial precheck + three post-failure checks + one final poll.
                 let server = spawn_registry_server(
                     std::collections::BTreeMap::from([(
                         "/api/v1/crates/demo/0.1.0".to_string(),
@@ -6666,15 +8125,14 @@ mod tests {
                             (404, "{}".to_string()),
                             (404, "{}".to_string()),
                             (404, "{}".to_string()),
-                            (404, "{}".to_string()),
-                            (404, "{}".to_string()),
                         ],
                     )]),
-                    7,
+                    5,
                 );
                 let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
                 opts.max_attempts = 3;
+                opts.readiness.max_total_wait = Duration::ZERO;
                 opts.base_delay = Duration::from_millis(0);
                 opts.max_delay = Duration::from_millis(0);
 
@@ -6701,6 +8159,7 @@ mod tests {
                     attempt_msgs.len(),
                     attempt_msgs
                 );
+                assert_eq!(server.seen.lock().expect("requests").len(), 5);
                 server.join();
             },
         );
@@ -7515,17 +8974,112 @@ mod tests {
             opts.rehearsal_registry = Some("crates-io".to_string());
             opts.registries = vec![Registry {
                 name: "crates-io".to_string(),
-                api_base: "http://127.0.0.1:1".to_string(),
-                index_base: None,
+                api_base: "http://127.0.0.1:2".to_string(),
+                index_base: Some("http://127.0.0.1:2".to_string()),
             }];
 
             let mut reporter = CollectingReporter::default();
             let err = run_rehearsal(&ws, &opts, &mut reporter).expect_err("must fail");
             let msg = format!("{err:#}");
             assert!(
-                msg.contains("must differ from the live target"),
+                msg.contains("registry name matches the live target"),
                 "err was: {msg}"
             );
+            assert!(
+                !td.path().join(".shipper").exists(),
+                "same-name rejection must precede rehearsal evidence"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn run_rehearsal_rejects_authority_alias_before_state_cargo_or_network() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let cargo_log = td.path().join("cargo.log");
+        let state_dir = td.path().join("evidence");
+
+        let server = Server::http("127.0.0.1:0").expect("server");
+        let base_url = format!("http://{}", server.server_addr());
+        let network = thread::spawn(move || match server.recv_timeout(Duration::from_secs(1)) {
+            Ok(Some(request)) => {
+                request
+                    .respond(Response::from_string("{}"))
+                    .expect("respond");
+                true
+            }
+            Ok(None) | Err(_) => false,
+        });
+
+        with_test_env(
+            &bin,
+            vec![(
+                "SHIPPER_CARGO_ARGS_LOG",
+                Some(cargo_log.to_string_lossy().into_owned()),
+            )],
+            || {
+                let mut ws = planned_workspace(td.path(), base_url.clone());
+                ws.plan.registry.name = "live".to_string();
+                let mut opts = default_opts(state_dir.clone());
+                opts.registry_policies.insert(
+                    "live".to_string(),
+                    RegistryTrustOptions {
+                        allow_private: false,
+                        allow_loopback: true,
+                    },
+                );
+                opts.rehearsal_registry = Some("alias".to_string());
+                opts.registries = vec![Registry {
+                    name: "alias".to_string(),
+                    api_base: format!("{base_url}/different-path"),
+                    index_base: Some(format!("{base_url}/different-index-path")),
+                }];
+
+                let mut reporter = CollectingReporter::default();
+                let error = run_rehearsal(&ws, &opts, &mut reporter)
+                    .expect_err("same-authority alias must fail");
+                assert!(error.to_string().contains("authority overlaps"));
+                assert!(!state_dir.exists(), "guard must precede state mutation");
+                assert!(
+                    !cargo_log.exists(),
+                    "guard must precede Cargo publish/install"
+                );
+            },
+        );
+
+        assert!(
+            !network.join().expect("network observer"),
+            "guard must precede registry requests"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn run_rehearsal_rejects_differently_named_crates_io_alias() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        write_fake_tools(&bin);
+        let env_vars = fake_program_env_vars(&bin);
+        temp_env::with_vars(env_vars, || {
+            let mut ws = planned_workspace(td.path(), "https://registry.example".into());
+            ws.plan.registry.name = "live".to_string();
+            ws.plan.registry.index_base = Some("https://index.registry.example".to_string());
+            let state_dir = td.path().join("evidence");
+            let mut opts = default_opts(state_dir.clone());
+            opts.rehearsal_registry = Some("public-alias".to_string());
+            opts.registries = vec![Registry {
+                name: "public-alias".to_string(),
+                api_base: "https://rehearsal.crates.io:444/api".to_string(),
+                index_base: Some("https://index.rehearsal.crates.io:444/index".to_string()),
+            }];
+
+            let mut reporter = CollectingReporter::default();
+            let error = run_rehearsal(&ws, &opts, &mut reporter)
+                .expect_err("crates.io family alias must fail");
+            assert!(error.to_string().contains("crates.io family"));
+            assert!(!state_dir.exists());
         });
     }
 
@@ -7546,6 +9100,10 @@ mod tests {
             let err = run_rehearsal(&ws, &opts, &mut reporter).expect_err("must fail");
             let msg = format!("{err:#}");
             assert!(msg.contains("is not configured"), "err was: {msg}");
+            assert!(
+                !td.path().join(".shipper").exists(),
+                "missing catalog entry must fail before rehearsal evidence"
+            );
         });
     }
 
@@ -7585,6 +9143,20 @@ mod tests {
         write_fake_tools(&bin);
         let env_vars = fake_program_env_vars(&bin);
         temp_env::with_vars(env_vars, || {
+            let live_server = Server::http("127.0.0.1:0").expect("live server");
+            let live_url = format!("http://{}", live_server.server_addr());
+            let live_network =
+                thread::spawn(
+                    move || match live_server.recv_timeout(Duration::from_secs(1)) {
+                        Ok(Some(request)) => {
+                            request
+                                .respond(Response::from_string("{}"))
+                                .expect("respond");
+                            true
+                        }
+                        Ok(None) | Err(_) => false,
+                    },
+                );
             // Rehearsal-registry mock: returns 404 for the preflight lookup
             // (not here) and 200 for the post-publish visibility check.
             let rehearsal_server = spawn_registry_server(
@@ -7595,8 +9167,17 @@ mod tests {
                 1,
             );
 
-            let ws = planned_workspace(td.path(), "http://127.0.0.1:1".into());
+            let mut ws = planned_workspace(td.path(), live_url);
+            ws.plan.registry.name = "live".to_string();
+            ws.plan.registry.index_base = Some(ws.plan.registry.api_base.clone());
             let mut opts = default_opts(PathBuf::from(".shipper"));
+            opts.registry_policies.insert(
+                "live".to_string(),
+                RegistryTrustOptions {
+                    allow_private: false,
+                    allow_loopback: true,
+                },
+            );
             opts.rehearsal_registry = Some("rehearsal".to_string());
             opts.registries = vec![Registry {
                 name: "rehearsal".to_string(),
@@ -7640,6 +9221,10 @@ mod tests {
             );
 
             rehearsal_server.join();
+            assert!(
+                !live_network.join().expect("live network observer"),
+                "rehearsal must not dispatch requests to the live registry"
+            );
         });
     }
 
@@ -7712,7 +9297,7 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("no rehearsal receipt was found"), "err: {msg}");
         assert!(
-            msg.contains("shipper rehearse"),
+            msg.contains("shipper rehearse --registries rehearsal --rehearsal-registry rehearsal"),
             "err should hint fix: {msg}"
         );
     }

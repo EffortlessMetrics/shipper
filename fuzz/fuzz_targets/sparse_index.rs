@@ -10,7 +10,7 @@ fuzz_target!(|data: (String, String, Vec<String>)| {
     assert_eq!(path, sparse_index_path(&crate_name));
 
     if !crate_name.is_empty() {
-        assert!(path.ends_with(&crate_name.to_ascii_lowercase()));
+        assert!(path.ends_with(&crate_name.to_lowercase()));
     }
 
     let mut content_lines = versions

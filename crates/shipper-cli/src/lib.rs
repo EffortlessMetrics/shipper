@@ -41,14 +41,18 @@ use shipper_core::engine::{self, Reporter};
 use shipper_core::plan;
 use shipper_core::runtime::execution::pkg_key;
 use shipper_core::types::{
-    EventType, ExecutionResult, ExecutionState, Finishability, PackageState, PlannedPackage,
-    PreflightPackage, PreflightReport, PublishEvent, Registry, ReleasePlan, ReleaseSpec,
-    RuntimeOptions,
+    ErrorClass, EventType, ExecutionResult, ExecutionState, Finishability, PackageProgress,
+    PackageState, PlannedPackage, PreflightPackage, PreflightReport, PublishEvent, Registry,
+    ReleasePlan, ReleaseSpec, RuntimeOptions,
 };
 
+mod ci;
+mod containment;
 mod doctor;
 mod output;
+mod status_durable;
 
+use crate::output::outcome::{ActionKind, OperatorAction};
 use crate::output::progress::ProgressReporter;
 
 /// Extra build metadata shown by `shipper --version --verbose`.
@@ -87,7 +91,7 @@ struct Cli {
     manifest_path: PathBuf,
 
     /// Cargo registry name (default: crates-io)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "all_registries")]
     registry: Option<String>,
 
     /// Registry API base URL (default: <https://crates.io>)
@@ -119,7 +123,8 @@ struct Cli {
     #[arg(long, global = true)]
     skip_ownership_check: bool,
 
-    /// Fail preflight if ownership checks fail or if no token is available.
+    /// Require a registry token during strict-ownership preflight and before publish execution.
+    /// Preflight also fails when ownership verification fails.
     ///
     /// Note: crates.io token scopes may not allow querying owners; this is best-effort.
     #[arg(long, global = true)]
@@ -129,7 +134,7 @@ struct Cli {
     #[arg(long, global = true)]
     no_verify: bool,
 
-    /// Max attempts per crate publish step (default: 6)
+    /// Cumulative max attempts per crate across publish and resume (default: 6)
     #[arg(long, global = true)]
     max_attempts: Option<u32>,
 
@@ -177,11 +182,11 @@ struct Cli {
     #[arg(long, global = true)]
     force_resume: bool,
 
-    /// Force override of existing locks (use with caution)
+    /// Override unknown lock metadata; never an active OS guard
     #[arg(long, global = true)]
     force: bool,
 
-    /// Lock timeout duration (e.g. 1h, 30m; default: 1h). Locks older than this are considered stale.
+    /// Minimum age for confirmed abandoned legacy locks (e.g. 1h, 30m; default: 1h).
     #[arg(long, global = true)]
     lock_timeout: Option<String>,
 
@@ -230,11 +235,12 @@ struct Cli {
     #[arg(long, global = true)]
     all_registries: bool,
 
-    /// Optional package name to resume from
+    /// Select where resume begins: sequential uses the named package and later plan entries;
+    /// parallel uses its whole dependency level and later levels
     #[arg(long, global = true)]
     resume_from: Option<String>,
 
-    /// Name of a registry (from `[[registries]]` in `.shipper.toml`) to
+    /// Name of a registry (from `[[registries.registries]]` in `.shipper.toml`) to
     /// rehearse the publish against before live dispatch.
     ///
     /// Runs the rehearsal publish flow against the alternate registry and
@@ -322,12 +328,11 @@ const ADVANCED_RELEASE_ARG_IDS: &[&str] = &[
 
 // Subcommands whose help should not advertise publish/resume control
 // flags. These commands either read nothing (`ci`, `completion`,
-// `config`) or only touch `state_dir` (`clean`, `inspect-*`), so listing
-// `--retry-jitter`, `--webhook-secret`, or `--max-concurrent` under them
-// is pure noise — `shipper clean --help` was 153 lines for one real flag.
-// Release-execution commands (publish, resume, preflight, rehearse,
-// status) keep the full list, because there the flags apply.
-const FIRST_RUN_HELP_SUBCOMMANDS: &[&str] = &[
+// `config`, `status`) or only touch `state_dir` (`clean`, `inspect-*`), so
+// listing `--retry-jitter`, `--webhook-secret`, or `--max-concurrent` under
+// them is pure noise. Release-execution commands (publish, resume,
+// preflight, rehearse) keep the full list, because those flags apply there.
+const NON_EXECUTING_HELP_SUBCOMMANDS: &[&str] = &[
     "plan",
     "doctor",
     "ci",
@@ -336,6 +341,9 @@ const FIRST_RUN_HELP_SUBCOMMANDS: &[&str] = &[
     "completion",
     "inspect-events",
     "inspect-receipt",
+    "plan-yank",
+    "fix-forward",
+    "status",
 ];
 const DOCTOR_HELP_HIDDEN_ARG_IDS: &[&str] = &["verbose"];
 
@@ -344,7 +352,7 @@ fn cli_command() -> Command {
     command.build();
 
     let mut command = hide_args_from_help(command, ADVANCED_RELEASE_ARG_IDS);
-    for subcommand in FIRST_RUN_HELP_SUBCOMMANDS {
+    for subcommand in NON_EXECUTING_HELP_SUBCOMMANDS {
         command = command.mut_subcommand(*subcommand, |subcommand_args| {
             let subcommand_args = hide_args_from_help(subcommand_args, ADVANCED_RELEASE_ARG_IDS);
             if *subcommand == "doctor" {
@@ -365,6 +373,48 @@ fn hide_args_from_help(command: Command, hidden_ids: &[&str]) -> Command {
             arg
         }
     })
+}
+
+fn validate_cli_combinations(cli: &Cli) -> std::result::Result<(), clap::Error> {
+    let containment = matches!(
+        &cli.cmd,
+        Some(Commands::Yank { .. } | Commands::Remediate { .. })
+    );
+    if containment && (cli.registries.is_some() || cli.all_registries) {
+        return Err(cli_command().error(
+            clap::error::ErrorKind::ArgumentConflict,
+            "yank and remediate support one registry; use --registry, not --registries or --all-registries",
+        ));
+    }
+    let containment_execution = matches!(
+        &cli.cmd,
+        Some(
+            Commands::Yank { .. }
+                | Commands::Remediate {
+                    execute_plan: Some(_),
+                    ..
+                }
+        )
+    );
+    if containment_execution && cli.format == "json" {
+        return Err(cli_command().error(
+            clap::error::ErrorKind::ArgumentConflict,
+            "--format json is not supported for containment execution; use --format text. JSON remains available for remediate --dry-run",
+        ));
+    }
+    let durable_status = matches!(&cli.cmd, Some(Commands::Status { durable: true, .. }));
+    if durable_status && (cli.registries.is_some() || cli.all_registries) {
+        let selector = if cli.registries.is_some() {
+            "--registries"
+        } else {
+            "--all-registries"
+        };
+        return Err(cli_command().error(
+            clap::error::ErrorKind::ArgumentConflict,
+            format!("the argument '--durable' cannot be used with '{selector}'"),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Subcommand, Debug)]
@@ -425,8 +475,21 @@ every step.
 If `.shipper/state.json` already exists for this plan, `publish` picks
 up where the previous run left off — already-published crates are
 skipped, and the run continues from the first pending or failed
-package. On interruption (Ctrl-C, network drop, ambiguous registry
-response), rerun `shipper publish` or `shipper resume`.
+package.
+
+If a run stops (Ctrl-C, network drop, or ambiguous registry response),
+inspect retained evidence before another publish. For one registry, run
+`shipper status --durable` with the same manifest, singular `--registry`,
+and state directory. For a run started with `--registries` or
+`--all-registries`, inspect each registry separately with its matching
+singular `--registry` and registry-specific state directory; `--durable`
+rejects multi-registry selectors. With that same state directory selected,
+run `shipper inspect-events`; use `shipper inspect-receipt` only when a
+finalized receipt exists. Resume only when the typed retained-evidence
+posture explicitly authorizes it. The
+reconciliation outcome `StillUnknown`, durable status `unknown`, evidence
+disagreement, identity mismatch, malformed evidence, or inconclusive
+liveness must stop; preserve `reconciliation.json` when present.
 
 EXAMPLES:
     # Publish the whole workspace to crates.io:
@@ -449,27 +512,40 @@ EXAMPLES:
     # Continue the current workspace release from persisted state:
     shipper resume
 
-    # Resume from a specific crate after reviewing the saved state:
+    # Select a resume point after reviewing the saved state:
     shipper resume --resume-from shipper-core
+
+In sequential mode, `--resume-from` selects the named package and later plan
+entries. In parallel mode, it selects the target's whole dependency level and
+later levels; an earlier same-level sibling can therefore block retry-budget
+admission.
 
     # Force resume when the computed plan differs from saved state:
     shipper resume --force-resume
 ")]
     Resume,
     /// Rehearse a release against an alternate registry.
-    ///
-    /// Publishes every crate in the plan to the registry named by
-    /// `--rehearsal-registry` (or `[rehearsal] registry = "..."` in
-    /// `.shipper.toml`), verifies visibility on that registry, and
-    /// emits a `RehearsalComplete { passed, ... }` event to
-    /// `events.jsonl` so the outcome is auditable.
-    ///
-    /// Rehearse must target a non-live registry (kellnr, a sandbox
-    /// crates.io account, or a throwaway alternate registry). Shipper
-    /// refuses to rehearse against the same registry as the live target.
-    ///
-    /// When a rehearsal registry is configured, live publish later enforces
-    /// the recorded `rehearsal.json` gate unless `--skip-rehearsal` is used.
+    #[command(long_about = "\
+Rehearse a release against an alternate registry.
+
+Publishes every crate in the plan to the registry named by
+`--rehearsal-registry` (or `[rehearsal] registry = \"...\"` in
+`.shipper.toml`), verifies visibility on that registry, and emits a
+`RehearsalComplete { passed, ... }` event to `events.jsonl` so the outcome is
+auditable.
+
+The named registry must have a matching `[[registries.registries]]` entry and
+must be selected for the run with `--registries NAME --rehearsal-registry NAME`.
+
+Rehearse must target a separately named registry. The target requires a
+distinct configured API/index authority. Shipper rejects name or authority
+overlap with the live target and rejects every crates.io-family host. This guard
+checks configured identity; it does not prove DNS or administrative isolation
+of a remote registry.
+
+When a rehearsal registry is configured, live publish later enforces the
+recorded `rehearsal.json` gate unless `--skip-rehearsal` is used.
+")]
     Rehearse,
     /// Compare local workspace versions to the registry.
     #[command(long_about = "\
@@ -497,6 +573,9 @@ EXAMPLES:
         /// the last durable event, and the next scheduled wait/retry/poll.
         #[arg(long)]
         watch: bool,
+        /// Interpret authoritative local run evidence without querying a registry.
+        #[arg(long, conflicts_with = "watch")]
+        durable: bool,
     },
     /// Print environment and auth diagnostics.
     #[command(long_about = "\
@@ -521,6 +600,10 @@ View the authoritative event log.
 Reads `<state-dir>/events.jsonl`, which is the truth source for publish and
 resume state transitions. Use `--follow` while another terminal is running
 publish or resume.
+
+Events are printed in append order within each log, preserving their original
+wall-clock timestamps. Timestamps can move backward; they do not define replay
+order.
 
 EXAMPLES:
     # Print the current event log:
@@ -555,22 +638,26 @@ EXAMPLES:
         long_about = "\
 Print a ready-to-paste CI configuration snippet for a supported platform.
 
-The snippet covers the resumability wiring: it restores `.shipper/` from
-cache and from the previous run's artifact, runs `shipper publish`, and
-saves `.shipper/` again with `if: always()` so an interrupted run can be
-resumed from the uploaded state. It also shows where the registry token
-goes. It is printed to stdout and reads nothing from your workspace, so
-it works from any directory.
+GitHub Actions output is a YAML step sequence for a fresh, approved publish
+and an unconditional upload of hidden Shipper evidence. Insert it under
+`jobs.publish.steps` in a complete workflow. Retained execution evidence
+requires a separately selected recovery operation; the generated steps
+refuse to treat existing state as permission to publish again.
 
-It is a starting point, not a full release job. It does not include
-`shipper plan` / `shipper preflight` proof steps or the Trusted
-Publishing token-mint step — for a complete workflow, including
+Use a literal checkout-relative `--state-dir`; spaces are supported. The
+Cargo workspace must be at the checkout root. The snippet does not copy
+generator-side manifest paths, registry selections or other runtime flags.
+Other providers retain their platform-specific starting configurations.
+
+The output is printed to stdout. Install Shipper and run plan and
+`preflight --preflight-only` before the GitHub publish steps. For a complete
+workflow and the separately owned Trusted Publishing example, including
 `rust-lang/crates-io-auth-action@v1`, see
 docs/how-to/run-in-github-actions.md.
 
 EXAMPLES:
-    # Write a GitHub Actions release job to a workflow file:
-    shipper ci github-actions > .github/workflows/release.yml
+    # Save steps outside .github/workflows, then insert under jobs.publish.steps:
+    shipper ci github-actions > shipper-release-steps.yml
 
     # Preview the GitLab CI equivalent:
     shipper ci gitlab
@@ -610,6 +697,11 @@ EXAMPLES:
     /// Follow-on commands (`shipper plan-yank`, `shipper fix-forward`)
     /// compose this primitive into reverse-topological containment and
     /// fix-forward plans.
+    ///
+    /// Uses the selected workspace and single configured registry. Select a
+    /// registry with `--registry`; multi-registry selectors are unsupported.
+    /// A reviewed plan must name that same registry. Relative state paths are
+    /// resolved from the selected workspace, including with `--manifest-path`.
     Yank {
         /// Name of the crate to yank (e.g., `shipper-types`). Required
         /// unless `--plan` is supplied.
@@ -726,6 +818,11 @@ In `--execute-plan` mode, consumes that reviewed artifact and executes only the
 recorded containment yanks. It does NOT edit manifests or publish fix-forward
 successors.
 
+Execution uses the selected workspace and single configured registry. Use
+`--registry` to select a target; multi-registry selectors are unsupported.
+The reviewed plan must name that same registry. Relative state paths are
+resolved from the selected workspace, including with `--manifest-path`.
+
 EXAMPLES:
     shipper remediate --dry-run --from-receipt .shipper/receipt.json --crate bad-crate --target-version 0.4.0 --reason \"CVE-2026-0001\"
     shipper remediate --execute-plan .shipper/remediation-plan.json
@@ -815,7 +912,7 @@ EXAMPLES:
 
 #[derive(Subcommand, Debug)]
 enum CiCommands {
-    /// Print GitHub Actions workflow snippet.
+    /// Print fresh-publish GitHub Actions steps for jobs.publish.steps.
     #[command(name = "github-actions")]
     GitHubActions,
     /// Print GitLab CI workflow snippet.
@@ -831,9 +928,9 @@ enum CiCommands {
 
 #[derive(Subcommand, Debug, Clone)]
 enum ConfigCommands {
-    /// Generate a default .shipper.toml configuration file.
+    /// Create a new .shipper.toml configuration file; refuse existing paths.
     Init {
-        /// Output path for the configuration file (default: .shipper.toml)
+        /// Output path for the new configuration file (must not exist)
         #[arg(short, long, default_value = ".shipper.toml")]
         output: PathBuf,
     },
@@ -847,6 +944,7 @@ enum ConfigCommands {
 
 struct CliReporter {
     quiet: bool,
+    suppress_errors: bool,
     /// Optional progress handle installed during `publish`/`resume` so
     /// [`CliReporter::retry_wait`] can render a live countdown via the
     /// existing `ProgressReporter::retry_countdown`. When `None`, retries
@@ -857,9 +955,10 @@ struct CliReporter {
 }
 
 impl CliReporter {
-    fn new(quiet: bool) -> Self {
+    fn new(quiet: bool, suppress_errors: bool) -> Self {
         Self {
             quiet,
+            suppress_errors,
             progress: None,
             package_positions: BTreeMap::new(),
         }
@@ -894,7 +993,9 @@ impl Reporter for CliReporter {
     }
 
     fn error(&mut self, msg: &str) {
-        eprintln!("[error] {msg}");
+        if !self.suppress_errors {
+            eprintln!("[error] {msg}");
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -955,8 +1056,627 @@ pub fn format_error(error: &anyhow::Error) -> String {
     format!("Error: {error:?}")
 }
 
+#[derive(Debug)]
+struct PublishEarlyError {
+    format: String,
+    category: &'static str,
+    summary: &'static str,
+    rendered_error: String,
+    safe_to_rerun: PublishEarlySafeRerun,
+    next_action: OperatorAction,
+    evidence: Vec<String>,
+}
+
+const CLEANUP_INCOMPLETE_REASON: &str = "cleanup of a prior Cargo publish process could not be confirmed; another upload is not authorized";
+
+fn cleanup_incomplete_action() -> OperatorAction {
+    OperatorAction::posture(
+        ActionKind::StopAndInvestigate,
+        "preserve retained evidence and investigate the prior Cargo process; no new upload is authorized from this state directory",
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CleanupCommand {
+    Publish,
+    Resume,
+}
+
+#[derive(Debug)]
+struct CleanupIncompleteError {
+    format: String,
+    command: CleanupCommand,
+    rendered_error: String,
+    evidence: Vec<String>,
+}
+
+impl std::fmt::Display for CleanupIncompleteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(CLEANUP_INCOMPLETE_REASON)
+    }
+}
+
+impl std::error::Error for CleanupIncompleteError {}
+
+#[derive(Serialize)]
+struct CleanupIncompleteReport<'a> {
+    schema_version: &'static str,
+    command: &'static str,
+    status: &'static str,
+    category: &'static str,
+    summary: &'static str,
+    detail: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safe_to_rerun: Option<PublishEarlySafeRerun>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safe_to_resume: Option<ResumeSafeToResume>,
+    next_action: OperatorAction,
+    evidence: &'a [String],
+}
+
+impl CleanupIncompleteError {
+    fn report(&self) -> CleanupIncompleteReport<'_> {
+        let (schema_version, command, safe_to_rerun, safe_to_resume) = match self.command {
+            CleanupCommand::Publish => (
+                "shipper.publish.error.v1",
+                "publish",
+                Some(PublishEarlySafeRerun {
+                    value: Some(false),
+                    reason: CLEANUP_INCOMPLETE_REASON,
+                }),
+                None,
+            ),
+            CleanupCommand::Resume => (
+                "shipper.resume.error.v1",
+                "resume",
+                None,
+                Some(ResumeSafeToResume {
+                    value: false,
+                    reason: CLEANUP_INCOMPLETE_REASON.to_string(),
+                }),
+            ),
+        };
+        CleanupIncompleteReport {
+            schema_version,
+            command,
+            status: "failed",
+            category: "cleanup_incomplete",
+            summary: CLEANUP_INCOMPLETE_REASON,
+            detail: &self.rendered_error,
+            safe_to_rerun,
+            safe_to_resume,
+            next_action: cleanup_incomplete_action(),
+            evidence: &self.evidence,
+        }
+    }
+}
+
+fn mark_cleanup_incomplete_error(
+    error: anyhow::Error,
+    format: &str,
+    command: CleanupCommand,
+    evidence_state_dir: &Path,
+) -> anyhow::Error {
+    CleanupIncompleteError {
+        format: format.to_string(),
+        command,
+        rendered_error: shipper_output_sanitizer::redact_sensitive(&format_error(&error))
+            .trim_end()
+            .to_string(),
+        evidence: still_unknown_evidence(evidence_state_dir, true),
+    }
+    .into()
+}
+
+#[derive(Debug)]
+struct ResumeRetryBudgetError {
+    format: String,
+    rendered_error: String,
+    package: String,
+    current_attempts: u32,
+    requested_max_attempts: u32,
+    minimum_max_attempts: Option<u32>,
+    safe_to_resume: ResumeSafeToResume,
+    next_action: OperatorAction,
+    evidence: Vec<String>,
+}
+
+impl std::fmt::Display for ResumeRetryBudgetError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the requested cumulative retry ceiling cannot permit another attempt")
+    }
+}
+
+impl std::error::Error for ResumeRetryBudgetError {}
+
+#[derive(Serialize)]
+struct ResumeRetryBudgetReport<'a> {
+    schema_version: &'static str,
+    command: &'static str,
+    status: &'static str,
+    category: &'static str,
+    summary: &'static str,
+    package: &'a str,
+    current_attempts: u32,
+    requested_max_attempts: u32,
+    minimum_max_attempts: Option<u32>,
+    safe_to_resume: ResumeSafeToResume,
+    next_action: &'a OperatorAction,
+    evidence: Vec<String>,
+}
+
+impl std::fmt::Display for PublishEarlyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.summary)
+    }
+}
+
+impl std::error::Error for PublishEarlyError {}
+
+#[derive(Serialize)]
+struct PublishEarlyErrorReport<'a> {
+    schema_version: &'static str,
+    command: &'static str,
+    status: &'static str,
+    category: &'a str,
+    summary: &'a str,
+    safe_to_rerun: PublishEarlySafeRerun,
+    next_action: &'a OperatorAction,
+    evidence: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublishEarlySafeRerun {
+    value: Option<bool>,
+    reason: &'static str,
+}
+
+fn classify_publish_early_error(error: &anyhow::Error) -> (&'static str, &'static str, ActionKind) {
+    let normalized = error
+        .chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
+    if normalized.contains("manifest")
+        || normalized.contains("cargo metadata")
+        || normalized.contains("release plan")
+    {
+        (
+            "invalid_manifest",
+            "the publish plan could not be built",
+            ActionKind::ResolveBlockers,
+        )
+    } else if normalized.contains("dirty") || normalized.contains("git repository") {
+        (
+            "workspace_not_ready",
+            "the workspace is not ready for publication",
+            ActionKind::ResolveBlockers,
+        )
+    } else if normalized.contains("ownership")
+        || normalized.contains("token")
+        || normalized.contains("authoriz")
+    {
+        (
+            "authentication_required",
+            "publish authorization could not be proven",
+            ActionKind::ResolveBlockers,
+        )
+    } else if normalized.contains("lock") || normalized.contains("plan_id") {
+        (
+            "state_conflict",
+            "durable publish state conflicts with this invocation",
+            ActionKind::ResolveBlockers,
+        )
+    } else if normalized.contains("registry")
+        || normalized.contains("connect")
+        || normalized.contains("request failed")
+    {
+        (
+            "registry_unreachable",
+            "registry availability could not be proven",
+            ActionKind::StopAndInvestigate,
+        )
+    } else {
+        (
+            "publish_failed",
+            "publish stopped before a receipt was finalized",
+            ActionKind::StopAndInvestigate,
+        )
+    }
+}
+
+fn mark_publish_early_error(
+    error: anyhow::Error,
+    format: &str,
+    classification: (&'static str, &'static str, ActionKind),
+) -> anyhow::Error {
+    mark_publish_early_error_with_next_action(
+        error,
+        format,
+        classification,
+        "resolve the reported failure before deciding whether to run publish again",
+    )
+}
+
+fn still_unknown_evidence(state_dir: &Path, reconciliation_written: bool) -> Vec<String> {
+    let events_path = shipper_core::state::events::events_path(state_dir);
+    let mut paths = vec![
+        state_dir.join(shipper_core::state::execution_state::STATE_FILE),
+        events_path,
+    ];
+    if reconciliation_written {
+        paths.push(shipper_core::state::execution_state::reconciliation_path(
+            state_dir,
+        ));
+    }
+    paths
+        .into_iter()
+        .filter(|path| path.exists())
+        .map(|path| path.display().to_string())
+        .collect()
+}
+
+fn mark_recoverable_publish_stop(
+    error: anyhow::Error,
+    format: &str,
+    evidence_state_dir: &Path,
+    evidence_consistent: bool,
+) -> anyhow::Error {
+    let reconciliation_written =
+        shipper_core::state::execution_state::reconciliation_path(evidence_state_dir).is_file();
+    let evidence = still_unknown_evidence(evidence_state_dir, reconciliation_written);
+    let error = error.context(if evidence_consistent {
+        "publish stopped after registry truth proved the package absent and the retry budget was exhausted; retained evidence authorizes a controlled resume"
+    } else {
+        "publish stopped after registry truth proved the package absent, but retained recovery evidence is missing or inconsistent; recovery is not authorized"
+    });
+    let rendered_error = shipper_output_sanitizer::redact_sensitive(&format_error(&error))
+        .trim_end()
+        .to_string();
+    PublishEarlyError {
+        format: format.to_string(),
+        category: "recoverable_stop",
+        summary: "registry truth confirmed NotPublished after the retry budget was exhausted",
+        rendered_error,
+        safe_to_rerun: PublishEarlySafeRerun {
+            value: Some(false),
+            reason: if evidence_consistent {
+                "do not rerun publish; retained evidence authorizes controlled resume"
+            } else {
+                "retained recovery evidence is missing or inconsistent, so recovery safety is not proven"
+            },
+        },
+        next_action: OperatorAction::posture(
+            if evidence_consistent {
+                ActionKind::Resume
+            } else {
+                ActionKind::InspectEvents
+            },
+            if evidence_consistent {
+                "resume only with the same plan, registry, workspace, and state directory"
+            } else {
+                "inspect retained events, state, and reconciliation evidence; do not resume while evidence is missing or inconsistent"
+            },
+        ),
+        evidence,
+    }
+    .into()
+}
+
+fn mark_publish_engine_error(
+    error: anyhow::Error,
+    format: &str,
+    configured_state_dir: &Path,
+    evidence_state_dir: &Path,
+) -> anyhow::Error {
+    // A cleanup hold can be wrapped in the admission marker. Its more precise
+    // stop posture must survive that context and every generic error hint.
+    if matches!(
+        engine::classify_publish_stop(&error),
+        Some(engine::PublishStopClassification::CleanupIncomplete)
+    ) {
+        return mark_cleanup_incomplete_error(
+            error,
+            format,
+            CleanupCommand::Publish,
+            evidence_state_dir,
+        );
+    }
+    if engine::is_publish_admission_error(&error) {
+        let rendered_error = shipper_output_sanitizer::redact_sensitive(&format_error(&error))
+            .trim_end()
+            .to_string();
+        return PublishEarlyError {
+            format: format.to_string(),
+            category: "state_conflict",
+            summary: "publish admission conflicts with retained state or invocation ownership",
+            rendered_error,
+            safe_to_rerun: PublishEarlySafeRerun {
+                value: Some(false),
+                reason: "the admission conflict must be resolved before publication can proceed",
+            },
+            next_action: OperatorAction::posture(
+                ActionKind::InspectEvents,
+                "inspect the lock and retained state, events, and reconciliation evidence before retrying; preserve that evidence until the conflict is resolved",
+            ),
+            evidence: still_unknown_evidence(evidence_state_dir, true),
+        }
+        .into();
+    }
+    let Some(stop) = engine::classify_publish_stop(&error) else {
+        let classification = classify_publish_early_error(&error);
+        return mark_publish_early_error(
+            error.context(publish_failure_hint(configured_state_dir)),
+            format,
+            classification,
+        );
+    };
+    match stop {
+        engine::PublishStopClassification::Interrupted => {
+            PublishEarlyError {
+                format: format.to_string(),
+                category: "interrupted",
+                summary: "publication stopped after a termination request",
+                rendered_error: shipper_output_sanitizer::redact_sensitive(&format_error(&error)),
+                safe_to_rerun: PublishEarlySafeRerun {
+                    value: Some(false),
+                    reason: "the current process is stopping; retained evidence must be preserved for a fresh invocation",
+                },
+                next_action: OperatorAction::posture(ActionKind::InspectEvents,
+                    "inspect retained evidence, then use a fresh resume invocation with the same plan, registry, workspace, and state directory; ambiguous attempts reconcile before any new upload"),
+                evidence: still_unknown_evidence(evidence_state_dir, false),
+            }.into()
+        }
+        engine::PublishStopClassification::StillUnknown {
+            reconciliation_written,
+        } => {
+            let evidence = still_unknown_evidence(evidence_state_dir, reconciliation_written);
+            let error = error.context(
+                "publish stopped because registry truth remains unknown; inspect the retained reconciliation evidence before any retry",
+            );
+            let rendered_error = shipper_output_sanitizer::redact_sensitive(&format_error(&error))
+                .trim_end()
+                .to_string();
+            PublishEarlyError {
+                format: format.to_string(),
+                category: "ambiguous",
+                summary: "registry truth remains unknown after an ambiguous publish attempt",
+                rendered_error,
+                safe_to_rerun: PublishEarlySafeRerun {
+                    value: Some(false),
+                    reason: "persisted reconciliation evidence does not prove that another upload is safe",
+                },
+                next_action: OperatorAction::posture(
+                    ActionKind::Reconcile,
+                    "inspect the retained reconciliation and event evidence before any retry",
+                ),
+                evidence,
+            }
+            .into()
+        }
+        engine::PublishStopClassification::RecoverableNotPublished {
+            evidence_consistent,
+        } => mark_recoverable_publish_stop(error, format, evidence_state_dir, evidence_consistent),
+        engine::PublishStopClassification::CleanupIncomplete => mark_cleanup_incomplete_error(
+            error,
+            format,
+            CleanupCommand::Publish,
+            evidence_state_dir,
+        ),
+    }
+}
+
+fn mark_resume_engine_error(
+    error: anyhow::Error,
+    format: &str,
+    configured_state_dir: &Path,
+    evidence_state_dir: &Path,
+) -> anyhow::Error {
+    if matches!(
+        engine::classify_publish_stop(&error),
+        Some(engine::PublishStopClassification::CleanupIncomplete)
+    ) {
+        return mark_cleanup_incomplete_error(
+            error,
+            format,
+            CleanupCommand::Resume,
+            evidence_state_dir,
+        );
+    }
+    if matches!(
+        engine::classify_publish_stop(&error),
+        Some(engine::PublishStopClassification::Interrupted)
+    ) {
+        return error.context("resume was interrupted; preserve the retained evidence for a fresh invocation; ambiguous attempts reconcile before any new upload");
+    }
+    let Some(budget) = engine::classify_resume_retry_budget(&error) else {
+        if engine::is_publish_admission_error(&error) {
+            return error.context(
+                "resume was refused before changing retained evidence or dispatching a publish attempt; inspect the lock, state, events, and reconciliation evidence before retrying",
+            );
+        }
+        return error.context(resume_failure_hint(configured_state_dir));
+    };
+    let evidence = still_unknown_evidence(evidence_state_dir, true);
+    let (safe_to_resume, next_action, next_action_reason) = match budget.minimum_max_attempts {
+        Some(minimum) => (
+            true,
+            ActionKind::Resume,
+            format!(
+                "retry ceilings are cumulative; rerun resume with --max-attempts {minimum} or greater while preserving the same plan, registry, workspace, and state directory"
+            ),
+        ),
+        None => (
+            false,
+            ActionKind::StopAndInvestigate,
+            "the cumulative attempt count cannot be increased within the supported range; inspect retained evidence before acting".to_string(),
+        ),
+    };
+    let error = error.context(
+        "resume was rejected before changing retained evidence or dispatching a publish attempt",
+    );
+    let rendered_error = shipper_output_sanitizer::redact_sensitive(&format_error(&error))
+        .trim_end()
+        .to_string();
+    ResumeRetryBudgetError {
+        format: format.to_string(),
+        rendered_error,
+        package: budget.package,
+        current_attempts: budget.current_attempts,
+        requested_max_attempts: budget.requested_max_attempts,
+        minimum_max_attempts: budget.minimum_max_attempts,
+        safe_to_resume: ResumeSafeToResume {
+            value: safe_to_resume,
+            reason: if safe_to_resume {
+                "the rejected command did not consume or change the retained controlled-stop authorization".to_string()
+            } else {
+                "retained evidence is coherent, but no larger supported retry ceiling can authorize another attempt".to_string()
+            },
+        },
+        next_action: OperatorAction::posture(next_action, next_action_reason),
+        evidence,
+    }
+    .into()
+}
+
+fn mark_publish_early_error_with_next_action(
+    error: anyhow::Error,
+    format: &str,
+    classification: (&'static str, &'static str, ActionKind),
+    next_action_reason: &str,
+) -> anyhow::Error {
+    let rendered_error = shipper_output_sanitizer::redact_sensitive(&format_error(&error))
+        .trim_end()
+        .to_string();
+    let (category, summary, action) = classification;
+
+    PublishEarlyError {
+        format: format.to_string(),
+        category,
+        summary,
+        rendered_error,
+        safe_to_rerun: PublishEarlySafeRerun {
+            value: None,
+            reason: "no completed receipt exists to prove a safe rerun",
+        },
+        next_action: OperatorAction::posture(action, next_action_reason),
+        evidence: Vec::new(),
+    }
+    .into()
+}
+
 /// Render a top-level error to stderr via [`format_error`].
 pub fn report_error(error: &anyhow::Error) {
+    if let Some(cleanup_error) = error.downcast_ref::<CleanupIncompleteError>() {
+        let report = cleanup_error.report();
+        if cleanup_error.format == "json" {
+            match serde_json::to_string_pretty(&report) {
+                Ok(json) => eprintln!("{json}"),
+                Err(_) => eprintln!("{}", cleanup_error.rendered_error),
+            }
+            return;
+        }
+        eprintln!("{}", cleanup_error.rendered_error);
+        eprintln!();
+        eprintln!("Result: failed — {}", report.summary);
+        let action = match cleanup_error.command {
+            CleanupCommand::Publish => "rerun",
+            CleanupCommand::Resume => "resume",
+        };
+        eprintln!("Safe to {action}: no — {CLEANUP_INCOMPLETE_REASON}");
+        eprintln!("Next: {}", report.next_action.reason);
+        if !report.evidence.is_empty() {
+            eprintln!("Evidence: {}", report.evidence.join(", "));
+        }
+        return;
+    }
+    if let Some(resume_error) = error.downcast_ref::<ResumeRetryBudgetError>() {
+        if resume_error.format == "json" {
+            let report = ResumeRetryBudgetReport {
+                schema_version: "shipper.resume.error.v1",
+                command: "resume",
+                status: "failed",
+                category: "retry_budget_exhausted",
+                summary: "the requested cumulative retry ceiling cannot permit another attempt",
+                package: &resume_error.package,
+                current_attempts: resume_error.current_attempts,
+                requested_max_attempts: resume_error.requested_max_attempts,
+                minimum_max_attempts: resume_error.minimum_max_attempts,
+                safe_to_resume: ResumeSafeToResume {
+                    value: resume_error.safe_to_resume.value,
+                    reason: resume_error.safe_to_resume.reason.clone(),
+                },
+                next_action: &resume_error.next_action,
+                evidence: resume_error.evidence.clone(),
+            };
+            match serde_json::to_string_pretty(&report) {
+                Ok(json) => eprintln!("{json}"),
+                Err(_) => eprintln!("{}", resume_error.rendered_error),
+            }
+            return;
+        }
+
+        eprintln!("{}", resume_error.rendered_error);
+        eprintln!();
+        eprintln!(
+            "Result: failed — the requested cumulative retry ceiling cannot permit another attempt"
+        );
+        let safe_to_resume = if resume_error.safe_to_resume.value {
+            "yes"
+        } else {
+            "no"
+        };
+        eprintln!(
+            "Safe to resume: {safe_to_resume} — {}",
+            resume_error.safe_to_resume.reason
+        );
+        eprintln!("Next: {}", resume_error.next_action.reason);
+        eprintln!("Evidence: {}", resume_error.evidence.join(", "));
+        return;
+    }
+    if let Some(publish_error) = error.downcast_ref::<PublishEarlyError>() {
+        if publish_error.format == "json" {
+            let report = PublishEarlyErrorReport {
+                schema_version: "shipper.publish.error.v1",
+                command: "publish",
+                status: "failed",
+                category: publish_error.category,
+                summary: publish_error.summary,
+                safe_to_rerun: PublishEarlySafeRerun {
+                    value: publish_error.safe_to_rerun.value,
+                    reason: publish_error.safe_to_rerun.reason,
+                },
+                next_action: &publish_error.next_action,
+                evidence: publish_error.evidence.clone(),
+            };
+            match serde_json::to_string_pretty(&report) {
+                Ok(json) => eprintln!("{json}"),
+                Err(_) => eprintln!("{}", publish_error.rendered_error),
+            }
+            return;
+        }
+
+        eprintln!("{}", publish_error.rendered_error);
+        eprintln!();
+        eprintln!("Result: failed — {}", publish_error.summary);
+        let safe_to_rerun = match publish_error.safe_to_rerun.value {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "unknown",
+        };
+        eprintln!(
+            "Safe to rerun: {safe_to_rerun} — {}",
+            publish_error.safe_to_rerun.reason
+        );
+        eprintln!("Next: {}", publish_error.next_action.reason);
+        if publish_error.evidence.is_empty() {
+            eprintln!("Evidence: none from a completed receipt");
+        } else {
+            eprintln!("Evidence: {}", publish_error.evidence.join(", "));
+        }
+        return;
+    }
     eprintln!("{}", format_error(error));
 }
 
@@ -971,8 +1691,20 @@ fn is_registry_destination_validation_error(error: &anyhow::Error) -> bool {
 
 /// CLI entry point. Exposed for the `shipper` crate's binary target
 /// and for the `shipper-cli` crate's own `shipper-cli` binary — both
-/// are three-line `fn main() { shipper_cli::run() }` wrappers over
+/// are three-line `fn main() { shipper_cli::run_process() }` wrappers over
 /// this function.
+/// Executable-only entry point with process-lifetime termination handling.
+/// Embedders should call [`run`] and retain ownership of their signal policy.
+pub fn run_process() -> Result<std::process::ExitCode> {
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    process_signals::install()?;
+    run()
+}
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+mod process_signals;
+
+/// Parse and execute CLI arguments without installing process signal handlers.
 pub fn run() -> Result<std::process::ExitCode> {
     // Build via cli_command() then from_arg_matches (swarm#108: scope first-run
     // help flags) so the manual Command can carry long_help-only arg scoping
@@ -984,6 +1716,10 @@ pub fn run() -> Result<std::process::ExitCode> {
     if cli.version {
         print_version(cli.verbose);
         return Ok(std::process::ExitCode::SUCCESS);
+    }
+
+    if let Err(error) = validate_cli_combinations(&cli) {
+        error.exit();
     }
 
     // Handle Config commands early (they don't need workspace plan)
@@ -1010,7 +1746,7 @@ pub fn run() -> Result<std::process::ExitCode> {
         .unwrap_or_else(|| "https://crates.io".to_string());
     let index_base = cli.api_base.as_ref().map(|_| api_base.clone());
 
-    let spec = ReleaseSpec {
+    let mut spec = ReleaseSpec {
         manifest_path: cli.manifest_path.clone(),
         registry: Registry {
             name: cli
@@ -1033,46 +1769,62 @@ pub fn run() -> Result<std::process::ExitCode> {
         .map(command_name_for_hint)
         .unwrap_or("command");
 
-    // `doctor` and `ci` answer questions about the environment, not about a
-    // specific plan, so a workspace that cannot be planned must not stop
-    // them — `doctor` in particular is what an operator reaches for when
-    // they are in the wrong directory, and failing it with "run `shipper
-    // plan` first" is circular advice.
-    let (mut planned, workspace_status) = match plan::build_plan(&spec) {
-        Ok(planned) => (planned, doctor::WorkspaceStatus::Planned),
-        Err(err) if cli.cmd.as_ref().is_some_and(runs_without_workspace) => {
-            let reason = short_error_reason(&err);
-            (
-                workspace_less_plan(&spec),
-                doctor::WorkspaceStatus::Unavailable(reason),
-            )
-        }
-        Err(err) => {
-            return Err(err).with_context(|| {
-                plan_failure_hint(&spec.manifest_path, &cli.packages, command_name)
-            });
+    let plan_error = |err: anyhow::Error, target: Option<&str>| {
+        // Classify the underlying planning failure before adding diagnostic
+        // target text: the word "registry" must not turn an invalid package
+        // selection into a registry-connectivity error in JSON output.
+        let classification = classify_publish_early_error(&err);
+        let err = if let Some(target) = target {
+            err.context(format!("failed to build plan for registry '{target}'"))
+        } else {
+            err
+        };
+        let error = err.context(plan_failure_hint(
+            &cli.manifest_path,
+            &cli.packages,
+            command_name,
+        ));
+        if matches!(cli.cmd.as_ref(), Some(Commands::Publish)) {
+            mark_publish_early_error(error, &cli.format, classification)
+        } else {
+            error
         }
     };
 
-    // Load configuration file
-    let diagnostic_command = matches!(cli.cmd.as_ref(), Some(Commands::Doctor));
-    let config = if let Some(ref config_path) = cli.config {
-        // Use custom config file specified via --config
-        let load = if diagnostic_command {
-            ShipperConfig::load_from_file_for_diagnostics(config_path)
-        } else {
-            ShipperConfig::load_from_file(config_path)
+    // Discover the workspace without choosing a registry. Its configuration
+    // must be loaded before publish eligibility and plan identity are computed.
+    // `doctor` and `ci` still diagnose environments whose metadata or plan is
+    // unavailable; neither should require a successful plan to explain why.
+    let (planning_workspace, workspace_root, mut workspace_status) =
+        match shipper_core::cli_bridge::PlanningWorkspace::load(&spec.manifest_path) {
+            Ok(workspace) => {
+                let root = workspace.workspace_root().to_path_buf();
+                (Some(workspace), root, doctor::WorkspaceStatus::Planned)
+            }
+            Err(err) if cli.cmd.as_ref().is_some_and(runs_without_workspace) => {
+                let reason = short_error_reason(&err);
+                (
+                    None,
+                    workspace_less_plan(&spec).workspace_root,
+                    doctor::WorkspaceStatus::Unavailable(reason),
+                )
+            }
+            Err(err) => return Err(plan_error(err, None)),
         };
+
+    // Load configuration file
+    let config = if let Some(ref config_path) = cli.config {
+        // Parse first so the single validation boundary below can apply CLI
+        // trust flags such as --allow-loopback. The parser still rejects file,
+        // TOML, and schema errors before returning a configuration.
+        let load = ShipperConfig::load_from_file_without_value_validation(config_path);
         Some(
             load.with_context(|| format!("Failed to load config from: {}", config_path.display()))?,
         )
     } else {
-        // Try to load .shipper.toml from workspace root
-        let load = if diagnostic_command {
-            ShipperConfig::load_from_workspace_for_diagnostics(&planned.workspace_root)
-        } else {
-            ShipperConfig::load_from_workspace(&planned.workspace_root)
-        };
+        // Try to parse .shipper.toml from the workspace root. Value and
+        // destination validation belongs to the flag-aware boundary below.
+        let load = ShipperConfig::load_from_workspace_without_value_validation(&workspace_root);
         load.with_context(|| "Failed to load config from workspace")?
     };
 
@@ -1084,7 +1836,7 @@ pub fn run() -> Result<std::process::ExitCode> {
         let config_path = cli
             .config
             .clone()
-            .unwrap_or_else(|| planned.workspace_root.join(".shipper.toml"));
+            .unwrap_or_else(|| workspace_root.join(".shipper.toml"));
         let validation = cfg.validate_with_loopback(cli.allow_loopback);
         let validation = validation.or_else(|error| {
             if matches!(cli.cmd.as_ref(), Some(Commands::Doctor))
@@ -1103,16 +1855,17 @@ pub fn run() -> Result<std::process::ExitCode> {
         })?;
     }
 
-    // Apply registry from config if CLI didn't set it
+    // Resolve the single-target registry before building any plan. CLI fields
+    // retain their existing precedence over the workspace configuration.
     if let Some(ref cfg) = config
         && let Some(ref reg_config) = cfg.registry
     {
         if cli.registry.is_none() {
-            planned.plan.registry.name = reg_config.name.clone();
+            spec.registry.name = reg_config.name.clone();
         }
         if cli.api_base.is_none() {
-            planned.plan.registry.api_base = reg_config.api_base.clone();
-            planned.plan.registry.index_base = reg_config.index_base.clone();
+            spec.registry.api_base = reg_config.api_base.clone();
+            spec.registry.index_base = reg_config.index_base.clone();
         }
     }
 
@@ -1198,15 +1951,111 @@ pub fn run() -> Result<std::process::ExitCode> {
     let config_for_merge = config.clone().unwrap_or_default();
     let opts: RuntimeOptions = config_for_merge.build_runtime_options(cli_overrides);
 
-    let mut reporter = CliReporter::new(cli.quiet);
+    // Rehearsal deliberately keeps the live plan: its selected registry is the
+    // alternate destination whose isolation the engine checks. Other secondary
+    // commands retain their single-target planning contract.
+    let uses_selected_registries = matches!(
+        cli.cmd.as_ref(),
+        Some(
+            Commands::Plan
+                | Commands::Preflight { .. }
+                | Commands::Publish
+                | Commands::Resume
+                | Commands::Status { .. }
+                | Commands::Doctor
+        )
+    );
+    let target_registries = if uses_selected_registries && !opts.registries.is_empty() {
+        opts.registries.clone()
+    } else {
+        vec![spec.registry.clone()]
+    };
+    if target_registries.len() > 1
+        && matches!(
+            cli.cmd.as_ref(),
+            Some(Commands::Plan | Commands::Preflight { .. })
+        )
+    {
+        bail!(
+            "{command_name} supports one registry at a time; keep the other options and replace the multi-registry selector with `--registries {}`, then repeat for each registry",
+            target_registries[0].name
+        );
+    }
+
+    // Build every execution target before any command runs. A later target
+    // with an invalid package selection must not fail after an earlier target
+    // has already published. Each graph and ID use the same metadata snapshot.
+    let multiple_targets = target_registries.len() > 1;
+    let mut planned_workspaces = Vec::with_capacity(target_registries.len());
+    let mut doctor_plan_statuses = Vec::with_capacity(target_registries.len());
+    for registry in target_registries {
+        let current_spec = ReleaseSpec {
+            registry,
+            ..spec.clone()
+        };
+        let (planned, target_status) = match planning_workspace.as_ref() {
+            Some(workspace) => match workspace.build_plan(&current_spec) {
+                Ok(planned) => (planned, Some(doctor::WorkspaceStatus::Planned)),
+                Err(err) if cli.cmd.as_ref().is_some_and(runs_without_workspace) => {
+                    let status = doctor::WorkspaceStatus::Unavailable(short_error_reason(&err));
+                    // A graph failure belongs to this target. Keep the existing
+                    // single-target diagnostic, but do not make another valid
+                    // registry's workspace unavailable in a mixed report.
+                    if !multiple_targets {
+                        workspace_status = status.clone();
+                    }
+                    let mut unavailable = workspace_less_plan(&current_spec);
+                    unavailable.workspace_root = workspace_root.clone();
+                    (unavailable, Some(status))
+                }
+                Err(err) => {
+                    let target =
+                        (opts.registries.len() > 1).then_some(current_spec.registry.name.as_str());
+                    return Err(plan_error(err, target));
+                }
+            },
+            None => (workspace_less_plan(&current_spec), None),
+        };
+        planned_workspaces.push(planned);
+        // Metadata failures remain one run-scoped condition; no target graph
+        // was evaluated in that case. Single-target reports retain their shape.
+        doctor_plan_statuses.push(target_status.filter(|_| multiple_targets));
+    }
+
+    if matches!(cli.cmd.as_ref(), Some(Commands::Publish | Commands::Resume)) {
+        // Building a graph does not validate --resume-from. Check the engine's
+        // selection contract for every target before the first can mutate state
+        // or publish, including when an earlier target's graph is valid.
+        for current_planned in &planned_workspaces {
+            if let Err(error) =
+                shipper_core::cli_bridge::validate_resume_target(current_planned, &opts)
+            {
+                let classification = classify_publish_early_error(&error);
+                let error = error.context(format!(
+                    "invalid resume selection for registry '{}'",
+                    current_planned.plan.registry.name
+                ));
+                return Err(if matches!(cli.cmd.as_ref(), Some(Commands::Publish)) {
+                    mark_publish_early_error(error, &cli.format, classification)
+                } else {
+                    error
+                });
+            }
+        }
+    }
+    let planned = &planned_workspaces[0];
+
+    let structured_publish =
+        matches!(cli.cmd.as_ref(), Some(Commands::Publish)) && cli.format == "json";
+    let mut reporter = CliReporter::new(cli.quiet || structured_publish, structured_publish);
 
     match cli.cmd.expect("subcommand checked above") {
         Commands::Plan => {
-            print_plan(&planned, cli.verbose, &cli.format);
+            print_plan(planned, cli.verbose, &cli.format);
         }
         Commands::Preflight { preflight_only } => {
             let rep = engine::run_preflight_in_place_with_options(
-                &mut planned,
+                &mut planned_workspaces[0],
                 &opts,
                 &mut reporter,
                 engine::PreflightRunOptions {
@@ -1217,28 +2066,28 @@ pub fn run() -> Result<std::process::ExitCode> {
             print_preflight(&rep, &cli.format);
         }
         Commands::Publish => {
-            let target_registries = if opts.registries.is_empty() {
-                vec![planned.plan.registry.clone()]
-            } else {
-                opts.registries.clone()
-            };
+            if let Err(error) = engine::prevalidate_publish_registry_tokens(planned, &opts) {
+                let classification = classify_publish_early_error(&error);
+                let error = error.context(
+                    "publish token prevalidation failed before execution; configure a token for every selected registry, then rerun publish",
+                );
+                return Err(mark_publish_early_error_with_next_action(
+                    error,
+                    &cli.format,
+                    classification,
+                    "configure a token for every selected registry, then rerun publish",
+                ));
+            }
 
             let mut worst_outcome: Option<ExecutionResult> = None;
-            for reg in target_registries {
-                if opts.registries.len() > 1 {
-                    if cli.format == "json" {
-                        eprintln!();
-                        eprintln!("Publishing to registry: {} ({})", reg.name, reg.api_base);
-                    } else {
-                        println!(
-                            "\n🚀 Publishing to registry: {} ({})",
-                            reg.name, reg.api_base
-                        );
-                    }
+            for current_planned in planned_workspaces {
+                let reg = &current_planned.plan.registry;
+                if opts.registries.len() > 1 && !structured_publish {
+                    println!(
+                        "\n🚀 Publishing to registry: {} ({})",
+                        reg.name, reg.api_base
+                    );
                 }
-
-                let mut current_planned = planned.clone();
-                current_planned.plan.registry = reg.clone();
 
                 let mut current_opts = opts.clone();
                 // Segregate state dir by registry name if multiple registries
@@ -1247,7 +2096,8 @@ pub fn run() -> Result<std::process::ExitCode> {
                 }
 
                 let total_packages = current_planned.plan.packages.len();
-                let mut progress = ProgressReporter::new(total_packages, cli.quiet);
+                let mut progress =
+                    ProgressReporter::new(total_packages, cli.quiet || structured_publish);
                 let package_positions: BTreeMap<String, usize> = current_planned
                     .plan
                     .packages
@@ -1257,7 +2107,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                     .collect();
 
                 // Show initial progress if we have packages
-                if total_packages > 0 {
+                if total_packages > 0 && current_opts.resume_from.is_none() {
                     let first_pkg = &current_planned.plan.packages[0];
                     progress.set_package(1, &first_pkg.name, &first_pkg.version);
                 }
@@ -1267,15 +2117,37 @@ pub fn run() -> Result<std::process::ExitCode> {
                 // countdown via ProgressReporter::retry_countdown.
                 reporter.install_progress(progress, package_positions);
 
-                let receipt = engine::run_publish(&current_planned, &current_opts, &mut reporter)
-                    .with_context(|| publish_failure_hint(&current_opts.state_dir))?;
+                let evidence_state_dir = publish_evidence_state_dir(
+                    &current_planned.workspace_root,
+                    &current_opts.state_dir,
+                );
 
+                let engine::PublishRunOutcome { receipt, state } =
+                    match engine::run_publish_with_state(
+                        &current_planned,
+                        &current_opts,
+                        &mut reporter,
+                    ) {
+                        Ok(outcome) => outcome,
+                        Err(error) => {
+                            return Err(mark_publish_engine_error(
+                                error,
+                                &cli.format,
+                                &current_opts.state_dir,
+                                &evidence_state_dir,
+                            ));
+                        }
+                    };
+
+                let packages = full_plan_package_progress(&current_planned.plan, &state)?;
                 if let Some(progress) = reporter.take_progress() {
-                    progress.finish();
+                    let counts = command_package_counts(&packages, &receipt);
+                    progress.finish_with_completed(counts.published + counts.skipped);
                 }
 
                 print_publish_output(
                     &receipt,
+                    &packages,
                     &current_planned.workspace_root,
                     &current_opts.state_dir,
                     &cli.format,
@@ -1289,14 +2161,9 @@ pub fn run() -> Result<std::process::ExitCode> {
                 .map_or(std::process::ExitCode::SUCCESS, exit_code_for_result));
         }
         Commands::Resume => {
-            let target_registries = if opts.registries.is_empty() {
-                vec![planned.plan.registry.clone()]
-            } else {
-                opts.registries.clone()
-            };
-
             let mut worst_outcome: Option<ExecutionResult> = None;
-            for reg in target_registries {
+            for current_planned in planned_workspaces {
+                let reg = &current_planned.plan.registry;
                 if opts.registries.len() > 1 {
                     if cli.format == "json" {
                         eprintln!();
@@ -1309,24 +2176,32 @@ pub fn run() -> Result<std::process::ExitCode> {
                     }
                 }
 
-                let mut current_planned = planned.clone();
-                current_planned.plan.registry = reg.clone();
-
                 let mut current_opts = opts.clone();
                 if opts.registries.len() > 1 {
                     current_opts.state_dir = opts.state_dir.join(&reg.name);
                 }
 
-                // A resume with no state at all is not a resume *failure* —
-                // nothing was ever started. Say that, instead of wrapping it
-                // in the generic hint about plan-ID mismatch, corrupt state,
-                // and stale locks, none of which can apply here.
-                let resumable_state = shipper_core::runtime::execution::resolve_state_dir(
+                let evidence_state_dir = shipper_core::runtime::execution::resolve_state_dir(
                     &current_planned.workspace_root,
                     &current_opts.state_dir,
-                )
-                .join(shipper_core::state::execution_state::STATE_FILE);
+                );
+                let resumable_state =
+                    evidence_state_dir.join(shipper_core::state::execution_state::STATE_FILE);
                 if !resumable_state.exists() {
+                    // A hold may be retained only in events if the projection
+                    // save failed. Missing state must never turn that hold into
+                    // advice to start another publish. Existing state goes
+                    // through the engine's shared admission boundary below.
+                    engine::validate_publish_cleanup_safety(&evidence_state_dir).map_err(
+                        |error| {
+                            mark_resume_engine_error(
+                                error,
+                                &cli.format,
+                                &current_opts.state_dir,
+                                &evidence_state_dir,
+                            )
+                        },
+                    )?;
                     bail!(
                         "nothing to resume: no publish state at {}\n  \
                          * run `shipper plan` to preview the release\n  \
@@ -1357,15 +2232,26 @@ pub fn run() -> Result<std::process::ExitCode> {
                 // countdown via ProgressReporter::retry_countdown.
                 reporter.install_progress(progress, package_positions);
 
-                let receipt = engine::run_resume(&current_planned, &current_opts, &mut reporter)
-                    .with_context(|| resume_failure_hint(&current_opts.state_dir))?;
+                let engine::PublishRunOutcome { receipt, state } =
+                    engine::run_resume_with_state(&current_planned, &current_opts, &mut reporter)
+                        .map_err(|error| {
+                        mark_resume_engine_error(
+                            error,
+                            &cli.format,
+                            &current_opts.state_dir,
+                            &evidence_state_dir,
+                        )
+                    })?;
 
+                let packages = full_plan_package_progress(&current_planned.plan, &state)?;
                 if let Some(progress) = reporter.take_progress() {
-                    progress.finish();
+                    let counts = command_package_counts(&packages, &receipt);
+                    progress.finish_with_completed(counts.published + counts.skipped);
                 }
 
                 print_resume_output(
                     &receipt,
+                    &packages,
                     &current_planned.workspace_root,
                     &current_opts.state_dir,
                     &cli.format,
@@ -1379,7 +2265,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                 .map_or(std::process::ExitCode::SUCCESS, exit_code_for_result));
         }
         Commands::Rehearse => {
-            let outcome = engine::run_rehearsal(&planned, &opts, &mut reporter)?;
+            let outcome = engine::run_rehearsal(planned, &opts, &mut reporter)?;
 
             // Stdout is the operator-facing receipt: mirrors the live
             // publish path, so a human scanning the terminal sees one
@@ -1404,82 +2290,88 @@ pub fn run() -> Result<std::process::ExitCode> {
                 anyhow::bail!("rehearsal did not pass");
             }
         }
-        Commands::Status { watch } => {
-            let target_registries = if opts.registries.is_empty() {
-                vec![planned.plan.registry.clone()]
-            } else {
-                opts.registries.clone()
-            };
-
+        Commands::Status { watch, durable } => {
+            if durable {
+                let state_dir = absolute_state_dir(planned, &opts);
+                status_durable::run(
+                    &planned.plan,
+                    &planned.workspace_root,
+                    &opts.state_dir,
+                    &state_dir,
+                    &opts.encryption,
+                    &cli.format,
+                )?;
+                return Ok(std::process::ExitCode::SUCCESS);
+            }
             if watch {
-                if target_registries.len() > 1 {
+                if planned_workspaces.len() > 1 {
                     bail!(
                         "status --watch supports one registry at a time; pass --registry once or inspect the registry-specific state directory directly"
                     );
                 }
-                run_status_watch(&planned, &opts, &cli.format)?;
+                run_status_watch(planned, &opts, &cli.format)?;
                 return Ok(std::process::ExitCode::SUCCESS);
             }
 
             let mut registry_reports = Vec::new();
-            for reg in target_registries {
-                let mut current_planned = planned.clone();
-                current_planned.plan.registry = reg;
+            let mut report_plan_id = None;
+            for current_planned in &planned_workspaces {
+                report_plan_id.get_or_insert_with(|| current_planned.plan.plan_id.clone());
                 registry_reports.push(build_status_registry_report(
-                    &current_planned,
+                    current_planned,
                     &mut reporter,
                     &opts,
                 )?);
             }
+            let outcome = build_status_operator_outcome(&registry_reports);
             let report = StatusReport {
                 schema_version: "shipper.status.v1",
-                plan_id: planned.plan.plan_id.clone(),
+                plan_id: report_plan_id.context("status requires at least one target registry")?,
                 workspace_root: planned.workspace_root.display().to_string(),
                 registries: registry_reports,
+                outcome,
             };
             write_status_report(&report, &cli.format)?;
         }
         Commands::Doctor => {
-            let target_registries = if opts.registries.is_empty() {
-                vec![planned.plan.registry.clone()]
-            } else {
-                opts.registries.clone()
-            };
-
             if cli.format == "json" {
                 let mut reports = Vec::new();
-                for reg in target_registries {
-                    let mut current_planned = planned.clone();
-                    current_planned.plan.registry = reg;
-                    reports.push(doctor::collect_report(&current_planned, &opts)?);
+                for (current_planned, target_status) in
+                    planned_workspaces.iter().zip(&doctor_plan_statuses)
+                {
+                    reports.push(doctor::collect_report(
+                        current_planned,
+                        &opts,
+                        target_status.as_ref(),
+                    )?);
                 }
                 doctor::print_json(reports, &workspace_status)?;
             } else {
-                for (idx, reg) in target_registries.into_iter().enumerate() {
+                for (idx, current_planned) in planned_workspaces.iter().enumerate() {
                     if opts.registries.len() > 1 {
+                        let reg = &current_planned.plan.registry;
                         println!(
                             "\n🩺 Diagnostics for registry: {} ({})",
                             reg.name,
                             doctor::redact_diagnostic_value(&reg.api_base)
                         );
                     }
-                    let mut current_planned = planned.clone();
-                    current_planned.plan.registry = reg;
                     doctor::run(
-                        &current_planned,
+                        current_planned,
                         &opts,
                         &mut reporter,
                         &workspace_status,
+                        doctor_plan_statuses[idx].as_ref(),
                         idx == 0,
                     )?;
                 }
             }
         }
         Commands::InspectEvents { follow } => {
-            run_inspect_events(&planned, &opts, &cli.format, follow)?;
+            run_inspect_events(planned, &opts, &cli.format, follow)?;
         }
         Commands::InspectReceipt => {
-            run_inspect_receipt(&planned, &opts, &cli.format)?;
+            run_inspect_receipt(planned, &opts, &cli.format)?;
         }
         Commands::Ci(ci_cmd) => {
             run_ci(ci_cmd, &opts.state_dir, &planned.workspace_root)?;
@@ -1491,17 +2383,18 @@ pub fn run() -> Result<std::process::ExitCode> {
             mark_compromised,
             plan,
         } => {
+            use crate::containment::ContainmentContext;
             use shipper_core::cargo;
             use shipper_core::engine::plan_yank;
-            use shipper_core::state::events::{EventLog, events_path};
-            use shipper_core::state::execution_state::{load_receipt, receipt_path, write_receipt};
-            use shipper_core::types::{EventType, PublishEvent};
+
+            let context = ContainmentContext::resolve(planned, &opts)?;
 
             // #98 PR 5 — plan execution mode. Dispatched entirely
             // separately from the single-yank path below; the two share
             // the same cargo_yank primitive but different orchestration.
             if let Some(plan_path) = plan {
                 let yank_plan = plan_yank::load_plan_from_path(&plan_path)?;
+                context.validate_plan_registry("yank plan", &yank_plan.registry)?;
                 reporter.info(&format!(
                     "executing yank plan: {} entries against '{}' (plan_id {})",
                     yank_plan.entries.len(),
@@ -1509,16 +2402,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                     yank_plan.plan_id
                 ));
 
-                let workspace_root = std::env::current_dir()
-                    .context("failed to resolve current dir for plan execution")?;
-                let registry_name = opts
-                    .registries
-                    .first()
-                    .map(|r| r.name.clone())
-                    .unwrap_or_else(|| yank_plan.registry.clone());
-
-                let mut log = EventLog::new();
-                let events_file = events_path(&opts.state_dir);
+                context.prepare_events()?;
 
                 let mut succeeded = 0usize;
                 let mut failed: Option<(String, i32)> = None;
@@ -1538,31 +2422,20 @@ pub fn run() -> Result<std::process::ExitCode> {
                     ));
 
                     let out = cargo::cargo_yank(
-                        &workspace_root,
+                        context.workspace_root,
                         entry.name.as_str(),
                         entry.version.as_str(),
-                        registry_name.as_str(),
+                        context.registry_name,
                         opts.output_lines,
                         None,
                     )?;
 
-                    log.record(PublishEvent {
-                        timestamp: chrono::Utc::now(),
-                        event_type: EventType::PackageYanked {
-                            crate_name: entry.name.clone(),
-                            version: entry.version.clone(),
-                            reason: entry_reason.clone(),
-                            exit_code: out.exit_code,
-                        },
-                        package: format!("{}@{}", entry.name, entry.version),
-                    });
-                    if let Err(err) = log.write_to_file(&events_file) {
-                        reporter.warn(&format!(
-                            "failed to append PackageYanked event to {}: {err:#}",
-                            events_file.display()
-                        ));
-                    }
-                    log.clear();
+                    context.record_yank(
+                        &entry.name,
+                        &entry.version,
+                        &entry_reason,
+                        out.exit_code,
+                    )?;
 
                     if out.exit_code == 0 {
                         succeeded += 1;
@@ -1623,46 +2496,26 @@ pub fn run() -> Result<std::process::ExitCode> {
                 anyhow::anyhow!("--reason is required when --plan is not supplied")
             })?;
 
+            if mark_compromised {
+                context.prepare_receipt_amendment(&crate_name, &version)?;
+            }
+            context.prepare_events()?;
+
             reporter.warn(&format!(
                 "yanking {crate_name}@{version} from registry \
                  (containment, not undo) — reason: {reason}"
             ));
 
-            let workspace_root =
-                std::env::current_dir().context("failed to resolve current dir for cargo yank")?;
-            let registry_name = opts
-                .registries
-                .first()
-                .map(|r| r.name.clone())
-                .unwrap_or_else(|| "crates-io".to_string());
-
             let out = cargo::cargo_yank(
-                &workspace_root,
+                context.workspace_root,
                 crate_name.as_str(),
                 version.as_str(),
-                registry_name.as_str(),
+                context.registry_name,
                 opts.output_lines,
                 None,
             )?;
 
-            let mut log = EventLog::new();
-            log.record(PublishEvent {
-                timestamp: chrono::Utc::now(),
-                event_type: EventType::PackageYanked {
-                    crate_name: crate_name.clone(),
-                    version: version.clone(),
-                    reason: reason.clone(),
-                    exit_code: out.exit_code,
-                },
-                package: format!("{crate_name}@{version}"),
-            });
-            let events_file = events_path(&opts.state_dir);
-            if let Err(err) = log.write_to_file(&events_file) {
-                reporter.warn(&format!(
-                    "failed to append PackageYanked event to {}: {err:#}",
-                    events_file.display()
-                ));
-            }
+            context.record_yank(&crate_name, &version, &reason, out.exit_code)?;
 
             if out.exit_code == 0 {
                 if mark_compromised {
@@ -1672,54 +2525,11 @@ pub fn run() -> Result<std::process::ExitCode> {
                     // events.jsonl. The receipt is a *projection*, so
                     // mutating one field on one matching package is a
                     // legitimate amendment.
-                    let rpath = receipt_path(&opts.state_dir);
-                    match load_receipt(&opts.state_dir) {
-                        Ok(Some(mut receipt)) => {
-                            let matched = receipt
-                                .packages
-                                .iter_mut()
-                                .find(|p| p.name == crate_name && p.version == version);
-                            if let Some(pkg) = matched {
-                                pkg.compromised_at = Some(chrono::Utc::now());
-                                pkg.compromised_by = Some(reason.clone());
-                                if let Err(err) = write_receipt(&opts.state_dir, &receipt) {
-                                    reporter.warn(&format!(
-                                        "yanked successfully but failed to mark receipt at \
-                                         {}: {err:#}",
-                                        rpath.display()
-                                    ));
-                                } else {
-                                    reporter.info(&format!(
-                                        "marked {crate_name}@{version} compromised in {}",
-                                        rpath.display()
-                                    ));
-                                }
-                            } else {
-                                reporter.warn(&format!(
-                                    "--mark-compromised: no matching package entry for \
-                                     {crate_name}@{version} in {}; yank succeeded but the \
-                                     receipt was not amended.",
-                                    rpath.display()
-                                ));
-                            }
-                        }
-                        Ok(None) => {
-                            reporter.warn(&format!(
-                                "--mark-compromised: no receipt at {}; yank succeeded but \
-                                 nothing to amend. Future plan-yank / fix-forward runs won't \
-                                 see this version as compromised unless the receipt is \
-                                 reconstructed.",
-                                rpath.display()
-                            ));
-                        }
-                        Err(err) => {
-                            reporter.warn(&format!(
-                                "--mark-compromised: failed to load receipt at {}: {err:#}. \
-                                 Yank succeeded; receipt not amended.",
-                                rpath.display()
-                            ));
-                        }
-                    }
+                    let rpath = context.mark_compromised(&crate_name, &version, &reason)?;
+                    reporter.info(&format!(
+                        "marked {crate_name}@{version} compromised in {}",
+                        rpath.display()
+                    ));
                 }
 
                 reporter.info(&format!(
@@ -1749,8 +2559,11 @@ pub fn run() -> Result<std::process::ExitCode> {
             use shipper_core::engine::plan_yank::{self, PlanYankFilter};
 
             let receipt_path = from_receipt.unwrap_or_else(|| {
-                opts.state_dir
-                    .join(shipper_core::state::execution_state::RECEIPT_FILE)
+                shipper_core::runtime::execution::resolve_state_dir(
+                    &planned.workspace_root,
+                    &opts.state_dir,
+                )
+                .join(shipper_core::state::execution_state::RECEIPT_FILE)
             });
 
             let receipt = plan_yank::load_receipt_from_path(&receipt_path).with_context(|| {
@@ -1780,7 +2593,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                 } else {
                     PlanYankFilter::AllPublished
                 };
-                plan_yank::build_plan(&receipt, filter)
+                plan_yank::build_plan_with_reason(&receipt, filter, reason.as_deref())
             };
 
             match cli.format.as_str() {
@@ -1803,8 +2616,11 @@ pub fn run() -> Result<std::process::ExitCode> {
             use shipper_core::engine::fix_forward::{self, SuccessorStrategy};
 
             let receipt_path = from_receipt.unwrap_or_else(|| {
-                opts.state_dir
-                    .join(shipper_core::state::execution_state::RECEIPT_FILE)
+                shipper_core::runtime::execution::resolve_state_dir(
+                    &planned.workspace_root,
+                    &opts.state_dir,
+                )
+                .join(shipper_core::state::execution_state::RECEIPT_FILE)
             });
 
             let plan =
@@ -1840,15 +2656,15 @@ pub fn run() -> Result<std::process::ExitCode> {
             dry_run,
             execute_plan,
         } => {
+            use crate::containment::ContainmentContext;
             use shipper_core::cargo;
             use shipper_core::engine::{plan_yank, remediation};
-            use shipper_core::runtime::execution::resolve_state_dir;
-            use shipper_core::state::events::{EventLog, events_path};
 
+            let context = ContainmentContext::resolve(planned, &opts)?;
+            let state_dir = &context.state_dir;
             if let Some(plan_path) = execute_plan {
-                let state_dir = resolve_state_dir(&planned.workspace_root, &opts.state_dir);
                 let expected_plan_path =
-                    shipper_core::state::execution_state::remediation_plan_path(&state_dir);
+                    shipper_core::state::execution_state::remediation_plan_path(state_dir);
                 let requested_plan_path = plan_path.canonicalize().with_context(|| {
                     format!(
                         "failed to resolve remediation plan path {}; execute reviewed plans from <state-dir>/remediation-plan.json",
@@ -1869,19 +2685,8 @@ pub fn run() -> Result<std::process::ExitCode> {
                 }
 
                 let plan = remediation::load_plan_from_path(&expected_plan_path)?;
-                let events_file = events_path(&state_dir);
-                let registry_name = opts
-                    .registries
-                    .first()
-                    .map(|r| r.name.clone())
-                    .unwrap_or_else(|| "crates-io".to_string());
-                if plan.registry != registry_name {
-                    anyhow::bail!(
-                        "remediation plan registry '{}' does not match configured registry '{}'",
-                        plan.registry,
-                        registry_name
-                    );
-                }
+                context.validate_plan_registry("remediation plan", &plan.registry)?;
+                context.prepare_events()?;
 
                 reporter.warn(&format!(
                     "executing reviewed remediation plan: {} containment yanks for {}@{} (plan_id {})",
@@ -1903,35 +2708,19 @@ pub fn run() -> Result<std::process::ExitCode> {
                         plan.yank_order.len(),
                         step.name,
                         step.version,
-                        registry_name
+                        context.registry_name
                     ));
 
                     let out = cargo::cargo_yank(
-                        &planned.workspace_root,
+                        context.workspace_root,
                         step.name.as_str(),
                         step.version.as_str(),
-                        registry_name.as_str(),
+                        context.registry_name,
                         opts.output_lines,
                         None,
                     )?;
 
-                    let mut log = EventLog::new();
-                    log.record(PublishEvent {
-                        timestamp: chrono::Utc::now(),
-                        event_type: EventType::PackageYanked {
-                            crate_name: step.name.clone(),
-                            version: step.version.clone(),
-                            reason: event_reason,
-                            exit_code: out.exit_code,
-                        },
-                        package: format!("{}@{}", step.name, step.version),
-                    });
-                    if let Err(err) = log.write_to_file(&events_file) {
-                        reporter.warn(&format!(
-                            "failed to append PackageYanked event to {}: {err:#}",
-                            events_file.display()
-                        ));
-                    }
+                    context.record_yank(&step.name, &step.version, &event_reason, out.exit_code)?;
 
                     if out.exit_code == 0 {
                         succeeded += 1;
@@ -1981,9 +2770,8 @@ pub fn run() -> Result<std::process::ExitCode> {
                 anyhow::anyhow!("--reason is required when --execute-plan is not supplied")
             })?;
 
-            let state_dir = resolve_state_dir(&planned.workspace_root, &opts.state_dir);
             let receipt_path = from_receipt
-                .unwrap_or_else(|| shipper_core::state::execution_state::receipt_path(&state_dir));
+                .unwrap_or_else(|| shipper_core::state::execution_state::receipt_path(state_dir));
             let receipt = plan_yank::load_receipt_from_path(&receipt_path).with_context(|| {
                 "remediate needs a readable receipt; default path is \
                  <state_dir>/receipt.json. Pass --from-receipt <path> to \
@@ -1999,7 +2787,7 @@ pub fn run() -> Result<std::process::ExitCode> {
                 &target_version,
                 &reason,
             )?;
-            let artifact_path = remediation::write_dry_run_artifact(&state_dir, &plan)?;
+            let artifact_path = remediation::write_dry_run_artifact(state_dir, &plan)?;
 
             match cli.format.as_str() {
                 "json" => {
@@ -2050,8 +2838,8 @@ pub fn run() -> Result<std::process::ExitCode> {
 /// rather than treating the run as a hard failure.
 ///
 /// Note that finalization does not currently produce `CompleteFailure`:
-/// `sequential_execution_result` / `parallel_execution_result` classify
-/// every non-all-successful receipt as `PartialFailure`, so an all-failed
+/// the shared whole-plan classifier treats every plan with a nonterminal
+/// package as `PartialFailure`, so an all-failed
 /// run also exits 2. Exit 1 reaches the process from the `Err` path in
 /// `main` instead — an error that ended the run before a receipt was
 /// finalized. Changing that classification is a behavior change for CI
@@ -2110,7 +2898,7 @@ fn preflight_failure_hint(state_dir: &Path) -> String {
     with_common_blockers(
         hint,
         &[
-            "missing token/auth: run `cargo login <token>` or configure Trusted Publishing",
+            "missing token/auth: run `shipper doctor` for guidance scoped to the selected registry before changing credentials",
             "dirty git: commit or stash changes, or pass `--allow-dirty` only for intentional rehearsal",
             "version already exists: run `shipper status`, then bump or skip the crate version",
             "ownership failure: confirm the token can publish with `cargo owner --list <crate>`",
@@ -2356,7 +3144,9 @@ fn print_first_run_guidance() {
     eprintln!("  shipper doctor      check auth, git, tooling, and registry reachability");
     eprintln!("  shipper plan        preview the deterministic publish order");
     eprintln!("  shipper preflight   prove the release can finish before anything uploads");
-    eprintln!("  shipper publish     execute the plan — rerun (or `shipper resume`) to continue");
+    eprintln!(
+        "  shipper publish     execute the plan — after a stop, inspect retained evidence and follow its typed next action"
+    );
     eprintln!();
     eprintln!("Usage: shipper [OPTIONS] <COMMAND>");
     eprintln!();
@@ -2373,6 +3163,7 @@ fn print_version(verbose: bool) {
 #[derive(Debug, Serialize)]
 struct PlanReport {
     schema_version: &'static str,
+    outcome: PlanOutcomeReport,
     plan_id: String,
     registry: PlanRegistryReport,
     workspace_root: String,
@@ -2383,6 +3174,19 @@ struct PlanReport {
     artifacts: Vec<PlanArtifactReport>,
     packages: Vec<PlanPackageReport>,
     skipped: Vec<PlanSkippedPackageReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanOutcomeReport {
+    status: PlanOutcomeStatus,
+    publication_performed: bool,
+    next_action: OperatorAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PlanOutcomeStatus {
+    Planned,
 }
 
 #[derive(Debug, Serialize)]
@@ -2421,6 +3225,7 @@ struct PlanArtifactReport {
 #[derive(Debug, Serialize)]
 struct PreflightJsonReport<'a> {
     schema_version: &'static str,
+    outcome: PreflightOutcomeReport,
     #[serde(flatten)]
     report: &'a PreflightReport,
     proofs: Vec<PreflightEvidenceItem>,
@@ -2430,6 +3235,13 @@ struct PreflightJsonReport<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     registry_profile: Option<PreflightRegistryProfileReport>,
     artifacts: Vec<PreflightArtifactReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct PreflightOutcomeReport {
+    status: Finishability,
+    publication_performed: bool,
+    next_action: OperatorAction,
 }
 
 #[derive(Debug, Serialize)]
@@ -2457,8 +3269,8 @@ struct PreflightArtifactReport {
 }
 
 fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool, format: &str) {
+    let report = build_plan_report(ws);
     if format == "json" {
-        let report = build_plan_report(ws);
         let json = serde_json::to_string_pretty(&report).expect("serialize plan report");
         println!("{}", json);
         return;
@@ -2508,6 +3320,13 @@ fn print_plan(ws: &plan::PlannedWorkspace, verbose: bool, format: &str) {
             );
         }
     }
+
+    println!();
+    println!("Result: {}", plan_outcome_summary(&report.outcome));
+    match report.outcome.next_action.command_line() {
+        Some(command) => println!("Next: {command} — {}", report.outcome.next_action.reason),
+        None => println!("Next: {}", report.outcome.next_action.reason),
+    }
 }
 
 fn build_plan_report(ws: &plan::PlannedWorkspace) -> PlanReport {
@@ -2553,6 +3372,7 @@ fn build_plan_report(ws: &plan::PlannedWorkspace) -> PlanReport {
 
     PlanReport {
         schema_version: "shipper.plan.v1",
+        outcome: build_plan_outcome(),
         plan_id: ws.plan.plan_id.clone(),
         registry: PlanRegistryReport {
             name: ws.plan.registry.name.clone(),
@@ -2567,6 +3387,116 @@ fn build_plan_report(ws: &plan::PlannedWorkspace) -> PlanReport {
         artifacts: vec![plan_artifact_report()],
         packages,
         skipped,
+    }
+}
+
+fn build_plan_outcome() -> PlanOutcomeReport {
+    PlanOutcomeReport {
+        status: PlanOutcomeStatus::Planned,
+        publication_performed: false,
+        next_action: OperatorAction::posture(
+            ActionKind::Preflight,
+            "run preflight with the same manifest, package, configuration, and registry selection",
+        ),
+    }
+}
+
+fn plan_outcome_summary(outcome: &PlanOutcomeReport) -> &'static str {
+    match outcome.status {
+        PlanOutcomeStatus::Planned => "plan created; no packages were published",
+    }
+}
+
+#[cfg(test)]
+mod operator_outcome_tests {
+    use super::*;
+
+    fn status_registry(exists: &[bool]) -> StatusRegistryReport {
+        StatusRegistryReport {
+            name: "test-registry".to_string(),
+            api_base: "https://registry.example.test".to_string(),
+            index_base: None,
+            packages: exists
+                .iter()
+                .enumerate()
+                .map(|(index, exists)| StatusPackageReport {
+                    name: format!("package-{index}"),
+                    version: "1.0.0".to_string(),
+                    status: if *exists { "published" } else { "missing" },
+                    exists: *exists,
+                })
+                .collect(),
+            plan_id: "test-plan".to_string(),
+        }
+    }
+
+    #[test]
+    fn status_outcome_maps_all_registry_observations_without_vacuous_success() -> Result<()> {
+        struct Case {
+            name: &'static str,
+            registries: Vec<StatusRegistryReport>,
+            status: StatusOutcomeStatus,
+            action: ActionKind,
+        }
+
+        let cases = [
+            Case {
+                name: "all published across registries",
+                registries: vec![status_registry(&[true]), status_registry(&[true, true])],
+                status: StatusOutcomeStatus::AllPublished,
+                action: ActionKind::NoneComplete,
+            },
+            Case {
+                name: "mixed across registries",
+                registries: vec![status_registry(&[true]), status_registry(&[false])],
+                status: StatusOutcomeStatus::PartiallyPublished,
+                action: ActionKind::Preflight,
+            },
+            Case {
+                name: "all missing across registries",
+                registries: vec![status_registry(&[false, false]), status_registry(&[false])],
+                status: StatusOutcomeStatus::NotPublished,
+                action: ActionKind::Preflight,
+            },
+            Case {
+                name: "zero observations",
+                registries: vec![status_registry(&[])],
+                status: StatusOutcomeStatus::NoPublishablePackages,
+                action: ActionKind::Plan,
+            },
+        ];
+
+        for case in cases {
+            let outcome = build_status_operator_outcome(&case.registries);
+            anyhow::ensure!(outcome.status == case.status, "{}: status", case.name);
+            anyhow::ensure!(
+                outcome.next_action.kind == case.action,
+                "{}: action",
+                case.name
+            );
+            anyhow::ensure!(
+                outcome.next_action.command.is_empty(),
+                "{}: action must not fabricate a command",
+                case.name
+            );
+            anyhow::ensure!(
+                !outcome.publication_performed,
+                "{}: read-only status cannot claim publication",
+                case.name
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn publishable_plan_points_to_context_preserving_preflight() {
+        let outcome = build_plan_outcome();
+        assert_eq!(outcome.status, PlanOutcomeStatus::Planned);
+        assert!(!outcome.publication_performed);
+        assert_eq!(outcome.next_action.kind, ActionKind::Preflight);
+        assert_eq!(outcome.next_action.command_line(), None);
+        assert!(!outcome.next_action.requires_confirmation);
     }
 }
 
@@ -2743,9 +3673,9 @@ fn print_detailed_plan(ws: &plan::PlannedWorkspace) {
 }
 
 fn print_preflight(rep: &PreflightReport, format: &str) {
+    let report = build_preflight_json_report(rep);
     match format {
         "json" => {
-            let report = build_preflight_json_report(rep);
             let json = serde_json::to_string_pretty(&report).expect("serialize preflight report");
             println!("{}", json);
         }
@@ -2857,34 +3787,181 @@ fn print_preflight(rep: &PreflightReport, format: &str) {
 
             print_preflight_proof_explanation(rep, total, dry_run_passed);
 
-            // What to do next guidance
-            println!("What to do next:");
-            println!("-----------------");
-            match rep.finishability {
-                Finishability::Proven => {
-                    println!(
-                        "\x1b[32m✓ All local preflight checks passed. Next: shipper publish\x1b[0m"
-                    );
+            println!("Result: {}", preflight_outcome_summary(&report.outcome));
+            match report.outcome.next_action.command_line() {
+                Some(command) => {
+                    println!("Next: {command} — {}", report.outcome.next_action.reason)
                 }
-                Finishability::NotProven => {
-                    println!(
-                        "\x1b[33m⚠ Preflight did not prove every release prerequisite.\x1b[0m"
-                    );
-                    println!(
-                        "  - configure registry auth or Trusted Publishing if ownership is unverified"
-                    );
-                    println!("  - rerun `shipper preflight`");
-                    println!(
-                        "  - if you accept the uncertainty, run `shipper publish` with an explicit policy choice"
-                    );
-                }
-                Finishability::Failed => {
-                    println!(
-                        "\x1b[31m✗ Preflight failed. Fix the failed checks above, then rerun `shipper preflight`.\x1b[0m"
-                    );
-                }
+                None => println!("Next: {}", report.outcome.next_action.reason),
             }
         }
+    }
+}
+
+fn build_preflight_outcome(rep: &PreflightReport) -> PreflightOutcomeReport {
+    let next_action = match rep.finishability {
+        Finishability::Proven => OperatorAction::posture(
+            ActionKind::Publish,
+            "publish or rehearse with the same manifest, package, configuration, and registry selection",
+        )
+        .with_confirmation(),
+        Finishability::NotProven if all_packages_are_first_publish_candidates(rep) => {
+            OperatorAction::posture(
+                ActionKind::Publish,
+                "ownership cannot be verified before a first publish; review the advisory gaps, then deliberately publish or rehearse with the same selection",
+            )
+            .with_confirmation()
+        }
+        Finishability::NotProven => OperatorAction::posture(
+            ActionKind::InvestigateUnknowns,
+            "inspect the ownership and authentication gaps, correct configuration if needed, then rerun preflight with the same selection",
+        ),
+        Finishability::Failed => OperatorAction::posture(
+            ActionKind::ResolveBlockers,
+            "resolve the failed checks above, then rerun preflight with the same selection",
+        ),
+    };
+
+    PreflightOutcomeReport {
+        status: rep.finishability.clone(),
+        publication_performed: false,
+        next_action,
+    }
+}
+
+fn all_packages_are_first_publish_candidates(rep: &PreflightReport) -> bool {
+    !rep.packages.is_empty()
+        && rep
+            .packages
+            .iter()
+            .all(|package| package.is_new_crate && package.dry_run_passed)
+}
+
+fn preflight_outcome_summary(outcome: &PreflightOutcomeReport) -> &'static str {
+    match outcome.status {
+        Finishability::Proven => {
+            "preflight proved the selected release inputs; no packages were published"
+        }
+        Finishability::NotProven => {
+            "preflight completed with advisory proof gaps; no packages were published"
+        }
+        Finishability::Failed => "preflight found blocking checks; no packages were published",
+    }
+}
+
+#[cfg(test)]
+mod preflight_outcome_tests {
+    use super::*;
+    use anyhow::ensure;
+    use chrono::Utc;
+
+    fn report(
+        finishability: Finishability,
+        token_detected: bool,
+        packages: Vec<PreflightPackage>,
+    ) -> PreflightReport {
+        PreflightReport {
+            plan_id: "plan-test".to_string(),
+            token_detected,
+            finishability,
+            packages,
+            timestamp: Utc::now(),
+            estimated_publish_duration: None,
+            dry_run_output: None,
+        }
+    }
+
+    fn package(
+        name: &str,
+        is_new_crate: bool,
+        ownership_verified: bool,
+        dry_run_passed: bool,
+    ) -> PreflightPackage {
+        PreflightPackage {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            already_published: false,
+            is_new_crate,
+            auth_type: None,
+            ownership_verified,
+            dry_run_passed,
+            dry_run_output: None,
+        }
+    }
+
+    #[test]
+    fn proven_preflight_requires_deliberate_context_preserving_publish() -> Result<()> {
+        let outcome = build_preflight_outcome(&report(
+            Finishability::Proven,
+            true,
+            vec![package("existing", false, true, true)],
+        ));
+
+        ensure!(outcome.status == Finishability::Proven);
+        ensure!(!outcome.publication_performed);
+        ensure!(outcome.next_action.kind == ActionKind::Publish);
+        ensure!(outcome.next_action.command_line().is_none());
+        ensure!(outcome.next_action.requires_confirmation);
+        Ok(())
+    }
+
+    #[test]
+    fn first_publish_ownership_gap_remains_an_advisory_publish_posture() -> Result<()> {
+        let outcome = build_preflight_outcome(&report(
+            Finishability::NotProven,
+            false,
+            vec![package("new-crate", true, false, true)],
+        ));
+
+        ensure!(outcome.next_action.kind == ActionKind::Publish);
+        ensure!(outcome.next_action.command_line().is_none());
+        ensure!(outcome.next_action.requires_confirmation);
+        ensure!(outcome.next_action.reason.contains("first publish"));
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_ownership_gap_does_not_recommend_blind_publish() -> Result<()> {
+        let outcome = build_preflight_outcome(&report(
+            Finishability::NotProven,
+            true,
+            vec![
+                package("new-crate", true, false, true),
+                package("existing", false, true, true),
+            ],
+        ));
+
+        ensure!(outcome.next_action.kind == ActionKind::InvestigateUnknowns);
+        ensure!(outcome.next_action.command_line().is_none());
+        ensure!(!outcome.next_action.requires_confirmation);
+        Ok(())
+    }
+
+    #[test]
+    fn existing_crate_ownership_gap_stays_investigative() -> Result<()> {
+        let outcome = build_preflight_outcome(&report(
+            Finishability::NotProven,
+            true,
+            vec![package("existing", false, false, true)],
+        ));
+
+        ensure!(outcome.next_action.kind == ActionKind::InvestigateUnknowns);
+        ensure!(!outcome.next_action.requires_confirmation);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_preflight_resolves_blockers_without_suggesting_publish() -> Result<()> {
+        let outcome = build_preflight_outcome(&report(
+            Finishability::Failed,
+            false,
+            vec![package("broken", true, false, false)],
+        ));
+
+        ensure!(outcome.next_action.kind == ActionKind::ResolveBlockers);
+        ensure!(outcome.next_action.command_line().is_none());
+        ensure!(!outcome.next_action.requires_confirmation);
+        Ok(())
     }
 }
 
@@ -3001,6 +4078,7 @@ fn build_preflight_json_report(rep: &PreflightReport) -> PreflightJsonReport<'_>
 
     PreflightJsonReport {
         schema_version: "shipper.preflight.v1",
+        outcome: build_preflight_outcome(rep),
         report: rep,
         proofs,
         gaps,
@@ -3165,6 +4243,7 @@ struct PublishJsonReport<'a> {
     command: &'static str,
     execution_result: &'a ExecutionResult,
     safe_to_rerun: bool,
+    outcome: PublishOperatorOutcome,
     registry: String,
     plan_id: &'a str,
     state_dir: String,
@@ -3172,6 +4251,8 @@ struct PublishJsonReport<'a> {
     pending: usize,
     failed: usize,
     ambiguous: usize,
+    #[serde(skip_serializing_if = "count_is_zero")]
+    cleanup_incomplete: usize,
     uploaded: usize,
     skipped: usize,
     packages: Vec<CommandJsonPackageReport>,
@@ -3185,6 +4266,7 @@ struct ResumeJsonReport<'a> {
     command: &'static str,
     execution_result: &'a ExecutionResult,
     safe_to_resume: bool,
+    outcome: ResumeOperatorOutcome,
     registry: String,
     plan_id: &'a str,
     state_dir: String,
@@ -3192,6 +4274,8 @@ struct ResumeJsonReport<'a> {
     pending: usize,
     failed: usize,
     ambiguous: usize,
+    #[serde(skip_serializing_if = "count_is_zero")]
+    cleanup_incomplete: usize,
     uploaded: usize,
     skipped: usize,
     next_package: Option<String>,
@@ -3200,14 +4284,54 @@ struct ResumeJsonReport<'a> {
     receipt: &'a shipper_core::types::Receipt,
 }
 
+#[derive(Default)]
 struct CommandJsonPackageCounts {
     published: usize,
     pending: usize,
     failed: usize,
     ambiguous: usize,
+    cleanup_incomplete: usize,
     uploaded: usize,
     skipped: usize,
     next_package: Option<String>,
+    retryable_failures: usize,
+    permanent_failures: usize,
+    ambiguous_failures: usize,
+    // Derived from this invocation's validated receipt membership, not an
+    // inferred historical resume scope.
+    first_omitted_resumable: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublishOperatorOutcome {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_class: Option<&'static str>,
+    safe_to_rerun: PublishSafeRerun,
+    next_action: OperatorAction,
+    evidence: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublishSafeRerun {
+    value: bool,
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ResumeOperatorOutcome {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_class: Option<&'static str>,
+    safe_to_resume: ResumeSafeToResume,
+    next_action: OperatorAction,
+    evidence: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ResumeSafeToResume {
+    value: bool,
+    reason: String,
 }
 
 #[derive(Serialize)]
@@ -3251,12 +4375,18 @@ struct CommandJsonArtifact {
 
 fn print_publish_output(
     receipt: &shipper_core::types::Receipt,
+    packages: &[&PackageProgress],
     workspace_root: &Path,
     state_dir: &Path,
     format: &str,
 ) -> Result<()> {
+    let counts = command_package_counts(packages, receipt);
+    let evidence_state_dir = publish_evidence_state_dir(workspace_root, state_dir);
+    let outcome =
+        build_publish_operator_outcome(&receipt.execution_result, &counts, &evidence_state_dir);
     if format == "json" {
-        let report = build_publish_json_report(receipt, state_dir)?;
+        let report =
+            build_publish_json_report(receipt, packages, state_dir, &evidence_state_dir, outcome)?;
         let json = serde_json::to_string_pretty(&report)
             .context("failed to serialize publish JSON envelope")?;
         println!("{}", json);
@@ -3264,17 +4394,33 @@ fn print_publish_output(
     }
 
     print_receipt(receipt, workspace_root, state_dir, format);
+    print_omitted_package_states(receipt, packages);
+    print_publish_operator_outcome(&outcome);
     Ok(())
+}
+
+fn publish_evidence_state_dir(workspace_root: &Path, state_dir: &Path) -> PathBuf {
+    if state_dir.is_absolute() {
+        state_dir.to_path_buf()
+    } else {
+        workspace_root.join(state_dir)
+    }
 }
 
 fn print_resume_output(
     receipt: &shipper_core::types::Receipt,
+    packages: &[&PackageProgress],
     workspace_root: &Path,
     state_dir: &Path,
     format: &str,
 ) -> Result<()> {
+    let counts = command_package_counts(packages, receipt);
+    let evidence_state_dir = publish_evidence_state_dir(workspace_root, state_dir);
+    let outcome =
+        build_resume_operator_outcome(&receipt.execution_result, &counts, &evidence_state_dir);
     if format == "json" {
-        let report = build_resume_json_report(receipt, state_dir)?;
+        let report =
+            build_resume_json_report(receipt, packages, state_dir, &evidence_state_dir, outcome)?;
         let json = serde_json::to_string_pretty(&report)
             .context("failed to serialize resume JSON envelope")?;
         println!("{}", json);
@@ -3282,24 +4428,29 @@ fn print_resume_output(
     }
 
     print_receipt(receipt, workspace_root, state_dir, format);
+    print_omitted_package_states(receipt, packages);
+    print_resume_operator_outcome(&outcome);
     Ok(())
 }
 
 fn build_publish_json_report<'a>(
     receipt: &'a shipper_core::types::Receipt,
+    progress: &[&PackageProgress],
     state_dir: &Path,
+    evidence_state_dir: &Path,
+    outcome: PublishOperatorOutcome,
 ) -> Result<PublishJsonReport<'a>> {
-    let reconciled = reconciled_packages(state_dir)?;
-    let packages = command_package_reports(receipt, &reconciled);
-    let counts = command_package_counts(receipt);
-    let safe_to_rerun =
-        counts.pending == 0 && counts.failed == 0 && counts.ambiguous == 0 && counts.uploaded == 0;
+    let reconciled = reconciled_packages(evidence_state_dir)?;
+    let packages = command_package_reports(progress, &reconciled);
+    let counts = command_package_counts(progress, receipt);
+    let safe_to_rerun = outcome.safe_to_rerun.value;
 
     Ok(PublishJsonReport {
         schema_version: "shipper.publish.v1",
         command: "publish",
         execution_result: &receipt.execution_result,
         safe_to_rerun,
+        outcome,
         registry: receipt.registry.name.clone(),
         plan_id: &receipt.plan_id,
         state_dir: state_dir.display().to_string(),
@@ -3307,28 +4458,33 @@ fn build_publish_json_report<'a>(
         pending: counts.pending,
         failed: counts.failed,
         ambiguous: counts.ambiguous,
+        cleanup_incomplete: counts.cleanup_incomplete,
         uploaded: counts.uploaded,
         skipped: counts.skipped,
         packages,
-        artifacts: command_json_artifacts(state_dir),
+        artifacts: command_json_artifacts_with_lookup(state_dir, evidence_state_dir),
         receipt,
     })
 }
 
 fn build_resume_json_report<'a>(
     receipt: &'a shipper_core::types::Receipt,
+    progress: &[&PackageProgress],
     state_dir: &Path,
+    evidence_state_dir: &Path,
+    outcome: ResumeOperatorOutcome,
 ) -> Result<ResumeJsonReport<'a>> {
-    let reconciled = reconciled_packages(state_dir)?;
-    let packages = command_package_reports(receipt, &reconciled);
-    let counts = command_package_counts(receipt);
-    let safe_to_resume = counts.failed == 0 && counts.ambiguous == 0;
+    let reconciled = reconciled_packages(evidence_state_dir)?;
+    let packages = command_package_reports(progress, &reconciled);
+    let counts = command_package_counts(progress, receipt);
+    let safe_to_resume = legacy_safe_to_resume(&counts);
 
     Ok(ResumeJsonReport {
         schema_version: "shipper.resume.v1",
         command: "resume",
         execution_result: &receipt.execution_result,
         safe_to_resume,
+        outcome,
         registry: receipt.registry.name.clone(),
         plan_id: &receipt.plan_id,
         state_dir: state_dir.display().to_string(),
@@ -3336,27 +4492,101 @@ fn build_resume_json_report<'a>(
         pending: counts.pending,
         failed: counts.failed,
         ambiguous: counts.ambiguous,
+        cleanup_incomplete: counts.cleanup_incomplete,
         uploaded: counts.uploaded,
         skipped: counts.skipped,
         next_package: counts.next_package,
         packages,
-        artifacts: command_json_artifacts(state_dir),
+        artifacts: command_json_artifacts_with_lookup(state_dir, evidence_state_dir),
         receipt,
     })
 }
 
-fn command_package_counts(receipt: &shipper_core::types::Receipt) -> CommandJsonPackageCounts {
+fn legacy_safe_to_resume(counts: &CommandJsonPackageCounts) -> bool {
+    counts.failed == 0 && counts.ambiguous == 0 && counts.cleanup_incomplete == 0
+}
+
+fn count_is_zero(count: &usize) -> bool {
+    *count == 0
+}
+
+fn full_plan_package_progress<'a>(
+    plan: &ReleasePlan,
+    state: &'a ExecutionState,
+) -> Result<Vec<&'a PackageProgress>> {
+    plan.packages
+        .iter()
+        .map(|package| {
+            let key = pkg_key(&package.name, &package.version);
+            state
+                .packages
+                .get(&key)
+                .with_context(|| format!("{key}: finalized plan has no package state"))
+        })
+        .collect()
+}
+
+fn print_omitted_package_states(
+    receipt: &shipper_core::types::Receipt,
+    packages: &[&PackageProgress],
+) {
+    let receipted: BTreeSet<_> = receipt
+        .packages
+        .iter()
+        .map(|package| (&package.name, &package.version))
+        .collect();
+    for package in packages
+        .iter()
+        .filter(|package| !receipted.contains(&(&package.name, &package.version)))
+    {
+        println!(
+            "{}@{}: {} (outside this invocation's receipt; durable attempts={})",
+            package.name,
+            package.version,
+            package_state_name(&package.state),
+            package.attempts
+        );
+    }
+}
+
+fn command_package_counts(
+    packages: &[&PackageProgress],
+    receipt: &shipper_core::types::Receipt,
+) -> CommandJsonPackageCounts {
+    let receipted: BTreeSet<_> = receipt
+        .packages
+        .iter()
+        .map(|package| (&package.name, &package.version))
+        .collect();
     let mut counts = CommandJsonPackageCounts {
         published: 0,
         pending: 0,
         failed: 0,
         ambiguous: 0,
+        cleanup_incomplete: 0,
         uploaded: 0,
         skipped: 0,
         next_package: None,
+        retryable_failures: 0,
+        permanent_failures: 0,
+        ambiguous_failures: 0,
+        first_omitted_resumable: None,
     };
 
-    for package in &receipt.packages {
+    for package in packages {
+        if matches!(
+            package.state,
+            PackageState::Pending
+                | PackageState::Failed {
+                    class: ErrorClass::Retryable,
+                    ..
+                }
+        ) && !receipted.contains(&(&package.name, &package.version))
+        {
+            counts
+                .first_omitted_resumable
+                .get_or_insert_with(|| package.name.clone());
+        }
         match &package.state {
             PackageState::Pending => {
                 counts.pending += 1;
@@ -3376,8 +4606,13 @@ fn command_package_counts(receipt: &shipper_core::types::Receipt) -> CommandJson
             PackageState::Skipped { .. } => {
                 counts.skipped += 1;
             }
-            PackageState::Failed { .. } => {
+            PackageState::Failed { class, .. } => {
                 counts.failed += 1;
+                match class {
+                    ErrorClass::Retryable => counts.retryable_failures += 1,
+                    ErrorClass::Permanent => counts.permanent_failures += 1,
+                    ErrorClass::Ambiguous => counts.ambiguous_failures += 1,
+                }
                 counts
                     .next_package
                     .get_or_insert_with(|| package.name.clone());
@@ -3388,18 +4623,273 @@ fn command_package_counts(receipt: &shipper_core::types::Receipt) -> CommandJson
                     .next_package
                     .get_or_insert_with(|| package.name.clone());
             }
+            PackageState::CleanupIncomplete { .. } => {
+                counts.cleanup_incomplete += 1;
+            }
         }
     }
 
+    if counts.cleanup_incomplete > 0 {
+        counts.next_package = None;
+        counts.first_omitted_resumable = None;
+    }
     counts
 }
 
+fn resume_action(counts: &CommandJsonPackageCounts, state_dir: &Path) -> OperatorAction {
+    let mut reason = format!(
+        "resume from the durable state at {} using the same workspace, manifest, configuration, and registry selection",
+        state_dir.display()
+    );
+    if let Some(package) = &counts.first_omitted_resumable {
+        reason.push_str(&format!(
+            "; remove --resume-from so the next resume includes {package}, the first unfinished package omitted by this invocation"
+        ));
+    }
+    OperatorAction::posture(ActionKind::Resume, reason)
+}
+
+fn build_publish_operator_outcome(
+    result: &ExecutionResult,
+    counts: &CommandJsonPackageCounts,
+    state_dir: &Path,
+) -> PublishOperatorOutcome {
+    let safe_to_rerun = counts.pending == 0
+        && counts.failed == 0
+        && counts.ambiguous == 0
+        && counts.uploaded == 0
+        && counts.cleanup_incomplete == 0;
+    let evidence = publish_outcome_evidence(state_dir);
+
+    let (failure_class, next_action, reason) = if counts.cleanup_incomplete > 0 {
+        (
+            Some("cleanup_incomplete"),
+            cleanup_incomplete_action(),
+            CLEANUP_INCOMPLETE_REASON,
+        )
+    } else if counts.ambiguous > 0 || counts.ambiguous_failures > 0 {
+        (
+            Some("ambiguous"),
+            OperatorAction::posture(
+                ActionKind::Reconcile,
+                "registry truth remains unknown; inspect reconciliation and event evidence before any retry",
+            ),
+            "registry truth remains unknown for at least one package",
+        )
+    } else if counts.uploaded > 0 {
+        (
+            Some("ambiguous"),
+            OperatorAction::posture(
+                ActionKind::WaitForRegistry,
+                "an uploaded package has not reached verified registry visibility; inspect events and wait for registry truth",
+            ),
+            "at least one upload has not reached a verified terminal state",
+        )
+    } else if counts.permanent_failures > 0 {
+        (
+            Some("permanent"),
+            OperatorAction::posture(
+                ActionKind::ResolveBlockers,
+                "resolve the permanent failure recorded in retained state and event evidence before resuming",
+            ),
+            "a permanent failure must be resolved before more publication work",
+        )
+    } else if counts.retryable_failures > 0 || counts.pending > 0 {
+        (
+            counts.retryable_failures.gt(&0).then_some("retryable"),
+            resume_action(counts, state_dir),
+            "unfinished work must continue through the durable resume path",
+        )
+    } else if matches!(result, ExecutionResult::Success) {
+        (
+            None,
+            OperatorAction::posture(
+                ActionKind::NoneComplete,
+                "publication is complete; retain the receipt and event evidence",
+            ),
+            "all packages reached a successful terminal state",
+        )
+    } else {
+        (
+            None,
+            OperatorAction::posture(
+                ActionKind::StopAndInvestigate,
+                "the aggregate result and package states disagree; inspect the retained evidence",
+            ),
+            "the completed receipt does not prove a safe rerun",
+        )
+    };
+
+    PublishOperatorOutcome {
+        status: execution_result_name(result),
+        failure_class,
+        safe_to_rerun: PublishSafeRerun {
+            value: safe_to_rerun,
+            reason: reason.to_string(),
+        },
+        next_action,
+        evidence,
+    }
+}
+
+fn build_resume_operator_outcome(
+    result: &ExecutionResult,
+    counts: &CommandJsonPackageCounts,
+    state_dir: &Path,
+) -> ResumeOperatorOutcome {
+    let evidence = publish_outcome_evidence(state_dir);
+
+    let (failure_class, safe_to_resume, next_action, reason) = if counts.cleanup_incomplete > 0 {
+        (
+            Some("cleanup_incomplete"),
+            false,
+            cleanup_incomplete_action(),
+            CLEANUP_INCOMPLETE_REASON,
+        )
+    } else if counts.ambiguous > 0 || counts.ambiguous_failures > 0 {
+        (
+            Some("ambiguous"),
+            false,
+            OperatorAction::posture(
+                ActionKind::Reconcile,
+                "registry truth remains unknown; inspect reconciliation and event evidence before resuming",
+            ),
+            "registry truth remains unknown for at least one package",
+        )
+    } else if counts.uploaded > 0 {
+        (
+            Some("ambiguous"),
+            false,
+            OperatorAction::posture(
+                ActionKind::WaitForRegistry,
+                "an uploaded package has not reached verified registry visibility; inspect events and wait for registry truth",
+            ),
+            "at least one upload has not reached a verified terminal state",
+        )
+    } else if counts.permanent_failures > 0 {
+        (
+            Some("permanent"),
+            false,
+            OperatorAction::posture(
+                ActionKind::ResolveBlockers,
+                "resolve the permanent failure recorded in retained state and event evidence before resuming",
+            ),
+            "a permanent failure must be resolved before resume is safe",
+        )
+    } else if counts.retryable_failures > 0 || counts.pending > 0 {
+        (
+            counts.retryable_failures.gt(&0).then_some("retryable"),
+            true,
+            resume_action(counts, state_dir),
+            "durable state identifies unfinished work that can continue through resume",
+        )
+    } else if matches!(result, ExecutionResult::Success) {
+        (
+            None,
+            true,
+            OperatorAction::posture(
+                ActionKind::NoneComplete,
+                "resume completed the publish run; retain the receipt and event evidence",
+            ),
+            "all packages reached a successful terminal state",
+        )
+    } else {
+        (
+            None,
+            false,
+            OperatorAction::posture(
+                ActionKind::StopAndInvestigate,
+                "the aggregate result and package states disagree; inspect the retained evidence",
+            ),
+            "the completed receipt does not prove that resume is safe",
+        )
+    };
+
+    ResumeOperatorOutcome {
+        status: execution_result_name(result),
+        failure_class,
+        safe_to_resume: ResumeSafeToResume {
+            value: safe_to_resume,
+            reason: reason.to_string(),
+        },
+        next_action,
+        evidence,
+    }
+}
+
+fn execution_result_name(result: &ExecutionResult) -> &'static str {
+    match result {
+        ExecutionResult::Success => "success",
+        ExecutionResult::PartialFailure => "partial_failure",
+        ExecutionResult::CompleteFailure => "complete_failure",
+    }
+}
+
+fn publish_outcome_evidence(state_dir: &Path) -> Vec<String> {
+    let mut evidence = vec![
+        state_dir
+            .join(shipper_core::state::execution_state::STATE_FILE)
+            .display()
+            .to_string(),
+        state_dir
+            .join(shipper_core::state::events::EVENTS_FILE)
+            .display()
+            .to_string(),
+        state_dir
+            .join(shipper_core::state::execution_state::RECEIPT_FILE)
+            .display()
+            .to_string(),
+    ];
+    let reconciliation = state_dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE);
+    if reconciliation.exists() {
+        evidence.push(reconciliation.display().to_string());
+    }
+    evidence
+}
+
+fn print_publish_operator_outcome(outcome: &PublishOperatorOutcome) {
+    println!();
+    println!("Result: {}", outcome.status.replace('_', " "));
+    println!(
+        "Safe to rerun: {} — {}",
+        if outcome.safe_to_rerun.value {
+            "yes"
+        } else {
+            "no"
+        },
+        outcome.safe_to_rerun.reason
+    );
+    match outcome.next_action.command_line() {
+        Some(command) => println!("Next: {command} — {}", outcome.next_action.reason),
+        None => println!("Next: {}", outcome.next_action.reason),
+    }
+    println!("Evidence: {}", outcome.evidence.join(", "));
+}
+
+fn print_resume_operator_outcome(outcome: &ResumeOperatorOutcome) {
+    println!();
+    println!("Result: {}", outcome.status.replace('_', " "));
+    println!(
+        "Safe to resume: {} — {}",
+        if outcome.safe_to_resume.value {
+            "yes"
+        } else {
+            "no"
+        },
+        outcome.safe_to_resume.reason
+    );
+    match outcome.next_action.command_line() {
+        Some(command) => println!("Next: {command} — {}", outcome.next_action.reason),
+        None => println!("Next: {}", outcome.next_action.reason),
+    }
+    println!("Evidence: {}", outcome.evidence.join(", "));
+}
+
 fn command_package_reports(
-    receipt: &shipper_core::types::Receipt,
+    progress: &[&PackageProgress],
     reconciled: &BTreeSet<(String, String)>,
 ) -> Vec<CommandJsonPackageReport> {
-    receipt
-        .packages
+    progress
         .iter()
         .map(|package| CommandJsonPackageReport {
             name: package.name.clone(),
@@ -3411,20 +4901,33 @@ fn command_package_reports(
         .collect()
 }
 
-fn command_json_artifacts(state_dir: &Path) -> CommandJsonArtifacts {
+fn command_json_artifacts_with_lookup(
+    display_state_dir: &Path,
+    lookup_state_dir: &Path,
+) -> CommandJsonArtifacts {
     CommandJsonArtifacts {
-        state: json_artifact(state_dir.join(shipper_core::state::execution_state::STATE_FILE)),
-        events: json_artifact(state_dir.join(shipper_core::state::events::EVENTS_FILE)),
-        receipt: json_artifact(state_dir.join(shipper_core::state::execution_state::RECEIPT_FILE)),
-        reconciliation: json_artifact(
-            state_dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE),
+        state: json_artifact_with_lookup(
+            display_state_dir.join(shipper_core::state::execution_state::STATE_FILE),
+            lookup_state_dir.join(shipper_core::state::execution_state::STATE_FILE),
+        ),
+        events: json_artifact_with_lookup(
+            display_state_dir.join(shipper_core::state::events::EVENTS_FILE),
+            lookup_state_dir.join(shipper_core::state::events::EVENTS_FILE),
+        ),
+        receipt: json_artifact_with_lookup(
+            display_state_dir.join(shipper_core::state::execution_state::RECEIPT_FILE),
+            lookup_state_dir.join(shipper_core::state::execution_state::RECEIPT_FILE),
+        ),
+        reconciliation: json_artifact_with_lookup(
+            display_state_dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE),
+            lookup_state_dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE),
         ),
     }
 }
 
-fn json_artifact(path: PathBuf) -> CommandJsonArtifact {
+fn json_artifact_with_lookup(path: PathBuf, lookup_path: PathBuf) -> CommandJsonArtifact {
     CommandJsonArtifact {
-        exists: path.exists(),
+        exists: lookup_path.exists(),
         path: path.display().to_string(),
     }
 }
@@ -3455,6 +4958,7 @@ fn package_state_name(state: &PackageState) -> &'static str {
         PackageState::Skipped { .. } => "skipped",
         PackageState::Failed { .. } => "failed",
         PackageState::Ambiguous { .. } => "ambiguous",
+        PackageState::CleanupIncomplete { .. } => "cleanup_incomplete",
     }
 }
 
@@ -3819,6 +5323,10 @@ fn run_inspect_receipt(
             shipper_core::types::PackageState::Ambiguous { message } => {
                 &format!("\x1b[33mAmbiguous: {}\x1b[0m", message)
             }
+            shipper_core::types::PackageState::CleanupIncomplete { message } => &format!(
+                "\x1b[31mCleanup incomplete: {}\x1b[0m",
+                shipper_output_sanitizer::redact_sensitive(message)
+            ),
         };
         println!(
             "  {}@{}: {} (attempts={}, {}ms)",
@@ -3835,6 +5343,34 @@ struct StatusReport {
     plan_id: String,
     workspace_root: String,
     registries: Vec<StatusRegistryReport>,
+    outcome: StatusOperatorOutcome,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusOperatorOutcome {
+    status: StatusOutcomeStatus,
+    publication_performed: bool,
+    next_action: OperatorAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum StatusOutcomeStatus {
+    AllPublished,
+    PartiallyPublished,
+    NotPublished,
+    NoPublishablePackages,
+}
+
+impl StatusOutcomeStatus {
+    fn human_label(self) -> &'static str {
+        match self {
+            Self::AllPublished => "all published",
+            Self::PartiallyPublished => "partially published",
+            Self::NotPublished => "not published",
+            Self::NoPublishablePackages => "no publishable packages",
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -3844,6 +5380,7 @@ struct StatusRegistryReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     index_base: Option<String>,
     packages: Vec<StatusPackageReport>,
+    plan_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -3883,7 +5420,60 @@ fn build_status_registry_report(
         api_base: ws.plan.registry.api_base.clone(),
         index_base: ws.plan.registry.index_base.clone(),
         packages,
+        plan_id: ws.plan.plan_id.clone(),
     })
+}
+
+fn build_status_operator_outcome(registries: &[StatusRegistryReport]) -> StatusOperatorOutcome {
+    let observed = registries
+        .iter()
+        .map(|registry| registry.packages.len())
+        .sum::<usize>();
+    let published = registries
+        .iter()
+        .flat_map(|registry| &registry.packages)
+        .filter(|package| package.exists)
+        .count();
+
+    let (status, next_action) = if observed == 0 {
+        (
+            StatusOutcomeStatus::NoPublishablePackages,
+            OperatorAction::posture(
+                ActionKind::Plan,
+                "review the plan and package selection; status observed no publishable packages",
+            ),
+        )
+    } else if published == observed {
+        (
+            StatusOutcomeStatus::AllPublished,
+            OperatorAction::posture(
+                ActionKind::NoneComplete,
+                "every registry-eligible selected package version is visible in its effective target registry or registries",
+            ),
+        )
+    } else if published == 0 {
+        (
+            StatusOutcomeStatus::NotPublished,
+            OperatorAction::posture(
+                ActionKind::Preflight,
+                "run preflight in the same workspace and registry context before publishing",
+            ),
+        )
+    } else {
+        (
+            StatusOutcomeStatus::PartiallyPublished,
+            OperatorAction::posture(
+                ActionKind::Preflight,
+                "some selected package versions are missing; run preflight in the same workspace and registry context before publishing",
+            ),
+        )
+    };
+
+    StatusOperatorOutcome {
+        status,
+        publication_performed: false,
+        next_action,
+    }
 }
 
 fn write_status_report(report: &StatusReport, format: &str) -> Result<()> {
@@ -3910,6 +5500,14 @@ fn write_status_report(report: &StatusReport, format: &str) -> Result<()> {
         for package in &registry.packages {
             println!("{}@{}: {}", package.name, package.version, package.status);
         }
+    }
+
+    println!();
+    println!("Result: {}", report.outcome.status.human_label());
+    println!("Publication performed: no");
+    match report.outcome.next_action.command_line() {
+        Some(command) => println!("Next: {command} — {}", report.outcome.next_action.reason),
+        None => println!("Next: {}", report.outcome.next_action.reason),
     }
 
     Ok(())
@@ -3962,6 +5560,8 @@ struct StatusWatchReport {
     current_package: Option<String>,
     last_event: Option<StatusWatchEventReport>,
     next_action: Option<StatusWatchNextAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<ResumeOperatorOutcome>,
     packages: Vec<StatusWatchPackageReport>,
 }
 
@@ -3974,6 +5574,8 @@ struct StatusWatchCounts {
     skipped: usize,
     failed: usize,
     ambiguous: usize,
+    #[serde(skip_serializing_if = "count_is_zero")]
+    cleanup_incomplete: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -4012,11 +5614,36 @@ fn build_status_watch_report(
     let events = read_status_watch_events(&events_path)
         .with_context(|| format!("failed to read event log from {}", events_path.display()))?;
 
-    let packages = build_status_watch_packages(ws, state.as_ref());
+    let mut packages = build_status_watch_packages(ws, state.as_ref());
+    for event in &events {
+        if matches!(event.event_type, EventType::PackageCleanupIncomplete { .. })
+            && let Some(package) = packages
+                .iter_mut()
+                .find(|package| pkg_key(&package.name, &package.version) == event.package)
+        {
+            package.state = "cleanup_incomplete".to_string();
+            package.last_updated_at = Some(format_utc(event.timestamp));
+        }
+    }
     let counts = status_watch_counts(&packages);
     let current_package = current_status_package(&events, state.as_ref(), &packages);
     let last_event = events.last().map(status_watch_event_report);
-    let next_action = latest_status_watch_next_action(&events);
+    let cleanup_incomplete = has_cleanup_hold(&events, state.as_ref());
+    let next_action = if cleanup_incomplete {
+        None
+    } else {
+        latest_status_watch_next_action(&events)
+    };
+    let outcome = cleanup_incomplete.then(|| ResumeOperatorOutcome {
+        status: "cleanup_incomplete",
+        failure_class: Some("cleanup_incomplete"),
+        safe_to_resume: ResumeSafeToResume {
+            value: false,
+            reason: CLEANUP_INCOMPLETE_REASON.to_string(),
+        },
+        next_action: cleanup_incomplete_action(),
+        evidence: still_unknown_evidence(state_dir, true),
+    });
 
     Ok(StatusWatchReport {
         schema_version: "shipper.status.watch.v1",
@@ -4030,6 +5657,7 @@ fn build_status_watch_report(
         current_package,
         last_event,
         next_action,
+        outcome,
         packages,
     })
 }
@@ -4107,6 +5735,7 @@ fn status_watch_counts(packages: &[StatusWatchPackageReport]) -> StatusWatchCoun
             "skipped" => counts.skipped += 1,
             "failed" => counts.failed += 1,
             "ambiguous" => counts.ambiguous += 1,
+            "cleanup_incomplete" => counts.cleanup_incomplete += 1,
             _ => {}
         }
     }
@@ -4118,6 +5747,9 @@ fn current_status_package(
     state: Option<&ExecutionState>,
     packages: &[StatusWatchPackageReport],
 ) -> Option<String> {
+    if has_cleanup_hold(events, state) {
+        return None;
+    }
     if let Some(state) = state {
         for package in &state.packages {
             let progress = package.1;
@@ -4126,6 +5758,7 @@ fn current_status_package(
                 PackageState::Published
                     | PackageState::Skipped { .. }
                     | PackageState::Failed { .. }
+                    | PackageState::CleanupIncomplete { .. }
             ) {
                 return Some(format!("{}@{}", progress.name, progress.version));
             }
@@ -4140,12 +5773,18 @@ fn current_status_package(
     packages
         .iter()
         .find(|package| {
-            package.state != "published" && package.state != "skipped" && package.state != "failed"
+            package.state != "published"
+                && package.state != "skipped"
+                && package.state != "failed"
+                && package.state != "cleanup_incomplete"
         })
         .map(|package| format!("{}@{}", package.name, package.version))
 }
 
 fn latest_active_progress_event(events: &[PublishEvent]) -> Option<&PublishEvent> {
+    if has_cleanup_hold(events, None) {
+        return None;
+    }
     for event in events.iter().rev() {
         if !event.package.is_empty()
             && event.package != "workspace"
@@ -4170,6 +5809,9 @@ fn status_watch_event_report(event: &PublishEvent) -> StatusWatchEventReport {
 }
 
 fn latest_status_watch_next_action(events: &[PublishEvent]) -> Option<StatusWatchNextAction> {
+    if has_cleanup_hold(events, None) {
+        return None;
+    }
     for event in events.iter().rev() {
         if let Some(action) = status_watch_next_action(event) {
             return Some(action);
@@ -4179,6 +5821,18 @@ fn latest_status_watch_next_action(events: &[PublishEvent]) -> Option<StatusWatc
         }
     }
     None
+}
+
+fn has_cleanup_hold(events: &[PublishEvent], state: Option<&ExecutionState>) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event.event_type, EventType::PackageCleanupIncomplete { .. }))
+        || state.is_some_and(|state| {
+            state
+                .packages
+                .values()
+                .any(|package| matches!(package.state, PackageState::CleanupIncomplete { .. }))
+        })
 }
 
 fn status_watch_next_action(event: &PublishEvent) -> Option<StatusWatchNextAction> {
@@ -4247,6 +5901,7 @@ fn event_type_is_active_progress(event_type: &EventType) -> bool {
         EventType::PackageStarted { .. }
             | EventType::PackageAttempted { .. }
             | EventType::PackageOutput { .. }
+            | EventType::PackageUploadUnconfirmed { .. }
             | EventType::PublishWaiting { .. }
             | EventType::RateLimitObserved { .. }
             | EventType::PublishReconciling { .. }
@@ -4265,6 +5920,7 @@ fn event_type_clears_next_action(event_type: &EventType) -> bool {
             | EventType::PackageStarted { .. }
             | EventType::PackagePublished { .. }
             | EventType::PackageFailed { .. }
+            | EventType::PackageCleanupIncomplete { .. }
             | EventType::PackageSkipped { .. }
             | EventType::PublishReconciled { .. }
             | EventType::ReadinessComplete { .. }
@@ -4315,6 +5971,13 @@ fn write_status_watch_report<W: Write>(
         report.counts.ambiguous,
         report.counts.total
     )?;
+    if report.counts.cleanup_incomplete > 0 {
+        writeln!(
+            out,
+            "cleanup_incomplete: {}",
+            report.counts.cleanup_incomplete
+        )?;
+    }
 
     if let Some(current) = &report.current_package {
         writeln!(out, "current: {}", current)?;
@@ -4332,7 +5995,14 @@ fn write_status_watch_report<W: Write>(
         writeln!(out, "last_event: none")?;
     }
 
-    if let Some(next_action) = &report.next_action {
+    if let Some(outcome) = &report.outcome {
+        writeln!(
+            out,
+            "Safe to resume: no — {}",
+            outcome.safe_to_resume.reason
+        )?;
+        writeln!(out, "Next: {}", outcome.next_action.reason)?;
+    } else if let Some(next_action) = &report.next_action {
         writeln!(
             out,
             "next: {} {} at {} - {}",
@@ -4362,6 +6032,7 @@ fn package_state_label(state: &PackageState) -> &'static str {
         PackageState::Skipped { .. } => "skipped",
         PackageState::Failed { .. } => "failed",
         PackageState::Ambiguous { .. } => "ambiguous",
+        PackageState::CleanupIncomplete { .. } => "cleanup_incomplete",
     }
 }
 
@@ -4370,14 +6041,18 @@ fn event_type_name(event_type: &EventType) -> &'static str {
         EventType::PlanCreated { .. } => "plan_created",
         EventType::ExecutionStarted => "execution_started",
         EventType::ExecutionFinished { .. } => "execution_finished",
+        EventType::ExecutionStopped { .. } => "execution_stopped",
         EventType::AuthEvidenceRecorded { .. } => "auth_evidence_recorded",
         EventType::RegistryPolicyApplied { .. } => "registry_policy_applied",
         EventType::PackageStarted { .. } => "package_started",
         EventType::PackageAttempted { .. } => "package_attempted",
         EventType::PackageOutput { .. } => "package_output",
+        EventType::PackageNotLaunched { .. } => "package_not_launched",
+        EventType::PackageUploadUnconfirmed { .. } => "package_upload_unconfirmed",
         EventType::PackageUploaded => "package_uploaded",
         EventType::PackagePublished { .. } => "package_published",
         EventType::PackageFailed { .. } => "package_failed",
+        EventType::PackageCleanupIncomplete { .. } => "package_cleanup_incomplete",
         EventType::PackageSkipped { .. } => "package_skipped",
         EventType::PublishWaiting { .. } => "publish_waiting",
         EventType::RateLimitObserved { .. } => "rate_limit_observed",
@@ -4415,6 +6090,9 @@ fn summarize_event(event: &PublishEvent) -> String {
     match &event.event_type {
         EventType::ExecutionStarted => "execution started".to_string(),
         EventType::ExecutionFinished { result } => format!("execution finished: {:?}", result),
+        EventType::ExecutionStopped { reason } => {
+            format!("execution stopped: {:?}", reason)
+        }
         EventType::PackageStarted { name, version } => {
             format!("started {}@{}", name, version)
         }
@@ -4422,7 +6100,14 @@ fn summarize_event(event: &PublishEvent) -> String {
             format!("published in {}", format_millis(*duration_ms))
         }
         EventType::PackageUploaded => "upload accepted by cargo".to_string(),
+        EventType::PackageNotLaunched { message, .. } => {
+            shipper_output_sanitizer::redact_sensitive(message)
+        }
         EventType::PackageFailed { class, message } => format!("failed ({:?}): {}", class, message),
+        EventType::PackageCleanupIncomplete { message } => format!(
+            "cleanup incomplete: {}",
+            shipper_output_sanitizer::redact_sensitive(message)
+        ),
         EventType::PackageSkipped { reason } => format!("skipped: {}", reason),
         EventType::PublishWaiting {
             reason, delay_ms, ..
@@ -4522,39 +6207,7 @@ fn run_ci(ci_cmd: CiCommands, state_dir: &Path, workspace_root: &Path) -> Result
 
     match ci_cmd {
         CiCommands::GitHubActions => {
-            println!("# GitHub Actions workflow snippet for Shipper");
-            println!("# Add these steps to your workflow file");
-            println!();
-            println!("# Restore Shipper State (cache for faster restores)");
-            println!("- name: Restore Shipper State");
-            println!("  uses: actions/cache@v3");
-            println!("  with:");
-            println!("    path: {}/", abs_state.display());
-            println!("    key: shipper-${{{{ github.sha }}}}");
-            println!("    restore-keys: |");
-            println!("      shipper-");
-            println!();
-            println!("# Restore Shipper State (artifact for resumability)");
-            println!("- name: Restore Shipper State Artifact");
-            println!("  uses: actions/download-artifact@v4");
-            println!("  with:");
-            println!("    name: shipper-state");
-            println!("    path: {}/", abs_state.display());
-            println!("  continue-on-error: true");
-            println!();
-            println!("# Run shipper publish (will resume if state exists)");
-            println!("- name: Publish Crates");
-            println!("  run: shipper publish --quiet");
-            println!("  env:");
-            println!("    CARGO_REGISTRY_TOKEN: ${{{{ secrets.CARGO_REGISTRY_TOKEN }}}}");
-            println!();
-            println!("# Save Shipper State (even if publish fails)");
-            println!("- name: Save Shipper State");
-            println!("  if: always()");
-            println!("  uses: actions/upload-artifact@v3");
-            println!("  with:");
-            println!("    name: shipper-state");
-            println!("    path: {}/", abs_state.display());
+            print!("{}", ci::github_actions_steps(state_dir)?);
         }
         CiCommands::GitLab => {
             println!("# GitLab CI snippet for Shipper");
@@ -4727,9 +6380,17 @@ fn run_clean(
         }
     }
 
+    // Refuse the whole selection before deleting any evidence. Keep every
+    // acquired owner alive through the entire deletion pass, so a cooperating
+    // publisher cannot add a hold after validation or enter an earlier directory
+    // while a later directory is still being cleaned.
+    let prepared = dirs_to_clean
+        .into_iter()
+        .map(|dir| PreparedCleanDirectory::acquire(dir, workspace_root, force))
+        .collect::<Result<Vec<_>>>()?;
     let mut actions = Vec::new();
-    for dir in dirs_to_clean {
-        actions.extend(clean_single_dir(&dir, workspace_root, keep_receipt, force)?);
+    for directory in &prepared {
+        actions.extend(directory.clean(keep_receipt)?);
     }
 
     if json {
@@ -4761,105 +6422,167 @@ fn print_clean_report(state_dir: &Path, existed: bool, actions: Vec<CleanAction>
     Ok(())
 }
 
+struct PreparedCleanDirectory {
+    path: PathBuf,
+    _owner: shipper_core::lock::LockFile,
+}
+
+impl PreparedCleanDirectory {
+    fn acquire(dir: PathBuf, workspace_root: &Path, force: bool) -> Result<Self> {
+        let lock_path = shipper_core::lock::lock_path(&dir, Some(workspace_root));
+
+        // Ownership spans every deletion, even if the advisory JSON is missing.
+        // Never unlink the persistent OS guard or steal it with --force.
+        let owner = if force {
+            if lock_path.exists() {
+                eprintln!(
+                    "[warn] --force assumes any legacy or foreign publisher is quiescent; acquiring ownership before cleaning {}",
+                    dir.display()
+                );
+            }
+            shipper_core::lock::LockFile::acquire_with_timeout_and_force(
+                &dir,
+                Some(workspace_root),
+                Duration::ZERO,
+                true,
+            )
+        } else {
+            shipper_core::lock::LockFile::acquire(&dir, Some(workspace_root))
+        }
+        .with_context(|| format!("cannot clean: active lock exists or ownership is unavailable in {}", dir.display()))?;
+
+        // The absence of a live publisher owner does not prove that a prior
+        // process's descendants were contained. Clean is not a hold-clearing
+        // command, even with --force. Preserve ordinary corrupt-artifact cleanup
+        // when the validator reports a read error rather than a typed hold.
+        if let Err(error) = engine::validate_publish_cleanup_safety(&dir)
+            && matches!(
+                engine::classify_publish_stop(&error),
+                Some(engine::PublishStopClassification::CleanupIncomplete)
+            )
+        {
+            return Err(error.context(
+                "cannot clean: retained process cleanup is incomplete; preserve the evidence and investigate the prior Cargo process",
+            ));
+        }
+
+        Ok(Self {
+            path: dir,
+            _owner: owner,
+        })
+    }
+
+    fn clean(&self, keep_receipt: bool) -> Result<Vec<CleanAction>> {
+        let dir = &self.path;
+        #[cfg(test)]
+        CLEAN_DELETE_OBSERVER.with(|observer| {
+            if let Some(observer) = observer.borrow().as_ref() {
+                observer(dir);
+            }
+        });
+        let mut actions = Vec::new();
+        let state_path = dir.join(shipper_core::state::execution_state::STATE_FILE);
+        let receipt_path = dir.join(shipper_core::state::execution_state::RECEIPT_FILE);
+        let reconciliation_path =
+            dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE);
+
+        // Remove state file
+        if state_path.exists() {
+            std::fs::remove_file(&state_path)
+                .with_context(|| format!("failed to remove state file {}", state_path.display()))?;
+            actions.push(CleanAction::Removed(state_path.display().to_string()));
+        }
+
+        // Remove event logs (authoritative + preflight-only sidecars)
+        for events_path in discover_event_logs(dir)? {
+            if events_path.exists() {
+                std::fs::remove_file(&events_path).with_context(|| {
+                    format!("failed to remove events file {}", events_path.display())
+                })?;
+                actions.push(CleanAction::Removed(events_path.display().to_string()));
+            }
+        }
+
+        // Optionally remove receipt file
+        if !keep_receipt && receipt_path.exists() {
+            std::fs::remove_file(&receipt_path).with_context(|| {
+                format!("failed to remove receipt file {}", receipt_path.display())
+            })?;
+            actions.push(CleanAction::Removed(receipt_path.display().to_string()));
+        } else if keep_receipt && receipt_path.exists() {
+            actions.push(CleanAction::Kept(receipt_path.display().to_string()));
+        }
+
+        if !keep_receipt && reconciliation_path.exists() {
+            std::fs::remove_file(&reconciliation_path).with_context(|| {
+                format!(
+                    "failed to remove reconciliation file {}",
+                    reconciliation_path.display()
+                )
+            })?;
+            actions.push(CleanAction::Removed(
+                reconciliation_path.display().to_string(),
+            ));
+        } else if keep_receipt && reconciliation_path.exists() {
+            actions.push(CleanAction::Kept(reconciliation_path.display().to_string()));
+        }
+
+        // Remove cache directory if exists
+        let cache_dir = dir.join("cache");
+        if cache_dir.exists() {
+            std::fs::remove_dir_all(&cache_dir).with_context(|| {
+                format!("failed to remove cache directory {}", cache_dir.display())
+            })?;
+            actions.push(CleanAction::Removed(cache_dir.display().to_string()));
+        }
+
+        Ok(actions)
+    }
+}
+
+#[cfg(test)]
+type CleanDeleteObserver = Box<dyn Fn(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static CLEAN_DELETE_OBSERVER: std::cell::RefCell<Option<CleanDeleteObserver>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
 fn clean_single_dir(
     dir: &Path,
     workspace_root: &Path,
     keep_receipt: bool,
     force: bool,
 ) -> Result<Vec<CleanAction>> {
-    let mut actions = Vec::new();
-    let state_path = dir.join(shipper_core::state::execution_state::STATE_FILE);
-    let receipt_path = dir.join(shipper_core::state::execution_state::RECEIPT_FILE);
-    let reconciliation_path = dir.join(shipper_core::state::execution_state::RECONCILIATION_FILE);
-    let lock_path = shipper_core::lock::lock_path(dir, Some(workspace_root));
-
-    // Check for active lock
-    if lock_path.exists() {
-        if force {
-            eprintln!(
-                "[warn] --force specified; removing lock file: {}",
-                lock_path.display()
-            );
-            std::fs::remove_file(&lock_path)
-                .with_context(|| format!("failed to remove lock file {}", lock_path.display()))?;
-        } else {
-            match shipper_core::lock::LockFile::read_lock_info(dir, Some(workspace_root)) {
-                Ok(lock_info) => {
-                    eprintln!("[warn] Active lock found in {}:", dir.display());
-                    eprintln!("[warn]   PID: {}", lock_info.pid);
-                    eprintln!("[warn]   Hostname: {}", lock_info.hostname);
-                    eprintln!("[warn]   Acquired at: {}", lock_info.acquired_at);
-                    eprintln!("[warn]   Plan ID: {:?}", lock_info.plan_id);
-                }
-                Err(err) => {
-                    eprintln!(
-                        "[warn] Active lock found in {} but metadata could not be read: {err:#}",
-                        dir.display()
-                    );
-                }
-            }
-            eprintln!("[warn] Use --force to override the lock");
-            bail!("cannot clean: active lock exists in {}", dir.display());
-        }
-    }
-
-    // Remove state file
-    if state_path.exists() {
-        std::fs::remove_file(&state_path)
-            .with_context(|| format!("failed to remove state file {}", state_path.display()))?;
-        actions.push(CleanAction::Removed(state_path.display().to_string()));
-    }
-
-    // Remove event logs (authoritative + preflight-only sidecars)
-    for events_path in discover_event_logs(dir)? {
-        if events_path.exists() {
-            std::fs::remove_file(&events_path).with_context(|| {
-                format!("failed to remove events file {}", events_path.display())
-            })?;
-            actions.push(CleanAction::Removed(events_path.display().to_string()));
-        }
-    }
-
-    // Optionally remove receipt file
-    if !keep_receipt && receipt_path.exists() {
-        std::fs::remove_file(&receipt_path)
-            .with_context(|| format!("failed to remove receipt file {}", receipt_path.display()))?;
-        actions.push(CleanAction::Removed(receipt_path.display().to_string()));
-    } else if keep_receipt && receipt_path.exists() {
-        actions.push(CleanAction::Kept(receipt_path.display().to_string()));
-    }
-
-    if !keep_receipt && reconciliation_path.exists() {
-        std::fs::remove_file(&reconciliation_path).with_context(|| {
-            format!(
-                "failed to remove reconciliation file {}",
-                reconciliation_path.display()
-            )
-        })?;
-        actions.push(CleanAction::Removed(
-            reconciliation_path.display().to_string(),
-        ));
-    } else if keep_receipt && reconciliation_path.exists() {
-        actions.push(CleanAction::Kept(reconciliation_path.display().to_string()));
-    }
-
-    // Remove cache directory if exists
-    let cache_dir = dir.join("cache");
-    if cache_dir.exists() {
-        std::fs::remove_dir_all(&cache_dir)
-            .with_context(|| format!("failed to remove cache directory {}", cache_dir.display()))?;
-        actions.push(CleanAction::Removed(cache_dir.display().to_string()));
-    }
-
-    Ok(actions)
+    PreparedCleanDirectory::acquire(dir.to_path_buf(), workspace_root, force)?.clean(keep_receipt)
 }
 
 fn run_config_with_loopback(cmd: ConfigCommands, allow_loopback: bool) -> Result<()> {
     match cmd {
         ConfigCommands::Init { output } => {
             let template = ShipperConfig::default_toml_template();
-            std::fs::write(&output, template)
-                .with_context(|| format!("Failed to write config file to {}", output.display()))?;
+            // Atomic create-new protects existing files, symlinks, and a path
+            // another process creates between invocation and this open.
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)
+                .with_context(|| {
+                    format!(
+                        "Failed to create new config file at {}; existing paths are preserved. Choose an unused path with `shipper config init --output <new-path>`",
+                        output.display()
+                    )
+                })?;
+            file.write_all(template.as_bytes())
+                .and_then(|()| file.sync_all())
+                .with_context(|| {
+                    format!(
+                        "Failed to finish new config file at {}; the new file may be incomplete. Inspect it before retrying or choose another --output path",
+                        output.display()
+                    )
+                })?;
             println!("Created configuration file: {}", output.display());
             println!();
             println!("Edit the file to customize shipper settings for your workspace.");
@@ -4876,7 +6599,7 @@ fn run_config_with_loopback(cmd: ConfigCommands, allow_loopback: bool) -> Result
                     path.display()
                 );
             }
-            let config = ShipperConfig::load_from_file(&path)
+            let config = ShipperConfig::load_from_file_without_value_validation(&path)
                 .with_context(|| format!("Failed to load config file: {}", path.display()))?;
             config
                 .validate_with_loopback(allow_loopback)
@@ -4901,6 +6624,9 @@ fn run_completion(shell: &Shell) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    mod clean_lock_ownership;
+    mod cleanup_incomplete;
+
     use std::fs;
 
     use chrono::Utc;
@@ -4942,6 +6668,28 @@ mod tests {
             PartialFailure
         ));
         assert!(matches!(worst_result(Some(Success), &Success), Success));
+    }
+
+    #[test]
+    fn generic_engine_error_does_not_borrow_stale_reconciliation_evidence() -> Result<()> {
+        let td = tempdir().context("create stale-evidence fixture")?;
+        for artifact in ["state.json", "events.jsonl", "reconciliation.json"] {
+            fs::write(td.path().join(artifact), "{}").context("write stale evidence marker")?;
+        }
+
+        let marked = mark_publish_engine_error(
+            anyhow::anyhow!("unrelated engine failure"),
+            "json",
+            Path::new("configured-state"),
+            td.path(),
+        );
+        let publish_error = marked
+            .downcast_ref::<PublishEarlyError>()
+            .context("generic publish error marker")?;
+        anyhow::ensure!(publish_error.category == "publish_failed");
+        anyhow::ensure!(publish_error.safe_to_rerun.value.is_none());
+        anyhow::ensure!(publish_error.evidence.is_empty());
+        Ok(())
     }
 
     #[derive(Default)]
@@ -4992,6 +6740,368 @@ mod tests {
         );
     }
 
+    #[test]
+    fn publish_outcome_mapping_fails_closed_and_preserves_rerun_contract() {
+        use ExecutionResult::{CompleteFailure, PartialFailure, Success};
+
+        struct Case {
+            name: &'static str,
+            result: ExecutionResult,
+            counts: CommandJsonPackageCounts,
+            action: ActionKind,
+            safe_to_rerun: bool,
+            failure_class: Option<&'static str>,
+            has_command: bool,
+        }
+
+        let counts = |published,
+                      pending,
+                      failed,
+                      ambiguous,
+                      uploaded,
+                      retryable_failures,
+                      permanent_failures,
+                      ambiguous_failures| CommandJsonPackageCounts {
+            published,
+            pending,
+            failed,
+            ambiguous,
+            cleanup_incomplete: 0,
+            uploaded,
+            skipped: 0,
+            next_package: None,
+            retryable_failures,
+            permanent_failures,
+            ambiguous_failures,
+            first_omitted_resumable: None,
+        };
+
+        let cases = [
+            Case {
+                name: "success is terminal",
+                result: Success,
+                counts: counts(1, 0, 0, 0, 0, 0, 0, 0),
+                action: ActionKind::NoneComplete,
+                safe_to_rerun: true,
+                failure_class: None,
+                has_command: false,
+            },
+            Case {
+                name: "pending partial resumes durable state",
+                result: PartialFailure,
+                counts: counts(1, 1, 0, 0, 0, 0, 0, 0),
+                action: ActionKind::Resume,
+                safe_to_rerun: false,
+                failure_class: None,
+                has_command: false,
+            },
+            Case {
+                name: "retryable failure resumes durable state",
+                result: PartialFailure,
+                counts: counts(0, 0, 1, 0, 0, 1, 0, 0),
+                action: ActionKind::Resume,
+                safe_to_rerun: false,
+                failure_class: Some("retryable"),
+                has_command: false,
+            },
+            Case {
+                name: "permanent failure requires repair",
+                result: CompleteFailure,
+                counts: counts(0, 0, 1, 0, 0, 0, 1, 0),
+                action: ActionKind::ResolveBlockers,
+                safe_to_rerun: false,
+                failure_class: Some("permanent"),
+                has_command: false,
+            },
+            Case {
+                name: "ambiguous state requires reconciliation",
+                result: PartialFailure,
+                counts: counts(0, 0, 0, 1, 0, 0, 0, 0),
+                action: ActionKind::Reconcile,
+                safe_to_rerun: false,
+                failure_class: Some("ambiguous"),
+                has_command: false,
+            },
+            Case {
+                name: "ambiguous failure also requires reconciliation",
+                result: PartialFailure,
+                counts: counts(0, 0, 1, 0, 0, 0, 0, 1),
+                action: ActionKind::Reconcile,
+                safe_to_rerun: false,
+                failure_class: Some("ambiguous"),
+                has_command: false,
+            },
+            Case {
+                name: "uploaded state waits for registry truth",
+                result: PartialFailure,
+                counts: counts(0, 0, 0, 0, 1, 0, 0, 0),
+                action: ActionKind::WaitForRegistry,
+                safe_to_rerun: false,
+                failure_class: Some("ambiguous"),
+                has_command: false,
+            },
+            Case {
+                name: "inconsistent complete result stops",
+                result: CompleteFailure,
+                counts: counts(1, 0, 0, 0, 0, 0, 0, 0),
+                action: ActionKind::StopAndInvestigate,
+                safe_to_rerun: true,
+                failure_class: None,
+                has_command: false,
+            },
+        ];
+
+        for case in cases {
+            let outcome =
+                build_publish_operator_outcome(&case.result, &case.counts, Path::new("run-state"));
+            assert_eq!(outcome.next_action.kind, case.action, "{}", case.name);
+            assert_eq!(
+                outcome.safe_to_rerun.value, case.safe_to_rerun,
+                "{}",
+                case.name
+            );
+            assert_eq!(outcome.failure_class, case.failure_class, "{}", case.name);
+            assert_eq!(
+                outcome.next_action.command_line().is_some(),
+                case.has_command,
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_resume_scope_guidance_preserves_blocker_precedence() {
+        for (ambiguous, ambiguous_failures, uploaded, permanent_failures, expected) in [
+            (0, 0, 0, 0, ActionKind::Resume),
+            (1, 0, 0, 0, ActionKind::Reconcile),
+            (0, 1, 0, 0, ActionKind::Reconcile),
+            (0, 0, 1, 0, ActionKind::WaitForRegistry),
+            (0, 0, 0, 1, ActionKind::ResolveBlockers),
+        ] {
+            let counts = CommandJsonPackageCounts {
+                pending: 1,
+                first_omitted_resumable: Some("alpha".to_string()),
+                failed: ambiguous_failures + permanent_failures,
+                ambiguous,
+                ambiguous_failures,
+                uploaded,
+                permanent_failures,
+                ..CommandJsonPackageCounts::default()
+            };
+            let publish = build_publish_operator_outcome(
+                &ExecutionResult::PartialFailure,
+                &counts,
+                Path::new("run-state"),
+            );
+            let resume = build_resume_operator_outcome(
+                &ExecutionResult::PartialFailure,
+                &counts,
+                Path::new("run-state"),
+            );
+            assert_eq!(resume.safe_to_resume.value, expected == ActionKind::Resume);
+            for action in [publish.next_action, resume.next_action] {
+                assert_eq!(action.kind, expected);
+                assert_eq!(
+                    action.reason.contains("remove --resume-from"),
+                    expected == ActionKind::Resume
+                );
+                assert!(
+                    action.command.is_empty(),
+                    "scope guidance must not invent invocation context"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn publish_resume_action_preserves_state_identity_without_fabricating_context() {
+        let counts = CommandJsonPackageCounts {
+            pending: 1,
+            ..CommandJsonPackageCounts::default()
+        };
+        let outcome = build_publish_operator_outcome(
+            &ExecutionResult::PartialFailure,
+            &counts,
+            Path::new("custom-state"),
+        );
+
+        assert!(outcome.next_action.command.is_empty());
+        assert!(outcome.next_action.reason.contains("custom-state"));
+    }
+
+    #[test]
+    fn resume_outcome_mapping_fails_closed_and_preserves_resume_contract() -> Result<()> {
+        use ExecutionResult::{CompleteFailure, PartialFailure, Success};
+
+        struct Case {
+            name: &'static str,
+            result: ExecutionResult,
+            counts: CommandJsonPackageCounts,
+            action: ActionKind,
+            safe_to_resume: bool,
+            failure_class: Option<&'static str>,
+        }
+
+        let counts = |pending,
+                      failed,
+                      ambiguous,
+                      uploaded,
+                      retryable_failures,
+                      permanent_failures,
+                      ambiguous_failures| CommandJsonPackageCounts {
+            pending,
+            failed,
+            ambiguous,
+            uploaded,
+            retryable_failures,
+            permanent_failures,
+            ambiguous_failures,
+            ..CommandJsonPackageCounts::default()
+        };
+
+        let cases = [
+            Case {
+                name: "success is terminal",
+                result: Success,
+                counts: counts(0, 0, 0, 0, 0, 0, 0),
+                action: ActionKind::NoneComplete,
+                safe_to_resume: true,
+                failure_class: None,
+            },
+            Case {
+                name: "pending state resumes",
+                result: PartialFailure,
+                counts: counts(1, 0, 0, 0, 0, 0, 0),
+                action: ActionKind::Resume,
+                safe_to_resume: true,
+                failure_class: None,
+            },
+            Case {
+                name: "retryable failure resumes",
+                result: PartialFailure,
+                counts: counts(0, 1, 0, 0, 1, 0, 0),
+                action: ActionKind::Resume,
+                safe_to_resume: true,
+                failure_class: Some("retryable"),
+            },
+            Case {
+                name: "permanent failure requires repair",
+                result: CompleteFailure,
+                counts: counts(0, 1, 0, 0, 0, 1, 0),
+                action: ActionKind::ResolveBlockers,
+                safe_to_resume: false,
+                failure_class: Some("permanent"),
+            },
+            Case {
+                name: "ambiguous package requires reconciliation",
+                result: PartialFailure,
+                counts: counts(0, 0, 1, 0, 0, 0, 0),
+                action: ActionKind::Reconcile,
+                safe_to_resume: false,
+                failure_class: Some("ambiguous"),
+            },
+            Case {
+                name: "ambiguous failure requires reconciliation",
+                result: PartialFailure,
+                counts: counts(0, 1, 0, 0, 0, 0, 1),
+                action: ActionKind::Reconcile,
+                safe_to_resume: false,
+                failure_class: Some("ambiguous"),
+            },
+            Case {
+                name: "uploaded package waits for registry truth",
+                result: PartialFailure,
+                counts: counts(0, 0, 0, 1, 0, 0, 0),
+                action: ActionKind::WaitForRegistry,
+                safe_to_resume: false,
+                failure_class: Some("ambiguous"),
+            },
+            Case {
+                name: "result and terminal states disagree",
+                result: CompleteFailure,
+                counts: counts(0, 0, 0, 0, 0, 0, 0),
+                action: ActionKind::StopAndInvestigate,
+                safe_to_resume: false,
+                failure_class: None,
+            },
+        ];
+
+        for case in cases {
+            let outcome = build_resume_operator_outcome(
+                &case.result,
+                &case.counts,
+                Path::new("custom-state"),
+            );
+            anyhow::ensure!(
+                outcome.next_action.kind == case.action,
+                "{}: unexpected action",
+                case.name
+            );
+            anyhow::ensure!(
+                outcome.safe_to_resume.value == case.safe_to_resume,
+                "{}: unexpected resume posture",
+                case.name
+            );
+            anyhow::ensure!(
+                outcome.failure_class == case.failure_class,
+                "{}: unexpected failure class",
+                case.name
+            );
+            anyhow::ensure!(
+                outcome.next_action.command.is_empty(),
+                "{}: resume outcome fabricated a command",
+                case.name
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn resume_legacy_and_typed_safety_preserve_intentional_compatibility_divergence() -> Result<()>
+    {
+        let retryable = CommandJsonPackageCounts {
+            failed: 1,
+            retryable_failures: 1,
+            ..CommandJsonPackageCounts::default()
+        };
+        let retryable_outcome = build_resume_operator_outcome(
+            &ExecutionResult::PartialFailure,
+            &retryable,
+            Path::new("state"),
+        );
+        anyhow::ensure!(!legacy_safe_to_resume(&retryable));
+        anyhow::ensure!(retryable_outcome.safe_to_resume.value);
+
+        let uploaded = CommandJsonPackageCounts {
+            uploaded: 1,
+            ..CommandJsonPackageCounts::default()
+        };
+        let uploaded_outcome = build_resume_operator_outcome(
+            &ExecutionResult::PartialFailure,
+            &uploaded,
+            Path::new("state"),
+        );
+        anyhow::ensure!(legacy_safe_to_resume(&uploaded));
+        anyhow::ensure!(!uploaded_outcome.safe_to_resume.value);
+
+        Ok(())
+    }
+
+    #[test]
+    fn relative_publish_evidence_is_resolved_against_the_workspace() {
+        let resolved =
+            publish_evidence_state_dir(Path::new("workspace"), Path::new("custom-state"));
+        assert_eq!(resolved, Path::new("workspace").join("custom-state"));
+
+        let absolute = std::env::temp_dir().join("shipper-publish-outcome-evidence");
+        assert_eq!(
+            publish_evidence_state_dir(Path::new("ignored"), &absolute),
+            absolute
+        );
+    }
+
     /// Regression guard for the top-level error format (PR #417 regression:
     /// `{e:#}` flattened cause chains into one line; `format_error` must
     /// preserve the readable `Error:` / `Caused by:` structure). If this
@@ -5034,6 +7144,34 @@ mod tests {
     }
 
     #[test]
+    fn publish_early_error_redacts_secret_bearing_cause() {
+        let error = anyhow::anyhow!("CARGO_REGISTRY_TOKEN=EARLY_ERROR_SECRET")
+            .context("publish authorization failed");
+        let classification = classify_publish_early_error(&error);
+        let marked = mark_publish_early_error(error, "json", classification);
+        let publish_error = marked
+            .downcast_ref::<PublishEarlyError>()
+            .expect("publish marker");
+        assert_eq!(publish_error.category, "authentication_required");
+        assert!(publish_error.rendered_error.contains("[REDACTED]"));
+        assert!(!publish_error.rendered_error.contains("EARLY_ERROR_SECRET"));
+    }
+
+    #[test]
+    fn publish_early_error_category_uses_raw_cause_not_generic_hint() {
+        let lock = anyhow::anyhow!("failed to acquire publish lock: stale lock");
+        let unknown = anyhow::anyhow!("unexpected internal adapter failure");
+        let registry = anyhow::anyhow!("registry request failed: connection refused");
+
+        assert_eq!(classify_publish_early_error(&lock).0, "state_conflict");
+        assert_eq!(classify_publish_early_error(&unknown).0, "publish_failed");
+        assert_eq!(
+            classify_publish_early_error(&registry).0,
+            "registry_unreachable"
+        );
+    }
+
+    #[test]
     fn global_flags_parse_after_subcommand() {
         let cli = Cli::try_parse_from([
             "shipper",
@@ -5060,6 +7198,39 @@ mod tests {
         assert_eq!(cli.verify_mode.as_deref(), Some("package"));
         assert_eq!(cli.policy.as_deref(), Some("safe"));
         assert_eq!(cli.format, "json");
+    }
+
+    #[test]
+    fn durable_status_validation_rejects_both_multi_registry_selectors() -> Result<()> {
+        for args in [
+            ["shipper", "--registries", "a,b", "status", "--durable"].as_slice(),
+            ["shipper", "--all-registries", "status", "--durable"].as_slice(),
+        ] {
+            let matches = cli_command().try_get_matches_from(args)?;
+            let cli = Cli::from_arg_matches(&matches)?;
+            let error = validate_cli_combinations(&cli).err().ok_or_else(|| {
+                anyhow::anyhow!("multi-registry durable status validated: {args:?}")
+            })?;
+            anyhow::ensure!(
+                error.kind() == clap::error::ErrorKind::ArgumentConflict,
+                "expected argument conflict for {args:?}, got {:?}: {error}",
+                error.kind()
+            );
+        }
+
+        let singular_matches = cli_command().try_get_matches_from([
+            "shipper",
+            "--registry",
+            "private",
+            "status",
+            "--durable",
+        ])?;
+        let singular = Cli::from_arg_matches(&singular_matches)?;
+        anyhow::ensure!(
+            validate_cli_combinations(&singular).is_ok(),
+            "single-registry durable status must remain accepted"
+        );
+        Ok(())
     }
 
     // #100 — `--preflight-only` on `shipper preflight` must parse into a
@@ -5098,14 +7269,70 @@ mod tests {
     fn status_watch_flag_parses() {
         let cli = Cli::try_parse_from(["shipper", "status", "--watch"]).expect("parse status");
         match cli.cmd {
-            Some(Commands::Status { watch }) => assert!(watch),
+            Some(Commands::Status { watch, durable }) => {
+                assert!(watch);
+                assert!(!durable);
+            }
             other => panic!("expected Status, got {other:?}"),
         }
     }
 
     #[test]
+    fn status_help_omits_publish_controls_but_keeps_compatibility_parsing() {
+        let mut status_command = cli_command()
+            .find_subcommand("status")
+            .expect("status command")
+            .clone();
+        let help = status_command.render_help().to_string();
+
+        assert!(
+            help.contains("--watch"),
+            "status help lost its read-only watch option"
+        );
+        for flag in [
+            "--allow-dirty",
+            "--no-verify",
+            "--max-attempts",
+            "--parallel",
+            "--webhook-secret",
+            "--encrypt-passphrase",
+        ] {
+            assert!(
+                !help.contains(flag),
+                "status help leaked publish control {flag}"
+            );
+        }
+
+        // Global flags remain parseable after a subcommand for compatibility
+        // with existing scripts, even when the command help omits controls
+        // that do not affect read-only status inspection.
+        let cli = Cli::try_parse_from([
+            "shipper",
+            "status",
+            "--no-verify",
+            "--max-attempts",
+            "2",
+            "--parallel",
+            "--webhook-secret",
+            "compatibility-value",
+        ])
+        .expect("compatibility flags should remain parseable");
+        assert!(cli.no_verify);
+        assert_eq!(cli.max_attempts, Some(2));
+        assert!(cli.parallel);
+        assert_eq!(cli.webhook_secret.as_deref(), Some("compatibility-value"));
+        assert!(matches!(
+            cli.cmd,
+            Some(Commands::Status {
+                watch: false,
+                durable: false
+            })
+        ));
+    }
+
+    #[test]
     fn cli_reporter_methods_are_callable() {
-        let mut rep = CliReporter::new(false);
+        let mut rep = CliReporter::new(false, false);
         rep.info("info");
         rep.warn("warn");
         rep.error("error");
@@ -5115,9 +7342,9 @@ mod tests {
     fn cli_reporter_retry_wait_without_progress_blocks_for_delay() {
         // With no progress handle installed, retry_wait falls back to the
         // legacy warn-line + sleep path. Assert it still blocks for the
-        // full delay (the engine relies on this).
+        // full remaining delay for compatibility with countdown callers.
         use std::time::Instant;
-        let mut rep = CliReporter::new(true); // quiet to suppress stderr
+        let mut rep = CliReporter::new(true, false); // quiet to suppress stderr
         let delay = Duration::from_millis(60);
         let start = Instant::now();
         rep.retry_wait(
@@ -5139,7 +7366,7 @@ mod tests {
     #[test]
     fn cli_reporter_retry_wait_without_progress_warns_and_blocks_for_delay() {
         use std::time::Instant;
-        let mut rep = CliReporter::new(false);
+        let mut rep = CliReporter::new(false, false);
         let delay = Duration::from_millis(40);
         let start = Instant::now();
         rep.retry_wait(
@@ -5160,7 +7387,7 @@ mod tests {
         // through ProgressReporter::retry_countdown — still blocks for the
         // delay, with no panic from the set_status path.
         use std::time::Instant;
-        let mut rep = CliReporter::new(false);
+        let mut rep = CliReporter::new(false, false);
         rep.install_progress(
             crate::output::progress::ProgressReporter::silent(2),
             BTreeMap::from([(String::from("pkg@1.0.0"), 2usize)]),
@@ -5182,7 +7409,7 @@ mod tests {
 
     #[test]
     fn cli_reporter_retry_wait_updates_progress_to_retrying_package() {
-        let mut rep = CliReporter::new(true);
+        let mut rep = CliReporter::new(true, false);
         rep.install_progress(
             crate::output::progress::ProgressReporter::silent(3),
             BTreeMap::from([(String::from("beta@0.2.0"), 2usize)]),
@@ -5604,6 +7831,7 @@ mod tests {
                     &opts,
                     &mut reporter,
                     &doctor::WorkspaceStatus::Planned,
+                    None,
                     true,
                 )
                 .expect("doctor");
@@ -5684,6 +7912,7 @@ mod tests {
                     &opts,
                     &mut reporter,
                     &doctor::WorkspaceStatus::Planned,
+                    None,
                     true,
                 )
                 .expect("doctor");
@@ -6053,6 +8282,81 @@ mode = "fast"
         assert!(!second.contains(r#""type":"plan_created""#));
         assert_eq!(second.lines().count(), 1);
         assert!(next_offset > offset);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn inspect_events_follow_preserves_append_order_and_original_timestamps() {
+        let td = tempdir().expect("tempdir");
+        let events_path = td.path().join("events.jsonl");
+        let original = [
+            PublishEvent {
+                timestamp: "2025-01-01T00:00:30Z".parse().expect("timestamp"),
+                event_type: EventType::PackageStarted {
+                    name: "a".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                package: "a@1.0.0".to_string(),
+            },
+            PublishEvent {
+                timestamp: "2025-01-01T00:00:10Z".parse().expect("timestamp"),
+                event_type: EventType::PackageStarted {
+                    name: "b".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                package: "b@1.0.0".to_string(),
+            },
+            PublishEvent {
+                timestamp: "2025-01-01T00:00:20Z".parse().expect("timestamp"),
+                event_type: EventType::PackagePublished { duration_ms: 1 },
+                package: "a@1.0.0".to_string(),
+            },
+        ];
+        let mut log = shipper_core::state::events::EventLog::new();
+        log.record(original[0].clone());
+        log.write_to_file(&events_path).expect("first append");
+        let mut json = Vec::new();
+        let offset =
+            write_event_lines_since(&events_path, 0, "json", &mut json).expect("first poll");
+
+        log.clear();
+        // An older observation arrives after the first follow poll. The
+        // package a outcome also reflects clock rollback from its start.
+        for event in &original[1..] {
+            log.record(event.clone());
+        }
+        log.write_to_file(&events_path).expect("delayed append");
+        let next_offset =
+            write_event_lines_since(&events_path, offset, "json", &mut json).expect("second poll");
+        let mut expected_json = Vec::new();
+        for event in &original {
+            serde_json::to_writer(&mut expected_json, event).expect("serialize witness");
+            expected_json.push(b'\n');
+        }
+        assert_eq!(json, expected_json);
+        assert_eq!(next_offset, expected_json.len() as u64);
+        assert_eq!(
+            write_event_lines_since(&events_path, next_offset, "json", &mut json)
+                .expect("unchanged poll"),
+            next_offset
+        );
+        assert_eq!(
+            json, expected_json,
+            "follow must not replay the prior prefix"
+        );
+
+        let mut text = Vec::new();
+        write_event_lines_since(&events_path, 0, "text", &mut text).expect("text poll");
+        let text = String::from_utf8(text).expect("text UTF-8");
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        for (line, prefix) in lines.iter().zip([
+            "2025-01-01T00:00:30Z a@1.0.0 package_started - ",
+            "2025-01-01T00:00:10Z b@1.0.0 package_started - ",
+            "2025-01-01T00:00:20Z a@1.0.0 package_published - ",
+        ]) {
+            assert!(line.starts_with(prefix), "{line}");
+        }
     }
 
     #[test]

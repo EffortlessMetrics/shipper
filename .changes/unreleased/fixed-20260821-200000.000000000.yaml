@@ -1,0 +1,6 @@
+kind: fixed
+body: Preserve an operator-supplied plan-yank reason in every selected default or compromised receipt entry and its later yank evidence.
+time: 2026-08-21T20:00:00Z
+custom:
+  Audience: Operators
+  Importance: Important

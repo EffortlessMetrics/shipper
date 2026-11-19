@@ -12,6 +12,9 @@ use predicates::str::contains;
 use tempfile::tempdir;
 use tiny_http::{Header, Response, Server, StatusCode};
 
+#[path = "e2e_expanded/containment_context.rs"]
+mod containment_context;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -446,6 +449,7 @@ fn write_fake_yank_cargo(path: &Path, fail_yanks: bool) -> PathBuf {
                 r#"@echo off
 setlocal enabledelayedexpansion
 echo %*>>"%SHIPPER_FAKE_CARGO_LOG%"
+if defined SHIPPER_FAKE_CARGO_CWD_LOG cd>>"%SHIPPER_FAKE_CARGO_CWD_LOG%"
 if "%~1"=="yank" (
   {yank_exit}
 )
@@ -472,6 +476,9 @@ exit /b 64
             &format!(
                 r#"#!/usr/bin/env sh
 printf '%s\n' "$*" >> "$SHIPPER_FAKE_CARGO_LOG"
+if [ -n "${{SHIPPER_FAKE_CARGO_CWD_LOG:-}}" ]; then
+  pwd -P >> "$SHIPPER_FAKE_CARGO_CWD_LOG"
+fi
 if [ "$1" = "yank" ]; then
   {yank_exit}
 fi
@@ -519,6 +526,7 @@ fn write_remediation_dry_run_artifact(
     receipt_path: &Path,
 ) -> PathBuf {
     let output = loopback_shipper_cmd()
+        .timeout(std::time::Duration::from_secs(15))
         .arg("--manifest-path")
         .arg(root.join("Cargo.toml"))
         .arg("--state-dir")
@@ -1721,6 +1729,30 @@ fn help_publish_snapshot() {
     assert_snapshot!("help_publish", normalize_stderr(&stdout));
 }
 
+/// Snapshot and semantic contract: `rehearse --help` describes configured
+/// authority separation without presenting crates.io as a sandbox.
+#[test]
+fn help_rehearse_snapshot() {
+    let output = loopback_shipper_cmd()
+        .args(["rehearse", "--help"])
+        .output()
+        .expect("failed to run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success());
+    assert!(stdout.contains("distinct configured API/index authority"));
+    assert!(stdout.contains("--registries NAME --rehearsal-registry NAME"));
+    assert!(stdout.contains("matching `[[registries.registries]]` entry"));
+    assert!(stdout.contains("rejects every crates.io-family host"));
+    assert!(stdout.contains("does not prove DNS or administrative isolation"));
+    assert!(!stdout.contains("throwaway alternate registry"));
+    assert!(!stdout.contains("crates.io account"));
+    assert_snapshot!(
+        "help_rehearse",
+        trim_trailing_line_whitespace(&normalize_stderr(&stdout))
+    );
+}
+
 /// Snapshot: `doctor --help` output.
 #[test]
 fn help_doctor_snapshot() {
@@ -1872,6 +1904,126 @@ fn plan_yank_json_format_emits_schema_version() {
         serde_json::from_slice(&output.stdout)
             .expect("plan-yank envelope remains readable as a yank plan");
     assert_eq!(parsed_plan.entries.len(), 2);
+}
+
+#[test]
+fn plan_yank_reason_matches_human_json_and_compromised_modes() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+    let receipt_path = td.path().join("receipt.json");
+    write_remediation_receipt(&receipt_path);
+    let manifest = td.path().join("Cargo.toml");
+    let approved = "operator approved containment";
+
+    let json_output = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .args(["--format", "json", "plan-yank", "--from-receipt"])
+        .arg(&receipt_path)
+        .args(["--reason", approved])
+        .output()
+        .expect("failed to run JSON plan-yank");
+    assert!(
+        json_output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&json_output.stdout).expect("plan-yank JSON parses");
+    let entries = json["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|entry| entry["reason"] == approved));
+
+    let human_output = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .args(["plan-yank", "--from-receipt"])
+        .arg(&receipt_path)
+        .args(["--reason", approved])
+        .output()
+        .expect("failed to run human plan-yank");
+    assert!(
+        human_output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&human_output.stderr)
+    );
+    let human = String::from_utf8_lossy(&human_output.stdout);
+    assert_eq!(
+        human.matches(&format!("# {approved}")).count(),
+        entries.len(),
+        "human plan must show the same reason for every JSON entry: {human}"
+    );
+
+    let compromised_output = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .args(["--format", "json", "plan-yank", "--from-receipt"])
+        .arg(&receipt_path)
+        .args(["--compromised-only", "--reason", approved])
+        .output()
+        .expect("failed to run compromised-only plan-yank");
+    assert!(compromised_output.status.success());
+    let compromised: serde_json::Value = serde_json::from_slice(&compromised_output.stdout)
+        .expect("compromised-only plan-yank JSON parses");
+    assert_eq!(compromised["entries"].as_array().map(Vec::len), Some(1));
+    assert_eq!(compromised["entries"][0]["name"], "core-lib");
+    assert_eq!(compromised["entries"][0]["reason"], approved);
+}
+
+#[test]
+fn reasoned_default_plan_roundtrips_to_yank_output_and_events() {
+    let td = tempdir().expect("tempdir");
+    create_multi_crate_workspace(td.path());
+    let receipt_path = td.path().join("receipt.json");
+    write_remediation_receipt(&receipt_path);
+    let state_dir = td.path().join(".shipper");
+    let plan_path = td.path().join("reasoned-yank-plan.json");
+    let approved = "operator approved containment";
+
+    let planned = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .args(["--format", "json", "plan-yank", "--from-receipt"])
+        .arg(&receipt_path)
+        .args(["--reason", approved])
+        .output()
+        .expect("failed to generate reasoned yank plan");
+    assert!(planned.status.success());
+    fs::write(&plan_path, &planned.stdout).expect("write reasoned yank plan");
+
+    let fake_cargo = write_fake_yank_cargo(td.path(), false);
+    let fake_log = td.path().join("fake-cargo.log");
+    let executed = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .args(["yank", "--plan"])
+        .arg(&plan_path)
+        .env("SHIPPER_CARGO_BIN", &fake_cargo)
+        .env("SHIPPER_FAKE_CARGO_LOG", &fake_log)
+        .output()
+        .expect("failed to execute reasoned yank plan");
+    assert!(
+        executed.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    let operator_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&executed.stdout),
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    assert_eq!(operator_output.matches(approved).count(), 2);
+
+    let events = read_jsonl(&state_dir.join("events.jsonl"));
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|event| {
+        event
+            .pointer("/event_type/reason")
+            .and_then(|value| value.as_str())
+            == Some(approved)
+    }));
 }
 
 #[test]
@@ -3177,6 +3329,7 @@ fn resume_no_state_file_exit_code() {
 
 /// Snapshot: resume with a corrupted (non-JSON) state file.
 #[test]
+#[serial_test::serial]
 fn resume_corrupted_state_file_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
@@ -3203,6 +3356,7 @@ fn resume_corrupted_state_file_snapshot() {
 
 /// Snapshot: resume with an empty state file.
 #[test]
+#[serial_test::serial]
 fn resume_empty_state_file_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
@@ -3562,6 +3716,47 @@ fn error_unknown_subcommand_exit_code() {
 // 41. Inspect-events with actual events file
 // ===========================================================================
 
+#[test]
+#[serial_test::serial]
+fn inspect_events_preserves_append_order_and_original_timestamps() {
+    let td = tempdir().expect("tempdir");
+    create_workspace(td.path());
+    let state_dir = td.path().join(".shipper");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+    let events_path = state_dir.join("events.jsonl");
+    // Exact canonical JSONL, including subsecond precision. Package order and
+    // a package's causal order both differ from wall-clock timestamp order.
+    let observations = concat!(
+        r#"{"timestamp":"2025-01-01T00:00:30.123456789Z","event_type":{"type":"package_started","name":"demo","version":"0.1.0"},"package":"demo@0.1.0"}"#,
+        "\n",
+        r#"{"timestamp":"2025-01-01T00:00:10.987654321Z","event_type":{"type":"package_started","name":"peer","version":"0.1.0"},"package":"peer@0.1.0"}"#,
+        "\n",
+        r#"{"timestamp":"2025-01-01T00:00:20.234567891Z","event_type":{"type":"package_published","duration_ms":1},"package":"demo@0.1.0"}"#,
+        "\n",
+    );
+    fs::write(&events_path, observations).expect("write observations");
+
+    let output = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .args(["--format", "json", "inspect-events"])
+        .output()
+        .expect("run inspect-events");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, observations.as_bytes());
+    assert_eq!(
+        fs::read(events_path).expect("retained log"),
+        observations.as_bytes()
+    );
+}
+
 /// Snapshot: inspect-events with a populated events file.
 #[test]
 fn inspect_events_with_data_snapshot() {
@@ -3830,17 +4025,25 @@ fn publish_package_filter_no_registry_runs() {
 
 /// Snapshot: resume with a valid JSON state file that has a mismatched plan_id.
 #[test]
+#[serial_test::serial]
 fn resume_wrong_plan_id_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
     let state_dir = td.path().join(".shipper");
     fs::create_dir_all(&state_dir).expect("mkdir");
-    // Write a valid JSON state file with a bogus plan_id
-    fs::write(
-        state_dir.join("state.json"),
-        r#"{"plan_id":"bogus-plan-id-12345","packages":[],"started_at":"2025-01-01T00:00:00Z"}"#,
-    )
-    .expect("write");
+    // This fixture must reach plan admission, not fail decoding beforehand.
+    let retained = serde_json::json!({
+        "state_version": "shipper.state.v1",
+        "plan_id": "bogus-plan-id-12345",
+        "registry": {"name": "crates-io", "api_base": "https://crates.io", "index_base": null},
+        "created_at": "2025-01-01T00:00:00Z",
+        "updated_at": "2025-01-01T00:00:00Z",
+        "packages": {}
+    });
+    serde_json::from_value::<shipper_core::types::ExecutionState>(retained.clone())
+        .expect("fixture must be a valid execution state");
+    let before = serde_json::to_vec_pretty(&retained).expect("encode state");
+    fs::write(state_dir.join("state.json"), &before).expect("write");
 
     let output = loopback_shipper_cmd()
         .arg("--manifest-path")
@@ -3852,7 +4055,24 @@ fn resume_wrong_plan_id_snapshot() {
         .expect("failed to run");
 
     assert!(!output.status.success());
+    assert_eq!(
+        fs::read(state_dir.join("state.json")).expect("retained state"),
+        before
+    );
+    assert!(!state_dir.join("events.jsonl").exists());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr
+            .contains("existing state plan_id bogus-plan-id-12345 does not match current plan_id "),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("failed to parse state JSON"), "{stderr}");
+    let current_plan_id = stderr
+        .split("current plan_id ")
+        .nth(1)
+        .and_then(|rest| rest.split(';').next())
+        .expect("current plan identifier");
+    let stderr = stderr.replace(current_plan_id, "<PLAN_ID>");
     assert_snapshot!(
         "resume_wrong_plan_id",
         normalize_output(&normalize_stderr(&normalize_tempdir_paths(
@@ -3864,6 +4084,7 @@ fn resume_wrong_plan_id_snapshot() {
 
 /// Snapshot: resume with a state file containing only `{}` (minimal valid JSON).
 #[test]
+#[serial_test::serial]
 fn resume_minimal_json_state_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
@@ -3895,9 +4116,10 @@ fn resume_minimal_json_state_snapshot() {
 // 47. Config init — overwrite protection
 // ===========================================================================
 
-/// Config init on an already-existing file: snapshot whatever the CLI does.
+/// A valid customized file must survive init, including the unrelated lock flag.
 #[test]
-fn config_init_overwrite_snapshot() {
+#[serial_test::serial]
+fn config_init_preserves_existing_customized_file() {
     let td = tempdir().expect("tempdir");
     let config_path = td.path().join(".shipper.toml");
 
@@ -3907,33 +4129,61 @@ fn config_init_overwrite_snapshot() {
         .assert()
         .success();
 
-    // Second init — capture result regardless of pass/fail
-    let output = loopback_shipper_cmd()
-        .args(["config", "init", "-o", config_path.to_str().unwrap()])
-        .output()
-        .expect("failed to run");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!(
-        "exit_code: {:?}\n--- stdout ---\n{}--- stderr ---\n{}",
-        output.status.code(),
-        stdout
-            .replace(config_path.to_str().unwrap(), "<CONFIG_PATH>")
-            .replace(
-                &config_path.to_str().unwrap().replace('\\', "/"),
-                "<CONFIG_PATH>",
-            ),
-        normalize_stderr(
-            &stderr
-                .replace(config_path.to_str().unwrap(), "<CONFIG_PATH>")
-                .replace(
-                    &config_path.to_str().unwrap().replace('\\', "/"),
-                    "<CONFIG_PATH>",
-                )
-        )
+    let template = fs::read_to_string(&config_path).expect("read template");
+    let customized = format!(
+        "{}\n# Keep the reviewed ownership policy and this sentinel.\n[registry]\nname = \"reviewed-registry\"\napi_base = \"https://registry.example.com\"\nindex_base = \"https://registry.example.com/index\"\n",
+        template.replace("strict_ownership = false", "strict_ownership = true")
     );
-    assert_snapshot!("config_init_overwrite", combined);
+    assert!(customized.contains("strict_ownership = true"));
+    fs::write(&config_path, &customized).expect("customize configuration");
+    loopback_shipper_cmd()
+        .args(["config", "validate", "-p", config_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    for flags in [&[][..], &["--force"][..]] {
+        let output = loopback_shipper_cmd()
+            .args(flags)
+            .args(["config", "init", "-o", config_path.to_str().unwrap()])
+            .assert()
+            .failure()
+            .get_output()
+            .clone();
+        assert!(
+            output.stdout.is_empty(),
+            "failed init must not claim creation"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("existing paths are preserved"), "{stderr}");
+        assert!(
+            stderr.contains("config init --output <new-path>"),
+            "{stderr}"
+        );
+        assert_eq!(
+            fs::read(&config_path).expect("retained config"),
+            customized.as_bytes()
+        );
+    }
+
+    let alternative = td.path().join("another-config.toml");
+    loopback_shipper_cmd()
+        .arg("config")
+        .arg("init")
+        .arg("--output")
+        .arg(&alternative)
+        .assert()
+        .success();
+    loopback_shipper_cmd()
+        .arg("config")
+        .arg("validate")
+        .arg("--path")
+        .arg(&alternative)
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read(&config_path).expect("original config"),
+        customized.as_bytes()
+    );
 }
 
 // ===========================================================================

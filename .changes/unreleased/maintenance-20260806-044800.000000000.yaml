@@ -1,0 +1,7 @@
+kind: maintenance
+body: Narrow Droid and coverage workflow authority before making workflow-policy findings blocking.
+time: 2026-08-06T04:48:00Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance
+  PR: 280

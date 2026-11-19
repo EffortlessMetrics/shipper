@@ -1,0 +1,7 @@
+kind: maintenance
+body: Add a repository-owned local pre-commit gate for Changie fragments and staged-fragment validation.
+time: 2026-08-04T02:41:35Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance
+  PR: 242

@@ -1,74 +1,102 @@
 # shipper
 
-Installable release-execution facade for Rust workspaces.
+Installable Shipper facade for Rust workspaces.
 
-A workspace release can fail after some crates publish and before the rest do. Cargo's own docs note that `cargo publish --workspace` is non-atomic and that a client timeout does not always mean the upload failed. Shipper gives you a plan, a preflight gate, durable state, and a recovery path for that failure mode.
+Shipper publishes missing workspace crate versions in dependency order,
+verifies registry visibility before advancing, and retains the evidence needed
+to explain or resume a partial run. It assumes versions, changelogs, and tags
+are already chosen.
 
 ## Install
 
-The stable 0.4.0 install package is `shipper`:
+The supported install package is the `shipper` facade. This command resolves
+the latest version exposed by the public registry when it runs:
 
 ```bash
 cargo install shipper --locked
 ```
 
-For reproducible 0.4.0 installs, pin the version:
+The retained public-install evidence available when this source snapshot was
+prepared covers 0.4.0. Pin that verified baseline for reproducibility:
 
 ```bash
 cargo install shipper --version 0.4.0 --locked
 ```
 
-The public crates.io install path was smoke-tested after `v0.4.0` published.
+This snapshot was prepared for 0.5.0 before its public result existed. A source
+version or README cannot prove registry publication; check the live registry
+and release evidence for the version available now.
 
-From a checkout, validate the same install facade with:
-
-```bash
-cargo install --path crates/shipper --locked
-```
-
-## Quick start
+From a checkout, exercise the same facade with:
 
 ```bash
-shipper plan        # preview the publish order
-shipper preflight   # check readiness
-shipper publish     # execute the plan
-shipper resume      # continue after an interrupted run
+cargo run -p shipper -- --help
 ```
 
-`shipper --help` and `shipper <subcommand> --help` are the canonical command reference.
+## First useful path
 
-## What this crate is
+```bash
+shipper doctor      # diagnose workspace, auth, and registry posture
+shipper plan        # preview the dependency-ordered graph
+shipper preflight   # assess readiness as PROVEN / NOT PROVEN / FAILED
+shipper publish     # publish missing versions and retain evidence
 
-`shipper` is the user-facing package — the one you install and the one that shows up on crates.io. It wraps:
+shipper status          # registry-aware status
+shipper inspect-events  # chronological event detail
+shipper inspect-receipt # summarized retained evidence
+shipper resume          # continue from agreeing retained evidence
+```
 
-- a small binary that forwards to the CLI adapter,
-- a curated library re-export over the engine (`engine`, `plan`, `types`, `config`, `state`, `store`),
-- product-facing documentation.
+The 0.5.0 candidate also adds `shipper status --durable`, a local,
+registry-bypassing view that refuses to call a run resumable when evidence or
+liveness is inconclusive. Use `shipper --help` and
+`shipper <command> --help` as the canonical command surface.
 
-The actual work happens in two sibling crates:
+## Facade ownership
 
-- [`shipper-cli`](https://crates.io/crates/shipper-cli) — CLI adapter (clap parsing, subcommands, output, `pub fn run()`).
-- [`shipper-core`](https://crates.io/crates/shipper-core) — engine library with no CLI dependencies.
+`shipper` is the user-facing package: the binary most operators install and a
+curated product-name library surface. It wraps:
 
-## Use another crate when
+- a small binary that forwards to `shipper_cli::run()`;
+- curated re-exports of engine modules for product-name embedders;
+- install-facing documentation.
 
-- You want the lean embedding surface (no `clap`, no `indicatif`) → depend on [`shipper-core`](https://crates.io/crates/shipper-core).
-- You need the exact clap-driven CLI surface programmatically (custom wrappers, pre-run hooks) → depend on [`shipper-cli`](https://crates.io/crates/shipper-cli) and call `shipper_cli::run()`.
-- You want `shipper` as a library but without the `clap` graph → `shipper = { version = "...", default-features = false }`.
+The sibling crates own the implementation seams:
 
-## Scope
+- [`shipper-cli`](https://crates.io/crates/shipper-cli) owns Clap parsing,
+  command dispatch, rendering, and exit behavior;
+- [`shipper-core`](https://crates.io/crates/shipper-core) owns the reusable
+  engine without CLI dependencies.
 
-Shipper handles publishing, retrying, resuming, rehearsing, yanking, and fix-forward planning. It does not decide version numbers, generate changelogs, tag releases, or create GitHub releases — pair it with your preferred versioning/release workflow.
+Most library consumers should use `shipper-core` or the curated `shipper`
+re-exports. Direct `shipper-cli` use is for specialized command embedding.
 
-## Documentation
+## Evidence contract
 
-- Project README: <https://github.com/EffortlessMetrics/shipper#readme>
-- Full docs tree: <https://github.com/EffortlessMetrics/shipper/tree/main/docs>
-- Configuration reference: <https://github.com/EffortlessMetrics/shipper/blob/main/docs/configuration.md>
+```text
+events.jsonl         = authoritative truth
+state.json          = resumable projection
+receipt.json        = derived summary
+reconciliation.json = registry-truth evidence for ambiguous publish outcomes
+```
+
+When these disagree, stop and investigate rather than retrying blindly. A
+`StillUnknown` report is the evidence to inspect before recovery.
+
+## Scope and support
+
+Shipper publishes, reconciles, and resumes. It does not choose versions,
+generate changelogs, tag releases, or create GitHub Releases.
+
+- [Project README](https://github.com/EffortlessMetrics/shipper#readme)
+- [Documentation](https://github.com/EffortlessMetrics/shipper/tree/main/docs)
+- [Support tiers](https://github.com/EffortlessMetrics/shipper/blob/main/docs/status/SUPPORT_TIERS.md)
+- [0.5.0 migration guide](https://github.com/EffortlessMetrics/shipper/blob/v0.5.0/docs/release/0.5.0-migration.md) (resolves only after release authority creates that tag)
 
 ## Stability
 
-Pre-1.0. Breaking changes are called out in [`CHANGELOG.md`](https://github.com/EffortlessMetrics/shipper/blob/main/CHANGELOG.md).
+Pre-1.0. Breaking changes are called out in the
+[`CHANGELOG.md`](https://github.com/EffortlessMetrics/shipper/blob/main/CHANGELOG.md).
 
 ## License
 

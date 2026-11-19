@@ -7,182 +7,145 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-08-01
+## [0.5.0] - Unreleased
 
-Evidence-shape release. 0.5.0 closes the gaps between what Shipper *did* and
-what its durable artifacts *recorded*: uploaded-but-unverified packages,
-pending reconciliations, and per-attempt detail are now written to
-`events.jsonl` and projected into `state.json` instead of living only in
-process memory. It also gives CI a machine-readable outcome vocabulary
-(structured exit codes plus `execution_result` on the receipt) and finishes the
-post-0.4.0 cleanup carried over from the 0.4.0 readiness packet.
+0.5.0 is Shipper's evidence and recovery release. It makes interrupted and
+ambiguous publishes easier to inspect and resume, gives operators consistent
+human and JSON guidance, and strengthens registry, credential, and release
+boundaries. This is a pre-release description: it does not claim that 0.5.0
+crates, binaries, a tag, or a GitHub Release have been published.
 
-**Consumers of `events.jsonl`, `state.json`, and `receipt.json` should read the
-Changed section.** Every shape change below is additive and
-backward-compatible on read, but new fields and new event records appear in
-artifacts written by 0.5.0.
+Consumers of the Rust API and of `events.jsonl`, `state.json`, or
+`receipt.json` should read the compatibility notes below and the
+[0.5.0 migration guide](docs/release/0.5.0-migration.md).
 
 ### Added
 
-- **Exit-code vocabulary and `execution_result` on the receipt.** `shipper
-  publish` and `shipper resume` now exit `0` on success, `1` on complete
-  failure, and `2` on partial failure where resume is safe, so CI can branch on
-  the exit status instead of parsing stderr. The `Receipt` gains an
-  `execution_result` field (`#[serde(default)]`, so pre-0.5.0 receipts still
-  deserialize as `Success`), and the publish/resume JSON envelopes gain a
-  matching top-level `execution_result`. The sequential path still fail-fasts on
-  the first package failure and exits `1`; the structured mapping fires wherever
-  a receipt is produced.
-- **`safe_to_rerun` in the publish JSON envelope.** `PublishJsonReport` now
-  reports whether rerunning the command is safe — true only when no packages
-  remain pending, failed, ambiguous, or uploaded-but-unverified.
+- **Durable upload and recovery evidence.** `PackageUploaded` records the
+  checkpoint between a successful Cargo upload and registry visibility.
+  Pending reconciliation and per-attempt evidence are projected into state,
+  while `events.jsonl` remains authoritative. Resume can continue from the
+  durable checkpoint instead of blindly uploading again.
+- **Typed operator outcomes.** Plan, preflight, doctor, status, publish, and
+  resume now share typed next-action and safety semantics across human and JSON
+  output. Completed publish and resume commands report `execution_result` and
+  evidence-based rerun or resume guidance. Secret-safe JSON errors cover
+  failures that occur before a receipt can be finalized.
+- **Fail-closed durable status.** `shipper status --durable` reads local
+  authoritative evidence without querying a registry or publishing and emits
+  the versioned `shipper.status.durable.v1` JSON envelope. On Linux, an exact
+  boot, PID namespace, PID, and process-start identity can affirm a live
+  publisher; missing, legacy, cross-host, unsupported, or contradictory
+  evidence remains unknown.
+- **Registry policy evidence.** Per-registry destination policy is carried by
+  `RuntimeOptions.registry_policies`, and sanitized `RegistryPolicyApplied`
+  events record the applied posture.
 
 ### Changed
 
-- **Shared package execution and scheduler conformance.** Sequential and
-  parallel publishing now use one per-package execution authority, event-first
-  transitions, resume-skip operation, readiness evidence, and run-start
-  notification contract. The exact evidence is tracked in
-  `plans/0.5.0-scheduler-conformance.md`.
-- **Readiness authority.** Registry polling, attempt numbering, backoff, actual
-  sleep-duration evidence, timeout posture, and visibility evidence now have one
-  shared registry-client kernel; the engine retains local-index selection and
-  durable event adaptation.
-- **`PackageUploaded` is a durable readiness checkpoint.** The window between a
-  successful `cargo publish` upload and registry-visible readiness is now
-  recorded in `events.jsonl` and projected into `state.json` rather than held in
-  memory. A run interrupted inside that window resumes from the uploaded
-  checkpoint instead of re-attempting the upload. `docs/INVARIANTS.md` records
-  the checkpoint contract.
-- **Pending reconciliation state is projected into `state.json`.** Packages
-  awaiting registry-truth reconciliation after an ambiguous Cargo outcome now
-  appear in the state projection with their pending reconciliation state, so
-  `state.json` no longer looks quiescent while reconciliation is still in
-  flight.
-- **Attempt details are persisted through the event boundary.** Retry,
-  reconciliation, and terminal transitions commit matching evidence and state
-  together through the shared event-first transition boundary in both the
-  sequential and parallel paths, so an attempt recorded in `state.json` always
-  has a corresponding event.
-- **`attempt_history` is rebuilt from events.** Attempt history reconstructs
-  from `events.jsonl` alone, `PackageAttempted` carries `max_attempts` so the
-  rebuild is faithful, and finalization enforces attempt-history parity between
-  the event log and the state projection. Success attempts finalize at
-  `PackageUploaded` and the first failure's fields are preserved, so rebuilt
-  history matches `state.json` across resume and retry paths.
-- **Shared terminal resume-skip gate across publish modes.** Already-`Published`
-  and `Skipped` packages are handled by the shared package executor, so
-  sequential and parallel runs take the same trusted resume-skip path. Resume
-  receipts now include entries for already-complete packages instead of coming
-  back empty for a fully terminal run.
-- **Package execution timeout policy.** Sequential and parallel publish paths
-  now apply the configured finite `per_package_timeout` ceiling to each Cargo
-  package operation. The existing parallel configuration key remains the
-  compatibility source for this shared runtime policy for one migration cycle.
-- **`duration_suboptimal_units` clippy lint activated.** All 223 workspace
-  sites rewritten to their optimal `Duration` unit via `cargo clippy --fix`
-  (behavior-preserving exact aliases), and the lint moved from `[[planned]]` →
-  `[[active]]` in `policy/clippy-lints.toml`. Closes the last planned lint from
-  the #191 Clippy ratchet rollout and the 0.4.0 readiness carry-over.
+- **One package-execution authority.** Sequential and parallel publishing use
+  the same event-first package transitions, readiness kernel, retry/backoff,
+  resume-skip behavior, timeout ceiling, and reporter ordering. The existing
+  `parallel.per_package_timeout` configuration key remains the compatibility
+  source for the shared per-package timeout for one migration cycle.
+- **Events remain the durable authority.** Attempt history rebuilds from the
+  event log, `PackageAttempted` records `max_attempts`, and finalization checks
+  event, state, reconciliation, and receipt agreement. Disagreement fails
+  closed instead of being hidden by a newer summary.
+- **Stronger encrypted-state writes with legacy reads.** New encrypted
+  artifacts use the versioned PBKDF2-HMAC-SHA256 v2 parameters at 600,000
+  iterations. Existing unversioned v1 artifacts remain readable at their
+  original 100,000-iteration cost. Real 0.4 state, event, receipt,
+  reconciliation, and encrypted artifacts are covered by retained replay and
+  resume evidence.
+- **Registry and ownership refusal happens earlier.** Registry destinations
+  require validated scheme, authority, host-family, private-network, and
+  rehearsal posture. Strict-ownership runs validate every selected registry
+  token before registry or package work. Conflicting multi-registry selectors
+  are rejected before durable evidence is read; singular `--registry` remains
+  supported.
+- **Configuration validates on load.** Ordinary `.shipper.toml` loading now
+  rejects invalid values such as `output.lines = 0` at the configuration
+  boundary instead of carrying them into a later publish failure.
+- **Direct and plan-based yank execution.** `shipper yank --crate NAME
+  --version VERSION --reason TEXT` uses a command-scoped yank-version parser
+  identity rather than colliding with the global version flag. `shipper yank
+  --plan PATH` executes reviewed plan entries in order.
+- **Operator guidance is explicit.** `doctor` reports readiness, check counts,
+  unevaluated checks, and the first safe next action. Plan and preflight state
+  that no publication occurred. Non-watch status reports a typed transient
+  view, while durable status remains a separate evidence-backed mode.
+- **First-run help stays focused.** Advanced release-execution flags remain
+  parseable for compatibility but are hidden from first-run root, plan, and
+  doctor help where they would obscure the primary journey.
 
 ### Fixed
 
-- **Parallel fallback branches now emit `PackagePublished`.** Two fallback
-  branches in the parallel publish path advanced `state.json` to `Published`
-  without recording the matching `PackagePublished` event, violating the
-  events-as-truth invariant. Both branches (the "still Uploaded → final check"
-  and "final chance after error" paths, which fire when readiness times out but
-  a later existence check finds the package) now record the event, so the
-  finalization consistency check no longer turns a successful publish into a
-  drift failure.
-- **Multi-line `Error:` / `Caused by:` rendering restored.** The exit-code work
-  had switched both binary entry points to `eprintln!("{e:#}")`, which flattens
-  an `anyhow` cause chain onto one line and regressed every operator-facing
-  error path (`config validate`, `resume`, `plan`, `preflight`, `publish`,
-  duration/policy/verify-mode parsing). Top-level error rendering is now
-  centralized in `shipper-cli` and both binaries route through it, so the
-  readable multi-line form is back and the two entry points cannot diverge. The
-  exit-code vocabulary is preserved.
-- **First-run help flags scoped.** Advanced release-execution flags are hidden
-  from the help output of `shipper`, `shipper plan`, and `shipper doctor` so
-  first-run help does not read like a publish control panel. The flags remain
-  parseable everywhere for compatibility.
-- **Parallel resume state lock panic.** The parallel resume flow no longer
-  panics when acquiring execution-state locks.
-- **`engine/parallel` mutex poison posture.** All production `.lock().unwrap()`
-  sites in `engine/parallel/` (40 sites across `publish.rs` and `mod.rs`) now
-  handle poison gracefully instead of panicking: `Result`-returning sites
-  propagate a typed `anyhow::Error` via `let-else`/`map_err`; the `SendReporter`
-  methods (which can't return `Result`) recover the guard via
-  `unwrap_or_else(|e| e.into_inner())`. The no-panic baseline drops from 20 → 8
-  entries. Closes the carry-over from the 0.4.0 readiness doc.
-- **Cleanliness test isolation flake.** `ensure_git_clean_new_phrasing` now
-  carries `#[serial]`, bringing it into the same serialization group as the
-  engine integration tests that share the `SHIPPER_GIT_BIN` environment
-  variable.
-- **Resume fidelity: attempt history survives the event boundary.** Attempt
-  details are persisted through the transition boundary and the attempt history
-  is rebuilt from `events.jsonl`, so a resumed run reports the attempts the
-  original run actually made instead of starting the count over
-  ([#162](https://github.com/EffortlessMetrics/shipper/issues/162),
-  [#195](https://github.com/EffortlessMetrics/shipper/issues/195)).
-- **Resume fidelity: uploaded and pending-reconciliation checkpoints.** An
-  interruption after upload but before the readiness check now persists that
-  checkpoint, and pending reconciliation state is projected into `state.json`
-  rather than being lost, so resume picks up at the real position
-  ([#159](https://github.com/EffortlessMetrics/shipper/issues/159),
-  [#160](https://github.com/EffortlessMetrics/shipper/issues/160)).
-- **Sequential and parallel modes agree.** `Published` / `Skipped` resume-skip
-  handling moved into the shared package executor so both schedulers take the
-  same trusted path, a failed level no longer discards the previous level's
-  execution state, and a table-driven mode-parity corpus (clean publish,
-  permanent failure, already-published, `StillUnknown`) holds the two modes to
-  the same observable outcome
-  ([#153](https://github.com/EffortlessMetrics/shipper/issues/153),
-  [#196](https://github.com/EffortlessMetrics/shipper/issues/196)).
-- **No-panic baseline at zero.** The final 8 production panic sites (inline
-  `.lock().unwrap()` in `publish.rs`, `receipt["k"]` JSON indexing in
-  `execution_state/mod.rs`, `.expect()` invariants in `plan/graph.rs` and
-  `plan/assembly.rs`) converted to panic-free idioms (`let-else`/`map_err`,
-  `Map::insert`, `ok_or_else`). The no-panic baseline is now empty
-  (`production_sites=0`), achieving the policy goal in
-  `docs/NO_PANIC_POLICY.md`.
+- **Ambiguous outcomes stop safely.** `StillUnknown` remains one parseable JSON
+  error with matching human guidance and reconciliation evidence; it is never
+  converted into a retry or resume recommendation without the required
+  authoritative predicates.
+- **Resume fidelity across modes.** Uploaded and pending-reconciliation
+  checkpoints, attempt history, terminal resume skips, prior-level state, and
+  receipt entries now agree across sequential and parallel execution. Parallel
+  fallback paths also emit the matching `PackagePublished` event before state
+  advances, preserving the events-as-truth invariant.
+- **Registry edge cases fail closed.** Explicit loopback trust is honored,
+  strict ownership without a token stops before work, and sparse-index path
+  derivation is total for Unicode crate names while preserving ASCII mappings
+  and public signatures.
+- **Operator errors and internal failure paths are safer.** Multi-line
+  `Error:`/`Caused by:` rendering is restored, parallel lock poisoning is
+  handled without production panics, and the governed production no-panic
+  baseline is empty.
 
 ### Security
 
-- **Versioned encryption migration.** New encrypted payloads use versioned
-  PBKDF2-HMAC-SHA256 parameters at the stronger 600,000-iteration default.
-  Existing unversioned KDF v1 payloads remain decryptable at their legacy
-  100,000-iteration cost.
-- **Release-auth diagnostics.** Blank or whitespace-only OIDC request values
-  are unavailable and reported as `blank` without credential material.
-- **Registry and webhook security boundaries.** Registry destinations require
-  validated scheme/authority policy with explicit private or rehearsal opt-in,
-  while authorization redaction removes complete header values and bounded
-  credential assignments without redacting ordinary prose.
+- Updated `h2` to 0.4.16 to address the excessive empty/small HTTP/2 DATA-frame
+  denial-of-service condition tracked as RUSTSEC-2026-0258.
+- Updated `serde_with` to 3.22.0 as defense in depth against oversized
+  collection size hints. Shipper does not use the affected duplicate-key or
+  duplicate-value adapters and was not exposed through them.
+- Updated `quinn-proto` from 0.11.14 to 0.11.15 for its upstream security fix.
+- Blank OIDC request values are reported as unavailable without credential
+  material. Registry, webhook, process, receipt, and diagnostic paths preserve
+  bounded secret redaction.
 
-- **Registry destination trust boundary.** Registry API and sparse-index URLs
-  now require secure, explicitly validated destinations, trusted host-family
-  alignment, and explicit private/rehearsal opt-ins. Custom registries must
-  now declare `index_base`; only the built-in crates.io target retains its
-  well-known index default. Sanitized
-  `RegistryPolicyApplied` evidence records the applied posture. The new public
-  `RuntimeOptions.registry_policies` field is an intentional API change for
-  carrying these per-registry trust choices; downstream struct-literal callers
-  must initialize it (or migrate to their own options constructor).
+### Maintainer and release preparation
 
-- **`quinn-proto` security patch.** Bumped `quinn-proto` 0.11.14 → 0.11.15 in
-  `Cargo.lock` to pick up the upstream security fix.
+- Added a repository-owned staged-index pre-commit contract for Changie
+  fragments. The 0.5.0-and-earlier changelog remains an opaque retained
+  baseline: use exactly Changie v1.25.1, keep `CHANGELOG.md` and
+  `.changes/0.5.0.md` synchronized, and never run `changie batch 0.5.0`.
+- Workflow-authority checks now reconcile exact owned exceptions and fail
+  closed on unexcepted, expired, drifted, unused, or invalid entries. The
+  retired Factory Droid workflows remain restoration history, not a live
+  review lane.
+- Routed Rust-small CI, reviewed-note identity, approved-source checks,
+  binary-before-publish ordering, resume identity, and release permission
+  boundaries are recorded as preparation controls. Green preparation evidence
+  is not tag, signing, deployment, or publication authorization.
 
-### Resolved carry-over
+### Compatibility summary
 
-- **CI lane routing.** The readiness doc's "CI lane routing cleanup remains
-  carry-over" referred to the pre-routing state. The routed Rust-small PR gate
-  (`em-ci-routed-rust.yml`, with self-hosted `CPX42 → CX43 → CX53` runner
-  ordering and explicit GitHub-hosted fallback control) shipped during the 0.4.0
-  cycle. The remaining work is "further CI cost routing" — optimization
-  candidates documented as "Routing Follow-Ups" in
-  `docs/ci/test-evidence-lanes.md`, not unresolved cleanup.
+- **Rust source:** the additive public `RuntimeOptions.registry_policies` field
+  requires downstream struct literals to initialize it; exhaustive matches on
+  public event enums must account for new variants such as `PackageUploaded`.
+- **Durable artifacts:** pre-0.5 artifacts remain readable within the tested
+  contract. Older Shipper versions are not promised to understand every new
+  0.5 event, state, receipt, or command-envelope field.
+- **CLI and CI:** Shipper command outcomes use exit `0` for success, `1` for a
+  complete or unsafe failure, and `2` for a partial result only where the
+  command evidence says continuation is safe. Clap also uses exit `2` for
+  usage errors; distinguish them by the command-owned output envelope.
+- **Support boundary:** raw inspect-event JSONL and direct versioned receipt
+  serialization remain evidence drilldowns governed by the existing recorder
+  contract. They are not a new command-owned aggregate JSON schema or footer.
+
+See [release notes](RELEASE_NOTES_v0.5.0.md), the
+[migration guide](docs/release/0.5.0-migration.md), and the
+[evidence ledger](docs/release/0.5.0-change-ledger.md) for the prioritized
+story, upgrade details, exact source identities, and bounded proof.
 
 ## [0.4.0] - 2026-05-20
 

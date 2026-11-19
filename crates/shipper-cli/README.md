@@ -1,55 +1,75 @@
 # shipper-cli
 
-CLI adapter for [Shipper](https://crates.io/crates/shipper).
+Command adapter for [Shipper](https://crates.io/crates/shipper).
 
-**Most users should install `shipper`, not this crate:**
+Most users should install the `shipper` facade, not this crate. The unversioned
+command resolves the latest version exposed by the public registry when it
+runs:
 
 ```bash
 cargo install shipper --locked
 ```
 
-This becomes the supported crates.io path after the `v0.4.0` publish completes.
-
-For reproducible 0.4.0 installs, pin the version:
+The retained public-install evidence available when this source snapshot was
+prepared covers facade version 0.4.0. Pin that baseline when reproducibility
+matters:
 
 ```bash
 cargo install shipper --version 0.4.0 --locked
 ```
 
+This snapshot was prepared for the 0.5.0 candidate before its public result
+existed. Package source or README text does not by itself prove registry
+publication; check the live registry and release evidence.
+
 ## Use this crate when
 
-You need the exact clap-based CLI surface programmatically — for example, a wrapper that invokes Shipper after extra preflight steps of your own:
+Use `shipper-cli` only when a Rust wrapper needs Shipper's exact Clap command
+surface and exit behavior programmatically:
 
 ```rust,no_run
-fn main() -> anyhow::Result<()> {
-    // ... custom preflight ...
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    // Add wrapper-specific setup before entering the Shipper command adapter.
     shipper_cli::run()
 }
 ```
 
-Or you want to install the adapter binary directly:
+For engine integration without Clap or terminal rendering, depend on
+[`shipper-core`](https://crates.io/crates/shipper-core). Operators should run
+the `shipper` facade.
 
-```bash
-cargo install shipper-cli --version 0.4.0 --locked
-```
+## Ownership
 
-That adapter binary runs the same code path as the `shipper` facade.
+`shipper-cli` owns:
 
-For programmatic use **without** the `clap` graph, depend on [`shipper-core`](https://crates.io/crates/shipper-core) instead — that's the lean embedding surface.
+- Clap arguments, subcommands, conflicts, and help text;
+- command dispatch and process exit behavior;
+- human rendering and versioned JSON command envelopes;
+- the public `shipper_cli::run()` adapter entry point.
+
+Engine behavior, durable event folding, state, receipts, registry policy, and
+publish/resume orchestration remain in `shipper-core`.
+
+The 0.5.0 candidate's `status --durable` mode reads core-owned observation
+results, bypasses registry access, and emits `shipper.status.durable.v1` in JSON
+mode. It does not turn raw `inspect-events` JSONL or direct receipt JSON into a
+new command-owned envelope.
 
 ## Architecture
 
 ```text
-shipper (install face — `cargo install shipper`)
-  -> shipper-cli (this crate — CLI adapter, pub fn run())
-       -> shipper-core (engine, no CLI deps)
+shipper (install facade)
+  -> shipper-cli (this crate: Clap adapter, rendering, exit behavior)
+       -> shipper-core (engine, no CLI dependencies)
 ```
 
 ## Related
 
-- Install face: <https://crates.io/crates/shipper>
-- Engine library: <https://crates.io/crates/shipper-core>
-- Project README: <https://github.com/EffortlessMetrics/shipper#readme>
+- [Install facade](https://crates.io/crates/shipper)
+- [Engine library](https://crates.io/crates/shipper-core)
+- [Project README](https://github.com/EffortlessMetrics/shipper#readme)
+- [CLI reference](https://github.com/EffortlessMetrics/shipper/blob/main/docs/reference/cli.md)
+- [Support tiers](https://github.com/EffortlessMetrics/shipper/blob/main/docs/status/SUPPORT_TIERS.md)
 
 ## License
 

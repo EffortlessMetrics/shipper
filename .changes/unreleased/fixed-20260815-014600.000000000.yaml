@@ -1,0 +1,6 @@
+kind: fixed
+body: Stop strict-ownership publish runs before registry or package work when the selected registry has no token.
+time: 2026-08-15T01:46:00-04:00
+custom:
+  Audience: Operators
+  Importance: Detailed

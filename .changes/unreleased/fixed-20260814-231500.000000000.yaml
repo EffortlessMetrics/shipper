@@ -1,0 +1,6 @@
+kind: fixed
+body: Honor explicit loopback trust during config validation and reject conflicting registry selectors before execution.
+time: 2026-08-14T23:15:00Z
+custom:
+  Audience: Operators
+  Importance: Detailed

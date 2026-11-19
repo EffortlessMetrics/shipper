@@ -1,0 +1,6 @@
+kind: changed
+body: Align the CLI, evidence, failure-mode, support-tier, and documentation references with Shipper's typed fail-closed recovery outcomes, exact exit-code meanings, and pre-publication lifecycle boundary.
+time: 2026-08-21T04:40:00Z
+custom:
+  Audience: Mixed
+  Importance: Detailed

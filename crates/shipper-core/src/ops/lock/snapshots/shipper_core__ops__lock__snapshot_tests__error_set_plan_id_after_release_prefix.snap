@@ -1,5 +1,5 @@
 ---
-source: crates/shipper/src/ops/lock/mod.rs
-expression: "\"lock file does not exist\""
+source: crates/shipper-core/src/ops/lock/mod.rs
+expression: "\"lock ownership has already been released\""
 ---
-lock file does not exist
+lock ownership has already been released

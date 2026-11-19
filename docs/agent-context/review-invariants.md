@@ -1,6 +1,6 @@
 # Review Invariants
 
-This file captures invariants for both human and Droid review of shipper PRs. These are durable expectations a reviewer can rely on regardless of which lens they apply.
+This file captures durable invariants for human, Claude Code, and Codex review of shipper PRs, plus a restoration record for the retired Factory Droid lane. It is shared semantic context, not an executable review authority; each active provider's native skill carries its complete operating procedure.
 
 ## Product invariants
 
@@ -20,9 +20,24 @@ This file captures invariants for both human and Droid review of shipper PRs. Th
 - **Snapshot tests use `insta`; property-based tests use `proptest`.**
 - **CI runs on ubuntu, windows, and macos for the test matrix.** Windows behavior is not optional.
 
-## Droid workflow invariants
+## Pull-request currentness invariants
 
-These constrain how Factory Droid review is configured for shipper. A reviewer should reject any change that violates them without an explicit, scoped justification PR.
+- A substantive review binds repository, PR number, head SHA, base ref and base SHA, merge-base SHA, synthetic merge/check commit where applicable, review skill/rules identity, and relevant tool/schema/fixture/configuration/receipt identities.
+- Head identity alone is insufficient. Base or merge-base movement can change the effective candidate without moving the head.
+- Candidate judgment and live integration are separate. Substantive results are `REVIEW_CURRENT`, `CHANGES_REQUIRED`, `NOT_PROVEN`, `BLOCKED_BY_PREREQUISITE`, or `SUPERSEDED_OR_CLOSE`; integration results are `INTEGRATION_READY`, `PR_IN_FLIGHT`, `MERGE_BLOCKED`, or `NOT_PROVEN`.
+- Green CI, mergeability, an approval, a bot summary, or zero unresolved threads cannot substitute for substantive review.
+- A failed, cancelled, skipped, rate-limited, malformed, placeholder, or unavailable reviewer is unavailable evidence, not a clean review.
+- Repairs invalidate the findings and dimensions they affect. Rerun affected proof and re-review affected semantics and repair-created edge cases.
+- Reviewer identity alone does not create independence. Record authorship/repair posture, live evidence reloaded, external controls, correlated-failure risk, and author-side versus independent posture.
+- Every PR in a stack receives its own candidate judgment before campaign synthesis.
+- Valid inline findings receive a reply naming the fixing commit and focused proof, or an evidence-backed rejection, before resolution. Blanket automated thread resolution is forbidden.
+- Shared semantics live in `docs/agent-context/review-currentness.md`, while current executable authority remains in `.agents/skills/` and `.claude/skills/`. Retained `.factory/**` material is restoration-only.
+
+## Droid workflow invariants (retired)
+
+The Droid workflows were removed, so none of the invariants below is currently enforced by anything that runs. They are retained as the configuration record for anyone restoring the lane.
+
+One of them is load-bearing and was learned the hard way: the `droid-action-safe` action exchanges a **GitHub OIDC token** for a Factory app token, so any Droid job requires `id-token: write`. Removing that grant as "unused OIDC authority" silently broke every Droid run.
 
 - Droid review uses MiniMax M3 via Factory Droid BYOK.
 - Model is `custom:MiniMax-M3-0` for both `review_model` and `security_model`.
@@ -61,9 +76,10 @@ These constrain how Factory Droid review is configured for shipper. A reviewer s
 
 ## Review output invariants
 
-- No naked `LGTM`. Clean reviews include an inspection record: inspected surfaces, checks performed, why no comments, residual risk, validation signal.
-- Findings use the `[P0|P1|P2]` packet format: title, failure mode, why here, fix direction, validation, confidence.
+- No naked `LGTM`. Clean reviews include the reviewed subject, inspected surfaces, challenge passes, existing-finding disposition, residual risk, validation signal, independence posture, and substantive candidate result.
+- Findings use the `[P0|P1|P2]` packet format: title, failure mode, why here, fix direction, validation, confidence, and evidence provenance.
 - Every claim is marked `Observed:`, `Reported:`, or `Not verified:`.
+- Prefer one bounded review with exact-line inline findings; suppress duplicate conversations.
 - No `@mentions` of humans, teams, bots, or organizations in Droid-generated content.
 - No second-person address. Address the diff, not the author.
 

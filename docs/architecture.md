@@ -81,9 +81,9 @@ These crates have standalone value or a stable contract worth versioning:
 | `shipper-types` | Shared domain types: plans, execution state, receipts, events, and schemas. |
 | `shipper-registry` | Registry HTTP client for version-existence and owner checks. |
 | `shipper-duration` | Human-friendly duration parsing and serde codecs. |
-| `shipper-retry` | Retry/backoff strategies with jitter. |
+| `shipper-retry` | Retry/backoff execution: delay calculation, jitter, and the retry loop. Configuration values are re-exported from `shipper-types`. |
 | `shipper-encrypt` | AES-256-GCM encryption for state files. |
-| `shipper-webhook` | Webhook notifications for publish lifecycle events. |
+| `shipper-webhook` | Webhook delivery, signing, and payload rendering for publish lifecycle events. Configuration values are re-exported from `shipper-types`. |
 | `shipper-sparse-index` | Cargo sparse-index path derivation and version lookup. |
 | `shipper-cargo-failure` | Cargo publish stderr classification. |
 | `shipper-output-sanitizer` | Token and secret redaction from captured cargo output. |
@@ -103,7 +103,7 @@ module root and a `pub(crate)` boundary; they are not separately published.
 Examples:
 
 - `shipper_core::ops::auth` - token resolution and OIDC detection
-- `shipper_core::ops::lock` - file-based distributed locking
+- `shipper_core::ops::lock` - owned local OS file guard and advisory holder metadata
 - `shipper_core::ops::process` - subprocess invocation and capture
 - `shipper_core::plan` - workspace analysis, topo-sort, plan ID, levels, chunking
 - `shipper_core::engine` - preflight, publish, resume, reconcile, readiness verification
@@ -138,6 +138,9 @@ publishability, targets, workspace dependencies, surface hashes, and the
 - `shipper-cli` depends on `shipper-core`;
 - `shipper-core` has no normal, dev, or build dependency on `shipper`,
   `shipper-cli`, `clap`, or `indicatif`;
+- `shipper-types` has no normal, dev, or build dependency on `shipper-webhook`
+  or `shipper-retry` (the contract hub does not depend on behavior crates — see
+  #261; the remaining behavior crates join this rule as each inversion lands);
 - `xtask` is the only private workspace package.
 
 Any change that makes `shipper-core` depend on `shipper-cli` or `shipper`, turns
@@ -152,6 +155,12 @@ authority. It owns Cargo invocation, retry and ambiguity classification,
 readiness, durable transitions, evidence, and package outcomes. Sequential and
 parallel modules own scheduling order, dependency levels, concurrency, and
 reporter adaptation; they do not assemble independent package transitions.
+
+Both schedulers run the canonical package executor in workers and deliver one
+ordered progress queue on the host thread. Sequential mode joins its single
+package worker before admitting the next package. Worker retry waits use the same
+monotonic deadline as the remaining delay passed to the host reporter; slow
+callbacks do not hold the queue lock or control retry admission.
 
 Readiness polling is owned by the registry-client kernel. The engine chooses
 local-index fast paths and adapts poll evidence into durable events, but does
@@ -266,15 +275,38 @@ shipper-registry -> shipper-sparse-index
 shipper-registry -> shipper-output-sanitizer
 
 shipper-types -> shipper-encrypt
-shipper-types -> shipper-webhook
-shipper-types -> shipper-retry
 shipper-types -> shipper-duration
+
+shipper-retry -> shipper-types
+shipper-webhook -> shipper-types
 
 Leaf support crates:
   shipper-cargo-failure, shipper-duration, shipper-encrypt,
-  shipper-output-sanitizer, shipper-retry, shipper-sparse-index,
-  shipper-webhook
+  shipper-output-sanitizer, shipper-sparse-index
 ```
+
+`shipper-types` is the domain-contract hub. The long-term direction (#261) is
+behavior depending on contracts, never the reverse: a contract crate that
+depends on a delivery crate makes every types-only consumer inherit machinery
+it does not use.
+
+Two edges are inverted so far, both the same way: the configuration values
+move to `shipper-types` and the behavior crate consumes and re-exports them, so
+the previous public paths keep resolving.
+
+- `shipper-webhook` — `WebhookConfig` and `WebhookType` now live in
+  `shipper_types::webhook`, so `shipper-types` no longer pulls an HTTP/TLS
+  stack (`reqwest`, `rustls`, `hyper`, `tokio`) into every consumer's graph.
+- `shipper-retry` — `RetryStrategyType`, `RetryStrategyConfig`, and
+  `PerErrorConfig` now live in `shipper_types::retry`, so the contract crate no
+  longer pulls a CSPRNG (`rand`, `rand_core`, `chacha20`, `getrandom`) in for
+  jitter it never applies. Delay calculation, jitter, `ErrorClass`,
+  `RetryPolicy`, and `RetryExecutor` stay in `shipper-retry`.
+
+`shipper-encrypt` and `shipper-duration` remain. `EncryptionConfig` cannot move
+as-is: `get_passphrase` reads the environment, which the ownership rules above
+place outside the contract crate, so that edge needs a behavior/value split
+rather than a move.
 
 ## Conventions
 

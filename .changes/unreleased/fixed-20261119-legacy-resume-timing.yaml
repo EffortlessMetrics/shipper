@@ -1,0 +1,6 @@
+kind: fixed
+body: "Preserve verifiable Shipper 0.4 Cargo completion timestamps when finalizing a resumed run that also contains 0.5 attempts."
+time: 2026-11-19T16:30:28Z
+custom:
+  Audience: Operators
+  Importance: Detailed

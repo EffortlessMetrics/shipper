@@ -1,0 +1,6 @@
+kind: fixed
+body: Defer the expensive routed Rust pull-request gate until a PR is ready for review, preserving main and merge-group checks and requiring a fresh normalized result after readiness.
+time: 2026-11-02T07:12:16Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

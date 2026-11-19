@@ -1,0 +1,6 @@
+kind: fixed
+body: Hold an exclusive OS guard through publish and cleanup, preserve predecessor evidence until claim, and prevent stale handles or force from stealing a live owner. Legacy recovery now requires evidence beyond age.
+time: 2026-10-29T00:02:50Z
+custom:
+  Audience: Mixed
+  Importance: Headline

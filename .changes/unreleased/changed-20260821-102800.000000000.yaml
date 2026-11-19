@@ -1,0 +1,6 @@
+kind: changed
+body: Reject resume before mutating retained evidence when its cumulative per-crate retry ceiling cannot permit another attempt, with matching human and JSON guidance for the minimum usable ceiling.
+time: 2026-08-21T14:28:00Z
+custom:
+  Audience: Operators
+  Importance: Important

@@ -1,105 +1,155 @@
-# Tutorial: Recover from an interrupted release
+# Tutorial: Recover from an interrupted release safely
 
-In this tutorial you'll deliberately interrupt a Shipper publish run, inspect the persisted state, and use `shipper resume` to complete the release without duplicating work.
+This tutorial exercises Shipper's interruption and resume journey with fake
+Cargo, a mock registry, and a real cross-job artifact handoff. It is the
+default rehearsal because it proves durable recovery mechanics without
+creating public registry versions.
+
+> **Do not learn recovery by cancelling a real crates.io publish.** A real
+> upload may succeed before the client reports failure, and yanking is
+> containment rather than deletion. Destructive real-registry rehearsal is a
+> separate release-authority operation.
 
 ## What you'll learn
 
-- What gets written to `.shipper/` during a running publish
-- How `plan_id` guards resume correctness
-- How `shipper resume` decides what to skip and what to continue
-- How to tell the difference between "we have state, let's continue" and "plan changed, we shouldn't continue"
+- Which `.shipper/` files are retained across an interruption.
+- Why events are authoritative and state is a projection.
+- How `status --durable` fails closed on disagreement or uncertain liveness.
+- How the deterministic `plan_id` guards resume, and what it does not bind.
+- Why `StillUnknown` never supplies a blind retry command.
 
-## What you'll need
+## 1. Run the safe rehearsal
 
-- A workspace that's already been through the [first-publish tutorial](first-publish.md)
-- A new patch version ready to publish across multiple crates (so there are >1 step to interrupt in the middle of)
-- About 10 minutes
-
-## 1. Start a publish
+Anyone working from this source checkout can run the local fake-Cargo and mock
+registry fixture:
 
 ```bash
-shipper publish
+cargo test -p shipper-cli --test e2e_rehearse \
+  rehearsal_interrupted_publish_then_resume_preserves_invariants \
+  -- --exact --nocapture
 ```
 
-Watch the output. After the first crate is published (you'll see a line like `published shipper-duration@0.0.2`), open a second terminal:
+This proves the local interruption/resume invariants without registry writes.
+The remaining steps inspect the cross-job version. They require Actions write
+permission on the release-authority repository; users without that permission
+can stop after the local fixture or use the
+[alternate-registry rehearsal](../how-to/rehearse-against-an-alt-registry.md).
 
-## 2. Interrupt it
-
-Kill the process. On Unix:
+Maintainers can dispatch the active workflow:
 
 ```bash
-# in a second terminal
-pkill shipper
+gh workflow run live-runner-interruption-rehearsal.yml \
+  --repo EffortlessMetrics/shipper \
+  --ref main
 ```
 
-Or press `Ctrl+C` in the first terminal. Shipper's signal handler writes final state before exiting.
-
-## 3. Inspect the persisted state
+Record the run ID, then wait for it to finish:
 
 ```bash
-ls -la .shipper/
+gh run watch <run-id> --repo EffortlessMetrics/shipper
 ```
 
-You'll see:
+The workflow uses one job to create interrupted evidence and a separate job to
+download it and resume. It never publishes to crates.io.
 
-- `events.jsonl` — append-only event log (grew during the run, stopped when you killed it)
-- `state.json` — projection: what's published so far, what's pending
-- `lock` — the concurrent-publish guard. Released cleanly on signal; may still be present on SIGKILL.
+## 2. Download both evidence artifacts
 
 ```bash
-shipper inspect-events | tail -20
+gh run download <run-id> \
+  --repo EffortlessMetrics/shipper \
+  --name shipper-live-interruption-seed-<run-id> \
+  --dir seed-evidence
+
+gh run download <run-id> \
+  --repo EffortlessMetrics/shipper \
+  --name shipper-live-interruption-resume-<run-id> \
+  --dir resumed-evidence
 ```
 
-The last events should show package_started / package_attempted / package_published for the crate that completed, then nothing further. No `execution_finished`.
+Keep the seed and resumed directories separate. The seed should contain
+`events.jsonl`, `state.json`, and the fake-Cargo command log. The completed
+resume artifact should additionally contain `receipt.json`.
 
-## 4. Resume
+## 3. Inspect the interrupted evidence
+
+The workflow artifacts contain `.shipper/` evidence, not their matching source
+workspace. Inspect them as raw evidence rather than invoking a command that
+must recompute the release plan:
 
 ```bash
-shipper resume
+jq -c '.' seed-evidence/events.jsonl | tail -20
+jq -r '.plan_id, (.packages[] | "\(.name)@\(.version): \(.state.state)")' \
+  seed-evidence/state.json
 ```
 
-Shipper will:
+Do not run `status --durable` from an artifact-only directory. It recomputes a
+release plan and needs the exact matching workspace and candidate binary.
 
-1. Load `.shipper/state.json`
-2. Recompute the current plan from your workspace
-3. **Verify the plan_id matches**. If the workspace changed between runs, Shipper refuses to continue (this is the safety guardrail that prevents partial-publish corruption).
-4. Skip packages already marked published
-5. Continue from the first pending package
+## 4. Inspect the completed resume
 
-You should see output like `skipping shipper-duration (already published)` followed by the next crate in the queue.
-
-## 5. What if the plan changed?
-
-Deliberately simulate: edit `Cargo.toml` of one of your crates (bump its version, add a dep, anything), then:
+Inspect the completed artifact without combining it with the seed:
 
 ```bash
-shipper resume
+jq -c '.' resumed-evidence/events.jsonl | tail -20
+jq '.' resumed-evidence/state.json
+jq '.' resumed-evidence/receipt.json
 ```
 
-Shipper will refuse:
+Verify that:
 
+- already-published packages were skipped rather than republished;
+- the same `plan_id` and workspace/run identity bind both segments;
+- `events.jsonl` contains one authoritative publish outcome per package;
+- `state.json` agrees as the resumable projection;
+- `receipt.json` summarizes the terminal run.
+
+## 5. Apply the rule to a real interruption
+
+After an actual runner cancellation, restore the entire `.shipper/` directory
+inside the exact source checkout and use the matching candidate binary. Start
+from that workspace root with:
+
+```bash
+shipper status --durable
+shipper inspect-events
 ```
-error: plan_id mismatch. The workspace has changed since the interrupted run.
-  expected: 23ff8f85...
-  got:      a11b7c42...
-Use --force-resume to override (advanced: may cause duplicate publish attempts).
-```
 
-Revert the change, then `shipper resume` works again.
+Run `shipper resume` only when the durable result and retained evidence say the
+run is interrupted and safe to resume. Resume recomputes the current plan and
+refuses when its `plan_id` differs from the stored value. That ID covers the
+registry API base and ordered package names/versions; it does not bind source
+bytes, workspace path, or run identity. Restore and independently verify the
+exact checkout rather than treating the plan-ID check as source provenance.
 
-## 6. Understanding the truth model
+The durable result is intentionally fail-closed. `no_evidence` means no durable
+run was found; `identity_mismatch` means the current plan ID, registry, or
+retained evidence identity differs; `evidence_disagreement` means the retained
+sources contradict each other; and `unknown` means an unfinished run's
+liveness cannot be established. None authorizes resume. On Linux, `Live`
+requires an exact local boot, PID namespace, PID, and process-start match.
+`NotLive` means the process was absent inside the same proven scope; it is not
+by itself permission to resume.
 
-The key invariant is: **events are truth, state is a projection**.
+Do not use `--force-resume` as a normal recovery step. It overrides a plan
+guard and requires a separate operator risk decision.
 
-If `state.json` ever disagrees with `events.jsonl`, events win. Full details: [explanation/INVARIANTS.md](../INVARIANTS.md).
+## 6. Ambiguity is not interruption
 
-In practice this means:
+If Cargo's result is ambiguous, Shipper queries registry truth before any new
+publish attempt:
 
-- `state.json` can be rebuilt from `events.jsonl` if it's corrupted
-- `resume` reads `state.json` for speed, but the ground truth is in events
-- Any tool you build on top of Shipper should prefer events for correctness, state for speed
+- `Published`: retain the reconciliation evidence and advance.
+- `NotPublished`: the normal policy may retry.
+- `StillUnknown`: stop, retain `reconciliation.json`, and investigate. No
+  generated retry command is safe.
 
-## 7. What's next
+Use `shipper inspect-events`, `shipper inspect-receipt` when a receipt exists,
+and the paths reported by `status --durable`. Never infer safety from a quiet
+log, an old lock timestamp, or exit code alone.
 
-- Running this flow in CI requires a bit of care: the `.shipper/` directory must be uploaded as an artifact so a re-run can download it. See [how-to/run-in-github-actions.md](../how-to/run-in-github-actions.md).
-- To understand why resume exists and what edge cases still need work, see issues [#90](https://github.com/EffortlessMetrics/shipper/issues/90) and [#101](https://github.com/EffortlessMetrics/shipper/issues/101).
+## See also
+
+- [Run the Recover rehearsal](../how-to/run-recover-rehearsal.md)
+- [Inspect a stalled run](../how-to/inspect-a-stalled-run.md)
+- [Inspect state, events, and receipts](../how-to/inspect-state-and-receipts.md)
+- [INVARIANTS.md](../INVARIANTS.md)

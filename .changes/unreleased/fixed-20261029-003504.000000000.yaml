@@ -1,0 +1,6 @@
+kind: fixed
+body: Stop containment before Cargo when event evidence cannot be prepared, and halt remaining yanks with an essential nonzero diagnostic when event persistence or a requested receipt amendment fails after an observed result. Preserve retained evidence, require matching receipt registries, and direct reconciliation even under quiet mode. Reject unsupported containment execution JSON before effects while preserving remediation dry-run JSON.
+time: 2026-10-29T00:35:04Z
+custom:
+  Audience: Operators
+  Importance: Detailed

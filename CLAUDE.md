@@ -43,7 +43,8 @@ cargo run -p shipper-cli -- <command>   # equivalent; same code path
 cargo install --path crates/shipper --locked
 
 # Tests
-cargo test                                         # all workspace tests
+cargo test --workspace --all-features --locked      # workspace tests + doc tests
+cargo test --locked                                # quick default-member tests
 cargo test -p shipper-core                         # engine crate
 cargo test -p shipper-cli                          # CLI adapter crate
 cargo test -p shipper                              # façade (integration tests)
@@ -56,6 +57,11 @@ cargo fmt --all
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
+
+At the workspace root, plain `cargo test` selects only the `shipper` and
+`shipper-cli` default members. Use `--workspace` to include the engine, support
+crates, and xtask tests. See [Testing Guide](docs/testing.md) for command scope
+and the configured CI evidence lanes.
 
 ## Architecture
 
@@ -95,7 +101,7 @@ Written to `.shipper/` (configurable via `--state-dir`):
 - `state.json` — resumable execution state (schema-versioned). **Projection** of events.
 - `receipt.json` — audit receipt with evidence (stdout/stderr, exit codes, git context, environment fingerprint). **Summary** derived at end-of-run.
 - `events.jsonl` — append-only event log. **Authoritative truth.**
-- `lock` — distributed lock preventing concurrent publishes
+- `lock` (or `lock_<workspace-hash>`) — advisory holder metadata; the persistent `.guard` sidecar provides local OS ownership for cooperating invocations
 
 ### Events-as-truth invariant
 
@@ -120,3 +126,23 @@ Cargo 1.90 stabilized multi-package workspace publishing. Shipper's value is wha
 - Configuration can be set via `.shipper.toml` in workspace root; CLI flags override config file values. Config sections: `[policy]`, `[verify]`, `[readiness]`, `[output]`, `[lock]`, `[retry]`, `[flags]`, `[parallel]`, `[registry]`. Ownership/git settings live in `[flags]`, not a separate `[preflight]` section.
 - `config init` uses `-o`/`--output`; `config validate` uses `-p`/`--path`.
 - `prefer_index` and `index_path` (readiness) are config-file-only settings with no CLI flags.
+
+## Claude Code durable-goal delivery
+
+When the user asks to work issue by issue, PR by PR, finish an umbrella issue, or deliver a durable multi-PR outcome, invoke `.claude/skills/deliver-goal`. It must route every related candidate through `.claude/skills/finish-pr` and its complete challenge, substantive review, live-integration, and merge-reconciliation lifecycle before producing campaign-level synthesis.
+
+## Claude Code pull-request convergence
+
+When a candidate implementation is assembled, or the user asks to finish, land, carry through, prepare, or merge a PR, invoke the Claude-native route in this order:
+
+```text
+.claude/skills/finish-pr
+→ .claude/skills/final-challenge
+→ .claude/skills/review-pr
+→ .claude/skills/verify-live-ci
+→ .claude/skills/merge-reconcile
+```
+
+A direct request to review, check, or assess merge readiness invokes `.claude/skills/review-pr` even when CI is already green. Green CI, mergeability, an approval, a bot summary, or zero unresolved threads cannot substitute for the substantive candidate judgment. Repairs require affected challenge, proof, and re-review before live integration is evaluated again.
+
+The provider-native skill is the executable authority. [`docs/agent-context/review-currentness.md`](docs/agent-context/review-currentness.md) defines shared semantics only and must not replace the complete procedure in `.claude/skills/review-pr/SKILL.md`. Factory Droid is retired: its workflows were removed and no Droid review lane runs. Claude Code convergence is the review route.

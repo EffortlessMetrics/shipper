@@ -1,6 +1,6 @@
 # SHIPPER-SPEC-0002: Release Readiness Proof
 
-Status: proposed
+Status: implemented
 Owner: EffortlessMetrics
 Created: 2026-05-13
 Milestone: 0.4.0
@@ -16,14 +16,26 @@ Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask pol
 
 ## Problem
 
-Shipper 0.4.0 needs a reusable release-readiness contract before #195 produces
-the release artifact. The artifact should answer whether the workspace is ready
-to publish and what evidence supports that answer. It must not be a checklist of
-intent; it records command results, publish dry-run evidence, advisory signals,
-known carry-over, and sign-off for a specific version.
+Shipper 0.4.0 needed a reusable release-readiness contract before #195 produced
+the release artifact. The artifact had to answer whether the workspace was
+ready to publish and what evidence supported that answer. It could not be a
+checklist of intent; it had to record command results, publish dry-run evidence,
+advisory signals, known carry-over, and sign-off for a specific version.
 
-This spec defines what a release-readiness proof must contain. The command
-ordering and PR mechanics live in `plans/0.4.0/release-readiness-proof.md`.
+This spec defines what a release-readiness proof must contain. The historical
+command ordering and PR mechanics live in
+`plans/0.4.0/release-readiness-proof.md`.
+
+## Implementation Status
+
+The contract was implemented for 0.4.0. The authoritative retained record is
+`docs/release/0.4.0-readiness.md`, which identifies the evidence base and tag
+commits, plan ID, preflight and rehearsal results, auth path, package surface,
+public artifacts, install smoke, and explicit carry-over.
+
+That historical proof does not authorize another release. Each later release
+must produce exact-source evidence under its current release contract rather
+than copy the 0.4.0 verdict.
 
 ## Behavior Contract
 
@@ -59,7 +71,7 @@ not tag, publish, or imply that a release was published.
 
 ## Required Evidence
 
-The readiness proof must include results from these gates:
+The 0.4.0 readiness proof required results from these gates:
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -72,8 +84,12 @@ The readiness proof must include results from these gates:
 - `cargo xtask check-doc-contracts --mode advisory`
 - `cargo xtask policy-report`
 
-The readiness proof must also include cargo publish dry-run evidence for every
-publishable crate in the plan order reported by `cargo run -p shipper -- plan`.
+The readiness proof also required cargo publish dry-run evidence for every
+publishable crate in the plan order reported by
+`cargo run -p shipper -- plan`.
+
+Later release contracts may strengthen or replace individual commands, but they
+must preserve the underlying claims and identify the exact replacement proof.
 
 ## Acceptance Examples
 
@@ -91,8 +107,7 @@ publishable crate in the plan order reported by `cargo run -p shipper -- plan`.
 
 ## Test Mapping
 
-This spec is proven by the #195 release-readiness PR, not by unit tests alone.
-The proof maps to:
+The 0.4.0 implementation proof maps to:
 
 - formatting, lint, test, audit, documentation, BDD, and policy commands
 - `cargo run -p shipper -- plan` for plan id and topological order
@@ -102,11 +117,14 @@ The proof maps to:
   `target/policy/doc-contracts-report.{md,json}` for machine-readable policy
   evidence
 
+The retained readiness artifact records which checks actually ran and any
+carry-over. This spec does not retroactively upgrade omitted or failed evidence.
+
 ## Implementation Mapping
 
-`plans/0.4.0/release-readiness-proof.md` sequences the release-readiness work.
-The first consumer is #195, which must produce
-`docs/release/0.4.0-readiness.md`.
+`plans/0.4.0/release-readiness-proof.md` sequenced the implementation. #195 was
+the initial tracking issue; `docs/release/0.4.0-readiness.md` is the completed
+artifact.
 
 ## CI Proof
 
@@ -117,19 +135,22 @@ candidate.
 
 ## Promotion Rule
 
-The `0.4.0 release readiness proof` support-tier entry may move from
-`planned until #195` to `stable` only after `docs/release/0.4.0-readiness.md`
-exists and records the required evidence.
+The 0.4.0 release-readiness support-tier entry could move from planned to stable
+only after `docs/release/0.4.0-readiness.md` existed and recorded the required
+evidence. That promotion occurred for the bounded 0.4.0 claim.
 
 Release-readiness proof does not by itself promote adjacent release-closure
-claims. Registry reconciliation and interruption-resume support-tier rows must
-name their own specs, tests, and artifacts. Current proof lives in
-`docs/status/SUPPORT_TIERS.md`: ambiguous publish reconciliation is stable, and
-resume under live runner interruption is stable/internal against fake
-Cargo/mock registry proof surfaces.
+claims. Registry reconciliation and interruption-resume support-tier rows name
+their own specs, tests, and artifacts. Current claim state lives in
+`docs/status/SUPPORT_TIERS.md`, not in this historical verdict.
 
 ## Open Questions
 
-- Whether future release-readiness proof should also emit a JSON artifact.
-- Whether mutation evidence should be mandatory for every release candidate or
+These questions were intentionally left policy-selectable for later releases:
+
+- whether release-readiness proof should also emit a dedicated JSON artifact
+  beyond the versioned command and `.shipper/` evidence already retained;
+- whether mutation evidence should be mandatory for every release candidate or
   only when requested by release policy.
+
+They do not make the implemented 0.4.0 contract provisional.

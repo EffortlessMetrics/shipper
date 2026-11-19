@@ -1,10 +1,29 @@
-# Scheduled fuzzing workflow for shipper
-# Runs extended fuzz tests nightly and on demand
+# Scheduled fuzzing plus compile-only coverage for every declared target.
+# Extended fuzz runs remain nightly/on-demand, not part of ordinary PRs.
 # Based on cargo-fuzz: https://github.com/rust-fuzz/cargo-fuzz
 
 name: Fuzz
 
 on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'crates/**'
+      - 'fuzz/**'
+      - '.github/workflows/fuzz.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'crates/**'
+      - 'fuzz/**'
+      - '.github/workflows/fuzz.yml'
   schedule:
     # Run nightly at 3 AM UTC
     - cron: '0 3 * * *'
@@ -15,7 +34,7 @@ on:
         required: false
         default: '300'
       targets:
-        description: 'Specific targets to run (comma-separated, or "all")'
+        description: 'Comma-separated manifest target names, or "all" for the six-target nightly set'
         required: false
         default: 'all'
 
@@ -27,26 +46,79 @@ permissions:
   contents: read
 
 jobs:
+  check-targets:
+    name: Compile all fuzz targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      duration: ${{ steps.select.outputs.duration }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Cache Cargo + fuzz checks
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: fuzz-check-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            fuzz-check-${{ runner.os }}-
+      - name: Validate campaign inputs and select targets
+        id: select
+        env:
+          REQUESTED_TARGETS: ${{ inputs.targets || 'all' }}
+          REQUESTED_DURATION: ${{ inputs.duration || '300' }}
+        run: |
+          case "$REQUESTED_DURATION" in
+            ''|*[!0-9]*) echo '::error::Duration must be a positive integer.'; exit 1 ;;
+          esac
+          if ! [ "$REQUESTED_DURATION" -gt 0 ]; then
+            echo '::error::Duration must be a positive integer.'
+            exit 1
+          fi
+          metadata=$(cargo metadata --manifest-path fuzz/Cargo.toml --no-deps --format-version 1)
+          matrix=$(jq -ce --arg requested "$REQUESTED_TARGETS" \
+            --argjson defaults '["load_state","resolve_token","encrypt_decrypt","retry_strategy","types_serialization","redact_output"]' '
+            .packages[] | select(.name == "shipper-fuzz") |
+            [.targets[] | select(.kind | index("bin")) | .name] as $available |
+            ($requested | gsub("^\\s+|\\s+$"; "")) as $request |
+            (if $request == "all" then $defaults else
+              $request | split(",") | map(gsub("^\\s+|\\s+$"; "")) end) as $selected |
+            if ($selected | length) == 0 or any($selected[]; . == "") then
+              error("Select at least one nonempty target name")
+            elif any($selected[]; . as $name | $available | index($name) | not) then
+              error("Unknown fuzz target; use a binary declared in fuzz/Cargo.toml")
+            else {target: ($selected | unique)} end
+          ' <<< "$metadata")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "duration=$REQUESTED_DURATION" >> "$GITHUB_OUTPUT"
+      - name: Check every declared fuzz binary
+        # fuzz/ is excluded from the product workspace and has no tracked lockfile.
+        # The default workspace checks and the curated nightly matrix miss targets.
+        run: cargo check --manifest-path fuzz/Cargo.toml --bins
+
   fuzz:
     name: Fuzz (${{ matrix.target }})
+    needs: [check-targets]
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
-    # Only run on main branch for scheduled runs
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    # PRs and main pushes compile all targets without running extended campaigns.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     strategy:
       fail-fast: false
-      matrix:
-        target:
-          - load_state
-          - resolve_token
-          - encrypt_decrypt
-          - retry_strategy
-          - types_serialization
-          - redact_output
+      matrix: ${{ fromJSON(needs.check-targets.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
@@ -71,22 +143,18 @@ jobs:
             ubuntu-fuzz-${{ matrix.target }}-
             ubuntu-fuzz-
 
-      - name: Get duration
-        id: duration
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "value=${{ github.event.inputs.duration }}" >> $GITHUB_OUTPUT
-          else
-            echo "value=300" >> $GITHUB_OUTPUT
-          fi
-
       - name: Run fuzz target
+        id: run_fuzz
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+          FUZZ_DURATION: ${{ needs.check-targets.outputs.duration }}
+          RUSTUP_TOOLCHAIN: nightly
         run: |
-          cargo fuzz run ${{ matrix.target }} \
-            --corpus fuzz/corpus/${{ matrix.target }} \
+          mkdir -p "fuzz/corpus/$FUZZ_TARGET" artifacts
+          cargo fuzz run "$FUZZ_TARGET" "fuzz/corpus/$FUZZ_TARGET" --target x86_64-unknown-linux-gnu \
             -- \
-            -max_total_time=${{ steps.duration.outputs.value }} \
-            -artifact_prefix=artifacts/${{ matrix.target }}_
+            "-max_total_time=$FUZZ_DURATION" \
+            "-artifact_prefix=artifacts/${FUZZ_TARGET}_"
         continue-on-error: true
 
       - name: Check for crashers
@@ -120,20 +188,34 @@ jobs:
         if: steps.check_crashers.outputs.crashers_found == 'true'
         run: exit 1
 
+      - name: Fail if the fuzz command failed
+        if: steps.run_fuzz.outcome == 'failure'
+        run: |
+          echo '::error::cargo fuzz failed; absence of a crash artifact is not a passing run.'
+          exit 1
+
   fuzz-summary:
     name: Fuzz Summary
     runs-on:
       group: em-ci-nano
       labels: [self-hosted, linux, x64, em-ci, cx23, ci-nano, trusted-pr]
-    needs: [fuzz]
-    if: always()
+    needs: [check-targets, fuzz]
+    if: always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     steps:
       - name: Check results
+        env:
+          COMPILE_RESULT: ${{ needs.check-targets.result }}
+          FUZZ_RESULT: ${{ needs.fuzz.result }}
         run: |
-          echo "## Fuzz Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Target | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
-          
-          # This would need the actual job results to be populated
-          echo "| All targets | See individual jobs |" >> $GITHUB_STEP_SUMMARY
+          {
+            echo '## Fuzz Results'
+            echo ''
+            echo '| Evidence | Status |'
+            echo '|----------|--------|'
+            echo "| All target builds | $COMPILE_RESULT |"
+            echo "| Fuzz campaign | $FUZZ_RESULT |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$COMPILE_RESULT" != success ] || [ "$FUZZ_RESULT" != success ]; then
+            echo '::error::Fuzz evidence is incomplete or failed; inspect the target jobs.'
+            exit 1
+          fi

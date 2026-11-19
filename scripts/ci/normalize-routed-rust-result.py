@@ -9,14 +9,18 @@ from dataclasses import dataclass
 
 
 SELF_HOSTED_TARGETS = ("cx43", "cpx42", "cx53")
-HARD_FAIL_REASONS = {
-    "fork_pr",
+# Routing could not consult the self-hosted pool. Whether that blocks depends on
+# whether a trustworthy fallback was authorized: an untrusted source has nowhere
+# safe to run, while a trusted source degrades to the GitHub-hosted lane, which
+# runs the identical gate. `fork_pr` is never recoverable by fallback.
+DEGRADED_REASONS = {
     "runner_token_missing",
     "runner_token_unauthorized",
     "runner_token_forbidden",
     "runner_api_failed",
     "parse_failed",
 }
+HARD_FAIL_REASONS = {"fork_pr"} | DEGRADED_REASONS
 
 
 @dataclass(frozen=True)
@@ -37,11 +41,12 @@ def failures_for(result: RoutedResult) -> list[str]:
     if result.target not in result.results:
         return ["Route job did not emit a known target."]
     if result.target == "github" and result.reason in HARD_FAIL_REASONS:
-        return [
-            "Fork PRs cannot run repository code on self-hosted runners."
-            if result.reason == "fork_pr"
-            else "Self-hosted routing failed before a trustworthy fallback decision."
-        ]
+        if result.reason == "fork_pr":
+            return ["Fork PRs cannot run repository code on self-hosted runners."]
+        if not result.fallback_allowed:
+            return ["Self-hosted routing failed before a trustworthy fallback decision."]
+        # Degraded but authorized: fall through and judge the fallback lane's
+        # own result exactly as any other run.
 
     failures = []
     for name, value in result.results.items():
@@ -74,11 +79,23 @@ def normalize(result: RoutedResult) -> int:
     for name, value in result.results.items():
         print(f"{name}_result={value}")
 
+    degraded = result.reason in DEGRADED_REASONS and result.fallback_allowed
+    if degraded:
+        print(
+            f"::warning title=Degraded CI routing::Could not consult the self-hosted "
+            f"runner pool ({result.reason}); this run used the GitHub-hosted lane, "
+            f"which runs the identical Rust-small gate. Rotate EM_RUNNER_READ_TOKEN "
+            f"to restore self-hosted routing."
+        )
+
     failures = failures_for(result)
     for failure in failures:
         print(failure)
     if failures:
         return 1
+    if degraded:
+        print("Rust small gate passed on the GitHub-hosted lane (degraded routing).")
+        return 0
     print("Exactly one routed Rust small lane succeeded.")
     return 0
 
@@ -129,6 +146,46 @@ def test_cases() -> None:
             "hard-fail github routing",
             RoutedResult(
                 "github", "runner_token_missing", "success", "true", False,
+                {"cx43": "skipped", "cpx42": "skipped", "cx53": "skipped", "github": "skipped"},
+            ),
+            True,
+        ),
+        (
+            "fork PR never degrades to fallback",
+            RoutedResult(
+                "github", "fork_pr", "success", "false", True,
+                {"cx43": "skipped", "cpx42": "skipped", "cx53": "skipped", "github": "success"},
+            ),
+            True,
+        ),
+        (
+            "degraded routing with authorized passing fallback",
+            RoutedResult(
+                "github", "runner_token_unauthorized", "success", "true", True,
+                {"cx43": "skipped", "cpx42": "skipped", "cx53": "skipped", "github": "success"},
+            ),
+            False,
+        ),
+        (
+            "degraded routing still fails on a red fallback",
+            RoutedResult(
+                "github", "runner_token_unauthorized", "success", "true", True,
+                {"cx43": "skipped", "cpx42": "skipped", "cx53": "skipped", "github": "failure"},
+            ),
+            True,
+        ),
+        (
+            "degraded routing fails when the fallback never ran",
+            RoutedResult(
+                "github", "runner_api_failed", "success", "true", True,
+                {"cx43": "skipped", "cpx42": "skipped", "cx53": "skipped", "github": "skipped"},
+            ),
+            True,
+        ),
+        (
+            "unauthorized fallback still hard-fails",
+            RoutedResult(
+                "github", "runner_token_forbidden", "success", "true", False,
                 {"cx43": "skipped", "cpx42": "skipped", "cx53": "skipped", "github": "skipped"},
             ),
             True,

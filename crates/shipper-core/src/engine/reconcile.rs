@@ -12,9 +12,9 @@
 //! outcomes:
 //!
 //! - **Published** — the version appeared; treat as success, do not retry.
-//! - **NotPublished** — within the budget, the version was never visible;
-//!   the caller may safely enter the normal retry path (no duplicate risk).
-//! - **StillUnknown** — queries themselves kept failing; the caller MUST
+//! - **NotPublished** — the final poll conclusively observed absence on all
+//!   configured authorities; the caller may enter the bounded retry path.
+//! - **StillUnknown** — the final observation could not establish absence; the caller MUST
 //!   NOT retry, and MUST mark the package state Ambiguous for operator
 //!   decision.
 //!
@@ -27,6 +27,7 @@
 use std::time::Instant;
 
 use crate::registry::RegistryClient;
+use shipper_registry::ReadinessObservationError;
 use shipper_types::{ReadinessConfig, ReadinessEvidence, ReconciliationOutcome};
 
 /// Reconcile an ambiguous `cargo publish` outcome against registry truth.
@@ -53,26 +54,29 @@ pub(crate) fn reconcile_ambiguous_upload(
     match reg.is_version_visible_with_backoff(crate_name, version, config) {
         Ok((true, evidence)) => (
             ReconciliationOutcome::Published {
-                attempts: evidence.len() as u32,
+                attempts: evidence.last().map_or(0, |poll| poll.attempt),
                 elapsed_ms: start.elapsed().as_millis() as u64,
             },
             evidence,
         ),
         Ok((false, evidence)) => (
             ReconciliationOutcome::NotPublished {
-                attempts: evidence.len() as u32,
+                attempts: evidence.last().map_or(0, |poll| poll.attempt),
                 elapsed_ms: start.elapsed().as_millis() as u64,
             },
             evidence,
         ),
-        Err(e) => (
-            ReconciliationOutcome::StillUnknown {
-                attempts: 0,
-                elapsed_ms: start.elapsed().as_millis() as u64,
-                reason: format!("reconciliation query failed: {e}"),
-            },
-            Vec::new(),
-        ),
+        Err(e) => {
+            let observation = e.downcast_ref::<ReadinessObservationError>();
+            (
+                ReconciliationOutcome::StillUnknown {
+                    attempts: observation.map_or(0, ReadinessObservationError::attempts),
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                    reason: format!("reconciliation query failed: {e}"),
+                },
+                observation.map_or_else(Vec::new, |error| error.evidence().to_vec()),
+            )
+        }
     }
 }
 

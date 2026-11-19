@@ -1,0 +1,6 @@
+kind: maintenance
+body: Reuse full-CI policy steps as a review-ready hosted PR proof without admitting other full-CI jobs.
+time: 2026-11-02T22:10:55Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance

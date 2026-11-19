@@ -1,0 +1,6 @@
+kind: fixed
+body: Update Reqwest to avoid panicking when a blocking webhook timeout exceeds the platform clock's range.
+time: 2026-10-29T08:33:00Z
+custom:
+  Audience: Mixed
+  Importance: Detailed

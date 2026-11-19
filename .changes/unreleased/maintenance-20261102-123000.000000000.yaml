@@ -1,0 +1,6 @@
+kind: maintenance
+body: Run the small runner-routing and workflow-syntax guard on a bounded hosted route in swarm, preserving shared checks, fork refusal, and governed routing outside swarm.
+time: 2026-11-02T12:30:00Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance

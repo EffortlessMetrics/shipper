@@ -1,0 +1,6 @@
+kind: fixed
+body: Bind the mock cross-run recovery rehearsal to the checked-out Rust pin and retain actual compiler and Cargo identity per phase.
+time: 2026-11-19T05:00:00Z
+custom:
+  Audience: Operators
+  Importance: Detailed

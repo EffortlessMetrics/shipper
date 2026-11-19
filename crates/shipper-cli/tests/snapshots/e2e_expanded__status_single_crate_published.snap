@@ -5,3 +5,7 @@ expression: normalize_output(&stdout)
 plan_id: <PLAN_ID>
 
 demo@0.1.0: published
+
+Result: all published
+Publication performed: no
+Next: every registry-eligible selected package version is visible in its effective target registry or registries

@@ -14,7 +14,7 @@ use shipper_types::{
     PublishEvent, ReconciliationOutcome, Registry,
 };
 
-use super::{events, execution_state};
+use super::{events, execution_state, upload_evidence::UploadWitness};
 
 /// Inputs that cannot be recovered from `events.jsonl` alone.
 #[derive(Debug, Clone)]
@@ -43,6 +43,15 @@ impl StateRebuildOptions {
 /// record the plan id but not the full registry definition. If the log contains
 /// no `plan_created` event, `fallback_plan_id` is used; otherwise this returns
 /// an error.
+///
+/// Replay follows JSONL append order, never timestamp order. For a nonempty
+/// log, `created_at` and `updated_at` are the first and last appended events'
+/// timestamps, not the minimum and maximum wall-clock values. Both use the
+/// rebuild time for an empty log. Attempt timestamps follow the existing
+/// per-event completion semantics without clock normalization. A `StillUnknown`
+/// reconciliation can replace an earlier failure end with its event time, so
+/// live and rebuilt attempt ends are not universally identical. Clock rollback
+/// can leave an attempt's end earlier than its start.
 pub fn rebuild_state_from_events(
     events_path: &Path,
     options: StateRebuildOptions,
@@ -62,9 +71,14 @@ pub fn rebuild_state_from_events(
     let mut attempt_history = Vec::new();
     let mut active_attempts: BTreeMap<String, RebuildAttemptDetail> = BTreeMap::new();
 
+    let mut upload_witnesses = BTreeMap::<&str, UploadWitness>::new();
     for event in events {
+        let witness = upload_witnesses.entry(&event.package).or_default();
+        let previous = *witness;
+        *witness = witness.observe(&event.event_type);
         apply_event(
             event,
+            (previous, *witness),
             &mut plan_id,
             &mut packages,
             &mut active_attempts,
@@ -92,23 +106,90 @@ pub fn rebuild_state_from_events(
 }
 
 /// Rebuild and write `<state_dir>/state.json` from `<state_dir>/events.jsonl`.
+///
+/// This low-level writer requires an offline state directory or exclusive
+/// caller ownership of the same publication key for the whole call. It does
+/// not acquire an invocation lock: this API has no workspace/ownership input.
+/// Concurrent publication, cleanup, or arbitrary embedding writes are not
+/// supported. Under that precondition, an already-retained projection-only
+/// cleanup hold cannot be erased by rebuilding an older event prefix.
 pub fn rebuild_state_file_from_events(
     state_dir: &Path,
     options: StateRebuildOptions,
 ) -> Result<ExecutionState> {
     let events_path = events::events_path(state_dir);
     let state = rebuild_state_from_events(&events_path, options)?;
+    // A cleanup hold saved only in the projection is evidence of an incomplete
+    // persistence boundary. Rebuilding from an older event prefix must not
+    // silently erase that observed local-safety condition. The caller provides
+    // exclusion against concurrent writers as required by this API contract.
+    let retained = match execution_state::load_state(state_dir) {
+        Ok(retained) => retained,
+        Err(error) if error.downcast_ref::<serde_json::Error>().is_some() => {
+            // A damaged projection is the reason this recovery API exists.
+            // Still preserve a complete typed hold nested in otherwise invalid
+            // JSON/schema; never mistake a projection parse failure for proof
+            // that local process cleanup was confirmed.
+            let raw = std::fs::read(execution_state::state_path(state_dir))
+                .context("failed to inspect damaged state before rebuilding")?;
+            if recognizable_cleanup_hold(&raw) {
+                bail!(
+                    "cannot rebuild away retained cleanup hold in damaged state; preserve the evidence and inspect the owned processes"
+                );
+            }
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(retained) = retained {
+        for (key, progress) in &retained.packages {
+            if matches!(progress.state, PackageState::CleanupIncomplete { .. })
+                && !state.packages.get(key).is_some_and(|rebuilt| {
+                    matches!(rebuilt.state, PackageState::CleanupIncomplete { .. })
+                })
+            {
+                bail!(
+                    "cannot rebuild away retained cleanup hold for {key}: its authoritative event is missing; preserve the evidence and inspect the owned processes"
+                );
+            }
+        }
+    }
     execution_state::save_state(state_dir, &state)?;
     Ok(state)
 }
 
+/// Find complete typed states even when surrounding projection JSON is damaged.
+/// Deserialize each possible object boundary as a prefix so trailing damage
+/// cannot erase an already recognizable hold. Escaped strings are handled by
+/// serde, and arbitrary prose mentioning the state name is not a typed hold.
+fn recognizable_cleanup_hold(raw: &[u8]) -> bool {
+    raw.iter().enumerate().any(|(offset, byte)| {
+        *byte == b'{'
+            && matches!(
+                serde_json::Deserializer::from_slice(&raw[offset..])
+                    .into_iter::<PackageState>()
+                    .next(),
+                Some(Ok(PackageState::CleanupIncomplete { .. }))
+            )
+    })
+}
+
 fn apply_event(
     event: &PublishEvent,
+    upload_transition: (UploadWitness, UploadWitness),
     plan_id: &mut Option<String>,
     packages: &mut BTreeMap<String, PackageProgress>,
     active_attempts: &mut BTreeMap<String, RebuildAttemptDetail>,
     attempt_history: &mut Vec<AttemptDetail>,
 ) {
+    let affected_key = match &event.event_type {
+        EventType::PackageStarted { name, version } => format!("{name}@{version}"),
+        _ => event.package.clone(),
+    };
+    let retained_hold = packages.get(&affected_key).and_then(|progress| {
+        matches!(progress.state, PackageState::CleanupIncomplete { .. })
+            .then(|| progress.state.clone())
+    });
     match &event.event_type {
         EventType::PlanCreated {
             plan_id: event_plan_id,
@@ -119,13 +200,42 @@ fn apply_event(
         EventType::PackageStarted { name, version } => {
             let key = format!("{}@{}", name, version);
             let progress = ensure_package(packages, &key, name, version, event.timestamp);
-            progress.state = PackageState::Pending;
+            if !matches!(
+                progress.state,
+                PackageState::Uploaded
+                    | PackageState::Ambiguous { .. }
+                    | PackageState::Failed {
+                        class: ErrorClass::Ambiguous,
+                        ..
+                    }
+            ) && !matches!(upload_transition.1, UploadWitness::NotLaunched(_))
+            {
+                progress.state = PackageState::Pending;
+            }
+            // The new invocation may reconcile an old upload. Its result
+            // must not rewrite the earlier Cargo attempt's durable outcome.
+            if active_attempts.get(&key).is_some_and(|active| {
+                active.upload_checkpoint == Some(UploadCheckpoint::Provisional)
+            }) {
+                active_attempts.remove(&key);
+            }
             progress.last_updated_at = event.timestamp;
         }
         EventType::ReadinessStarted { .. } => {
-            if let Some(progress) = ensure_event_package(packages, event, event.timestamp) {
-                progress.state = PackageState::Uploaded;
-                progress.last_updated_at = event.timestamp;
+            // v0.4 had no PackageUploaded marker. Its first readiness check
+            // followed the successful Cargo attempt and the Uploaded save.
+            // A modern readiness start can be only a visibility probe.
+            if let (UploadWitness::Attempted { .. }, UploadWitness::LegacyUploaded(attempt)) =
+                upload_transition
+                && let Some(active) = active_attempt_for_key_mut(active_attempts, &event.package)
+                && active.attempt == attempt
+            {
+                active.ended_at = event.timestamp;
+                finalize_attempt(active_attempts, attempt_history, &event.package);
+                if let Some(progress) = ensure_event_package(packages, event, event.timestamp) {
+                    progress.state = PackageState::Uploaded;
+                    progress.last_updated_at = event.timestamp;
+                }
             }
         }
         EventType::PackageUploaded => {
@@ -186,6 +296,44 @@ fn apply_event(
                 progress.last_updated_at = event.timestamp;
             }
         }
+        EventType::PackageNotLaunched { message, .. }
+            if matches!(
+                upload_transition,
+                (
+                    UploadWitness::Attempted { .. },
+                    UploadWitness::NotLaunched(_)
+                )
+            ) =>
+        {
+            if let Some(active) = active_attempt_for_key_mut(active_attempts, &event.package) {
+                active.ended_at = event.timestamp;
+                active.error_class = Some(ErrorClass::Retryable);
+                active.redacted_message = Some(message.clone());
+            }
+            finalize_attempt(active_attempts, attempt_history, &event.package);
+            if let Some(progress) = ensure_event_package(packages, event, event.timestamp) {
+                progress.state = PackageState::Failed {
+                    class: ErrorClass::Retryable,
+                    message: message.clone(),
+                };
+                progress.last_updated_at = event.timestamp;
+            }
+        }
+        EventType::PackageUploadUnconfirmed { class, message } => {
+            if let Some(active) = active_attempt_for_key_mut(active_attempts, &event.package) {
+                active.ended_at = event.timestamp;
+                active.error_class = Some(class.clone());
+                active.redacted_message = Some(message.clone());
+                active.upload_checkpoint = Some(UploadCheckpoint::Provisional);
+                attempt_history.push(rebuild_attempt_to_detail(active.clone()));
+            }
+            if let Some(progress) = ensure_event_package(packages, event, event.timestamp) {
+                progress.state = PackageState::Ambiguous {
+                    message: message.clone(),
+                };
+                progress.last_updated_at = event.timestamp;
+            }
+        }
         EventType::PackageFailed { class, message } => {
             if let Some((name, version)) = split_package_label(&event.package) {
                 apply_package_failed(
@@ -212,16 +360,36 @@ fn apply_event(
                 progress.last_updated_at = event.timestamp;
             }
         }
+        EventType::PackageCleanupIncomplete { message } => {
+            if let Some(active) = active_attempt_for_key_mut(active_attempts, &event.package) {
+                active.ended_at = event.timestamp;
+                active.error_class = Some(ErrorClass::Ambiguous);
+                active.next_attempt_at = None;
+                active.redacted_message = Some(message.clone());
+            }
+            finalize_attempt(active_attempts, attempt_history, &event.package);
+            if let Some(progress) = ensure_event_package(packages, event, event.timestamp) {
+                progress.state = PackageState::CleanupIncomplete {
+                    message: message.clone(),
+                };
+                progress.last_updated_at = event.timestamp;
+            }
+        }
         EventType::PublishReconciled { outcome } => {
             match outcome {
                 ReconciliationOutcome::StillUnknown { reason, .. } => {
                     if let Some(active) =
                         active_attempt_for_key_mut(active_attempts, &event.package)
                     {
-                        active.ended_at = event.timestamp;
-                        active.error_class = Some(ErrorClass::Ambiguous);
-                        if active.redacted_message.is_none() {
-                            active.redacted_message = Some(reason.clone());
+                        if active.upload_checkpoint.is_none() {
+                            // Older journals use reconciliation as the
+                            // attempt's completion boundary. A modern
+                            // checkpoint already recorded the Cargo result.
+                            active.ended_at = event.timestamp;
+                            active.error_class = Some(ErrorClass::Ambiguous);
+                            if active.redacted_message.is_none() {
+                                active.redacted_message = Some(reason.clone());
+                            }
                         }
                         finalize_attempt(active_attempts, attempt_history, &event.package);
                     }
@@ -247,22 +415,8 @@ fn apply_event(
             reason,
             message,
             ..
-        } => {
-            if let Some(active) = active_attempt_for_key_mut(active_attempts, &event.package)
-                && active.attempt == *attempt
-            {
-                apply_retry_wait(
-                    active,
-                    *max_attempts,
-                    *next_attempt_at,
-                    reason,
-                    message,
-                    event.timestamp,
-                );
-                finalize_attempt(active_attempts, attempt_history, &event.package);
-            }
         }
-        EventType::RetryScheduled {
+        | EventType::RetryScheduled {
             attempt,
             max_attempts,
             next_attempt_at,
@@ -281,10 +435,34 @@ fn apply_event(
                     message,
                     event.timestamp,
                 );
+                // A checkpointed ordinary failure commits Pending and the
+                // retry schedule together after confirming registry absence.
+                // Keep the older journal projection for pre-checkpoint logs.
+                if active.upload_checkpoint == Some(UploadCheckpoint::Classified)
+                    && matches!(reason, ErrorClass::Retryable)
+                    && let Some(progress) = packages.get_mut(&event.package)
+                    && matches!(
+                        progress.state,
+                        PackageState::Failed {
+                            class: ErrorClass::Retryable,
+                            ..
+                        }
+                    )
+                {
+                    progress.state = PackageState::Pending;
+                    progress.last_updated_at = event.timestamp;
+                }
                 finalize_attempt(active_attempts, attempt_history, &event.package);
             }
         }
         _ => {}
+    }
+    // Keep later observed metadata/attempts, but ordinary success, retry or
+    // registry events cannot resolve a local cleanup hold.
+    if let Some(held) = retained_hold
+        && let Some(progress) = packages.get_mut(&affected_key)
+    {
+        progress.state = held;
     }
 }
 
@@ -300,6 +478,13 @@ struct RebuildAttemptDetail {
     next_attempt_at: Option<DateTime<Utc>>,
     redacted_message: Option<String>,
     saw_failure: bool,
+    upload_checkpoint: Option<UploadCheckpoint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UploadCheckpoint {
+    Provisional,
+    Classified,
 }
 
 fn start_rebuild_attempt(
@@ -317,9 +502,10 @@ fn start_rebuild_attempt(
     } else {
         max_attempts
     };
-    if let Some(conflict) = active_attempts.remove(package_key) {
-        attempt_history.push(rebuild_attempt_to_detail(conflict));
-    }
+    // A resumed retry can begin while the preceding checkpoint is still
+    // active in replay. Close it through the checkpoint-aware path so an
+    // already recorded attempt is updated in place, not appended again.
+    finalize_attempt(active_attempts, attempt_history, package_key);
     active_attempts.insert(
         package_key.to_string(),
         RebuildAttemptDetail {
@@ -333,6 +519,7 @@ fn start_rebuild_attempt(
             next_attempt_at: None,
             redacted_message: None,
             saw_failure: false,
+            upload_checkpoint: None,
         },
     );
 }
@@ -350,10 +537,14 @@ fn apply_package_failed(
     let Some(active) = active_attempt_for_key_mut(active_attempts, package_key) else {
         return;
     };
+    let checkpointed = active.upload_checkpoint == Some(UploadCheckpoint::Provisional);
+    if checkpointed {
+        active.upload_checkpoint = Some(UploadCheckpoint::Classified);
+    }
     // Live attempt details capture the first failure's timestamp/message when the
     // attempt is recorded (retry schedule or exhaustion). A later terminal
     // PackageFailed must not rewrite those fields or finalization drifts.
-    if !active.saw_failure {
+    if !active.saw_failure && !checkpointed {
         active.ended_at = timestamp;
         active.error_class = Some(class.clone());
         active.redacted_message = Some(message.to_string());
@@ -388,12 +579,15 @@ fn finalize_attempt(
     attempt_history: &mut Vec<AttemptDetail>,
     package_key: &str,
 ) {
-    if let Some(active) = active_attempts.remove(package_key) {
+    if let Some(active) = active_attempts.remove(package_key)
+        && active.upload_checkpoint != Some(UploadCheckpoint::Provisional)
+    {
+        let checkpointed = active.upload_checkpoint.is_some();
         let mut attempt = rebuild_attempt_to_detail(active);
         if attempt.max_attempts < attempt.attempt {
             attempt.max_attempts = attempt.attempt;
         }
-        attempt_history.push(attempt);
+        record_rebuilt_detail(attempt_history, attempt, checkpointed);
     }
 }
 
@@ -403,15 +597,31 @@ fn finalize_active_attempts(
 ) {
     let mut active = Vec::with_capacity(active_attempts.len());
     while let Some((_, active_attempt)) = active_attempts.pop_first() {
-        active.push(active_attempt);
+        if active_attempt.upload_checkpoint != Some(UploadCheckpoint::Provisional) {
+            active.push(active_attempt);
+        }
     }
     active.sort_by(|left, right| {
         left.started_at
             .cmp(&right.started_at)
             .then_with(|| left.package.cmp(&right.package))
     });
-    for detail in active {
-        attempt_history.push(rebuild_attempt_to_detail(detail));
+    for active_attempt in active {
+        let checkpointed = active_attempt.upload_checkpoint.is_some();
+        let detail = rebuild_attempt_to_detail(active_attempt);
+        record_rebuilt_detail(attempt_history, detail, checkpointed);
+    }
+}
+
+fn record_rebuilt_detail(
+    history: &mut Vec<AttemptDetail>,
+    detail: AttemptDetail,
+    checkpointed: bool,
+) {
+    if checkpointed {
+        super::record_attempt_detail(history, detail);
+    } else {
+        history.push(detail);
     }
 }
 
@@ -502,6 +712,206 @@ mod tests {
             log.record(event);
         }
         log.write_to_file(path).expect("write events");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn rebuild_append_order_preserves_original_attempt_times_and_cleanup_hold() {
+        let td = tempdir().expect("tempdir");
+        let events_path = events::events_path(td.path());
+        // Worker b observed these events earlier, but appends after worker a.
+        let delayed = vec![
+            event(
+                20,
+                "b@1.0.0",
+                EventType::PackageAttempted {
+                    attempt: 1,
+                    command: "cargo publish".to_string(),
+                    max_attempts: 1,
+                },
+            ),
+            event(21, "b@1.0.0", EventType::PackageUploaded),
+            event(
+                22,
+                "b@1.0.0",
+                EventType::PackagePublished { duration_ms: 2 },
+            ),
+        ];
+        write_events(
+            &events_path,
+            vec![
+                event(
+                    30,
+                    "all",
+                    EventType::PlanCreated {
+                        plan_id: "append-order-plan".to_string(),
+                        package_count: 3,
+                    },
+                ),
+                event(
+                    50,
+                    "a@1.0.0",
+                    EventType::PackageAttempted {
+                        attempt: 1,
+                        command: "cargo publish".to_string(),
+                        max_attempts: 2,
+                    },
+                ),
+            ],
+        );
+        write_events(&events_path, delayed);
+        write_events(
+            &events_path,
+            vec![
+                // Wall-clock rollback does not reverse a's causal sequence:
+                // failure, retry decision, second attempt, then upload.
+                event(
+                    42,
+                    "a@1.0.0",
+                    EventType::PackageFailed {
+                        class: ErrorClass::Retryable,
+                        message: "rate limited".to_string(),
+                    },
+                ),
+                event(
+                    43,
+                    "a@1.0.0",
+                    EventType::RetryScheduled {
+                        attempt: 1,
+                        max_attempts: 2,
+                        delay_ms: 1_000,
+                        next_attempt_at: ts(44),
+                        reason: ErrorClass::Retryable,
+                        message: "retry after backoff".to_string(),
+                    },
+                ),
+                event(
+                    44,
+                    "a@1.0.0",
+                    EventType::PackageAttempted {
+                        attempt: 2,
+                        command: "cargo publish".to_string(),
+                        max_attempts: 2,
+                    },
+                ),
+                event(45, "a@1.0.0", EventType::PackageUploaded),
+                event(
+                    46,
+                    "a@1.0.0",
+                    EventType::PackagePublished { duration_ms: 2 },
+                ),
+                event(
+                    58,
+                    "held@1.0.0",
+                    EventType::PackageAttempted {
+                        attempt: 1,
+                        command: "cargo publish".to_string(),
+                        max_attempts: 1,
+                    },
+                ),
+                event(
+                    15,
+                    "held@1.0.0",
+                    EventType::PackageCleanupIncomplete {
+                        message: "cleanup could not be confirmed".to_string(),
+                    },
+                ),
+                // A later ordinary event updates observed metadata but cannot
+                // clear a retained hold after clock rollback.
+                event(
+                    16,
+                    "held@1.0.0",
+                    EventType::PackagePublished { duration_ms: 1 },
+                ),
+            ],
+        );
+        let original_bytes = std::fs::read(&events_path).expect("original events");
+
+        let state = rebuild_state_file_from_events(td.path(), options()).expect("rebuild file");
+        assert_eq!(state.plan_id, "append-order-plan");
+        assert_eq!(state.created_at, ts(30), "first append, not minimum time");
+        assert_eq!(state.updated_at, ts(16), "last append, not maximum time");
+        assert!(state.updated_at < state.created_at);
+        assert_eq!(state.packages.len(), 3);
+        for (key, attempts, last_update) in [("a@1.0.0", 2, 46), ("b@1.0.0", 1, 22)] {
+            let package = &state.packages[key];
+            assert!(matches!(package.state, PackageState::Published));
+            assert_eq!(package.attempts, attempts);
+            assert_eq!(package.last_updated_at, ts(last_update));
+        }
+        let held = &state.packages["held@1.0.0"];
+        assert!(matches!(
+            &held.state,
+            PackageState::CleanupIncomplete { message }
+                if message == "cleanup could not be confirmed"
+        ));
+        assert_eq!(held.attempts, 1);
+        assert_eq!(held.last_updated_at, ts(16));
+
+        // These are completed attempts in replay/finalization order. Sorting
+        // by start time would reverse a's attempts; clamping would fabricate
+        // the first failure and cleanup observations.
+        assert_eq!(
+            state.attempt_history,
+            vec![
+                AttemptDetail {
+                    package: "b".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempt: 1,
+                    max_attempts: 1,
+                    started_at: ts(20),
+                    ended_at: ts(21),
+                    error_class: None,
+                    next_attempt_at: None,
+                    redacted_message: None,
+                },
+                AttemptDetail {
+                    package: "a".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempt: 1,
+                    max_attempts: 2,
+                    started_at: ts(50),
+                    ended_at: ts(42),
+                    error_class: Some(ErrorClass::Retryable),
+                    next_attempt_at: Some(ts(44)),
+                    redacted_message: Some("rate limited".to_string()),
+                },
+                AttemptDetail {
+                    package: "a".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempt: 2,
+                    max_attempts: 2,
+                    started_at: ts(44),
+                    ended_at: ts(45),
+                    error_class: None,
+                    next_attempt_at: None,
+                    redacted_message: None,
+                },
+                AttemptDetail {
+                    package: "held".to_string(),
+                    version: "1.0.0".to_string(),
+                    attempt: 1,
+                    max_attempts: 1,
+                    started_at: ts(58),
+                    ended_at: ts(15),
+                    error_class: Some(ErrorClass::Ambiguous),
+                    next_attempt_at: None,
+                    redacted_message: Some("cleanup could not be confirmed".to_string()),
+                },
+            ]
+        );
+        let persisted = execution_state::load_state(td.path())
+            .expect("load rebuilt file")
+            .expect("persisted state");
+        assert_eq!(
+            serde_json::to_value(&persisted).expect("persisted state JSON"),
+            serde_json::to_value(&state).expect("rebuilt state JSON")
+        );
+        assert_eq!(
+            std::fs::read(&events_path).expect("events after rebuild"),
+            original_bytes,
+            "rebuild must not rewrite authoritative observations"
+        );
     }
 
     #[test]
@@ -1193,7 +1603,7 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_readiness_started_still_projects_uploaded_for_compatibility() {
+    fn rebuild_recovers_legacy_acceptance_from_the_first_readiness_start() {
         let td = tempdir().expect("tempdir");
         let events_path = td.path().join("events.jsonl");
         write_events(
@@ -1210,6 +1620,23 @@ mod tests {
                 event(
                     1,
                     "demo@0.1.0",
+                    EventType::PackageAttempted {
+                        attempt: 1,
+                        command: "cargo publish".into(),
+                        max_attempts: 0,
+                    },
+                ),
+                event(
+                    2,
+                    "demo@0.1.0",
+                    EventType::PackageOutput {
+                        stdout_tail: "Uploading demo".into(),
+                        stderr_tail: String::new(),
+                    },
+                ),
+                event(
+                    3,
+                    "demo@0.1.0",
                     EventType::ReadinessStarted {
                         method: ReadinessMethod::Api,
                     },
@@ -1220,7 +1647,7 @@ mod tests {
         let state = rebuild_state_from_events(&events_path, options()).expect("rebuild");
         let progress = state.packages.get("demo@0.1.0").expect("package");
         assert_eq!(progress.state, PackageState::Uploaded);
-        assert_eq!(progress.last_updated_at, ts(1));
+        assert_eq!(progress.last_updated_at, ts(3));
     }
 
     #[test]
@@ -1445,6 +1872,98 @@ mod tests {
 
         assert_eq!(rebuilt.plan_id, "plan-123");
         assert_eq!(loaded.packages["demo@0.1.0"].state, PackageState::Published);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn rebuild_recovers_corrupt_projection_without_recognizable_cleanup_hold() {
+        for damaged in [
+            "",
+            "{",
+            "broken JSON",
+            "{}",
+            r#"{"packages":false}"#,
+            r#"{"message":"cleanup_incomplete"}"#,
+            r#"{"state":"cleanup_incomplete","message":false}"#,
+        ] {
+            let td = tempdir().expect("tempdir");
+            let events_path = events::events_path(td.path());
+            write_events(
+                &events_path,
+                vec![
+                    event(
+                        0,
+                        "all",
+                        EventType::PlanCreated {
+                            plan_id: "plan-123".into(),
+                            package_count: 1,
+                        },
+                    ),
+                    event(
+                        1,
+                        "demo@0.1.0",
+                        EventType::PackagePublished { duration_ms: 100 },
+                    ),
+                ],
+            );
+            let events_before = std::fs::read(&events_path).unwrap();
+            std::fs::write(execution_state::state_path(td.path()), damaged).unwrap();
+
+            let rebuilt = rebuild_state_file_from_events(td.path(), options())
+                .expect("authoritative events recover a corrupt projection without a hold");
+
+            assert_eq!(
+                rebuilt.packages["demo@0.1.0"].state,
+                PackageState::Published
+            );
+            assert_eq!(
+                serde_json::to_value(execution_state::load_state(td.path()).unwrap().unwrap())
+                    .unwrap(),
+                serde_json::to_value(rebuilt).unwrap(),
+            );
+            assert_eq!(std::fs::read(events_path).unwrap(), events_before);
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn rebuild_preserves_recognizable_hold_inside_corrupt_projection() {
+        let hold = serde_json::to_string(&PackageState::CleanupIncomplete {
+            message: "retained process ownership is uncertain".into(),
+        })
+        .unwrap();
+        for damaged in [
+            format!(r#"{{"packages":{{"demo@0.1.0":{{"state":{hold}}}}}}}"#),
+            format!(r#"{{"packages":{{"demo@0.1.0":{{"state":{hold}}}}}"#),
+            format!("invalid prefix {hold} invalid suffix"),
+            format!(
+                "invalid prefix {}",
+                hold.replace("cleanup_incomplete", r"cleanup_\u0069ncomplete")
+            ),
+        ] {
+            let td = tempdir().expect("tempdir");
+            let events_path = events::events_path(td.path());
+            write_events(
+                &events_path,
+                vec![event(
+                    0,
+                    "all",
+                    EventType::PlanCreated {
+                        plan_id: "plan-123".into(),
+                        package_count: 1,
+                    },
+                )],
+            );
+            let state_path = execution_state::state_path(td.path());
+            std::fs::write(&state_path, &damaged).unwrap();
+            let events_before = std::fs::read(&events_path).unwrap();
+
+            let error = rebuild_state_file_from_events(td.path(), options()).unwrap_err();
+
+            assert!(format!("{error:#}").contains("cannot rebuild away retained cleanup hold"));
+            assert_eq!(std::fs::read_to_string(state_path).unwrap(), damaged);
+            assert_eq!(std::fs::read(events_path).unwrap(), events_before);
+        }
     }
 
     #[test]

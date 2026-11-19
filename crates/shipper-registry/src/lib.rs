@@ -31,9 +31,10 @@ pub mod http;
 pub mod policy;
 
 // Primary public API: the canonical, Registry-aware client.
-pub use context::{Owner, OwnersResponse, RegistryClient};
+pub use context::{Owner, OwnersResponse, ReadinessObservationError, RegistryClient};
 pub use policy::{
-    RegistryAuthority, RegistryPolicy, ValidatedRegistry, authorities_share_trusted_domain,
+    RegistryAuthority, RegistryPolicy, RehearsalRegistrySeparation, ValidatedRegistry,
+    authorities_share_trusted_domain,
 };
 
 // Lightweight HTTP client for callers that only have a base URL.
@@ -52,6 +53,10 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const USER_AGENT: &str = concat!("shipper/", env!("CARGO_PKG_VERSION"));
 
 /// Compute the sparse-index path for a crate name.
+///
+/// Sharding is based on Unicode scalar values after lowercasing. This performs
+/// path derivation only; the target registry remains responsible for enforcing
+/// its crate-name policy.
 pub fn sparse_index_path(crate_name: &str) -> String {
     shipper_sparse_index::sparse_index_path(crate_name)
 }

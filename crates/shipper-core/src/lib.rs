@@ -115,6 +115,14 @@ pub mod auth {
     };
 }
 
+/// Unsupported read-only bridge used by the separately packaged Shipper CLI.
+///
+/// This module is public because Rust crate privacy cannot span the
+/// `shipper-core` and `shipper-cli` package boundary. It is deliberately not
+/// re-exported by the `shipper` facade and is not a supported embedding API.
+#[doc(hidden)]
+pub mod cli_bridge;
+
 /// Workspace metadata and publish execution via cargo.
 ///
 /// Absorbed from the former `shipper-cargo` microcrate into

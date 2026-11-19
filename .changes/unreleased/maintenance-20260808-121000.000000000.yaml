@@ -1,0 +1,7 @@
+kind: maintenance
+body: Retire the Factory Droid review workflows. The droid, droid-review, and droid-security-scan workflows, their policy receipts, and the workflow-authority exception they required are removed, leaving zero authority findings and an empty exception ledger.
+time: 2026-08-08T12:10:00Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance
+  PR: 287

@@ -1,0 +1,6 @@
+kind: fixed
+body: Build native release archives with pinned Rust 1.95.0 and require matching Rust and Cargo versions in native archive smoke receipts.
+time: 2026-11-19T04:28:56Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

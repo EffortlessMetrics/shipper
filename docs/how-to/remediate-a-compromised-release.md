@@ -93,6 +93,33 @@ steps. It does not edit manifests, publish fix-forward successors, or invent new
 commands. It halts on the first failed yank and records `PackageYanked` event
 evidence.
 
+An unusable event-log destination stops the command before Cargo starts. If
+event persistence fails after Cargo has run, the command stops the remaining
+plan and returns a nonzero incomplete-evidence error even with `--quiet`.
+Preserve the available files and reconcile the observed Cargo result with the
+registry before taking another containment action. A local write failure does
+not establish that the registry effect failed.
+Execution accepts `--format text`; `--format json` is rejected before any effect.
+Use JSON with `remediate --dry-run` to inspect the planning artifact.
+
+Select the same single registry recorded in the reviewed artifact, for example
+`shipper --registry private remediate --execute-plan .shipper/remediation-plan.json`.
+The legacy `[registry]` configuration also supplies this target; an explicit
+`--registry` overrides it. A mismatch is refused before any yank or evidence
+write. `yank` and `remediate` reject `--registries` and `--all-registries`.
+Cargo receives the selected registry explicitly, including `crates-io` when
+that is the target, regardless of Cargo's configured default.
+
+When using `--manifest-path` from another directory, Cargo runs in the selected
+workspace and relative state paths resolve there. An absolute `--state-dir`
+is used unchanged. Give `--plan` and `--execute-plan` a path accessible from the
+caller's directory; guarded remediation still accepts only the reviewed file
+in the effective state directory.
+
+The planning commands `plan-yank` and `fix-forward` also use that state
+directory for their default receipt. An explicit `--from-receipt` path is
+resolved from the caller's directory unless absolute.
+
 For a one-off operator action you can still use the lower-level primitive:
 
 ```bash
@@ -106,6 +133,13 @@ shipper yank \
 Use this direct path only when you intentionally want to combine live yank
 execution with receipt annotation for a known crate version. Prefer the
 dry-run plan when the compromise may affect multiple workspace crates.
+
+`--mark-compromised` checks that the receipt belongs to the selected registry and
+contains the package entry before the yank, then rechecks and amends the receipt
+after recording the event.
+If that amendment fails, the command returns nonzero while retaining the
+recorded yank event. Repair the receipt from retained evidence rather than
+repeating the yank to retry a local annotation.
 
 ## Step 4 - Plan the Fix-Forward
 

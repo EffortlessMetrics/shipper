@@ -39,6 +39,12 @@ edition = "2021"
 }
 
 fn normalize_output(raw: &str) -> String {
+    let workspace_root = raw
+        .lines()
+        .find_map(|line| line.strip_prefix("workspace_root: "));
+    let state_dir = raw
+        .lines()
+        .find_map(|line| line.strip_prefix("state_dir: "));
     raw.lines()
         .map(|line| {
             if line.starts_with("plan_id: ") {
@@ -49,6 +55,15 @@ fn normalize_output(raw: &str) -> String {
                 "workspace_root: <WORKSPACE_ROOT>".to_string()
             } else if line.starts_with("state_dir: ") {
                 "state_dir: <STATE_DIR>".to_string()
+            } else if line.starts_with("    evidence: state_dir: ") {
+                let mut evidence = line.to_string();
+                if let Some(path) = state_dir {
+                    evidence = evidence.replace(path, "<STATE_DIR>");
+                }
+                if let Some(path) = workspace_root {
+                    evidence = evidence.replace(path, "<WORKSPACE_ROOT>");
+                }
+                evidence
             } else if line.starts_with("state:   ") {
                 "state:   <STATE_FILE>".to_string()
             } else if line.starts_with("receipt: ") {
@@ -200,6 +215,9 @@ fn plan_command_snapshot() {
       Plan artifact: .shipper/plan.txt (`shipper plan --format json` capture)
 
       1. demo@0.1.0 (no workspace dependencies)
+
+    Result: plan created; no packages were published
+    Next: run preflight with the same manifest, package, configuration, and registry selection
     "
     );
 }
@@ -227,6 +245,7 @@ fn plan_command_with_package_flag() {
 }
 
 #[test]
+#[serial_test::serial]
 fn doctor_command_snapshot() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
@@ -258,7 +277,7 @@ fn doctor_command_snapshot() {
     registry: crates-io (https://crates.io)
     auth_type: NONE FOUND (set CARGO_REGISTRY_TOKEN)
     state_dir: <STATE_DIR>
-    state_dir_exists: false (will be created)
+    state_dir_exists: false (prospective; write access is unverified)
 
     cargo: <CARGO_VERSION>
     git: <GIT_VERSION>
@@ -280,6 +299,20 @@ fn doctor_command_snapshot() {
           - configure Trusted Publishing with `permissions: id-token: write` and `rust-lang/crates-io-auth-action@v1`
           - rerun `shipper doctor` and `shipper preflight`
         docs: docs/how-to/run-in-github-actions.md
+      [unknown] state directory is prospective; write access is unverified (state-dir-not-created)
+        status: unknown
+        severity: warning
+        why: publish and resume need a usable directory for state, events, receipts, and locks; a diagnostic does not guarantee future access or durability
+        evidence: state_dir: <STATE_DIR>; path is absent; existing parent: <WORKSPACE_ROOT>; no directory or access probe was created
+        try next:
+          - create the intended directory or select an existing directory with `--state-dir <path>`
+          - rerun `shipper doctor` to check effective access
+        docs: docs/reference/state-files.md
+
+    Doctor: blocked
+    Checks: 8 evaluated, 5 passed, 0 warnings, 1 blocker, 2 unknown
+    Unknown: state directory, git context
+    Next: shipper doctor — apply the blocking finding remediation, then rerun diagnostics
 
     Diagnostics complete.
     "
@@ -287,6 +320,7 @@ fn doctor_command_snapshot() {
 }
 
 #[test]
+#[serial_test::serial]
 fn doctor_command_detects_trusted_publishing_auth() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
@@ -323,7 +357,7 @@ fn doctor_command_detects_trusted_publishing_auth() {
     registry: crates-io (https://crates.io)
     auth_type: trusted (detected)
     state_dir: <STATE_DIR>
-    state_dir_exists: false (will be created)
+    state_dir_exists: false (prospective; write access is unverified)
 
     cargo: <CARGO_VERSION>
     git: <GIT_VERSION>
@@ -345,6 +379,20 @@ fn doctor_command_detects_trusted_publishing_auth() {
           - pass `steps.auth.outputs.token` to Shipper as `CARGO_REGISTRY_TOKEN`
           - rerun `shipper doctor` and `shipper preflight`
         docs: docs/how-to/run-in-github-actions.md
+      [unknown] state directory is prospective; write access is unverified (state-dir-not-created)
+        status: unknown
+        severity: warning
+        why: publish and resume need a usable directory for state, events, receipts, and locks; a diagnostic does not guarantee future access or durability
+        evidence: state_dir: <STATE_DIR>; path is absent; existing parent: <WORKSPACE_ROOT>; no directory or access probe was created
+        try next:
+          - create the intended directory or select an existing directory with `--state-dir <path>`
+          - rerun `shipper doctor` to check effective access
+        docs: docs/reference/state-files.md
+
+    Doctor: blocked
+    Checks: 8 evaluated, 5 passed, 0 warnings, 1 blocker, 2 unknown
+    Unknown: state directory, git context
+    Next: shipper doctor — apply the blocking finding remediation, then rerun diagnostics
 
     Diagnostics complete.
     "
@@ -352,6 +400,7 @@ fn doctor_command_detects_trusted_publishing_auth() {
 }
 
 #[test]
+#[serial_test::serial]
 fn doctor_command_reports_partial_trusted_publishing_env() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
@@ -388,7 +437,7 @@ fn doctor_command_reports_partial_trusted_publishing_env() {
     registry: crates-io (https://crates.io)
     auth_type: unknown
     state_dir: <STATE_DIR>
-    state_dir_exists: false (will be created)
+    state_dir_exists: false (prospective; write access is unverified)
 
     cargo: <CARGO_VERSION>
     git: <GIT_VERSION>
@@ -410,6 +459,20 @@ fn doctor_command_reports_partial_trusted_publishing_env() {
           - run Shipper after the GitHub OIDC request URL and token are both available
           - or configure an explicit Cargo token fallback before rerunning preflight
         docs: docs/how-to/run-in-github-actions.md
+      [unknown] state directory is prospective; write access is unverified (state-dir-not-created)
+        status: unknown
+        severity: warning
+        why: publish and resume need a usable directory for state, events, receipts, and locks; a diagnostic does not guarantee future access or durability
+        evidence: state_dir: <STATE_DIR>; path is absent; existing parent: <WORKSPACE_ROOT>; no directory or access probe was created
+        try next:
+          - create the intended directory or select an existing directory with `--state-dir <path>`
+          - rerun `shipper doctor` to check effective access
+        docs: docs/reference/state-files.md
+
+    Doctor: blocked
+    Checks: 8 evaluated, 5 passed, 0 warnings, 1 blocker, 2 unknown
+    Unknown: state directory, git context
+    Next: shipper doctor — apply the blocking finding remediation, then rerun diagnostics
 
     Diagnostics complete.
     "
@@ -538,6 +601,10 @@ fn status_command_snapshot() {
 plan_id: <PLAN_ID>
 
 demo@0.1.0: missing
+
+Result: not published
+Publication performed: no
+Next: run preflight in the same workspace and registry context before publishing
 "#
     );
     registry.join();
@@ -626,12 +693,8 @@ Proof explanation:
   Live-release evidence:
     - registry acceptance and post-publish visibility are recorded during publish/resume.
 
-What to do next:
------------------
-⚠ Preflight did not prove every release prerequisite.
-  - configure registry auth or Trusted Publishing if ownership is unverified
-  - rerun `shipper preflight`
-  - if you accept the uncertainty, run `shipper publish` with an explicit policy choice
+Result: preflight completed with advisory proof gaps; no packages were published
+Next: ownership cannot be verified before a first publish; review the advisory gaps, then deliberately publish or rehearse with the same selection
 "#
     );
     registry.join();
@@ -725,6 +788,18 @@ fn preflight_command_with_json_flag() {
     assert!(json["proofs"].is_array());
     assert!(json["gaps"].is_array());
     assert!(json["failed_checks"].is_array());
+    assert_eq!(json["outcome"]["status"], "not_proven");
+    assert_eq!(json["outcome"]["publication_performed"], false);
+    assert_eq!(json["outcome"]["next_action"]["kind"], "publish");
+    assert_eq!(
+        json["outcome"]["next_action"]["requires_confirmation"],
+        true
+    );
+    assert!(json["outcome"]["next_action"].get("command").is_none());
+    assert_eq!(
+        json["outcome"]["next_action"]["reason"],
+        "ownership cannot be verified before a first publish; review the advisory gaps, then deliberately publish or rehearse with the same selection"
+    );
     registry.join();
 }
 
@@ -1000,7 +1075,8 @@ fn inspect_receipt_command_displays_new_fields() {
 }
 
 #[test]
-fn ci_github_actions_includes_cache() {
+#[serial_test::serial]
+fn ci_github_actions_retains_hidden_evidence_without_restoring_state() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
 
@@ -1017,10 +1093,16 @@ fn ci_github_actions_includes_cache() {
         .clone();
 
     let stdout = String::from_utf8(out).expect("utf8");
-    // Check that cache configuration is included
-    assert!(stdout.contains("actions/cache@v3"));
-    assert!(stdout.contains("shipper-${{"));
-    assert!(stdout.contains("restore-keys"));
+    let steps: serde_yaml::Value = serde_yaml::from_str(&stdout).expect("step YAML");
+    let steps = steps.as_sequence().expect("step sequence");
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0]["env"]["SHIPPER_STATE_DIR"], "./.shipper");
+    assert_eq!(steps[1]["uses"], "actions/upload-artifact@v7");
+    assert_eq!(steps[1]["if"], "always()");
+    assert_eq!(steps[1]["with"]["include-hidden-files"], true);
+    assert_eq!(steps[1]["with"]["path"], "./.shipper/");
+    assert!(!stdout.contains("actions/cache"));
+    assert!(!stdout.contains("actions/download-artifact"));
 }
 
 #[test]
@@ -1082,7 +1164,7 @@ fn preflight_command_finishability_failed() {
     let td = tempdir().expect("tempdir");
     create_workspace(td.path());
     fs::create_dir_all(td.path().join("cargo-home")).expect("mkdir");
-    let registry = spawn_registry(vec![404], 2);
+    let registry = spawn_registry(vec![404], 4);
 
     // Set up fake cargo to fail dry-run
     let bin = td.path().join("bin");
@@ -1134,8 +1216,8 @@ fn preflight_command_finishability_failed() {
         .arg("--allow-dirty")
         .arg("--skip-ownership-check")
         .arg("preflight")
-        .env("PATH", new_path)
-        .env("REAL_CARGO", real_cargo)
+        .env("PATH", &new_path)
+        .env("REAL_CARGO", &real_cargo)
         .env("SHIPPER_CARGO_BIN", &fake_cargo_path)
         .env("CARGO_HOME", td.path().join("cargo-home"))
         .env_remove("CARGO_REGISTRY_TOKEN")
@@ -1148,6 +1230,44 @@ fn preflight_command_finishability_failed() {
 
     let stdout = String::from_utf8(out).expect("utf8");
     assert!(stdout.contains("FAILED"));
+    assert!(stdout.contains("Result: preflight found blocking checks; no packages were published"));
+    assert!(stdout.contains(
+        "Next: resolve the failed checks above, then rerun preflight with the same selection"
+    ));
+
+    let out = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry.base_url)
+        .arg("--allow-dirty")
+        .arg("--skip-ownership-check")
+        .arg("preflight")
+        .arg("--format")
+        .arg("json")
+        .env("PATH", &new_path)
+        .env("REAL_CARGO", &real_cargo)
+        .env("SHIPPER_CARGO_BIN", &fake_cargo_path)
+        .env("CARGO_HOME", td.path().join("cargo-home"))
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("CARGO_REGISTRIES_CRATES_IO_TOKEN")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&out).expect("failed preflight JSON remains parseable");
+    assert_eq!(json["finishability"], "failed");
+    assert_eq!(json["outcome"]["status"], "failed");
+    assert_eq!(json["outcome"]["publication_performed"], false);
+    assert_eq!(json["outcome"]["next_action"]["kind"], "resolve_blockers");
+    assert_eq!(
+        json["outcome"]["next_action"]["requires_confirmation"],
+        false
+    );
+    assert!(json["outcome"]["next_action"].get("command").is_none());
     registry.join();
 }
 

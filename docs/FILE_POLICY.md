@@ -42,11 +42,19 @@ Changes to the release workflow must be reviewed with extra scrutiny. The `polic
 
 ### Process Behavior
 
-The `policy/process-allowlist.toml` receipts which shell commands and subprocesses each workflow is permitted to invoke. The release workflow's permitted processes include: `cargo`, `rustup`, `shipper`, `gh`, `tar`, `sha256sum`.
+The `policy/process-allowlist.toml` receipts which shell commands and subprocesses each workflow is permitted to invoke. Each profile carries a non-empty `name`, `owner`, and `reason`. Its `created` and `review_after` values must be exact `YYYY-MM-DD` calendar dates, and `review_after` cannot be before `created`. The release workflow's permitted processes include: `cargo`, `rustup`, `shipper`, `gh`, `tar`, `sha256sum`.
 
 ### Network Behavior
 
-The `policy/network-allowlist.toml` receipts which external endpoints each workflow may contact. The release workflow's permitted endpoints include: `crates.io`, `static.crates.io`, GitHub Actions OIDC endpoint, GitHub API.
+The `policy/network-allowlist.toml` applies the same lifecycle metadata to the external endpoints each workflow may contact. The release workflow's permitted endpoints include: `crates.io`, `static.crates.io`, GitHub Actions OIDC endpoint, GitHub API.
+
+Process and network checkers fail closed on duplicate profile names and invalid lifecycle metadata. They reconcile orphan profiles only against tracked workflow files, excluding Dependabot configuration and removed workflow receipts. Their mode behavior is:
+
+| Finding | `advisory` | `blocking-allowlist` | `blocking-strict` |
+|---|---|---|---|
+| Unknown command or endpoint | report | block | block |
+| Missing or invalid profile metadata | report | block | block |
+| Stale or orphan profile | report | report | block |
 
 ## Generated Files
 
@@ -100,7 +108,7 @@ In short:
 5. **PR 11** promotes file/generated/executable/dependency/workflow checks to `blocking-allowlist`. The CI job is renamed from `Policy (advisory)` to `Policy`, and an unreceipted non-Rust file fails the merge. Process and network stay at advisory.
 6. **PR 12** promotes process and network checks to `blocking-allowlist`. The process detector is refined to only consider the first word of each shell command inside `run:` blocks, so build-target names like `shipper` no longer false-positive. **The full file-policy rollout is now complete.**
 
-`blocking-strict` mode (which fails on unused entries and stale review dates) is explicitly out of scope for the initial rollout and is deferred until after a stale/unused cleanup pass.
+`blocking-strict` mode fails on unused entries, stale review dates, and process/network orphan profiles. It remains a deliberate local ratchet rather than a CI requirement; CI uses `blocking-allowlist` so lifecycle hygiene cannot unexpectedly stop merges.
 
 ## Receipts, not burn-down
 

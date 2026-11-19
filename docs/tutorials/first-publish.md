@@ -1,130 +1,153 @@
-# Tutorial: First publish from a toy workspace
+# Tutorial: Prepare a first workspace publish
 
-In this tutorial you will publish a two-crate workspace to crates.io using Shipper. By the end you'll have run the full `plan → preflight → publish → inspect` flow and seen what `.shipper/` state files look like after a successful release.
+This tutorial prepares a two-crate workspace for its first Shipper release.
+The default path stops at safe mock or alternate-registry rehearsal. A
+separately fenced final step shows the live crates.io command only for an
+authorized release, because a registry upload cannot be undone.
 
 ## What you'll learn
 
-- Install Shipper and initialize a config
-- Read a plan (what will be published, in what order)
-- Run a preflight check (what could go wrong, safely)
-- Execute the publish
-- Inspect the receipt
+- Install the supported Shipper facade.
+- Diagnose local blockers before planning.
+- Read the dependency-ordered plan and its `plan_id`.
+- Interpret the `PROVEN` / `NOT PROVEN` / `FAILED` preflight result.
+- Rehearse without touching crates.io.
+- Recognize the fence before a real publish.
+- Inspect retained evidence with actual public commands.
 
 ## What you'll need
 
-- Rust toolchain (edition 2024, MSRV 1.95 — `rustup update stable` is fine)
-- A crates.io account and a token (`cargo login`)
-- A git-clean workspace with two crates, one depending on the other
-- About 15 minutes
+- Rust 1.95 or newer.
+- A clean workspace with two publishable crates, one depending on the other.
+- About 15 minutes.
 
-> If you want a throwaway target, publish `0.0.1-dev.1` of a unique-name crate you control. This tutorial assumes you are publishing *your own* crates — Shipper will not invent version numbers.
+You need a crates.io account and publish credential only if a maintainer has
+separately authorized the optional live step. Do not create throwaway crates on
+crates.io for rehearsal; even yanked uploads remain part of registry history.
 
 ## 1. Install
 
-After the stable `0.4.0` release is published, the user-facing package is
-`shipper`:
+The supported install package is the `shipper` facade. The unversioned command
+resolves the version currently exposed by the public registry:
 
 ```bash
 cargo install shipper --locked
-```
-
-> The binary is named `shipper`; the supported install package is the `shipper`
-> facade crate. `shipper-cli` remains available for embedders that need the
-> exact CLI adapter surface.
-
-Confirm:
-
-```bash
 shipper --version
 ```
+
+The retained public-install evidence for this source line covers 0.4.0. A
+source checkout or candidate README does not prove that a later version is
+public.
 
 ## 2. Create a config
 
 ```bash
 cd /path/to/your/workspace
-shipper config init
+shipper config init --output .shipper.toml
 ```
 
-This writes `.shipper.toml` with sensible defaults. Open it; the defaults are fine for a first pass. Important defaults:
+Review the generated file. Shipper chooses versions neither here nor during
+publish; versions and changelog entries must already be intentional.
 
-- `policy = "safe"` — verify every step
-- `readiness = { method = "api", ... }` — check crates.io API before advancing to dependents
+## 3. Ask Doctor for local blockers
 
-## 3. Plan the release
+```bash
+shipper doctor
+```
+
+Fix local tool, auth, workspace, and state-directory blockers before treating
+the plan or preflight result as release evidence.
+
+## 4. Plan the release
 
 ```bash
 shipper plan
 ```
 
-You'll see a dependency-ordered list of crates and a `plan_id` (SHA256). Two properties to notice:
+Confirm that the publishable crates, skips, and dependency-first order match
+your intent. The deterministic `plan_id` is the identity Shipper later uses to
+refuse recovery against a different workspace plan.
 
-- The order respects your dependency graph (a dependency is published before its dependents).
-- The `plan_id` is deterministic: run `shipper plan` again and the ID is identical. If it changes, your workspace state changed — that's your early-warning for "something is different than you think."
-
-## 4. Preflight
+## 5. Run preflight
 
 ```bash
 shipper preflight
 ```
 
-Preflight runs checks without publishing:
+Preflight packages the workspace, checks registry and version posture, and
+applies the configured policy without publishing. Treat its finishability as a
+three-state decision:
 
-- Git working tree must be clean (or use `--allow-dirty`)
-- Registry must be reachable
-- `cargo publish --dry-run` must succeed for the workspace
-- For each crate: version must not already exist on crates.io
-- Optionally: ownership is verified (requires a token)
+- `PROVEN`: every required check was affirmatively proved.
+- `NOT PROVEN`: no definitive failure, but at least one proof is missing.
+- `FAILED`: a blocker was found; read the reported reason.
 
-Output ends with a `finishability` value:
+`NOT PROVEN` is not permission to publish. Review the named gap; do not convert
+unknown evidence into success.
 
-- `Proven` — everything checks out
-- `NotProven` — some checks could not be completed (e.g., ownership checks fail for crates that don't exist yet — that's normal for a first publish)
-- `Failed` — something is actually wrong; read the error above
+## 6. Rehearse safely
 
-> `NotProven` is not the same as `Failed`. First publishes of brand-new crates are inherently not-provable (you can't verify ownership of a crate that doesn't exist). See [explanation/why-shipper.md](../explanation/why-shipper.md#why-finishability-has-three-states) for why this distinction exists.
+For this workspace's packaged artifacts, configure a non-live registry and run
+`shipper rehearse --registries <name> --rehearsal-registry <name>` as described in
+[the alternate-registry guide](../how-to/rehearse-against-an-alt-registry.md).
+That is the public, non-destructive rehearsal path.
 
-## 5. Publish
+Maintainers with Actions write permission on `EffortlessMetrics/shipper` can
+also exercise the release authority's cross-job fake-Cargo/mock-registry
+recovery fixture:
+
+```bash
+gh workflow run live-runner-interruption-rehearsal.yml \
+  --repo EffortlessMetrics/shipper \
+  --ref main
+```
+
+Neither rehearsal proves crates.io publication.
+
+## 7. Publish only after release authorization
+
+> **Destructive live-registry fence:** the next command can create permanent
+> crates.io history. Run it only for final versions from an approved, clean
+> release commit after credentials, ownership, rehearsal evidence, and the
+> release decision are settled. A normal documentation or pull-request check
+> must stop before this step.
 
 ```bash
 shipper publish
 ```
 
-Shipper will:
+Shipper publishes missing versions in dependency order, verifies registry
+visibility before advancing, reconciles ambiguous Cargo outcomes against
+registry truth, and persists evidence after each package. A `StillUnknown`
+outcome stops without a blind retry.
 
-1. Publish each crate via `cargo publish`, in dependency order
-2. After each publish, wait for the new version to be visible on crates.io before moving to dependents
-3. Retry with backoff on transient failures (HTTP 429, network blips)
-4. Persist state to `.shipper/` after every step
+If the run stops, do not immediately rerun it. Follow the
+[recovery tutorial](recover-from-interruption.md) and require retained evidence
+to agree before resume.
 
-Expected wall-clock for a 2-crate workspace: 1–3 minutes.
-
-If something goes wrong mid-publish, see [the recovery tutorial](recover-from-interruption.md).
-
-## 6. Inspect what happened
-
-```bash
-shipper inspect-receipt
-```
-
-Human-readable summary of what was published, with timestamps.
+## 8. Inspect what happened
 
 ```bash
 shipper inspect-events
+shipper inspect-receipt
 ```
 
-The full event log — every state transition with timestamp.
+The durable contract is:
 
-```bash
-ls .shipper/
-# events.jsonl   <- append-only truth
-# state.json     <- projection for resume
-# receipt.json   <- end-of-run summary
+```text
+events.jsonl         = append-only authoritative truth
+state.json          = resumable projection
+receipt.json        = derived end-of-run summary
+reconciliation.json = registry-truth evidence for ambiguous outcomes
 ```
 
-See [explanation/INVARIANTS.md](../INVARIANTS.md) for how these three files relate.
+`reconciliation.json` is conditional; it appears when an ambiguous Cargo
+outcome is reconciled. See [INVARIANTS.md](../INVARIANTS.md) for the authority
+rules.
 
-## 7. What's next
+## 9. What's next
 
-- If you plan to publish from CI, follow [How-to: run in GitHub Actions](../how-to/run-in-github-actions.md).
-- To understand Shipper's safety model, read [Why Shipper exists](../explanation/why-shipper.md).
-- For the full command/flag reference, run `shipper --help` or see [reference/cli.md](../reference/cli.md).
+- For CI, follow [Run a Shipper release in GitHub Actions](../how-to/run-in-github-actions.md).
+- For interruption triage, use [Inspect a stalled run](../how-to/inspect-a-stalled-run.md).
+- For the exact command surface, run `shipper --help` and each command's
+  `--help` output.
