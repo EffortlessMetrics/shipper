@@ -739,7 +739,10 @@ fn verify_receipt_coverage(
         .iter()
         .rposition(|event| matches!(event.event_type, EventType::ExecutionStarted))
         .unwrap_or(0);
-    let current_events = &all_events[start..];
+    let Some(current_events) = all_events.get(start..) else {
+        findings.push("receipt coverage drift: current event segment is unavailable".to_string());
+        return;
+    };
     let receipted: BTreeSet<String> = receipt
         .packages
         .iter()
@@ -1593,6 +1596,69 @@ mod tests {
                 "{error:#}"
             );
         }
+    }
+
+    #[test]
+    fn receipt_coverage_preserves_empty_and_latest_segment_boundaries() {
+        let started = || PublishEvent {
+            timestamp: Utc::now(),
+            package: "all".into(),
+            event_type: EventType::ExecutionStarted,
+        };
+        let skipped = || PublishEvent {
+            timestamp: Utc::now(),
+            package: "a@1.0.0".into(),
+            event_type: EventType::PackageSkipped {
+                reason: "resume: state already published".into(),
+            },
+        };
+        let state = make_state(vec![pkg_progress("a", "1.0.0", PackageState::Published)]);
+        for (label, events, accepted) in [
+            ("empty history", vec![], false),
+            ("no marker with skip", vec![skipped()], true),
+            (
+                "no marker without skip",
+                vec![published_event("a", "1.0.0")],
+                false,
+            ),
+            ("latest marker only", vec![skipped(), started()], false),
+            ("current skip", vec![started(), skipped()], true),
+            (
+                "old segment skip",
+                vec![started(), skipped(), started()],
+                false,
+            ),
+            (
+                "latest of multiple segments",
+                vec![started(), skipped(), started(), skipped()],
+                true,
+            ),
+        ] {
+            let mut log = EventLog::new();
+            for event in events {
+                log.record(event);
+            }
+            let mut findings = Vec::new();
+            verify_receipt_coverage(&log, &state, &receipt(vec![]), &mut findings);
+            assert_eq!(findings.is_empty(), accepted, "{label}: {findings:?}");
+            if !accepted {
+                assert!(
+                    findings
+                        .iter()
+                        .any(|finding| finding.contains("receipt coverage drift")),
+                    "{label}: {findings:?}"
+                );
+            }
+        }
+
+        let mut findings = Vec::new();
+        verify_receipt_coverage(
+            &EventLog::new(),
+            &make_state(vec![]),
+            &receipt(vec![]),
+            &mut findings,
+        );
+        assert!(findings.is_empty(), "{findings:?}");
     }
 
     #[test]
