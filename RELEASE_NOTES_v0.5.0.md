@@ -18,8 +18,14 @@ registry and credential checks stop unsafe work earlier.
   run evidence.
 - Registry destination, loopback/private-network, selector, credential, and
   strict-ownership validation occurs before irreversible package work.
-- Real 0.4 durable artifacts, including encrypted v1 state, remain readable
-  and are covered by retained replay/resume evidence.
+- Qualification replayed the published 0.4 plaintext terminal journal
+  without uploading. In a separate loopback test, 0.5 resumed a fresh
+  interrupted plaintext journal from the tagged 0.4 writer. Mixed 0.4/0.5
+  journals preserve verifiable 0.4 Cargo completion timestamps without
+  inventing missing evidence.
+- Separate durable-status and SDK loader checks read tagged-writer encrypted
+  v1 state and receipts and rejected wrong passphrases and tampered artifacts.
+  They did not exercise encrypted CLI resume.
 
 ## Before upgrading
 
