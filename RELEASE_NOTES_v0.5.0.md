@@ -94,6 +94,10 @@ These release-authority, tag-qualified links become live only after the
 separate `v0.5.0` tag action succeeds. They are intentionally not evidence
 that the tag or public release exists today.
 
-The final release date, approved/tag SHA, crates.io results, downloadable
-binaries, GitHub Release, signatures, provenance, and public-install proof are
-recorded only by the release-authority workflow after a separate GO decision.
+Before [release-authority rehearsal and GO/NO-GO (#476)](https://github.com/EffortlessMetrics/shipper/issues/476),
+the [release-authority handoff (#478)](https://github.com/EffortlessMetrics/shipper/issues/478)
+records the intended tag date and exact approved source commit and tree. That
+handoff does not authorize publication. The actual tag is created only after a
+separate GO; crates.io results, downloadable release binaries, the GitHub
+Release, signatures, provenance, and public-install proof are recorded only
+as the release workflow and public verification complete.

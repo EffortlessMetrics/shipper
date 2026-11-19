@@ -84,19 +84,36 @@ its group or session is outside that boundary: an escaped descendant retaining
 a pipe is detected as incomplete cleanup, while one that also closes both pipes
 cannot be discovered through this mechanism.
 
-Windows and other platforms retain the existing direct-child/reader behavior;
-the bounded Unix cleanup claim does not apply to them. Their owned-process and
-cancellable-I/O implementation and native proof remain tracked by issue #412.
+### Windows subprocess cleanup
+
+On Windows, publication (with or without an execution timeout) and generic
+commands with an execution timeout use a fresh kill-on-close Job Object and
+nonblocking stdout/stderr capture. Shipper assigns the direct child to the job
+before it starts running. On direct-child exit, timeout, or interruption,
+Shipper requests termination of the owned job and allows up to one additional
+second to confirm direct-child exit, an empty job, and EOF on both pipes. The
+direct child's observed exit code is retained; cleanup does not itself set
+`timed_out=true`. If cleanup cannot be confirmed, Shipper retains the
+[cleanup hold](#retained-process-cleanup-hold) instead of retrying. A process
+outside the job is not terminated; if it still holds an inherited pipe open,
+missing EOF also causes a hold. The allowance is not a hard real-time guarantee
+for process creation or OS scheduling.
+
+Platforms other than Linux, macOS, and Windows still use the existing
+direct-child/reader fallback. The bounded cleanup described here does not
+apply to that fallback.
 
 ### Termination during publication
 
-On Linux and macOS, the shipped `shipper` and `shipper-cli` executables install
-process-lifetime handling for SIGINT, SIGTERM and SIGHUP. While a supervised Cargo
-group is active, a signal requests its existing bounded cleanup and stops later
-commands. For live publish/resume, confirmed cleanup retains the attempt as an
-ambiguous failure. The command returns an interruption error without an
-in-run retry. A fresh `resume` reconciles that attempt against the registry before
-any replacement upload. A signal does not assert that the upload was rejected.
+The shipped `shipper` and `shipper-cli` executables install process-lifetime
+handling for SIGINT, SIGTERM and SIGHUP on Linux and macOS, and Ctrl+C and
+Ctrl+Break console events on Windows. During supervision, an interruption
+requests bounded cleanup of the owned Cargo group or job and stops later
+commands. For live publish/resume, confirmed cleanup retains the attempt with an
+ambiguous upload outcome. The command returns an interruption error without an
+in-run retry. A fresh `resume` reconciles that attempt against the registry
+before any replacement upload. An interruption does not establish that the
+registry rejected the upload.
 If cleanup cannot be confirmed, the absorbing cleanup hold below takes precedence.
 Rehearsal instead retains its existing `rehearsal_package_failed` event with an
 ambiguous class; it does not create a resumable live-publish attempt projection.
@@ -107,12 +124,14 @@ retain ordinary termination behavior; planning, untimed metadata/dry-run work,
 registry waits and backoff do not acquire a new cancellation-latency guarantee.
 The shutdown request is sticky within the process and is never reset between
 packages or retries. SIGKILL, process crashes, arbitrary external reapers and
-processes escaping the owned group remain outside this cooperative signal path.
+processes outside the owned group or job remain outside this cooperative path.
 
 Plain `shipper_cli::run()` and core embedding entry points install no handlers.
 The executable-only `run_process()` wrapper owns this policy; embedders retain
-responsibility for their host's process and signal lifecycle. Native signal proof
-is Linux-only; macOS runtime qualification remains outstanding.
+responsibility for their host's process and signal lifecycle. Focused native
+evidence covers Linux signals and Windows cleanup and OS-delivered Ctrl+Break
+with fixture Cargo and a loopback registry. It does not establish native macOS
+behavior, all Windows console-event paths, or final release-binary support.
 
 ### Retained process cleanup hold
 
