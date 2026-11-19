@@ -5,7 +5,7 @@ Use this file with [CLAUDE.md](./CLAUDE.md) before making changes in this direct
 # Module: `crate::state::execution_state`
 
 **Layer:** state (layer 3)
-**Single responsibility:** Persist `ExecutionState` and `Receipt` to disk (atomic write, durable rename, schema-versioned migration).
+**Single responsibility:** Persist `ExecutionState` and `Receipt` to disk (plaintext atomic replacement, checked file sync, schema-versioned migration).
 **Was:** standalone crate `shipper-state` (physically absorbed in PR #60 shim +
 physical move)
 
@@ -28,7 +28,8 @@ crate has been deleted from the workspace.
 
 ## Invariants
 
-- Writes are atomic: write to a `.tmp` sibling, fsync, then rename.
+- Plaintext JSON writes require a successful `.tmp` write and file sync before rename; a returned sync failure preserves the prior destination.
+- Parent-directory sync is best effort, so rename is not a certified host/power-loss durability boundary. Encrypted helpers use a separate direct-write implementation and are outside this replacement contract.
 - Forward-compatible schema: unknown receipt versions are still deserialised best-effort.
 - v1 → v2 migration fills missing `git_context` (null) and `environment` fields and rewrites `receipt_version`.
 

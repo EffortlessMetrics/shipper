@@ -1,0 +1,7 @@
+kind: maintenance
+body: Keep state-encryption Base64 handling on the scalar, safe dependency feature surface and remove an unused core dependency.
+time: 2026-08-12T17:15:00Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance
+  PR: 289

@@ -30,20 +30,11 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// Strategy type for retry behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RetryStrategyType {
-    /// No delay between retries - retry immediately
-    Immediate,
-    /// Exponential backoff: delay doubles each attempt (default)
-    #[default]
-    Exponential,
-    /// Linear backoff: delay increases linearly each attempt
-    Linear,
-    /// Constant delay: same delay every attempt
-    Constant,
-}
+// The retry *configuration* values live in `shipper-types` so the contract
+// crate can describe configured retry behavior without depending on the crate
+// that performs it. Delay calculation, jitter, and the execution loop stay
+// here. These re-exports keep the previous public paths working.
+pub use shipper_types::retry::{PerErrorConfig, RetryStrategyConfig, RetryStrategyType};
 
 /// Predefined retry policies with sensible defaults for different use cases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -104,52 +95,6 @@ impl RetryPolicy {
     }
 }
 
-/// Configuration for a retry strategy.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RetryStrategyConfig {
-    /// Strategy type for calculating delay between retries.
-    #[serde(default)]
-    pub strategy: RetryStrategyType,
-    /// Maximum number of retry attempts.
-    #[serde(default)]
-    pub max_attempts: u32,
-    /// Base delay for backoff calculations.
-    #[serde(default = "default_base_delay")]
-    #[serde(with = "humantime_serde")]
-    pub base_delay: Duration,
-    /// Maximum delay cap for backoff.
-    #[serde(default = "default_max_delay")]
-    #[serde(with = "humantime_serde")]
-    pub max_delay: Duration,
-    /// Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter).
-    #[serde(default = "default_jitter")]
-    pub jitter: f64,
-}
-
-fn default_base_delay() -> Duration {
-    Duration::from_secs(2)
-}
-
-fn default_max_delay() -> Duration {
-    Duration::from_mins(2)
-}
-
-fn default_jitter() -> f64 {
-    0.5
-}
-
-impl Default for RetryStrategyConfig {
-    fn default() -> Self {
-        Self {
-            strategy: RetryStrategyType::Exponential,
-            max_attempts: 6,
-            base_delay: Duration::from_secs(2),
-            max_delay: Duration::from_mins(2),
-            jitter: 0.5,
-        }
-    }
-}
-
 /// Error classification for retry decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -161,21 +106,6 @@ pub enum ErrorClass {
     Ambiguous,
     /// Error is permanent and should not be retried
     Permanent,
-}
-
-/// Per-error-type retry configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PerErrorConfig {
-    /// Retry configuration for retryable errors (e.g., network issues, rate limiting).
-    #[serde(default, rename = "retryable")]
-    pub retryable: Option<RetryStrategyConfig>,
-    /// Retry configuration for ambiguous errors (e.g., unknown if publish succeeded).
-    #[serde(default, rename = "ambiguous")]
-    pub ambiguous: Option<RetryStrategyConfig>,
-    /// Retry configuration for permanent errors (e.g., authentication failure).
-    /// Permanent errors are typically not retried, but this can be customized.
-    #[serde(default, rename = "permanent")]
-    pub permanent: Option<RetryStrategyConfig>,
 }
 
 /// Calculate the delay for the next retry attempt based on the strategy configuration.

@@ -908,6 +908,35 @@ fn test_retry_countdown_tty_branch_updates_status() {
 }
 
 #[test]
+fn finish_with_completed_preserves_actual_tty_position() {
+    for completed in [1, 2] {
+        let progress_bar = indicatif::ProgressBar::hidden();
+        progress_bar.set_length(2);
+        progress_bar.set_position(2);
+        let reporter = ProgressReporter {
+            is_tty: true,
+            quiet: false,
+            total_packages: 2,
+            current_package: 2,
+            current_name: "beta@0.1.0".to_string(),
+            progress_bar: Some(progress_bar.clone()),
+            start_time: Instant::now(),
+        };
+
+        reporter.finish_with_completed(completed);
+
+        assert!(progress_bar.is_finished());
+        assert_eq!(progress_bar.length(), Some(2));
+        assert_eq!(progress_bar.position(), completed as u64);
+        assert!(
+            progress_bar
+                .message()
+                .starts_with(&format!("Completed {completed}/2 packages"))
+        );
+    }
+}
+
+#[test]
 fn test_retry_countdown_max_attempts_display() {
     // Smoke check: exotic attempt/max combinations shouldn't panic.
     let reporter = ProgressReporter::silent(1);

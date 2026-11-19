@@ -72,6 +72,56 @@ fn spawn_registry(statuses: Vec<u16>, expected_requests: usize) -> TestRegistry 
     TestRegistry { base_url, handle }
 }
 
+fn assert_controlled_not_published_stop(state_dir: &Path, failed_package: &str) {
+    let state: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(state_dir.join("state.json")).expect("read controlled-stop state"),
+    )
+    .expect("parse controlled-stop state");
+    assert_eq!(
+        state["packages"][failed_package]["state"]["state"].as_str(),
+        Some("failed")
+    );
+    assert_eq!(
+        state["packages"][failed_package]["state"]["class"].as_str(),
+        Some("retryable")
+    );
+
+    let events =
+        fs::read_to_string(state_dir.join("events.jsonl")).expect("read controlled-stop events");
+    let last_event: serde_json::Value = serde_json::from_str(
+        events
+            .lines()
+            .last()
+            .expect("controlled-stop terminal event"),
+    )
+    .expect("parse controlled-stop terminal event");
+    assert_eq!(
+        last_event["event_type"]["type"].as_str(),
+        Some("execution_stopped")
+    );
+
+    let reconciliation: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(state_dir.join("reconciliation.json"))
+            .expect("read controlled-stop reconciliation"),
+    )
+    .expect("parse controlled-stop reconciliation");
+    let latest = reconciliation["records"]
+        .as_array()
+        .and_then(|records| {
+            records
+                .iter()
+                .rev()
+                .find(|record| record["package"].as_str() == Some(failed_package))
+        })
+        .expect("latest failed-package reconciliation");
+    assert_eq!(latest["outcome"]["outcome"].as_str(), Some("not_published"));
+    assert_eq!(latest["operator_action"].as_str(), Some("retry_allowed"));
+    assert!(
+        !state_dir.join("receipt.json").exists(),
+        "controlled stop must not synthesize a receipt"
+    );
+}
+
 fn spawn_doctor_registry(expected_requests: usize) -> TestRegistry {
     let server = Server::http("127.0.0.1:0").expect("server");
     let base_url = format!("http://{}", server.server_addr());
@@ -581,9 +631,10 @@ mod resume_continues_after_interruption {
         let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
         let state_dir = td.path().join(".shipper");
 
-        // Initial publish: core 200 (skip), app 404 cargo-fail 404 404 → ~4 reqs.
-        // Resume: app 404, cargo ok, readiness 200 → ~2 reqs.
-        let registry = spawn_registry(vec![200, 404, 404, 404, 404, 200], 7);
+        // Initial publish: core 200 (skip), app 404, then conclusive
+        // NotPublished reconciliation. Resume: app 404, cargo ok, readiness
+        // 200. Exactly five registry requests span both runs.
+        let registry = spawn_registry(vec![200, 404, 404, 404, 200], 5);
 
         // Initial publish that fails on app
         loopback_shipper_cmd()
@@ -611,15 +662,7 @@ mod resume_continues_after_interruption {
             .assert()
             .failure();
 
-        // Verify pre-condition: app is failed
-        let state: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(state_dir.join("state.json")).expect("read state"),
-        )
-        .expect("parse state");
-        let app_state = state["packages"]["app@0.1.0"]["state"]["state"]
-            .as_str()
-            .expect("app state");
-        assert_eq!(app_state, "failed", "app should be failed before resume");
+        assert_controlled_not_published_stop(&state_dir, "app@0.1.0");
 
         // When: resume with cargo publish succeeding
         let mut cmd = loopback_shipper_cmd();
@@ -649,6 +692,20 @@ mod resume_continues_after_interruption {
             app_pkg.unwrap()["state"]["state"].as_str(),
             Some("published"),
             "app should be published after resume"
+        );
+        let core_pkg = packages
+            .iter()
+            .find(|package| package["name"].as_str() == Some("core"))
+            .expect("receipt should retain skipped core");
+        assert_eq!(core_pkg["state"]["state"].as_str(), Some("skipped"));
+        let final_state: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(state_dir.join("state.json")).expect("read final state"),
+        )
+        .expect("parse final state");
+        assert_eq!(
+            final_state["packages"]["app@0.1.0"]["attempts"].as_u64(),
+            Some(2),
+            "only the failed app should receive the resumed Cargo attempt"
         );
 
         registry.join();
@@ -1819,10 +1876,10 @@ mod bdd_resume_after_network_failure {
         let (new_path, real_cargo, fake_cargo) = setup_fake_cargo(td.path());
         let state_dir = td.path().join(".shipper");
 
-        // Initial publish: core-lib 200 (skip), utils-lib 200 (skip),
-        // top-app 404 (needs publish), cargo fails → marked failed
-        // Resume: top-app 404 (needs publish), cargo ok, verify 200
-        let registry = spawn_registry(vec![200, 200, 404, 404, 404, 404, 200], 8);
+        // Initial publish: core-lib 200 (skip), utils-lib 200 (skip), top-app
+        // 404, then conclusive NotPublished reconciliation. Resume: top-app
+        // 404, cargo ok, verify 200. Exactly six requests span both runs.
+        let registry = spawn_registry(vec![200, 200, 404, 404, 404, 200], 6);
 
         // Initial publish that fails on top-app (simulated network failure)
         loopback_shipper_cmd()
@@ -1855,6 +1912,7 @@ mod bdd_resume_after_network_failure {
             state_dir.join("state.json").exists(),
             "state.json should exist after failed publish"
         );
+        assert_controlled_not_published_stop(&state_dir, "top-app@0.1.0");
 
         // When: resume with cargo publish now succeeding (network recovered)
         let mut cmd = loopback_shipper_cmd();
@@ -1906,6 +1964,22 @@ mod bdd_resume_after_network_failure {
             Some("published"),
             "top-app should be published after resume"
         );
+        let final_state: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(state_dir.join("state.json")).expect("read final state"),
+        )
+        .expect("parse final state");
+        assert_eq!(
+            final_state["packages"]["top-app@0.1.0"]["attempts"].as_u64(),
+            Some(2),
+            "only top-app should receive the resumed Cargo attempt"
+        );
+        for skipped in ["core-lib@0.1.0", "utils-lib@0.1.0"] {
+            assert_eq!(
+                final_state["packages"][skipped]["state"]["state"].as_str(),
+                Some("skipped"),
+                "already-complete package must remain skipped: {skipped}"
+            );
+        }
 
         registry.join();
     }
@@ -2707,7 +2781,7 @@ mod status_all_missing {
     // When: I run "shipper status"
     // Then: exit code is 0
     // And: output contains "missing" for all three
-    // And: output does NOT contain "published"
+    // And: no package line reports "published"
     #[test]
     fn given_all_unpublished_when_status_then_all_missing() {
         let td = tempdir().expect("tempdir");
@@ -2734,8 +2808,10 @@ mod status_all_missing {
             "expected 'missing' in status output, got: {stdout}"
         );
         assert!(
-            !stdout.contains("published"),
-            "expected no 'published' when all crates are unpublished, got: {stdout}"
+            !stdout
+                .lines()
+                .any(|line| line.contains('@') && line.ends_with(": published")),
+            "expected no published package line when all crates are unpublished, got: {stdout}"
         );
     }
 }
@@ -3086,6 +3162,100 @@ mod plan_quiet_mode {
     }
 }
 
+mod plan_outcome_output {
+    use super::*;
+
+    // Scenario: Human plan output carries the same semantic outcome as JSON
+    //
+    // Given: a workspace with one publishable crate
+    // When: I run `shipper plan`
+    // Then: the output states that no publication happened
+    // And: the next action preserves invocation context instead of fabricating a command
+    #[test]
+    fn given_workspace_when_plan_then_human_outcome_is_actionable() {
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+
+        loopback_shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("plan")
+            .assert()
+            .success()
+            .stdout(contains("Result: plan created; no packages were published"))
+            .stdout(contains(
+                "Next: run preflight with the same manifest, package, configuration, and registry selection",
+            ));
+    }
+
+    // Scenario: No publishable packages does not become terminal completion
+    //
+    // Given: every workspace package has `publish = false`
+    // When: I inspect both human and JSON plan output
+    // Then: both remain `planned` and point to context-preserving preflight
+    // And: neither surface claims that publication occurred
+    #[test]
+    fn given_no_publishable_packages_when_plan_then_human_and_json_do_not_overclaim() {
+        let td = tempdir().expect("tempdir");
+        write_file(
+            &td.path().join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["internal"]
+resolver = "2"
+"#,
+        );
+        write_file(
+            &td.path().join("internal/Cargo.toml"),
+            r#"
+[package]
+name = "internal"
+version = "0.1.0"
+edition = "2021"
+publish = false
+"#,
+        );
+        write_file(&td.path().join("internal/src/lib.rs"), "");
+
+        loopback_shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("plan")
+            .assert()
+            .success()
+            .stdout(contains("Total packages to publish: 0"))
+            .stdout(contains("Result: plan created; no packages were published"))
+            .stdout(contains(
+                "Next: run preflight with the same manifest, package, configuration, and registry selection",
+            ));
+
+        let output = loopback_shipper_cmd()
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--format")
+            .arg("json")
+            .arg("plan")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let json: serde_json::Value =
+            serde_json::from_slice(&output).expect("valid zero-package plan JSON");
+        assert_eq!(json["publishable_count"].as_u64(), Some(0));
+        assert_eq!(json["outcome"]["status"].as_str(), Some("planned"));
+        assert_eq!(
+            json["outcome"]["publication_performed"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            json["outcome"]["next_action"]["kind"].as_str(),
+            Some("preflight")
+        );
+        assert!(json["outcome"]["next_action"].get("command").is_none());
+    }
+}
+
 // ============================================================================
 // Feature: JSON output format
 // ============================================================================
@@ -3120,6 +3290,32 @@ mod plan_json_format {
         let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid plan JSON");
 
         assert_eq!(json["schema_version"].as_str(), Some("shipper.plan.v1"));
+        assert_eq!(
+            json.pointer("/outcome/status")
+                .and_then(serde_json::Value::as_str),
+            Some("planned")
+        );
+        assert_eq!(
+            json.pointer("/outcome/publication_performed")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            json.pointer("/outcome/next_action/kind")
+                .and_then(serde_json::Value::as_str),
+            Some("preflight")
+        );
+        assert!(json.pointer("/outcome/next_action/command").is_none());
+        assert!(
+            json.pointer("/outcome/next_action/reason")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|reason| reason.contains("same manifest"))
+        );
+        assert_eq!(
+            json.pointer("/outcome/next_action/requires_confirmation")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
         assert!(json["plan_id"].is_string(), "missing plan_id: {stdout}");
         assert_eq!(json["publishable_count"].as_u64(), Some(3));
         assert_eq!(json["skipped_count"].as_u64(), Some(0));

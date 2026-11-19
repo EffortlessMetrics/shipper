@@ -1,0 +1,6 @@
+kind: fixed
+body: Use checked access for the current receipt event segment, preserving latest-resume coverage and reporting a consistency finding if the derived segment is unavailable.
+time: 2026-11-19T05:00:00Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

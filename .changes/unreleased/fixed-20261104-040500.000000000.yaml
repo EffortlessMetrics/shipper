@@ -1,0 +1,6 @@
+kind: fixed
+body: Treat an invalid diagnostic reader byte count as typed capture loss instead of indexing outside the read buffer, preserving valid output and clearing incomplete evidence.
+time: 2026-11-04T04:05:00Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

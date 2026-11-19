@@ -1,0 +1,6 @@
+kind: maintenance
+body: Reconcile implemented plan statuses, active Clippy policy, and the policy-ledger index with the repository's current executable controls.
+time: 2026-09-05T08:45:00Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

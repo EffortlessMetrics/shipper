@@ -1,0 +1,6 @@
+kind: fixed
+body: Preserve the canonical recovery artifact after every release continuation and select its exact nonexpired predecessor by run and artifact ID, so a second interruption can resume the latest retained state.
+time: 2026-10-28T12:00:01Z
+custom:
+  Audience: Operators
+  Importance: Detailed

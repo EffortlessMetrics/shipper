@@ -238,7 +238,15 @@ impl ProgressReporter {
     }
 
     /// Finishes reporting and prints completion summary in non-TTY mode.
+    #[cfg(test)]
     pub(crate) fn finish(self) {
+        let completed = self.total_packages;
+        self.finish_with_completed(completed);
+    }
+
+    /// Finish with the number of full-plan packages in successful terminal state.
+    /// A scoped invocation can finish while earlier packages remain unfinished.
+    pub(crate) fn finish_with_completed(self, completed: usize) {
         if self.quiet {
             return;
         }
@@ -247,17 +255,24 @@ impl ProgressReporter {
             if let Some(pb) = self.progress_bar {
                 let elapsed = self.start_time.elapsed();
                 let msg = format!(
-                    "Completed {} packages in {:?}",
-                    self.total_packages, elapsed
+                    "Completed {}/{} packages in {:?}",
+                    completed, self.total_packages, elapsed
                 );
+                pb.set_position(completed as u64);
                 pb.set_message(msg);
-                pb.finish();
+                if completed == self.total_packages {
+                    pb.finish();
+                } else {
+                    // `finish` fills the bar to its length. A completed
+                    // invocation may still leave part of its plan unfinished.
+                    pb.abandon();
+                }
             }
         } else {
             let elapsed = self.start_time.elapsed();
             eprintln!(
                 "Completed {}/{} packages in {:?}",
-                self.total_packages, self.total_packages, elapsed
+                completed, self.total_packages, elapsed
             );
         }
     }

@@ -16,7 +16,7 @@ serde.workspace = true
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", features = ["simple"] }
 sha2 = "0.10"
-base64 = "0.22"
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 anyhow = "1.0"
 zeroize = "1.8"
 

@@ -1,0 +1,7 @@
+kind: security
+body: Patch h2 to 0.4.16 to bound excessive empty and small HTTP/2 DATA frames, preventing the denial-of-service condition tracked as RUSTSEC-2026-0258.
+time: 2026-08-20T08:17:30Z
+custom:
+  Audience: Operators
+  Importance: Detailed
+  PR: 324

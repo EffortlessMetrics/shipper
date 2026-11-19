@@ -1,0 +1,6 @@
+kind: maintenance
+body: Validate profile ownership and created/review dates, reject duplicate names, report stale/orphan live references, and enforce allowlist versus strict modes.
+time: 2026-08-12T20:50:00Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance

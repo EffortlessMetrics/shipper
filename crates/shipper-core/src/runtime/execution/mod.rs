@@ -84,6 +84,7 @@ pub fn short_state(st: &PackageState) -> &'static str {
         PackageState::Skipped { .. } => "skipped",
         PackageState::Failed { .. } => "failed",
         PackageState::Ambiguous { .. } => "ambiguous",
+        PackageState::CleanupIncomplete { .. } => "cleanup_incomplete",
     }
 }
 
@@ -670,6 +671,12 @@ mod tests {
                 message: "x".into()
             }),
             "ambiguous"
+        );
+        assert_eq!(
+            short_state(&shipper_types::PackageState::CleanupIncomplete {
+                message: "x".into()
+            }),
+            "cleanup_incomplete"
         );
     }
 

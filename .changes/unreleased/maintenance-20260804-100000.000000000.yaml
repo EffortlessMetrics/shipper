@@ -1,0 +1,7 @@
+kind: maintenance
+body: Establish a lossless Changie history proof and an exact-identity release preparation contract.
+time: 2026-08-04T10:00:00Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance
+  PR: 249

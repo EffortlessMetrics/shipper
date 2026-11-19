@@ -1,0 +1,6 @@
+kind: fixed
+body: Preserve unknown registry observations during ambiguous-upload reconciliation, stopping publish and resume before blind retries when the final probe cannot establish absence.
+time: 2026-10-28T18:00:00Z
+custom:
+  Audience: Mixed
+  Importance: Headline

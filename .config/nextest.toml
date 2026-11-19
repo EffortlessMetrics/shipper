@@ -2,17 +2,17 @@
 # See: https://nexte.st/book/configuration.html
 
 [profile.ci]
-# Fail fast on CI to save time
+# Continue running remaining tests after a failure in CI
 fail-fast = false
 
-# Retries for flaky tests
+# Retry failed tests up to two times with exponential backoff
 retries = { count = 2, backoff = "exponential", delay = "1s" }
 
 # JUnit output for CI reporting. The path is relative to the profile's
 # nextest output directory, which is `target/nextest/ci` for this profile.
 junit = { path = "junit.xml" }
 
-# Timeout for individual tests
+# Run up to the detected CPU count of tests concurrently; this is not a timeout
 test-threads = "num-cpus"
 
 # Status level for output
@@ -22,11 +22,11 @@ status-level = "pass"
 final-status-level = "flaky"
 
 [profile.stress]
-# Stress testing profile - run tests multiple times
+# Retry failed tests up to ten times; successful tests are not repeated
 retries = { count = 10, backoff = "fixed", delay = "100ms" }
 test-threads = 1
 
 [profile.nightly]
-# Nightly profile for extended testing
+# Optional profile for extended testing; the name does not schedule a run
 retries = { count = 3, backoff = "exponential", delay = "2s" }
 test-threads = "num-cpus"

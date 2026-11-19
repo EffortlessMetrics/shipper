@@ -1,0 +1,6 @@
+kind: fixed
+body: Reject rehearsal registries whose configured name or API/index authority overlaps the live target, including every crates.io-family host, before rehearsal side effects.
+time: 2026-08-21T21:05:21Z
+custom:
+  Audience: Operators
+  Importance: Critical

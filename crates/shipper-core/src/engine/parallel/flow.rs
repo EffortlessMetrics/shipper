@@ -1,44 +1,33 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use shipper_types::PlannedPackage;
-use shipper_types::{ExecutionState, PackageState};
+use shipper_types::{ExecutionState, PackageState, PlannedPackage, PublishLevel};
 
 use super::SendReporter;
-
-pub(super) enum LevelResumeAction {
-    ReachedResumePoint,
-    SkipAlreadyComplete,
-    SkipBeforeResumePoint(String),
-}
 
 pub(super) fn init_send_reporter() -> SendReporter {
     SendReporter::default()
 }
 
-pub(super) fn determine_level_resume_action(
-    level_packages: &[PlannedPackage],
-    st_arc: &Arc<Mutex<ExecutionState>>,
+/// Return the first publish level selected by `--resume-from`.
+///
+/// Parallel resume operates on whole dependency levels: selecting one package
+/// selects its siblings in that level and every later level. Both admission
+/// checks and the scheduler use this owner so they cannot disagree about which
+/// packages may run.
+pub(crate) fn parallel_resume_start_level(
+    levels: &[PublishLevel],
     resume_from: Option<&str>,
-) -> Result<LevelResumeAction> {
-    let Some(resume_point) = resume_from else {
-        return Ok(LevelResumeAction::ReachedResumePoint);
-    };
-
-    if level_packages.iter().any(|p| p.name == resume_point) {
-        return Ok(LevelResumeAction::ReachedResumePoint);
-    }
-
-    if is_level_already_complete(level_packages, st_arc)? {
-        Ok(LevelResumeAction::SkipAlreadyComplete)
-    } else {
-        Ok(LevelResumeAction::SkipBeforeResumePoint(
-            resume_point.to_string(),
-        ))
+) -> Option<usize> {
+    match resume_from {
+        None => Some(0),
+        Some(resume_point) => levels
+            .iter()
+            .position(|level| level.packages.iter().any(|p| p.name == resume_point)),
     }
 }
 
-fn is_level_already_complete(
+pub(super) fn is_level_already_complete(
     level_packages: &[PlannedPackage],
     st_arc: &Arc<Mutex<ExecutionState>>,
 ) -> Result<bool> {

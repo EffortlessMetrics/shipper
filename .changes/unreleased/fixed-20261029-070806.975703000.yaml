@@ -1,0 +1,6 @@
+kind: fixed
+body: Require event-file sync before projecting progress, and stop atomic JSON replacement when file sync fails. Preserve prior files and the underlying I/O error, including typed cleanup refusals; refuse later appends through the failed event-log owner so a peer or readiness close cannot duplicate its batch. Report incomplete persistence without a success receipt or a power-loss durability claim.
+time: 2026-10-29T07:08:06.975703Z
+custom:
+  Audience: Operators
+  Importance: Detailed

@@ -63,6 +63,7 @@ or CI under the compatibility rules above:
 | `shipper preflight --format json` | `shipper.preflight.v1` | `cargo test -p shipper-cli preflight` |
 | `shipper status --format json` | `shipper.status.v1` | `cargo test -p shipper-cli --test e2e_status status_json_format_produces_registry_report` |
 | `shipper status --watch --format json` | `shipper.status.watch.v1` | `cargo test -p shipper-cli status_watch_report_summarizes_state_and_scheduled_events --lib` |
+| `shipper status --durable --format json` | `shipper.status.durable.v1` | `cargo test -p shipper-cli --test e2e_status durable_status_no_evidence_has_human_json_parity_without_registry_access` |
 | `shipper doctor --format json` | `shipper.doctor.v1` | `cargo test -p shipper-cli --test e2e_doctor doctor_json_format_reports_diagnostics_without_token_value` |
 | `shipper publish --format json` | `shipper.publish.v1` | `cargo test -p shipper-cli --test e2e_publish publish_json_format_writes_command_envelope_to_stdout` |
 | `shipper resume --format json` | `shipper.resume.v1` | `cargo test -p shipper-cli --test bdd_resume given_pending_state_when_resume_json_then_stdout_is_command_envelope` |
@@ -72,7 +73,47 @@ or CI under the compatibility rules above:
 
 The publish and resume JSON rows are command-owned envelopes with nested
 receipt evidence, package summaries, safe rerun/resume posture where exposed,
-and artifact paths.
+and artifact paths. `shipper.resume.v1` also carries an additive `outcome`
+object derived from the completed receipt. Its typed safe-to-resume posture,
+next action, and evidence references drive the human footer as well. The legacy
+top-level `safe_to_resume` predicate remains compatibility-frozen; consumers
+that need the evidence-based posture should read `outcome.safe_to_resume`.
+The non-watch `shipper.status.v1` envelope retains its registry/package fields
+and adds an `outcome` derived only from the completed registry observations.
+That outcome records whether all, some, none, or zero publishable package
+versions were observed, states `publication_performed: false`, and provides one
+commandless next-action posture. It deliberately omits safe-rerun and durable
+evidence claims because non-watch status does not load authoritative run
+events, state, or receipts. `shipper.status.watch.v1` is a separate unchanged
+surface. Non-watch status builds the package set independently for every
+effective registry so Cargo `package.publish` restrictions remain authoritative.
+Each registry report carries the `plan_id` for that exact registry/package
+plan; the compatibility-frozen top-level `plan_id` identifies the first
+effective registry. The `all_published` reason is scoped to registry-eligible
+selected versions in their effective targets rather than claiming visibility
+for an intentionally excluded package/registry cross-product.
+
+`shipper status --durable` is a separate, mutually exclusive read-only mode.
+Its `shipper.status.durable.v1` envelope derives a fail-closed operator posture
+from authoritative local events plus matching state, receipt, reconciliation,
+and affirmative liveness evidence. It does not query a registry or publish,
+and `publication_performed` is always false. Matching unfinished evidence
+whose exact local process is proven absent and whose package posture is
+pending or retryable may report `outcome.safe_to_resume.value: true`, but the
+action remains commandless because this envelope does not encode the complete manifest,
+config, registry, and state-directory invocation context needed for a replayable
+command. Missing, corrupt, ambiguous, mismatched, live, or inconclusive
+evidence also omits a resume command. The configured state-directory spelling
+is retained in output; only evidence reads use the workspace-resolved path.
+`outcome.safe_to_resume` is an object containing `value` (`true`, `false`, or
+`null`) and a human-readable `reason`; it is not a bare Boolean. Durable mode
+rejects `--watch`, `--registries`, and `--all-registries` during argument
+validation rather than inspecting an unrelated registry-specific state directory.
+This additive mode does
+not change `shipper.status.v1`, `shipper.status.watch.v1`, raw event JSONL, or
+direct versioned receipt rendering. When resolved runtime options enable state
+encryption, durable status uses the existing encrypted state and receipt
+readers; it never falls back to interpreting ciphertext as plaintext.
 The remediation command rows are command-owned envelopes with top-level
 planning fields plus `schema_version` and `command`. The remediation artifact
 row is durable dry-run evidence only; neither surface implies guarded live
@@ -97,7 +138,8 @@ placeholder in durable remediation artifacts.
 - Generating JSON Schema files for every command.
 - Replacing Rust snapshot or integration tests with schema-only validation.
 - Changing the receipt schema.
-- Changing human output.
+- Replacing or removing existing human output; additive typed outcome footers
+  are permitted when the original receipt rendering remains intact.
 - Promoting command envelopes before implementation proof exists.
 
 ## Required Evidence
@@ -139,6 +181,7 @@ Current proof is mapped through support tiers:
 - plan JSON: `given_multi_crate_when_plan_json_then_valid_json_output`
 - preflight JSON: preflight CLI tests
 - status JSON: `status_json_format_produces_registry_report`
+- durable status JSON: `durable_status_no_evidence_has_human_json_parity_without_registry_access`
 - status watch JSON: `status_watch_report_summarizes_state_and_scheduled_events`
 - doctor JSON: `doctor_json_format_reports_diagnostics_without_token_value`
 - publish JSON command envelope:

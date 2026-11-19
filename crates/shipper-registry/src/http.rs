@@ -1064,6 +1064,24 @@ mod tests {
     }
 
     #[test]
+    fn is_version_visible_in_sparse_index_uses_unicode_path() {
+        let (server, base) = mock_server();
+        let body = "{\"name\":\"café\",\"vers\":\"0.1.0\",\"deps\":[]}";
+        let handle = std::thread::spawn(move || {
+            let request = server.recv().expect("request");
+            assert_eq!(request.url(), "/ca/f%C3%A9/caf%C3%A9");
+            respond(request, 200, body);
+        });
+        let client = test_client(&base);
+        assert!(
+            client
+                .is_version_visible_in_sparse_index(&base, "café", "0.1.0")
+                .expect("ok")
+        );
+        handle.join().expect("join");
+    }
+
+    #[test]
     fn is_version_visible_in_sparse_index_returns_false_for_missing_version() {
         let (server, base) = mock_server();
         let body = "{\"name\":\"demo\",\"vers\":\"0.1.0\",\"deps\":[]}";
@@ -1195,6 +1213,11 @@ mod tests {
     fn sparse_index_path_four_plus_char() {
         assert_eq!(sparse_index_path("demo"), "de/mo/demo");
         assert_eq!(sparse_index_path("serde"), "se/rd/serde");
+    }
+
+    #[test]
+    fn sparse_index_path_delegation_handles_unicode() {
+        assert_eq!(crate::sparse_index_path("café"), "ca/fé/café");
     }
 
     // ── constants ────────────────────────────────────────────────────

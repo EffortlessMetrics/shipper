@@ -8,7 +8,7 @@ Error: preflight failed — next steps:
   * inspect .shipper/events.jsonl for the authoritative event log
   * `shipper preflight --format json` for machine-readable detail
   Common blockers to check:
-  * missing token/auth: run `cargo login <token>` or configure Trusted Publishing
+  * missing token/auth: run `shipper doctor` for guidance scoped to the selected registry before changing credentials
   * dirty git: commit or stash changes, or pass `--allow-dirty` only for intentional rehearsal
   * version already exists: run `shipper status`, then bump or skip the crate version
   * ownership failure: confirm the token can publish with `cargo owner --list <crate>`

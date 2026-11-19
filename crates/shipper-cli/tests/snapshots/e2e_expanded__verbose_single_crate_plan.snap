@@ -40,3 +40,6 @@ Dependency Graph:
 === Full Publish Order ===
 
     1. [Level 0] demo @0.1.0
+
+Result: plan created; no packages were published
+Next: run preflight with the same manifest, package, configuration, and registry selection

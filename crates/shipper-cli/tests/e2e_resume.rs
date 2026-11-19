@@ -14,6 +14,10 @@ use serial_test::serial;
 use tempfile::tempdir;
 use tiny_http::{Header, Response, Server, StatusCode};
 
+#[cfg(target_os = "linux")]
+#[path = "e2e_resume/interruption.rs"]
+mod interruption;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -212,6 +216,228 @@ fn resume_no_state_file_shows_error() {
         .failure()
         .stderr(contains("nothing to resume"))
         .stderr(contains("shipper publish"));
+}
+
+#[test]
+#[serial]
+fn resume_missing_state_cleanup_incomplete_never_suggests_publish() {
+    use shipper_core::state::events::{EventLog, events_path};
+    use shipper_core::types::{EventType, PublishEvent};
+
+    let td = tempdir().expect("tempdir");
+    create_single_crate_workspace(td.path());
+    let state_dir = td.path().join("retained-events-only");
+    let mut log = EventLog::new();
+    // A retained package outside the current plan still holds this directory.
+    log.record(PublishEvent {
+        timestamp: chrono::Utc::now(),
+        package: "retired@0.1.0".into(),
+        event_type: EventType::PackageCleanupIncomplete {
+            message: "owned process cleanup could not be confirmed".into(),
+        },
+    });
+    log.write_to_file(&events_path(&state_dir))
+        .expect("write hold");
+    let retained = fs::read(events_path(&state_dir)).expect("read hold");
+    let registry = Server::http("127.0.0.1:0").expect("mock registry");
+    let base_url = format!("http://{}", registry.server_addr());
+
+    for extra in [
+        &[][..],
+        &[
+            "--force",
+            "--force-resume",
+            "--resume-from",
+            "demo",
+            "--max-attempts",
+            "100",
+        ][..],
+    ] {
+        for format in ["text", "json"] {
+            let output = loopback_shipper_cmd()
+                .timeout(Duration::from_secs(20))
+                .arg("--manifest-path")
+                .arg(td.path().join("Cargo.toml"))
+                .args(["--api-base", &base_url])
+                .arg("--state-dir")
+                .arg(&state_dir)
+                .args(["--format", format, "--quiet"])
+                .args(extra)
+                .arg("resume")
+                .output()
+                .expect("resume CLI");
+            assert!(!output.status.success());
+            let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+            assert!(!stderr.contains("nothing to resume"), "{stderr}");
+            assert!(!stderr.contains("shipper publish"), "{stderr}");
+            assert!(!stderr.contains("--max-attempts"), "{stderr}");
+            if format == "json" {
+                let report: serde_json::Value =
+                    serde_json::from_str(&stderr).expect("resume hold JSON");
+                assert_eq!(report["schema_version"], "shipper.resume.error.v1");
+                assert_eq!(report["category"], "cleanup_incomplete");
+                assert_eq!(report["safe_to_resume"]["value"], false);
+                assert_eq!(report["next_action"]["kind"], "stop_and_investigate");
+                assert!(report["next_action"].get("command").is_none());
+            } else {
+                assert!(stderr.contains("Safe to resume: no"), "{stderr}");
+                assert!(stderr.contains("cleanup"), "{stderr}");
+            }
+            assert!(output.stdout.is_empty());
+            assert!(!state_dir.join("state.json").exists());
+            assert_eq!(
+                fs::read(events_path(&state_dir)).expect("read retained events"),
+                retained
+            );
+        }
+    }
+    assert!(
+        registry
+            .recv_timeout(Duration::from_millis(20))
+            .expect("mock registry observation")
+            .is_none()
+    );
+}
+
+#[test]
+#[serial]
+fn cleanup_incomplete_receipt_and_events_remain_inspectable() {
+    let td = tempdir().expect("tempdir");
+    create_single_crate_workspace(td.path());
+    let state_dir = td.path().join("forensic-evidence");
+    fs::create_dir_all(&state_dir).expect("create evidence directory");
+    let timestamp = "2026-10-29T00:00:00Z";
+    // Exercise the inspection consumer; an active cleanup stop does not
+    // finalize a normal publish receipt.
+    let receipt = serde_json::json!({
+        "receipt_version": "shipper.receipt.v2",
+        "plan_id": "forensic-cleanup",
+        "registry": {"name": "fixture", "api_base": "https://registry.invalid"},
+        "started_at": timestamp,
+        "finished_at": timestamp,
+        "packages": [{
+            "name": "demo", "version": "0.1.0", "attempts": 1,
+            "state": {"state": "cleanup_incomplete", "message": "cleanup could not be confirmed"},
+            "started_at": timestamp, "finished_at": timestamp, "duration_ms": 1,
+            "evidence": {"attempts": [], "readiness_checks": []}
+        }],
+        "event_log_path": state_dir.join("events.jsonl"),
+        "environment": {"shipper_version": "test", "os": "test", "arch": "test"},
+        "execution_result": "complete_failure"
+    });
+    fs::write(
+        state_dir.join("receipt.json"),
+        serde_json::to_vec(&receipt).expect("receipt JSON"),
+    )
+    .expect("write receipt");
+    let event = serde_json::json!({
+        "timestamp": timestamp,
+        "package": "demo@0.1.0",
+        "event_type": {"type": "package_cleanup_incomplete", "message": "cleanup could not be confirmed"}
+    });
+    fs::write(state_dir.join("events.jsonl"), format!("{event}\n")).expect("write event");
+
+    loopback_shipper_cmd()
+        .timeout(Duration::from_secs(20))
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("inspect-receipt")
+        .assert()
+        .success()
+        .stdout(contains(
+            "Cleanup incomplete: cleanup could not be confirmed",
+        ));
+    for (command, expected) in [
+        ("inspect-receipt", "cleanup_incomplete"),
+        ("inspect-events", "package_cleanup_incomplete"),
+    ] {
+        loopback_shipper_cmd()
+            .timeout(Duration::from_secs(20))
+            .arg("--manifest-path")
+            .arg(td.path().join("Cargo.toml"))
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .args(["--format", "json", command])
+            .assert()
+            .success()
+            .stdout(contains(expected));
+    }
+}
+
+#[test]
+#[serial]
+fn clean_cleanup_incomplete_preserves_event_only_and_projection_only_holds() {
+    for evidence in [
+        "projection",
+        "event",
+        "event-before-corrupt",
+        "event-after-corrupt",
+    ] {
+        let event_only = evidence != "projection";
+        let td = tempdir().expect("tempdir");
+        create_single_crate_workspace(td.path());
+        let state_dir = td.path().join("held-evidence");
+        fs::create_dir_all(&state_dir).unwrap();
+        let held = serde_json::json!({ "state": "cleanup_incomplete", "message": "cleanup not confirmed" });
+        let path = if event_only {
+            let path = state_dir.join("events.jsonl");
+            let event = serde_json::json!({
+                "timestamp": "2026-10-29T00:00:00Z", "package": "retired@0.1.0",
+                "event_type": { "type": "package_cleanup_incomplete", "message": "cleanup not confirmed" }
+            });
+            let contents = match evidence {
+                "event-before-corrupt" => format!("{event}\nmalformed-secret-sentinel\n"),
+                "event-after-corrupt" => format!("malformed-secret-sentinel\n{event}\n"),
+                _ => format!("{event}\n"),
+            };
+            fs::write(&path, contents).unwrap();
+            path
+        } else {
+            let path = state_dir.join("state.json");
+            let state = serde_json::json!({
+                "state_version": "shipper.state.v1", "plan_id": "retained-plan",
+                "registry": { "name": "fixture", "api_base": "https://registry.invalid" },
+                "created_at": "2026-10-29T00:00:00Z", "updated_at": "2026-10-29T00:00:00Z",
+                "packages": { "retired@0.1.0": {
+                    "name": "retired", "version": "0.1.0", "attempts": 1, "state": held,
+                    "last_updated_at": "2026-10-29T00:00:00Z"
+                }}
+            });
+            fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+            path
+        };
+        let before = fs::read(&path).unwrap();
+        let receipt = state_dir.join("receipt.json");
+        fs::write(&receipt, "retained receipt sentinel").unwrap();
+        for keep_receipt in [false, true] {
+            let mut command = loopback_shipper_cmd();
+            command
+                .timeout(Duration::from_secs(20))
+                .arg("--manifest-path")
+                .arg(td.path().join("Cargo.toml"))
+                .arg("--state-dir")
+                .arg(&state_dir)
+                .args(["--force", "clean"]);
+            if keep_receipt {
+                command.arg("--keep-receipt");
+            }
+            let output = command.output().expect("clean CLI");
+            assert!(!output.status.success());
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(stderr.contains("cleanup"), "{stderr}");
+            assert!(!stderr.contains("malformed-secret-sentinel"), "{stderr}");
+            assert_eq!(fs::read(&path).unwrap(), before);
+            assert_eq!(
+                fs::read_to_string(&receipt).unwrap(),
+                "retained receipt sentinel"
+            );
+            if event_only {
+                assert!(!state_dir.join("state.json").exists());
+            }
+        }
+    }
 }
 
 // ============================================================================

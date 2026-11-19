@@ -15,7 +15,17 @@ needs real-registry interruption proof.
 
 ## Safe runner-artifact rehearsal
 
-Use the dedicated workflow before attempting the crates.io rehearsal below:
+The source-level fake-Cargo/mock-registry test is available to every checkout:
+
+```bash
+cargo test -p shipper-cli --test e2e_rehearse \
+  rehearsal_interrupted_publish_then_resume_preserves_invariants \
+  -- --exact --nocapture
+```
+
+Maintainers with Actions write permission on `EffortlessMetrics/shipper` can
+then use the dedicated cross-job workflow before attempting the crates.io
+rehearsal below:
 
 ```bash
 gh workflow run live-runner-interruption-rehearsal.yml \
@@ -37,11 +47,13 @@ Download both artifacts after the run:
 ```bash
 gh run download <run-id> \
   --repo EffortlessMetrics/shipper \
-  --name shipper-live-interruption-seed-<run-id>
+  --name shipper-live-interruption-seed-<run-id> \
+  --dir seed-evidence
 
 gh run download <run-id> \
   --repo EffortlessMetrics/shipper \
-  --name shipper-live-interruption-resume-<run-id>
+  --name shipper-live-interruption-resume-<run-id> \
+  --dir resumed-evidence
 ```
 
 The workflow passes only if:
@@ -52,7 +64,7 @@ The workflow passes only if:
 - already-published crates are skipped, not republished;
 - the resumed artifact contains `receipt.json`;
 - `events.jsonl` has no state/event drift and records one
-  `PackagePublished` event per crate.
+  `package_published` event per crate.
 
 This is the safe proof for artifact upload/download and runner handoff. The
 0.4.0 support tier cites run `26051581056` as the stable/internal live-runner
@@ -60,6 +72,12 @@ interruption proof. This safe rehearsal does not publish to crates.io and does
 not prove live crates.io rate-limit or sparse-index behavior.
 
 ## Prerequisites
+
+The remainder of this guide is a **destructive release-authority-only**
+crates.io rehearsal. It creates permanent registry history even when every
+version is later yanked. Do not run it from a normal pull request, documentation
+review, or active-development repository. Require explicit release authority,
+approved throwaway versions, credentials, and a containment plan first.
 
 - Admin access to <https://github.com/EffortlessMetrics/shipper>.
 - `CARGO_REGISTRY_TOKEN` with publish scope for all 13 public crates already
@@ -101,8 +119,8 @@ gh workflow run release.yml --ref <tag>
 gh run watch --repo EffortlessMetrics/shipper
 ```
 
-Once 2–3 crates show as published in the logs (the per-crate
-`PackagePublished` event lines inside `shipper publish` stderr):
+Once 2–3 crates have authoritative `package_published` events in the retained
+event stream:
 
 ```bash
 gh run cancel <run-id> --repo EffortlessMetrics/shipper
@@ -123,8 +141,9 @@ Expect four directories:
 
 - `shipper-state-plan/` — plan stage artifact
 - `shipper-state-preflight/` — post-preflight artifact
-- `shipper-state-final/` — the crucial one. Contains `state.json`,
-  `events.jsonl`, `receipt.json` at the moment of cancellation.
+- `shipper-state-final/` — the crucial one. Contains `state.json` and
+  `events.jsonl` at the moment of cancellation. A terminal `receipt.json` is
+  expected only after a run finalizes, not merely because it was cancelled.
 
 ### Step 5 — sanity-check the artifacts
 
@@ -133,9 +152,17 @@ Pull up `shipper-state-final/`:
 ```bash
 cd shipper-state-final
 # state.json parses; events.jsonl is valid NDJSON
-shipper inspect events      # or: jq -c . events.jsonl | head
-shipper inspect receipt
+jq '.' state.json
+jq -c '.' events.jsonl | head
+# Run this only when the artifact actually contains a terminal receipt:
+jq '.' receipt.json
 ```
+
+This downloaded directory contains retained `.shipper/` evidence, not the
+matching source workspace. Do not run `status --durable` here: it recomputes
+the release plan. Restore the artifact as `.shipper/` inside the exact source
+checkout and use the matching candidate binary before asking Shipper for a
+durable classification.
 
 Expected shape:
 
@@ -144,7 +171,7 @@ Expected shape:
 - Some packages have `state: "published"`; at least one is still
   `state: "pending"` (or `"uploaded"` / `"failed"`).
 - `events.jsonl` ends with a complete line (no half-written event).
-- `PackagePublished` event count equals the count of `published`
+- `package_published` event count equals the count of `published`
   packages in state.json — events-as-truth.
 
 ### Step 6 — trigger the resume
@@ -194,23 +221,27 @@ done
 
 Each line should show the rehearsal version.
 
-### Step 9 — yank the rehearsal
+### Step 9 — plan, review, and yank the rehearsal
 
 ```bash
-for c in shipper shipper-cli shipper-core shipper-config shipper-types \
-         shipper-duration shipper-retry shipper-encrypt shipper-webhook \
-         shipper-registry shipper-sparse-index shipper-cargo-failure \
-         shipper-output-sanitizer; do
-  cargo yank --version <rehearsal-version> "$c"
-done
+shipper plan-yank \
+  --from-receipt <downloaded-resume-receipt.json> \
+  --reason "authorized rehearsal containment" \
+  --format json > yank-plan.json
+
+# Review every package, version, registry, reason, and dependents-first order.
+jq '.' yank-plan.json
+
+# Destructive: execute only after the reviewed plan is approved.
+shipper yank --plan yank-plan.json
 ```
 
 Yanking is containment, not deletion — the bytes remain on crates.io,
 but new resolves skip them.
 
-> Once `shipper yank` / `shipper plan-yank` land (#98 PR2+),
-> this step becomes a single `shipper plan-yank --from-receipt <file>`
-> invocation against the rehearsal's `receipt.json`.
+`plan-yank --reason` embeds the approved reason into every selected entry. The
+reviewed final plan preserves that reason, and plan execution keeps that
+evidence while replacing the direct, unreviewed `cargo yank` loop.
 
 ## Pass / fail rubric
 
@@ -219,7 +250,7 @@ The rehearsal passes iff **all** of the following are true:
 - [ ] `shipper-state-final` artifact exists after the cancelled run.
 - [ ] `state.json` parses; `plan_id` non-empty.
 - [ ] `events.jsonl` is valid NDJSON (every line parses).
-- [ ] `PackagePublished` event count = published-package count in
+- [ ] `package_published` event count = published-package count in
       state.json (events-as-truth).
 - [ ] Resume does not re-`cargo publish` any crate that was already
       Published (check logs for duplicate `Publishing X@...` lines).

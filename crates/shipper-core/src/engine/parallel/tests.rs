@@ -34,6 +34,29 @@ fn error_class_rank(error_class: &Option<ErrorClass>) -> u8 {
     }
 }
 
+#[test]
+fn cleanup_hold_identity_survives_poisoned_parallel_synchronization() {
+    let mut state = init_state_for_package("demo", &Registry::crates_io(), "demo", "0.1.0");
+    let shared = Arc::new(Mutex::new(state.clone()));
+    let _ = std::panic::catch_unwind(|| {
+        let _guard = shared.lock().unwrap();
+        panic!("poison the synchronization boundary");
+    });
+    let error = synchronize_parallel_failure(
+        &mut state,
+        &shared,
+        crate::engine::PublishCleanupIncompleteError {
+            message: "observed cleanup hold".into(),
+        }
+        .into(),
+    );
+    assert!(matches!(
+        crate::engine::classify_publish_stop(&error),
+        Some(crate::engine::PublishStopClassification::CleanupIncomplete)
+    ));
+    assert!(format!("{error:#}").contains("synchronize parallel state"));
+}
+
 fn sort_attempt_history_by_fields(history: &mut [AttemptDetail]) {
     history.sort_by_key(|entry| {
         (
@@ -57,6 +80,39 @@ fn test_registry_client(ws: &PlannedWorkspace) -> RegistryClient {
 
 fn make_send_reporter() -> Arc<SendReporter> {
     Arc::new(SendReporter::default())
+}
+
+#[test]
+fn live_reporting_preserves_mixed_message_order() {
+    struct OrderedReporter(Vec<String>);
+    impl Reporter for OrderedReporter {
+        fn info(&mut self, message: &str) {
+            self.0.push(format!("info:{message}"));
+        }
+        fn warn(&mut self, message: &str) {
+            self.0.push(format!("warn:{message}"));
+        }
+        fn error(&mut self, message: &str) {
+            self.0.push(format!("error:{message}"));
+        }
+    }
+
+    let sender = make_send_reporter();
+    sender.info("attempt started");
+    sender.warn("attempt failed");
+    sender.error("failure detail");
+    sender.info("retry succeeded");
+    let mut host = OrderedReporter(Vec::new());
+    replay_buffered_messages(&mut host, &sender);
+    assert_eq!(
+        host.0,
+        [
+            "info:attempt started",
+            "warn:attempt failed",
+            "error:failure detail",
+            "info:retry succeeded",
+        ]
+    );
 }
 
 #[derive(Default)]
@@ -140,7 +196,9 @@ fn emit_retry_backoff_does_not_block_other_reporter_calls_during_sleep() {
 
     retry_thread.join().expect("join retry thread");
 
-    let infos = reporter.drain_infos();
+    let mut host = CollectingReporter::default();
+    replay_buffered_messages(&mut host, &reporter);
+    let infos = host.infos;
     assert!(
         infos.iter().any(|msg| msg == "other worker thread"),
         "concurrent info should still be recorded"
@@ -148,7 +206,7 @@ fn emit_retry_backoff_does_not_block_other_reporter_calls_during_sleep() {
 }
 
 #[test]
-fn drain_retry_waits_forwards_live_notice_before_worker_sleep_elapses() {
+fn replay_messages_forwards_live_notice_before_worker_sleep_elapses() {
     struct SignalingReporter {
         tx: Option<mpsc::Sender<Duration>>,
     }
@@ -195,7 +253,7 @@ fn drain_retry_waits_forwards_live_notice_before_worker_sleep_elapses() {
 
     let (tx, rx) = mpsc::channel();
     let mut host_reporter = SignalingReporter { tx: Some(tx) };
-    drain_retry_waits(&mut host_reporter, send_reporter.as_ref());
+    replay_buffered_messages(&mut host_reporter, send_reporter.as_ref());
 
     let forwarded_delay = rx
         .recv_timeout(Duration::from_millis(500))
@@ -272,8 +330,20 @@ fn spawn_registry_server(
     let base_url = format!("http://{}", server.server_addr());
 
     let handle = std::thread::spawn(move || {
-        for _ in 0..expected_requests {
-            let req = server.recv().expect("request");
+        for request_index in 0..expected_requests {
+            let req = match server.recv_timeout(Duration::from_secs(10)) {
+                Ok(Some(request)) => request,
+                Ok(None) => panic!(
+                    "registry request {}/{} did not arrive within 10 seconds",
+                    request_index + 1,
+                    expected_requests
+                ),
+                Err(error) => panic!(
+                    "registry request {}/{} failed before receipt: {error}",
+                    request_index + 1,
+                    expected_requests
+                ),
+            };
             let path = req.url().to_string();
             let response = if let Some(list) = routes.get_mut(&path) {
                 if list.is_empty() {
@@ -2844,8 +2914,14 @@ fn test_webhook_failure_is_non_blocking_and_mode_parity_holds() {
     let webhook_received_clone = Arc::clone(&webhook_received);
     let webhook_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let webhook_done_clone = std::sync::Arc::clone(&webhook_done);
+    let (release_webhooks, await_publish) = std::sync::mpsc::channel();
 
     let webhook_handle = std::thread::spawn(move || {
+        // A valid late-delivery schedule: neither scheduler may require this
+        // notification endpoint to accept requests before returning success.
+        await_publish
+            .recv_timeout(Duration::from_secs(5))
+            .expect("publish schedulers must finish before webhook delivery");
         let mut total = 0usize;
         while !webhook_done_clone.load(std::sync::atomic::Ordering::Acquire) {
             if let Ok(Some(mut req)) = webhook_server.recv_timeout(Duration::from_millis(100)) {
@@ -2955,14 +3031,44 @@ fn test_webhook_failure_is_non_blocking_and_mode_parity_holds() {
         },
     );
 
+    release_webhooks.send(()).expect("release webhook fixture");
+    // Delivery guards are registered before detached threads are spawned. Both
+    // schedulers have returned, so zero now means every queued sender finished;
+    // keep the HTTP fixture alive until then instead of racing its shutdown.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while crate::webhook::active_test_deliveries() != 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let remaining_deliveries = crate::webhook::active_test_deliveries();
     webhook_done.store(true, std::sync::atomic::Ordering::Release);
     registry_server.join();
     webhook_handle.join().expect("webhook thread");
+    assert_eq!(
+        remaining_deliveries, 0,
+        "all queued webhook attempts must finish before checking delivery counts"
+    );
 
     let received = webhook_received.lock().unwrap();
-    assert!(
-        received.len() >= 2,
-        "expected webhook delivery attempts despite webhook failures"
+    assert_eq!(
+        received.len(),
+        4,
+        "each scheduler must attempt its run-start and package-success notifications"
+    );
+    let mut counts = BTreeMap::<String, usize>::new();
+    for body in received.iter() {
+        let payload: shipper_webhook::WebhookPayload =
+            serde_json::from_str(body).expect("complete webhook payload");
+        let event = payload.extra["legacy"]["event"]
+            .as_str()
+            .expect("typed notification kind");
+        *counts.entry(event.to_string()).or_default() += 1;
+    }
+    assert_eq!(
+        counts,
+        BTreeMap::from([
+            ("publish_started".to_string(), 2),
+            ("publish_succeeded".to_string(), 2),
+        ])
     );
 }
 
@@ -3626,7 +3732,7 @@ fn skipped_level_resume_action_reports_poisoned_state_lock() {
         regime: None,
     }];
 
-    let action_err = match determine_level_resume_action(&packages, &st_arc, Some("dependent")) {
+    let action_err = match is_level_already_complete(&packages, &st_arc) {
         Ok(_) => panic!("poisoned state lock should fail resume action selection"),
         Err(err) => err,
     };
@@ -4800,6 +4906,7 @@ fn test_error_in_second_level_preserves_first_level_success_state() {
     // Level 0 publishes as already existing in registry, so it is marked Skipped.
     // Level 1 depends on level 0 and fails, proving the first level result is still
     // synchronized back on the failure return path.
+    // Base precheck + dependent precheck + conclusive absent reconciliation.
     let server = spawn_registry_server(
         BTreeMap::from([
             (
@@ -4811,7 +4918,7 @@ fn test_error_in_second_level_preserves_first_level_success_state() {
                 vec![(404, "{}".to_string())],
             ),
         ]),
-        2,
+        3,
     );
 
     let ws = PlannedWorkspace {
@@ -4848,6 +4955,7 @@ fn test_error_in_second_level_preserves_first_level_success_state() {
     let state_dir = td.path().join(".shipper");
     let mut opts = default_opts(state_dir.clone());
     opts.max_attempts = 1;
+    opts.readiness.max_total_wait = Duration::ZERO;
 
     let mut packages = BTreeMap::new();
     for p in &ws.plan.packages {
@@ -6199,16 +6307,18 @@ mod property_tests_extra {
 //
 // Ambiguous classification is triggered by cargo exiting non-zero with
 // empty stdout/stderr (see `shipper-cargo-failure::classify_publish_failure`
-// edge-case tests). To keep readiness-polling bounded to a single call per
-// reconcile site (avoiding flaky request counts), each test disables the
-// readiness backoff loop: `readiness.enabled = false`.
+// edge-case tests). Enabled readiness with a zero wait budget performs one
+// complete observation per reconciliation site, exercising the default polling
+// branch without adding timing-dependent request counts.
 // ---------------------------------------------------------------------------
 
-/// Build a RuntimeOptions with readiness polling disabled — every reconcile
-/// site reduces to a single registry query. Simplifies mock request math.
+/// Exercise enabled polling with one observation per reconciliation site.
 fn reconcile_scenario_opts(state_dir: PathBuf) -> RuntimeOptions {
     let mut opts = default_opts(state_dir);
-    opts.readiness.enabled = false;
+    opts.readiness.enabled = true;
+    opts.readiness.method = shipper_types::ReadinessMethod::Api;
+    opts.readiness.initial_delay = Duration::ZERO;
+    opts.readiness.max_total_wait = Duration::ZERO;
     opts
 }
 
@@ -6220,7 +6330,7 @@ fn reconcile_bdd_ambiguous_resolves_to_published() {
     // the second reconciler poll sees the version as visible. Expected: the
     // package becomes Published after one retry.
     //
-    // Request sequence (readiness disabled):
+    // Request sequence (enabled readiness, zero wait budget):
     //   1. entry "already published" check (execute_package.rs) → 404
     //   2. first reconcile's version_exists (via is_version_visible_with_backoff) → 404
     //   3. second reconcile's version_exists (via is_version_visible_with_backoff) → 200
@@ -6311,7 +6421,9 @@ fn reconcile_bdd_ambiguous_resolves_to_published() {
         has_reconciled_published,
         "expected PublishReconciled with Published outcome"
     );
-    let infos = reporter.drain_infos();
+    let mut host = CollectingReporter::default();
+    replay_buffered_messages(&mut host, &reporter);
+    let infos = host.infos;
     assert!(
         infos
             .iter()
@@ -6325,18 +6437,18 @@ fn reconcile_bdd_ambiguous_resolves_to_published() {
 
 #[test]
 #[serial]
-fn reconcile_bdd_ambiguous_resolves_to_not_published_then_retries() {
+fn reconcile_bdd_not_published_exhaustion_records_controlled_retryable_stop() {
     // Scenario: cargo exits ambiguously on every attempt. Registry is
     // consistently 404 — the version never appears. Reconcile resolves
     // to NotPublished on each cargo-failure path, which falls through to
-    // the normal Retryable backoff → retry → fails-ambiguous-again. After
-    // max_attempts, the package ends Failed.
+    // the normal Retryable backoff and one safe retry. After max_attempts,
+    // the package ends in the typed controlled Failed(Retryable) stop.
     //
     // With max_attempts=2 and readiness disabled, the request sequence is:
     //   1. entry check → 404
     //   2. attempt 1 reconcile (enabled=false, single call) → 404 → NotPublished
-    //   3. attempt 2 reconcile → 404 → NotPublished
-    //   4. post-loop final "if last_err, maybe visible" check (execute_package.rs) → 404
+    //   3. attempt 2 reconcile → 404 → NotPublished and controlled stop
+    // There is no redundant post-loop visibility poll.
     let td = tempdir().expect("tempdir");
     let bin = td.path().join("bin");
     write_fake_tools(&bin);
@@ -6348,10 +6460,9 @@ fn reconcile_bdd_ambiguous_resolves_to_not_published_then_retries() {
                 (404, "{}".to_string()),
                 (404, "{}".to_string()),
                 (404, "{}".to_string()),
-                (404, "{}".to_string()),
             ],
         )]),
-        4,
+        3,
     );
 
     let ws = planned_workspace(td.path(), server.base_url.clone());
@@ -6398,8 +6509,13 @@ fn reconcile_bdd_ambiguous_resolves_to_not_published_then_retries() {
                 .expect_err("max_attempts exhausted without success should err");
             let msg = err.to_string();
             assert!(
-                msg.contains("failed"),
-                "expected failure message, got: {msg}"
+                err.downcast_ref::<crate::engine::PublishRecoverableStopError>()
+                    .is_some(),
+                "expected typed controlled-stop error, got: {err:#}"
+            );
+            assert!(
+                msg.contains("retry budget exhausted after registry confirmed NotPublished"),
+                "expected controlled-stop message, got: {msg}"
             );
             // Verify cargo was actually retried (attempts incremented).
             let state = st.lock().unwrap();
@@ -6409,8 +6525,8 @@ fn reconcile_bdd_ambiguous_resolves_to_not_published_then_retries() {
                 PackageState::Failed { class, .. } => {
                     assert_eq!(
                         *class,
-                        ErrorClass::Ambiguous,
-                        "expected ambiguous failure class after retry exhaustion"
+                        ErrorClass::Retryable,
+                        "expected retryable failure class after controlled exhaustion"
                     );
                 }
                 other => panic!("expected failed state, got {:?}", other),
@@ -6433,7 +6549,32 @@ fn reconcile_bdd_ambiguous_resolves_to_not_published_then_retries() {
         has_reconciled_not_published,
         "expected at least one PublishReconciled with NotPublished outcome"
     );
-    let infos = reporter.drain_infos();
+    assert!(matches!(
+        persisted.all_events().last().map(|event| &event.event_type),
+        Some(EventType::PackageFailed {
+            class: ErrorClass::Retryable,
+            ..
+        })
+    ));
+    let report: shipper_types::ReconciliationReport = serde_json::from_str(
+        &fs::read_to_string(crate::state::execution_state::reconciliation_path(
+            &state_dir,
+        ))
+        .expect("read reconciliation report"),
+    )
+    .expect("parse reconciliation report");
+    let latest = report.records.last().expect("latest reconciliation record");
+    assert!(matches!(
+        latest.outcome,
+        shipper_types::ReconciliationOutcome::NotPublished { .. }
+    ));
+    assert_eq!(
+        latest.operator_action,
+        shipper_types::ReconciliationOperatorAction::RetryAllowed
+    );
+    let mut host = CollectingReporter::default();
+    replay_buffered_messages(&mut host, &reporter);
+    let infos = host.infos;
     assert!(
         infos
             .iter()
@@ -6642,7 +6783,9 @@ fn reconcile_bdd_resume_from_ambiguous_state_skips_republish() {
         has_reconciled_published,
         "expected PublishReconciled with Published outcome"
     );
-    let infos = reporter.drain_infos();
+    let mut host = CollectingReporter::default();
+    replay_buffered_messages(&mut host, &reporter);
+    let infos = host.infos;
     assert!(
         infos
             .iter()
@@ -6751,7 +6894,9 @@ fn reconcile_bdd_resume_from_ambiguous_state_still_unknown_writes_report() {
         report.records[0].operator_action,
         shipper_types::ReconciliationOperatorAction::OperatorActionRequired
     );
-    let errors = reporter.drain_errors();
+    let mut host = CollectingReporter::default();
+    replay_buffered_messages(&mut host, &reporter);
+    let errors = host.errors;
     assert!(
         errors
             .iter()
@@ -6774,10 +6919,10 @@ fn reconcile_bdd_ambiguous_resolves_to_still_unknown() {
     // NOT retried (no blind-retry after StillUnknown), and an operator-visible
     // `PublishReconciled { outcome: StillUnknown }` event is persisted.
     //
-    // Request sequence (readiness disabled):
+    // Request sequence (enabled readiness, zero wait budget):
     //   1. entry "already published" check (execute_package.rs) → 500 → Err
     //   2. reconcile's single version_exists (via is_version_visible_with_backoff,
-    //      enabled=false) → 500 → Err → StillUnknown
+    //      enabled=true, zero wait budget) → 500 → Err → StillUnknown
     let td = tempdir().expect("tempdir");
     let bin = td.path().join("bin");
     write_fake_tools(&bin);
@@ -6839,6 +6984,11 @@ fn reconcile_bdd_ambiguous_resolves_to_still_unknown() {
             let err = result
                 .result
                 .expect_err("StillUnknown reconciliation must halt with Err");
+            assert!(
+                err.downcast_ref::<crate::engine::PublishStillUnknownError>()
+                    .is_some(),
+                "StillUnknown must retain its typed identity: {err:#}"
+            );
             let msg = err.to_string();
             assert!(
                 msg.contains("reconciliation inconclusive"),
@@ -6890,7 +7040,9 @@ fn reconcile_bdd_ambiguous_resolves_to_still_unknown() {
         has_reconciled_still_unknown,
         "expected PublishReconciled with StillUnknown outcome"
     );
-    let errors = reporter.drain_errors();
+    let mut host = CollectingReporter::default();
+    replay_buffered_messages(&mut host, &reporter);
+    let errors = host.errors;
     assert!(
         errors
             .iter()
@@ -7038,7 +7190,7 @@ enum ModeParityScenario {
     PermanentFailure,
     AlreadyPublishedInState,
     AmbiguousResolvesPublished,
-    AmbiguousRetriesWhenNotPublished,
+    AmbiguousControlledNotPublishedExhaustion,
     AmbiguousStillUnknown,
     StillUnknownResume,
     EventWriteFailure,
@@ -7077,8 +7229,8 @@ const MODE_PARITY_CORPUS: &[ModeParityCase] = &[
         scenario: ModeParityScenario::AmbiguousResolvesPublished,
     },
     ModeParityCase {
-        name: "ambiguous_retries_when_not_published",
-        scenario: ModeParityScenario::AmbiguousRetriesWhenNotPublished,
+        name: "ambiguous_controlled_not_published_exhaustion",
+        scenario: ModeParityScenario::AmbiguousControlledNotPublishedExhaustion,
     },
     ModeParityCase {
         name: "ambiguous_still_unknown",
@@ -7173,19 +7325,19 @@ fn mode_parity_routes(
             )]),
             3,
         ),
-        ModeParityScenario::AmbiguousRetriesWhenNotPublished => (
+        ModeParityScenario::AmbiguousControlledNotPublishedExhaustion => (
             BTreeMap::from([(
                 "/api/v1/crates/demo/0.1.0".to_string(),
-                // Initial visibility check, one reconciliation per attempt,
-                // then the final visibility check after exhaustion.
+                // Initial visibility check, then one conclusive NotPublished
+                // reconciliation per Cargo attempt. The second reconciliation
+                // is the terminal controlled stop; no redundant final poll.
                 vec![
-                    (404, "{}".to_string()),
                     (404, "{}".to_string()),
                     (404, "{}".to_string()),
                     (404, "{}".to_string()),
                 ],
             )]),
-            4,
+            3,
         ),
         ModeParityScenario::AmbiguousStillUnknown => (
             BTreeMap::from([(
@@ -7222,7 +7374,7 @@ fn mode_parity_seed_state(ws: &PlannedWorkspace, scenario: ModeParityScenario) -
         | ModeParityScenario::RetryableExhaustion
         | ModeParityScenario::PermanentFailure => init_state_for_workspace(ws),
         ModeParityScenario::AmbiguousResolvesPublished
-        | ModeParityScenario::AmbiguousRetriesWhenNotPublished
+        | ModeParityScenario::AmbiguousControlledNotPublishedExhaustion
         | ModeParityScenario::AmbiguousStillUnknown => init_state_for_workspace(ws),
         ModeParityScenario::AlreadyPublishedInState => {
             init_state_with_checkpoint(ws, &pkg_key("demo", "0.1.0"), PackageState::Published, 1)
@@ -7263,7 +7415,7 @@ fn mode_parity_cargo_env<'a>(
             ("SHIPPER_CARGO_STDOUT", Some("")),
         ],
         ModeParityScenario::AmbiguousResolvesPublished
-        | ModeParityScenario::AmbiguousRetriesWhenNotPublished
+        | ModeParityScenario::AmbiguousControlledNotPublishedExhaustion
         | ModeParityScenario::AmbiguousStillUnknown => vec![
             ("SHIPPER_CARGO_BIN", Some(cargo_bin)),
             ("SHIPPER_CARGO_ARGS_LOG", Some(cargo_args_log)),
@@ -7324,7 +7476,7 @@ fn run_mode_parity_case(
         ModeParityScenario::ReadinessTimeoutThenVisible
             | ModeParityScenario::RetryableExhaustion
             | ModeParityScenario::AmbiguousResolvesPublished
-            | ModeParityScenario::AmbiguousRetriesWhenNotPublished
+            | ModeParityScenario::AmbiguousControlledNotPublishedExhaustion
     ) {
         2
     } else {
@@ -7333,7 +7485,7 @@ fn run_mode_parity_case(
     if matches!(
         scenario,
         ModeParityScenario::AmbiguousResolvesPublished
-            | ModeParityScenario::AmbiguousRetriesWhenNotPublished
+            | ModeParityScenario::AmbiguousControlledNotPublishedExhaustion
             | ModeParityScenario::AmbiguousStillUnknown
     ) {
         opts.readiness.enabled = false;
@@ -7383,7 +7535,9 @@ fn run_mode_parity_case(
             )
         }
     });
-    let error = result.as_ref().err().map(ToString::to_string);
+    // Persistence errors retain their source chain; inspect that chain rather
+    // than requiring the outer context to flatten its underlying I/O cause.
+    let error = result.as_ref().err().map(|error| format!("{error:#}"));
     let ok = result.is_ok();
     let receipts = result.as_ref().ok().cloned().unwrap_or_default();
 
@@ -7678,18 +7832,22 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
                 assert_reconciled_event(outcome, "Published", mode, case.name);
             }
         }
-        ModeParityScenario::AmbiguousRetriesWhenNotPublished => {
-            assert!(!seq.ok, "{}: unresolved ambiguity should fail", case.name);
+        ModeParityScenario::AmbiguousControlledNotPublishedExhaustion => {
+            assert!(
+                !seq.ok,
+                "{}: controlled NotPublished stop should fail",
+                case.name
+            );
             let pkg = seq.state.packages.get("demo@0.1.0").expect("demo");
             assert!(
                 matches!(
                     pkg.state,
                     PackageState::Failed {
-                        class: ErrorClass::Ambiguous,
+                        class: ErrorClass::Retryable,
                         ..
                     }
                 ),
-                "{}: expected Failed/Ambiguous, got {:?}",
+                "{}: expected Failed/Retryable, got {:?}",
                 case.name,
                 pkg.state
             );
@@ -7699,6 +7857,13 @@ fn assert_mode_parity_pair(case: &ModeParityCase, seq: &ModeRunOutcome, par: &Mo
                     2,
                     "{} {mode}: not-published ambiguity must retry exactly once",
                     case.name
+                );
+                assert!(
+                    outcome.error.as_deref().is_some_and(|error| error
+                        .contains("retry budget exhausted after registry confirmed NotPublished")),
+                    "{} {mode}: expected stable controlled-stop error, got {:?}",
+                    case.name,
+                    outcome.error
                 );
                 assert_reconciled_event(outcome, "NotPublished", mode, case.name);
             }

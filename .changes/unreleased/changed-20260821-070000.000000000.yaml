@@ -1,0 +1,6 @@
+kind: changed
+body: Preserve conclusive NotPublished registry evidence as a controlled recoverable stop so durable status and resume no longer contradict retry eligibility after the publish retry budget is exhausted; raw event consumers must handle the new ExecutionStopped event and ControlledStopReason.
+time: 2026-08-21T07:00:00Z
+custom:
+  Audience: Operators
+  Importance: High

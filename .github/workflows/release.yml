@@ -35,11 +35,39 @@ on:
           - binaries
           - resume
       ref:
-        description: 'Git ref to check out (tag/branch/SHA). Defaults to the workflow ref.'
+        description: 'Exact approved SHA to check out for rehearsal, binaries, or resume.'
+        required: false
+        default: ''
+      approved_sha:
+        description: 'Approved release commit SHA from the release-authority GO record.'
+        required: false
+        default: ''
+      approved_tree:
+        description: 'Approved release tree SHA from the release-authority GO record.'
+        required: false
+        default: ''
+      approved_version:
+        description: 'Approved workspace version from the release-authority GO record.'
+        required: false
+        default: ''
+      approval_record_ref:
+        description: 'Immutable reference to the external approval record.'
+        required: false
+        default: ''
+      approval_record_sha:
+        description: 'Immutable identifier for the external approval record.'
+        required: false
+        default: ''
+      approved_registry:
+        description: 'Approved registry posture.'
+        required: false
+        default: ''
+      approved_auth_posture:
+        description: 'Approved auth posture: trusted_publishing or fallback_secret.'
         required: false
         default: ''
       artifact_run_id:
-        description: 'For resume mode: workflow run ID to download the .shipper artifact from.'
+        description: 'For resume mode: the prior publish or resume run containing shipper-state-final.'
         required: false
         default: ''
 
@@ -47,12 +75,89 @@ env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: write
-  # OIDC for Trusted Publishing (crates-io-auth-action). Needed by publish /
-  # rehearse / resume jobs; read-only reach is fine for the others. See #96.
-  id-token: write
+  contents: read
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Validate the exact source identity before any release job can mutate state.
+  # Approval values come from the protected `release` environment in the
+  # release authority, or explicit workflow-dispatch inputs for non-tag proof.
+  # The synced swarm workflow remains inert because of the repository guard.
+  # ---------------------------------------------------------------------------
+  release-identity-gate:
+    name: Release identity gate
+    if: >-
+      github.repository == 'EffortlessMetrics/shipper' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      approved_sha: ${{ steps.identity.outputs.approved_sha }}
+      approved_tree: ${{ steps.identity.outputs.approved_tree }}
+      approved_version: ${{ steps.identity.outputs.approved_version }}
+      approval_record_ref: ${{ steps.identity.outputs.approval_record_ref }}
+      approval_record_sha: ${{ steps.identity.outputs.approval_record_sha }}
+      approved_registry: ${{ steps.identity.outputs.approved_registry }}
+      approved_auth_posture: ${{ steps.identity.outputs.approved_auth_posture }}
+    env:
+      APPROVED_SHA: ${{ inputs.approved_sha || vars.SHIPPER_APPROVED_RELEASE_SHA }}
+      APPROVED_TREE: ${{ inputs.approved_tree || vars.SHIPPER_APPROVED_RELEASE_TREE }}
+      APPROVED_VERSION: ${{ inputs.approved_version || vars.SHIPPER_APPROVED_RELEASE_VERSION }}
+      APPROVAL_RECORD_REF: ${{ inputs.approval_record_ref || vars.SHIPPER_APPROVAL_RECORD_REF }}
+      APPROVAL_RECORD_SHA: ${{ inputs.approval_record_sha || vars.SHIPPER_APPROVAL_RECORD_SHA }}
+      APPROVED_REGISTRY: ${{ inputs.approved_registry || vars.SHIPPER_APPROVED_REGISTRY }}
+      APPROVED_AUTH_POSTURE: ${{ inputs.approved_auth_posture || vars.SHIPPER_APPROVED_AUTH_POSTURE }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate approved source identity
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          args=(
+            --approved-sha "$APPROVED_SHA"
+            --approved-tree "$APPROVED_TREE"
+            --approved-version "$APPROVED_VERSION"
+            --approval-record-ref "$APPROVAL_RECORD_REF"
+            --approval-record-sha "$APPROVAL_RECORD_SHA"
+            --registry "$APPROVED_REGISTRY"
+            --auth-posture "$APPROVED_AUTH_POSTURE"
+          )
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            tag="$GITHUB_REF_NAME"
+            tag_date="$(git for-each-ref --format='%(creatordate:short)' "refs/tags/$tag")"
+            main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+            args+=(--tag "$tag" --tag-date "$tag_date" --main-sha "$main_sha")
+          fi
+          cargo xtask release-identity "${args[@]}"
+          printf 'approved_sha=%s\n' "$APPROVED_SHA" >> "$GITHUB_OUTPUT"
+          printf 'approved_tree=%s\n' "$APPROVED_TREE" >> "$GITHUB_OUTPUT"
+          printf 'approved_version=%s\n' "$APPROVED_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'approval_record_ref=%s\n' "$APPROVAL_RECORD_REF" >> "$GITHUB_OUTPUT"
+          printf 'approval_record_sha=%s\n' "$APPROVAL_RECORD_SHA" >> "$GITHUB_OUTPUT"
+          printf 'approved_registry=%s\n' "$APPROVED_REGISTRY" >> "$GITHUB_OUTPUT"
+          printf 'approved_auth_posture=%s\n' "$APPROVED_AUTH_POSTURE" >> "$GITHUB_OUTPUT"
+
+      - name: Retain sanitized identity evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-identity-gate
+          path: target/policy/release-identity.json
+          retention-days: 90
+
   # ---------------------------------------------------------------------------
   # Build per-platform release binaries. These are published as GitHub Release
   # assets AFTER crates.io publish succeeds. (On tag pushes only.)
@@ -61,9 +166,15 @@ jobs:
     name: Build ${{ matrix.target }}
     if: >-
       github.repository == 'EffortlessMetrics/shipper' &&
+      needs.release-identity-gate.result == 'success' &&
       (github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'binaries'))
+    needs: [release-identity-gate]
+    permissions:
+      contents: read
     runs-on: ${{ matrix.runner }}
+    env:
+      RUSTUP_TOOLCHAIN: "1.95.0"
     strategy:
       fail-fast: false
       matrix:
@@ -83,7 +194,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ needs.release-identity-gate.outputs.approved_sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
 
       - name: Record runner and target
         shell: bash
@@ -93,10 +210,10 @@ jobs:
           echo "target=${{ matrix.target }}"
           rustc -vV
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Python for packaged executable proof
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          targets: ${{ matrix.target }}
+          python-version: '3.12'
 
       - name: Cache Cargo
         uses: actions/cache@v6
@@ -109,7 +226,7 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-release-
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p shipper
+        run: cargo build --locked --release --target ${{ matrix.target }} -p shipper
 
       - name: Package binary (Unix)
         if: matrix.archive != 'zip'
@@ -125,6 +242,51 @@ jobs:
           7z a ../../../shipper-${{ matrix.target }}.zip shipper.exe
           cd -
 
+      - name: Record binary checksum and source identity
+        shell: bash
+        env:
+          APPROVED_SHA: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          APPROVED_TREE: ${{ needs.release-identity-gate.outputs.approved_tree }}
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            artifact="shipper-${{ matrix.target }}.zip"
+          else
+            artifact="shipper-${{ matrix.target }}.tar.gz"
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$artifact" > "$artifact.sha256"
+          else
+            shasum -a 256 "$artifact" > "$artifact.sha256"
+          fi
+          printf '%s\n' \
+            '{' \
+            "  \"schema_version\": \"shipper.release_binary.v1\"," \
+            "  \"source_sha\": \"$APPROVED_SHA\"," \
+            "  \"source_tree\": \"$APPROVED_TREE\"," \
+            "  \"target\": \"${{ matrix.target }}\"," \
+            "  \"runner\": \"${{ matrix.runner }}\"," \
+            "  \"artifact\": \"$artifact\"," \
+            '  "retention_days": 7' \
+            '}' \
+            > "$artifact.metadata.json"
+
+      - name: Smoke packaged release executable
+        shell: bash
+        env:
+          APPROVED_SHA: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          APPROVED_TREE: ${{ needs.release-identity-gate.outputs.approved_tree }}
+          APPROVED_VERSION: ${{ needs.release-identity-gate.outputs.approved_version }}
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_binary.py smoke \
+            --target "${{ matrix.target }}" \
+            --archive "shipper-${{ matrix.target }}.${{ matrix.archive }}" \
+            --approved-sha "$APPROVED_SHA" \
+            --approved-tree "$APPROVED_TREE" \
+            --approved-version "$APPROVED_VERSION" \
+            --output "shipper-${{ matrix.target }}.${{ matrix.archive }}.smoke.json"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -133,17 +295,115 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------------
-  # MSRV sanity check gates the publish train. The published crates declare
-  # rust-version = 1.95; the publish job should not run if MSRV is broken.
+  # Verify that every uploaded binary artifact is still bound to the approved
+  # source identity before publication can begin. This catches missing,
+  # substituted, or checksum-mismatched artifacts and requires retained proof
+  # that each exact archive executable ran on its matching native host.
   # ---------------------------------------------------------------------------
-  msrv-gate:
-    name: MSRV gate (1.95)
-    if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
+  verify-binaries:
+    name: Verify release binaries
+    if: >-
+      github.repository == 'EffortlessMetrics/shipper' &&
+      needs.release-identity-gate.result == 'success' &&
+      needs.build-binaries.result == 'success' &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'binaries'))
+    needs: [release-identity-gate, build-binaries]
+    permissions:
+      contents: read
+      actions: read
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.release-identity-gate.outputs.approved_sha }}
+
+      - name: Install Python for packaged executable proof
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: shipper-*
+
+      - name: Verify binary identity and checksums
+        shell: bash
+        env:
+          APPROVED_SHA: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          APPROVED_TREE: ${{ needs.release-identity-gate.outputs.approved_tree }}
+          APPROVED_VERSION: ${{ needs.release-identity-gate.outputs.approved_version }}
+        run: |
+          set -euo pipefail
+          specs=(
+            'x86_64-unknown-linux-gnu|tar.gz'
+            'x86_64-apple-darwin|tar.gz'
+            'aarch64-apple-darwin|tar.gz'
+            'x86_64-pc-windows-msvc|zip'
+          )
+          for spec in "${specs[@]}"; do
+            IFS='|' read -r target extension <<< "$spec"
+            directory="artifacts/shipper-$target"
+            artifact="shipper-$target.$extension"
+            metadata="$directory/$artifact.metadata.json"
+            checksum="$directory/$artifact.sha256"
+            test -f "$directory/$artifact" || { echo "::error::missing binary artifact $artifact"; exit 1; }
+            test -f "$metadata" || { echo "::error::missing binary metadata $metadata"; exit 1; }
+            test -f "$checksum" || { echo "::error::missing binary checksum $checksum"; exit 1; }
+            jq -e \
+              --arg sha "$APPROVED_SHA" \
+              --arg tree "$APPROVED_TREE" \
+              --arg target "$target" \
+              --arg artifact "$artifact" \
+              '.schema_version == "shipper.release_binary.v1" and
+               .source_sha == $sha and
+               .source_tree == $tree and
+               .target == $target and
+               .artifact == $artifact and
+               .runner != null and
+               .retention_days == 7' \
+              "$metadata" >/dev/null
+            (cd "$directory" && sha256sum --check "$(basename "$checksum")")
+          done
+          python scripts/release/verify_binary.py aggregate \
+            --artifacts artifacts \
+            --approved-sha "$APPROVED_SHA" \
+            --approved-tree "$APPROVED_TREE" \
+            --approved-version "$APPROVED_VERSION" \
+            --output target/policy/release-binary-smoke.json
+
+      - name: Retain packaged executable verification
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-binary-smoke
+          path: target/policy/release-binary-smoke.json
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------
+  # MSRV sanity check gates the publish train. The published crates declare
+  # rust-version = 1.95; the publish job should not run if MSRV is broken.
+  # ---------------------------------------------------------------------------
+  msrv-gate:
+    name: MSRV gate (1.95)
+    if: >-
+      github.repository == 'EffortlessMetrics/shipper' &&
+      github.event_name == 'push' &&
+      needs.release-identity-gate.result == 'success'
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
+    needs: [release-identity-gate]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          fetch-depth: 0
       - name: Install Rust (MSRV)
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -170,12 +430,21 @@ jobs:
   # ---------------------------------------------------------------------------
   policy-gate:
     name: Policy gate (no-panic + invariants)
-    if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
+    if: >-
+      github.repository == 'EffortlessMetrics/shipper' &&
+      github.event_name == 'push' &&
+      needs.release-identity-gate.result == 'success'
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
+    needs: [release-identity-gate]
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -201,6 +470,78 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
+  # Reversible exact-source proof. Publication cannot start unless this gate,
+  # the MSRV/policy gates, and every binary matrix child succeed.
+  # ---------------------------------------------------------------------------
+  release-proof-gate:
+    name: Reversible release proof
+    if: >-
+      github.repository == 'EffortlessMetrics/shipper' &&
+      github.event_name == 'push' &&
+      needs.release-identity-gate.result == 'success'
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
+    needs: [release-identity-gate]
+    permissions:
+      contents: read
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-release-proof-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-release-proof-
+
+      - name: Run reversible release proof
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/shipper-release-proof-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo nextest run --workspace --all-targets --all-features --locked --profile ci
+          cargo test --workspace --doc --locked
+          cargo test -p xtask --all-targets --locked
+          cargo xtask package-surface
+          cargo xtask check-lint-policy
+          cargo xtask no-panic check --mode blocking
+          cargo xtask check-file-policy --mode blocking-allowlist
+          cargo xtask check-process-policy --mode blocking-allowlist
+          cargo xtask check-network-policy --mode blocking-allowlist
+          cargo xtask check-workflow-surfaces --mode blocking-allowlist
+          cargo xtask check-doc-contracts --mode advisory
+          cargo xtask policy-report
+          cargo package --workspace --locked --exclude xtask
+
+      - name: Retain reversible proof reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-reversible-proof
+          path: target/policy/
+          if-no-files-found: error
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------
   # The dogfood publish train.
   #
   # Execution order:
@@ -215,9 +556,8 @@ jobs:
   #       with exponential backoff on HTTP 429, post-publish readiness
   #       verification via sparse-index or API before advancing, and
   #       .shipper/state.json persistence after every step.
-  #   6.  Final post-publish verification: `cargo search` each published crate
-  #       at the tag's version to confirm registry visibility from a fresh
-  #       resolver.
+  #   6.  Final post-publish verification: prove every exact name@version,
+  #       install the public facade from crates.io, and smoke the installed CLI.
   #   7.  Upload the final .shipper/ state as an artifact regardless of outcome.
   #
   # Registry pacing:
@@ -240,17 +580,31 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-crates-io:
     name: Publish to crates.io (via shipper)
-    if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
+    if: >-
+      github.repository == 'EffortlessMetrics/shipper' &&
+      github.event_name == 'push' &&
+      needs.release-identity-gate.result == 'success' &&
+      needs.build-binaries.result == 'success' &&
+      needs.verify-binaries.result == 'success' &&
+      needs.release-proof-gate.result == 'success' &&
+      needs.msrv-gate.result == 'success' &&
+      needs.policy-gate.result == 'success'
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
-    needs: [msrv-gate, policy-gate]
+    needs: [release-identity-gate, build-binaries, verify-binaries, release-proof-gate, msrv-gate, policy-gate]
     environment: release
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 180
     outputs:
       publish_succeeded: ${{ steps.publish.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -277,8 +631,26 @@ jobs:
 
       # --- Step 2: plan -----------------------------------------------------
       - name: shipper plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           mkdir -p .shipper
+          tag_date="$(git for-each-ref --format='%(creatordate:short)' "refs/tags/$GITHUB_REF_NAME")"
+          main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          cargo xtask release-identity \
+            --approved-sha "${{ needs.release-identity-gate.outputs.approved_sha }}" \
+            --approved-tree "${{ needs.release-identity-gate.outputs.approved_tree }}" \
+            --approved-version "${{ needs.release-identity-gate.outputs.approved_version }}" \
+            --tag "$GITHUB_REF_NAME" \
+            --tag-date "$tag_date" \
+            --main-sha "$main_sha" \
+            --approval-record-ref "${{ needs.release-identity-gate.outputs.approval_record_ref }}" \
+            --approval-record-sha "${{ needs.release-identity-gate.outputs.approval_record_sha }}" \
+            --registry "${{ needs.release-identity-gate.outputs.approved_registry }}" \
+            --auth-posture "${{ needs.release-identity-gate.outputs.approved_auth_posture }}" \
+            --output .shipper/release-identity.json
           shipper plan \
             --registry crates-io \
             --state-dir .shipper \
@@ -332,16 +704,32 @@ jobs:
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: Record release auth evidence
+        id: auth-evidence
         if: always()
+        shell: bash
         env:
           SHIPPER_RELEASE_AUTH_ACTION_OUTCOME: ${{ steps.auth.outcome }}
           SHIPPER_RELEASE_AUTH_TOKEN_MINTED: ${{ steps.auth.outputs.token != '' }}
           SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
           SHIPPER_RELEASE_AUTH_RUN_ID: ${{ github.run_id }}
           SHIPPER_RELEASE_AUTH_RUN_ATTEMPT: ${{ github.run_attempt }}
-          SHIPPER_RELEASE_AUTH_COMMIT: ${{ github.sha }}
+          SHIPPER_RELEASE_AUTH_EVENT_COMMIT: ${{ github.sha }}
+          APPROVED_SHA: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          APPROVED_TREE: ${{ needs.release-identity-gate.outputs.approved_tree }}
         run: |
+          set -euo pipefail
+          evidence=.shipper/auth-evidence.json
+          # A resume may have restored a predecessor's receipt at this path.
+          rm -f -- "$evidence"
+          commit="$(git rev-parse --verify HEAD)"
+          tree="$(git rev-parse --verify 'HEAD^{tree}')"
+          if [[ "$commit" != "${APPROVED_SHA:-}" || "$tree" != "${APPROVED_TREE:-}" ]]; then
+            echo "::error::Auth evidence checkout SHA/tree does not match approval"
+            exit 1
+          fi
           mkdir -p .shipper
+          temporary="$(mktemp "${evidence}.XXXXXX")"
+          trap 'rm -f -- "$temporary"' EXIT
           token_minted="${SHIPPER_RELEASE_AUTH_TOKEN_MINTED:-false}"
           fallback_configured="${SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED:-false}"
           fallback_used=false
@@ -359,7 +747,9 @@ jobs:
             '  "job": "publish-crates-io",' \
             "  \"run_id\": \"${SHIPPER_RELEASE_AUTH_RUN_ID}\"," \
             "  \"run_attempt\": \"${SHIPPER_RELEASE_AUTH_RUN_ATTEMPT}\"," \
-            "  \"commit\": \"${SHIPPER_RELEASE_AUTH_COMMIT}\"," \
+            "  \"commit\": \"${commit}\"," \
+            "  \"tree\": \"${tree}\"," \
+            "  \"workflow_event_commit\": \"${SHIPPER_RELEASE_AUTH_EVENT_COMMIT}\"," \
             '  "environment": "release",' \
             '  "auth_action": {' \
             '    "name": "rust-lang/crates-io-auth-action@v1",' \
@@ -375,8 +765,27 @@ jobs:
             '    "token values are intentionally omitted",' \
             '    "crates.io-side trusted-publisher registration is not proven by this artifact"' \
             '  ]' \
-            '}' \
-            > .shipper/auth-evidence.json
+             '}' \
+             > "$temporary"
+          mv -- "$temporary" "$evidence"
+
+      - name: Enforce approved authentication posture
+        env:
+          APPROVED_AUTH_POSTURE: ${{ needs.release-identity-gate.outputs.approved_auth_posture }}
+          TOKEN_MINTED: ${{ steps.auth.outputs.token != '' }}
+          FALLBACK_CONFIGURED: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          actual_posture="missing"
+          if [ "$TOKEN_MINTED" = "true" ]; then
+            actual_posture="trusted_publishing"
+          elif [ "$FALLBACK_CONFIGURED" = "true" ]; then
+            actual_posture="fallback_secret"
+          fi
+          test "$actual_posture" = "$APPROVED_AUTH_POSTURE" || {
+            echo "::error::authentication posture drifted: approved=$APPROVED_AUTH_POSTURE actual=$actual_posture"
+            exit 1
+          }
 
       # --- Step 4: preflight ------------------------------------------------
       # `--policy safe` enables ownership checks. For existing crates
@@ -436,8 +845,8 @@ jobs:
       - name: Verify crates on crates.io
         if: steps.publish.outcome == 'success'
         run: |
-          # Ask cargo to resolve each published crate from a fresh cache.
           set -euo pipefail
+          version="${{ needs.release-identity-gate.outputs.approved_version }}"
           CRATES=(
             shipper-duration
             shipper-retry
@@ -454,10 +863,46 @@ jobs:
             shipper
           )
           for c in "${CRATES[@]}"; do
-            echo "::group::cargo search $c"
-            cargo search "$c" --limit 1
+            echo "::group::crates.io exact version $c@$version"
+            api_url="https://crates.io/api/v1/crates/$c/$version"
+            if api_json="$(curl --fail --location --silent --show-error --retry 3 "$api_url")" \
+              && jq -e --arg c "$c" --arg version "$version" \
+                '.version.name == $c and .version.num == $version and .version.yanked == false' \
+                <<<"$api_json" >/dev/null; then
+              echo "verified through crates.io API: $c@$version"
+            else
+              lower="${c,,}"
+              case "${#lower}" in
+                1) index_path="1/$lower" ;;
+                2) index_path="2/$lower" ;;
+                3) index_path="3/${lower:0:1}/$lower" ;;
+                *) index_path="${lower:0:2}/${lower:2:2}/$lower" ;;
+              esac
+              index_jsonl="$(curl --fail --location --silent --show-error --retry 3 \
+                "https://index.crates.io/$index_path")" || {
+                echo "::error::crates.io API and sparse-index lookup failed: $c@$version"
+                exit 1
+              }
+              jq -s -e --arg version "$version" \
+                'any(.[]; .vers == $version and .yanked == false)' \
+                <<<"$index_jsonl" >/dev/null || {
+                echo "::error::exact crates.io version missing or yanked: $c@$version"
+                exit 1
+              }
+              echo "verified through sparse index: $c@$version"
+            fi
             echo "::endgroup::"
           done
+
+          install_root="$RUNNER_TEMP/shipper-public-install"
+          cargo install shipper --version "$version" --locked --root "$install_root"
+          "$install_root/bin/shipper" --version
+          "$install_root/bin/shipper" doctor --help >/dev/null
+          "$install_root/bin/shipper" plan --help >/dev/null
+          "$install_root/bin/shipper" preflight --help >/dev/null
+          "$install_root/bin/shipper" publish --help >/dev/null
+          "$install_root/bin/shipper" resume --help >/dev/null
+          "$install_root/bin/shipper" status --help >/dev/null
 
       # --- Step 7: always persist final .shipper/ state --------------------
       - name: Upload .shipper/ (final state)
@@ -475,13 +920,27 @@ jobs:
   # ---------------------------------------------------------------------------
   create-release:
     name: Create GitHub Release
-    if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'push'
+    if: >-
+      github.repository == 'EffortlessMetrics/shipper' &&
+      github.event_name == 'push' &&
+      needs.release-identity-gate.result == 'success' &&
+      needs.build-binaries.result == 'success' &&
+      needs.verify-binaries.result == 'success' &&
+      needs.publish-crates-io.result == 'success'
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
-    needs: [build-binaries, publish-crates-io]
+    needs: [release-identity-gate, build-binaries, verify-binaries, publish-crates-io]
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          fetch-depth: 0
+
+      - name: Verify reviewed release notes
+        run: test -f "RELEASE_NOTES_v${{ needs.release-identity-gate.outputs.approved_version }}.md"
 
       - name: Download binary artifacts
         uses: actions/download-artifact@v8
@@ -510,8 +969,12 @@ jobs:
           files: |
             artifacts/**/shipper-*.tar.gz
             artifacts/**/shipper-*.zip
+            artifacts/**/shipper-*.sha256
+            artifacts/**/shipper-*.metadata.json
+            artifacts/**/shipper-*.smoke.json
             artifacts/shipper-release-state.tar.gz
-          generate_release_notes: true
+          body_path: RELEASE_NOTES_v${{ needs.release-identity-gate.outputs.approved_version }}.md
+          generate_release_notes: false
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta') }}
 
@@ -524,7 +987,11 @@ jobs:
   # ---------------------------------------------------------------------------
   release-rehearse:
     name: Release rehearse (plan + preflight dry-run)
-    if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'rehearse'
+    if: >-
+      github.repository == 'EffortlessMetrics/shipper' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.mode == 'rehearse' &&
+      needs.release-identity-gate.result == 'success'
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
@@ -537,11 +1004,16 @@ jobs:
     # here means rehearsal fails fast on the same scope errors prod
     # would hit. See #96 review discussion.
     environment: release
+    needs: [release-identity-gate]
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -568,6 +1040,15 @@ jobs:
       - name: shipper plan (verbose)
         run: |
           mkdir -p .shipper
+          cargo xtask release-identity \
+            --approved-sha "${{ needs.release-identity-gate.outputs.approved_sha }}" \
+            --approved-tree "${{ needs.release-identity-gate.outputs.approved_tree }}" \
+            --approved-version "${{ needs.release-identity-gate.outputs.approved_version }}" \
+            --approval-record-ref "${{ needs.release-identity-gate.outputs.approval_record_ref }}" \
+            --approval-record-sha "${{ needs.release-identity-gate.outputs.approval_record_sha }}" \
+            --registry "${{ needs.release-identity-gate.outputs.approved_registry }}" \
+            --auth-posture "${{ needs.release-identity-gate.outputs.approved_auth_posture }}" \
+            --output .shipper/release-identity.json
           shipper plan \
             --registry crates-io \
             --state-dir .shipper \
@@ -592,16 +1073,32 @@ jobs:
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: Record release auth evidence
+        id: auth-evidence
         if: always()
+        shell: bash
         env:
           SHIPPER_RELEASE_AUTH_ACTION_OUTCOME: ${{ steps.auth.outcome }}
           SHIPPER_RELEASE_AUTH_TOKEN_MINTED: ${{ steps.auth.outputs.token != '' }}
           SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
           SHIPPER_RELEASE_AUTH_RUN_ID: ${{ github.run_id }}
           SHIPPER_RELEASE_AUTH_RUN_ATTEMPT: ${{ github.run_attempt }}
-          SHIPPER_RELEASE_AUTH_COMMIT: ${{ github.sha }}
+          SHIPPER_RELEASE_AUTH_EVENT_COMMIT: ${{ github.sha }}
+          APPROVED_SHA: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          APPROVED_TREE: ${{ needs.release-identity-gate.outputs.approved_tree }}
         run: |
+          set -euo pipefail
+          evidence=.shipper/auth-evidence.json
+          # A resume may have restored a predecessor's receipt at this path.
+          rm -f -- "$evidence"
+          commit="$(git rev-parse --verify HEAD)"
+          tree="$(git rev-parse --verify 'HEAD^{tree}')"
+          if [[ "$commit" != "${APPROVED_SHA:-}" || "$tree" != "${APPROVED_TREE:-}" ]]; then
+            echo "::error::Auth evidence checkout SHA/tree does not match approval"
+            exit 1
+          fi
           mkdir -p .shipper
+          temporary="$(mktemp "${evidence}.XXXXXX")"
+          trap 'rm -f -- "$temporary"' EXIT
           token_minted="${SHIPPER_RELEASE_AUTH_TOKEN_MINTED:-false}"
           fallback_configured="${SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED:-false}"
           fallback_used=false
@@ -619,7 +1116,9 @@ jobs:
             '  "job": "release-rehearse",' \
             "  \"run_id\": \"${SHIPPER_RELEASE_AUTH_RUN_ID}\"," \
             "  \"run_attempt\": \"${SHIPPER_RELEASE_AUTH_RUN_ATTEMPT}\"," \
-            "  \"commit\": \"${SHIPPER_RELEASE_AUTH_COMMIT}\"," \
+            "  \"commit\": \"${commit}\"," \
+            "  \"tree\": \"${tree}\"," \
+            "  \"workflow_event_commit\": \"${SHIPPER_RELEASE_AUTH_EVENT_COMMIT}\"," \
             '  "environment": "release",' \
             '  "auth_action": {' \
             '    "name": "rust-lang/crates-io-auth-action@v1",' \
@@ -636,7 +1135,8 @@ jobs:
             '    "crates.io-side trusted-publisher registration is not proven by this artifact"' \
             '  ]' \
             '}' \
-            > .shipper/auth-evidence.json
+            > "$temporary"
+          mv -- "$temporary" "$evidence"
 
       # Preflight against crates.io without publishing. A token isn't strictly
       # required here (ownership checks are best-effort), but supply it if the
@@ -665,8 +1165,8 @@ jobs:
   #
   # Inputs:
   #   mode            = "resume"
-  #   artifact_run_id = the workflow run ID that uploaded shipper-state-final
-  #                     or shipper-state-preflight from a failed attempt
+  #   artifact_run_id = the prior publish or resume workflow run ID that
+  #                     uploaded shipper-state-final (never a preflight artifact)
   #   ref             = the exact tag/SHA that failed (MUST match the plan ID
   #                     in state.json or shipper will refuse to resume)
   #
@@ -676,16 +1176,26 @@ jobs:
   # ---------------------------------------------------------------------------
   release-resume:
     name: Release resume
-    if: github.repository == 'EffortlessMetrics/shipper' && github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'resume'
+    if: >-
+      github.repository == 'EffortlessMetrics/shipper' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.mode == 'resume' &&
+      needs.release-identity-gate.result == 'success'
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-large, trusted-pr]
     environment: release
+    needs: [release-identity-gate]
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -709,10 +1219,39 @@ jobs:
         run: |
           shipper --version
 
+      - name: Select prior .shipper/ state artifact
+        id: prior-state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::resume requires a positive artifact_run_id from the prior publish or resume run"
+            exit 1
+          }
+          artifact_id="$(gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID/artifacts?per_page=100" | \
+            jq -er --argjson run_id "$ARTIFACT_RUN_ID" '
+              [.[].artifacts[] | select(.name == "shipper-state-final")] |
+              if length != 1 then
+                error("expected exactly one shipper-state-final artifact in the selected run; missing or ambiguous evidence")
+              elif .[0].expired != false then
+                error("selected shipper-state-final artifact is expired or has unknown expiry")
+              elif .[0].workflow_run.id != $run_id then
+                error("selected artifact does not belong to the requested run")
+              elif (.[0].id | type) != "number" or .[0].id <= 0 or .[0].id != (.[0].id | floor) then
+                error("selected artifact has an invalid ID")
+              else .[0].id end')"
+          printf 'artifact_id=%s\n' "$artifact_id" >> "$GITHUB_OUTPUT"
+          printf 'Resume predecessor: run `%s`, artifact `%s` (`shipper-state-final`).\n' \
+            "$ARTIFACT_RUN_ID" "$artifact_id" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Download prior .shipper/ state
         uses: actions/download-artifact@v8
         with:
-          name: shipper-state-final
+          artifact-ids: ${{ steps.prior-state.outputs.artifact_id }}
           path: .shipper/
           run-id: ${{ github.event.inputs.artifact_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -721,6 +1260,16 @@ jobs:
         run: |
           ls -la .shipper/
           [ -f .shipper/state.json ] || { echo "::error::.shipper/state.json missing from recovered artifact"; exit 1; }
+          [ -f .shipper/release-identity.json ] || { echo "::error::.shipper/release-identity.json missing from recovered artifact"; exit 1; }
+          cargo xtask release-identity \
+            --approved-sha "${{ needs.release-identity-gate.outputs.approved_sha }}" \
+            --approved-tree "${{ needs.release-identity-gate.outputs.approved_tree }}" \
+            --approved-version "${{ needs.release-identity-gate.outputs.approved_version }}" \
+            --approval-record-ref "${{ needs.release-identity-gate.outputs.approval_record_ref }}" \
+            --approval-record-sha "${{ needs.release-identity-gate.outputs.approval_record_sha }}" \
+            --registry "${{ needs.release-identity-gate.outputs.approved_registry }}" \
+            --auth-posture "${{ needs.release-identity-gate.outputs.approved_auth_posture }}" \
+            --artifact .shipper/release-identity.json
 
       # Mint a fresh Trusted Publishing token for the resume (previous run's
       # token is already expired). Falls back to secret if OIDC unavailable.
@@ -738,16 +1287,32 @@ jobs:
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: Record release auth evidence
+        id: auth-evidence
         if: always()
+        shell: bash
         env:
           SHIPPER_RELEASE_AUTH_ACTION_OUTCOME: ${{ steps.auth.outcome }}
           SHIPPER_RELEASE_AUTH_TOKEN_MINTED: ${{ steps.auth.outputs.token != '' }}
           SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
           SHIPPER_RELEASE_AUTH_RUN_ID: ${{ github.run_id }}
           SHIPPER_RELEASE_AUTH_RUN_ATTEMPT: ${{ github.run_attempt }}
-          SHIPPER_RELEASE_AUTH_COMMIT: ${{ github.sha }}
+          SHIPPER_RELEASE_AUTH_EVENT_COMMIT: ${{ github.sha }}
+          APPROVED_SHA: ${{ needs.release-identity-gate.outputs.approved_sha }}
+          APPROVED_TREE: ${{ needs.release-identity-gate.outputs.approved_tree }}
         run: |
+          set -euo pipefail
+          evidence=.shipper/auth-evidence.json
+          # A resume may have restored a predecessor's receipt at this path.
+          rm -f -- "$evidence"
+          commit="$(git rev-parse --verify HEAD)"
+          tree="$(git rev-parse --verify 'HEAD^{tree}')"
+          if [[ "$commit" != "${APPROVED_SHA:-}" || "$tree" != "${APPROVED_TREE:-}" ]]; then
+            echo "::error::Auth evidence checkout SHA/tree does not match approval"
+            exit 1
+          fi
           mkdir -p .shipper
+          temporary="$(mktemp "${evidence}.XXXXXX")"
+          trap 'rm -f -- "$temporary"' EXIT
           token_minted="${SHIPPER_RELEASE_AUTH_TOKEN_MINTED:-false}"
           fallback_configured="${SHIPPER_RELEASE_AUTH_FALLBACK_CONFIGURED:-false}"
           fallback_used=false
@@ -765,7 +1330,9 @@ jobs:
             '  "job": "release-resume",' \
             "  \"run_id\": \"${SHIPPER_RELEASE_AUTH_RUN_ID}\"," \
             "  \"run_attempt\": \"${SHIPPER_RELEASE_AUTH_RUN_ATTEMPT}\"," \
-            "  \"commit\": \"${SHIPPER_RELEASE_AUTH_COMMIT}\"," \
+            "  \"commit\": \"${commit}\"," \
+            "  \"tree\": \"${tree}\"," \
+            "  \"workflow_event_commit\": \"${SHIPPER_RELEASE_AUTH_EVENT_COMMIT}\"," \
             '  "environment": "release",' \
             '  "auth_action": {' \
             '    "name": "rust-lang/crates-io-auth-action@v1",' \
@@ -781,8 +1348,27 @@ jobs:
             '    "token values are intentionally omitted",' \
             '    "crates.io-side trusted-publisher registration is not proven by this artifact"' \
             '  ]' \
-            '}' \
-            > .shipper/auth-evidence.json
+             '}' \
+             > "$temporary"
+          mv -- "$temporary" "$evidence"
+
+      - name: Enforce approved authentication posture
+        env:
+          APPROVED_AUTH_POSTURE: ${{ needs.release-identity-gate.outputs.approved_auth_posture }}
+          TOKEN_MINTED: ${{ steps.auth.outputs.token != '' }}
+          FALLBACK_CONFIGURED: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          actual_posture="missing"
+          if [ "$TOKEN_MINTED" = "true" ]; then
+            actual_posture="trusted_publishing"
+          elif [ "$FALLBACK_CONFIGURED" = "true" ]; then
+            actual_posture="fallback_secret"
+          fi
+          test "$actual_posture" = "$APPROVED_AUTH_POSTURE" || {
+            echo "::error::authentication posture drifted: approved=$APPROVED_AUTH_POSTURE actual=$actual_posture"
+            exit 1
+          }
 
       - name: shipper resume
         env:
@@ -805,7 +1391,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: shipper-state-resume-${{ github.run_id }}
-          path: .shipper/
+          name: shipper-state-final
+          path: |
+            .shipper/
+            ${{ steps.auth-evidence.outcome != 'success' && '!.shipper/auth-evidence.json' || '' }}
           include-hidden-files: true
           retention-days: 90

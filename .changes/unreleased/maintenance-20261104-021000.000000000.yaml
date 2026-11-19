@@ -1,0 +1,6 @@
+kind: maintenance
+body: Classify the reconciliation scheduling test helper using the existing test-file convention, without changing runtime behavior or growing the no-panic baseline.
+time: 2026-11-04T02:10:00Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance

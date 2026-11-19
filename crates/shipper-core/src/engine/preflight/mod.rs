@@ -6,10 +6,12 @@
 
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use chrono::Utc;
 
-use crate::engine::{Reporter, init_registry_client, policy_effects};
+use crate::engine::{
+    Reporter, init_registry_client, policy_effects, require_strict_ownership_token,
+};
 use crate::git;
 use crate::ops::auth;
 use crate::plan::PlannedWorkspace;
@@ -89,23 +91,23 @@ pub(in crate::engine) fn run(
     event_log.clear();
 
     let token = auth::resolve_token(&ws.plan.registry.name)?;
+    match require_strict_ownership_token(&effects, token.as_deref()) {
+        Ok(()) => {}
+        Err(error) => {
+            event_log.record(PublishEvent {
+                timestamp: Utc::now(),
+                event_type: EventType::PreflightComplete {
+                    finishability: Finishability::Failed,
+                },
+                package: "all".to_string(),
+            });
+            flush_events(&event_log, &events_path)?;
+            return Err(error);
+        }
+    }
     let token_detected = token.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
     let auth_type = auth::detect_auth_type_from_token(token.as_deref());
     warn_if_token_auth_overrides_oidc(&ws.plan.registry.name, &auth_type, reporter);
-
-    if effects.strict_ownership && !token_detected {
-        event_log.record(PublishEvent {
-            timestamp: Utc::now(),
-            event_type: EventType::PreflightComplete {
-                finishability: Finishability::Failed,
-            },
-            package: "all".to_string(),
-        });
-        flush_events(&event_log, &events_path)?;
-        bail!(
-            "strict ownership requested but no token found (set CARGO_REGISTRY_TOKEN or run cargo login)"
-        );
-    }
 
     let dry_run_outcome = dry_run::execute(ws, opts, &effects, &state_dir, reporter);
 

@@ -1,54 +1,59 @@
 # Clippy Policy
 
-This document describes the Clippy lint policy for `shipper`. The authoritative ledger is `policy/clippy-lints.toml`; this document explains the rationale and operating rules.
+This document describes the workspace lint policy for `shipper`. The authoritative Clippy ledger is `policy/clippy-lints.toml`; this document explains the rationale and operating rules. `[workspace.lints]` in `Cargo.toml` is the executable configuration.
 
 ## Goals
 
-1. Keep the codebase warning-free under CI (`RUSTFLAGS=-Dwarnings`, `cargo clippy -- -D warnings`).
+1. Keep the codebase warning-free under CI (`cargo clippy -- -D warnings`).
 2. Activate new lints deliberately, with a policy record, not opportunistically.
 3. Track planned lints against the MSRV that enables them.
-4. Never use broad category allows or test carveouts.
+4. Reject fabricated or unavailable lint names before they can become policy.
+5. Never use broad category allows or test carveouts.
 
 ## Active Lints
 
-The following lints are active at the workspace level in `Cargo.toml`:
+The following entries are active in the policy ledger and workspace lint configuration:
 
 | Lint | Level | Class | Reason |
 |---|---|---|---|
-| `rust::unsafe_code` | forbid | unsafe-memory | shipper has no unsafe code |
+| `rust::unsafe_code` | forbid | unsafe-memory | Shipper has no unsafe code |
 | `clippy::dbg_macro` | deny | hygiene | Debug macros are not a reviewable diagnostics path |
 | `clippy::todo` | deny | panic | TODO execution paths are not allowed |
 | `clippy::unimplemented` | deny | panic | Unimplemented execution paths are not allowed |
+| `clippy::same_length_and_capacity` | deny | correctness | Catch raw-parts reconstruction mistakes |
+| `clippy::manual_ilog2` | warn | style | Prefer the standard integer logarithm helper |
+| `clippy::decimal_bitwise_operands` | warn | correctness | Make bit masks visually inspectable |
+| `clippy::needless_type_cast` | warn | style | Avoid stale numeric type drift |
+| `clippy::manual_checked_ops` | warn | correctness | Prefer checked arithmetic over manual guards |
+| `clippy::manual_take` | warn | style | Use the standard ownership helper |
+| `clippy::unnecessary_trailing_comma` | warn | style | Keep format-macro calls clean |
+| `clippy::disallowed_fields` | deny | boundary | Reject access to any fields configured as protected seams |
+| `clippy::duration_suboptimal_units` | warn | style | Express durations using the largest available unit |
 
-## Planned Lints (MSRV-gated)
+Warn-level entries are still blocking in CI because Clippy runs with `-D warnings`.
 
-These lints are tracked in `policy/clippy-lints.toml` under `[[planned]]`. They activate when the MSRV reaches the stated minimum.
+## Planned and Rejected Lints
 
-| Lint | Level | Min MSRV | Reason |
-|---|---|---|---|
-| `clippy::same_length_and_capacity` | deny | 1.94 | Catch raw-parts reconstruction mistakes |
-| `clippy::manual_ilog2` | warn | 1.94 | Prefer standard integer log helper |
-| `clippy::decimal_bitwise_operands` | warn | 1.94 | Make bit masks visually inspectable |
-| `clippy::needless_type_cast` | warn | 1.94 | Avoid stale numeric type drift |
-| `clippy::manual_checked_ops` | warn | 1.95 | Prefer checked arithmetic over manual guards |
-| `clippy::manual_take` | warn | 1.95 | Use standard ownership helper |
-| `clippy::manual_pop_if` | warn | 1.95 | Use predicate-and-pop collection APIs |
-| `clippy::duration_suboptimal_units` | warn | 1.95 | Make durations legible |
-| `clippy::unnecessary_trailing_comma` | warn | 1.95 | Keep format macro calls clean |
-| `clippy::disallowed_fields` | deny | 1.95 | Ban direct field access across protected seams (pending seam configuration) |
+There are currently no `[[planned]]` entries in `policy/clippy-lints.toml`. A future planned lint must name its minimum MSRV, expected fallout, owner, and activation condition before it is added.
+
+`clippy::manual_pop_if` appeared in the original Rust 1.95 planning issue but is not a Clippy lint in Rust 1.95. It is deliberately absent. `rust::unknown_lints = "deny"` makes an unavailable or fabricated lint fail the activation change rather than becoming decorative policy.
 
 ## `disallowed_fields` Protected Seams
 
-`disallowed_fields` is held in planned status until the following seams are explicitly configured:
+`clippy::disallowed_fields` is active at `deny`. `clippy.toml` does not currently configure any `disallowed-fields` entries, so the lint has no protected field list to enforce yet.
+
+Candidate seams remain:
 
 - `state.json` / `events.jsonl` projection fields
-- Receipt summary internals
-- Plan ID / workspace fingerprint fields
-- Registry token / auth policy surfaces
-- Readiness verification outcomes
-- Ambiguous publish reconciliation state
-- Encrypted state internals
-- Output sanitizer internals
+- receipt summary internals
+- plan ID / workspace fingerprint fields
+- registry token / auth policy surfaces
+- readiness verification outcomes
+- ambiguous publish reconciliation state
+- encrypted state internals
+- output sanitizer internals
+
+Adding a protected field is a separate reviewed policy change. It must identify the owning abstraction, migrate legitimate callers first, add a negative fixture proving direct access is rejected, and update both `clippy.toml` and the ledger. The lint being active is not evidence that any particular seam is already protected.
 
 ## Suppression Policy
 
@@ -60,12 +65,12 @@ The `cargo xtask check-clippy-exceptions` command enforces that exceptions have 
 
 ## MSRV Alignment
 
-The `clippy.toml` file carries `msrv = "<current MSRV>"`. The `policy/clippy-lints.toml` file carries `msrv = "<current MSRV>"`. These three values must agree with `[workspace.package] rust-version` in `Cargo.toml`. The `cargo xtask check-lint-policy` command verifies alignment.
+The `clippy.toml` file carries `msrv = "<current MSRV>"`. The `policy/clippy-lints.toml` file carries the same value. Both must agree with `[workspace.package] rust-version` in `Cargo.toml`. The `cargo xtask check-lint-policy` command verifies alignment and checks configured workspace Clippy lints against the ledger.
 
 ## CI Behavior
 
-CI runs `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`. Since `RUSTFLAGS=-Dwarnings` is also set, any warn-level lint that fires breaks CI. Planned lints must therefore not be activated until the code is clean, or every warning must be fixed in the activation PR. There are no per-PR carveouts.
+CI runs `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`. Any active warn- or deny-level lint that fires therefore breaks the required Rust lane. Planned lints must not be placed in `[workspace.lints.clippy]` until their activation PR has measured and resolved the fallout. There are no per-PR test carveouts.
 
 ## Cognitive Complexity
 
-The `clippy.toml` carries `cognitive-complexity-threshold = 40`. Functions that exceed this threshold must be refactored, not suppressed with an allow.
+The `clippy.toml` file carries `cognitive-complexity-threshold = 40`. Functions that exceed this threshold must be refactored rather than hidden behind a broad lint allow.

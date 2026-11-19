@@ -1,0 +1,6 @@
+kind: maintenance
+body: Reconcile historical safety-audit findings with landed development repairs and preserve native, cross-run, release-authority, and consumer-use proof boundaries in support and build-readiness guidance.
+time: 2026-11-02T07:12:16Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

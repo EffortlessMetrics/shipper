@@ -16,7 +16,7 @@ pub(in crate::doctor) struct EncryptionCheck {
     pub findings: Vec<Finding>,
 }
 
-pub(in crate::doctor) fn check(opts: &RuntimeOptions) -> Vec<Finding> {
+pub(in crate::doctor) fn check(opts: &RuntimeOptions) -> EncryptionCheck {
     let check = inspect(opts);
     if check.enabled {
         println!();
@@ -36,7 +36,7 @@ pub(in crate::doctor) fn check(opts: &RuntimeOptions) -> Vec<Finding> {
             }
         }
     }
-    check.findings
+    check
 }
 
 pub(in crate::doctor) fn inspect(opts: &RuntimeOptions) -> EncryptionCheck {

@@ -60,10 +60,15 @@ The upgrade path is the rehearsal registry ([#97](https://github.com/EffortlessM
 
 | Situation | `finishability` | Action |
 |---|---|---|
-| Everything green | `Proven` | Publish |
-| First publish of new crate; ownership can't be verified yet | `NotProven` | **Publish** — this is normal |
-| Token lacks ownership on an existing crate | `NotProven` | Fix ownership (`cargo owner --add`) or rotate token |
+| Everything green | `Proven` | Deliberately publish or rehearse with the same selected context |
+| First publish of new crate; ownership can't be verified yet | `NotProven` | **Deliberately publish or rehearse** with the same selection — this is normal |
+| Existing crate has an ownership gap | `NotProven` | Inspect authentication/ownership, fix it if needed, then rerun the same preflight |
 | Git dirty, dry-run failed, version taken, registry unreachable | `Failed` | Do not publish; fix the actual problem |
+
+The CLI serializes this distinction in `shipper.preflight.v1.outcome` and
+renders the same typed next action in human output. It intentionally omits an
+executable command when reconstructing one would lose manifest, package,
+configuration, registry, or rehearsal selection.
 
 ## See also
 

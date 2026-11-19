@@ -1,0 +1,6 @@
+kind: fixed
+body: Bound Windows Cargo process-tree and output cleanup with an invocation-owned Job Object and retain publish evidence on timeout or interruption. Rust consumers must handle the new process-evidence variants when matching events exhaustively.
+time: 2026-11-19T04:29:01Z
+custom:
+  Audience: Operators
+  Importance: Detailed

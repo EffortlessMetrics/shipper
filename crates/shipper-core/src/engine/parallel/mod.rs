@@ -8,11 +8,11 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::plan::PlannedWorkspace;
 use crate::registry::RegistryClient;
@@ -27,7 +27,8 @@ pub(crate) mod webhook;
 /// Re-exported for parallel publish wave planning.
 pub use crate::plan::chunking::chunk_by_max_concurrent;
 
-use flow::{LevelResumeAction, determine_level_resume_action, init_send_reporter};
+pub(crate) use flow::parallel_resume_start_level;
+use flow::{init_send_reporter, is_level_already_complete};
 use scheduler::run_publish_level;
 #[cfg(test)]
 use webhook::{WebhookEvent, maybe_send_event};
@@ -114,26 +115,31 @@ impl<'a> Reporter for HostReporterAdapter<'a> {
     }
 }
 
-pub(super) struct RetryWaitNotice {
-    pub(super) pkg_name: String,
-    pub(super) pkg_version: String,
-    pub(super) attempt: u32,
-    pub(super) max_attempts: u32,
-    pub(super) delay: Duration,
-    pub(super) reason: shipper_types::ErrorClass,
-    pub(super) message: String,
-    pub(super) started_at: Instant,
+struct RetryWaitNotice {
+    pkg_name: String,
+    pkg_version: String,
+    attempt: u32,
+    max_attempts: u32,
+    delay: Duration,
+    reason: shipper_types::ErrorClass,
+    message: String,
+    started_at: Instant,
+}
+
+enum ReporterMessage {
+    Info(String),
+    Warn(String),
+    Error(String),
+    RetryWait(RetryWaitNotice),
 }
 
 #[derive(Default)]
 pub(crate) struct SendReporter {
-    infos: Mutex<Vec<String>>,
-    warns: Mutex<Vec<String>>,
-    errors: Mutex<Vec<String>>,
-    retry_waits: Mutex<VecDeque<RetryWaitNotice>>,
+    messages: Mutex<VecDeque<ReporterMessage>>,
+    available: Condvar,
 }
 
-// The `Reporter` trait returns `()`/`Vec`, not `Result`, so poison cannot
+// The `Reporter` trait returns `()`, not `Result`, so poison cannot
 // propagate as a typed error. A poisoned reporter mutex means a publish
 // thread panicked mid-push; recovering the guard (possibly with a partial
 // buffer) and continuing is safer than panicking the orchestrator, which
@@ -141,25 +147,24 @@ pub(crate) struct SendReporter {
 // `events.jsonl`, not this in-memory buffer. See `flow.rs` for the typed
 // sites that CAN propagate poison as an error.
 impl SendReporter {
-    pub(crate) fn info(&self, msg: &str) {
-        self.infos
+    fn push(&self, message: ReporterMessage) {
+        self.messages
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(msg.to_string());
+            .push_back(message);
+        self.available.notify_one();
+    }
+
+    pub(crate) fn info(&self, msg: &str) {
+        self.push(ReporterMessage::Info(msg.to_string()));
     }
 
     pub(crate) fn warn(&self, msg: &str) {
-        self.warns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(msg.to_string());
+        self.push(ReporterMessage::Warn(msg.to_string()));
     }
 
     pub(crate) fn error(&self, msg: &str) {
-        self.errors
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(msg.to_string());
+        self.push(ReporterMessage::Error(msg.to_string()));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -173,67 +178,62 @@ impl SendReporter {
         reason: shipper_types::ErrorClass,
         message: &str,
     ) {
-        self.retry_waits
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push_back(RetryWaitNotice {
-                pkg_name: pkg_name.to_string(),
-                pkg_version: pkg_version.to_string(),
-                attempt,
-                max_attempts,
-                delay,
-                reason,
-                message: message.to_string(),
-                started_at: Instant::now(),
-            });
-        thread::sleep(delay);
+        let started_at = Instant::now();
+        self.push(ReporterMessage::RetryWait(RetryWaitNotice {
+            pkg_name: pkg_name.to_string(),
+            pkg_version: pkg_version.to_string(),
+            attempt,
+            max_attempts,
+            delay,
+            reason,
+            message: message.to_string(),
+            started_at,
+        }));
+        // Reporting and execution observe the same monotonic wait. The host
+        // may render a countdown, return immediately, or be slow; none of
+        // those choices owns or restarts the worker's retry delay.
+        thread::sleep(delay.saturating_sub(started_at.elapsed()));
     }
 
-    fn drain_infos(&self) -> Vec<String> {
-        std::mem::take(&mut *self.infos.lock().unwrap_or_else(|e| e.into_inner()))
+    fn drain_messages(&self) -> VecDeque<ReporterMessage> {
+        std::mem::take(&mut *self.messages.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
-    fn drain_warns(&self) -> Vec<String> {
-        std::mem::take(&mut *self.warns.lock().unwrap_or_else(|e| e.into_inner()))
-    }
-
-    fn drain_errors(&self) -> Vec<String> {
-        std::mem::take(&mut *self.errors.lock().unwrap_or_else(|e| e.into_inner()))
-    }
-
-    fn drain_retry_waits(&self) -> Vec<RetryWaitNotice> {
-        self.retry_waits
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .drain(..)
-            .collect()
+    pub(crate) fn wait_for_messages(&self) {
+        let messages = self.messages.lock().unwrap_or_else(|e| e.into_inner());
+        // The bound also lets schedulers observe worker completion or panic
+        // when there is no final message. No consumer callback holds this lock.
+        drop(
+            self.available
+                .wait_timeout_while(messages, Duration::from_millis(25), |queue| {
+                    queue.is_empty()
+                })
+                .unwrap_or_else(|e| e.into_inner()),
+        );
     }
 }
 
 pub(crate) fn replay_buffered_messages(reporter: &mut dyn Reporter, send_reporter: &SendReporter) {
-    for msg in send_reporter.drain_infos() {
-        reporter.info(&msg);
-    }
-    for msg in send_reporter.drain_warns() {
-        reporter.warn(&msg);
-    }
-    for msg in send_reporter.drain_errors() {
-        reporter.error(&msg);
-    }
-}
-
-pub(crate) fn drain_retry_waits(reporter: &mut dyn Reporter, send_reporter: &SendReporter) {
-    for notice in send_reporter.drain_retry_waits() {
-        let remaining = notice.delay.saturating_sub(notice.started_at.elapsed());
-        reporter.retry_wait(
-            &notice.pkg_name,
-            &notice.pkg_version,
-            notice.attempt,
-            notice.max_attempts,
-            remaining,
-            notice.reason,
-            &notice.message,
-        );
+    // Drain under one lock to preserve mixed-severity and retry-notice order.
+    // Release the lock before invoking potentially slow embedding callbacks.
+    for message in send_reporter.drain_messages() {
+        match message {
+            ReporterMessage::Info(message) => reporter.info(&message),
+            ReporterMessage::Warn(message) => reporter.warn(&message),
+            ReporterMessage::Error(message) => reporter.error(&message),
+            ReporterMessage::RetryWait(notice) => {
+                let remaining = notice.delay.saturating_sub(notice.started_at.elapsed());
+                reporter.retry_wait(
+                    &notice.pkg_name,
+                    &notice.pkg_version,
+                    notice.attempt,
+                    notice.max_attempts,
+                    remaining,
+                    notice.reason,
+                    &notice.message,
+                );
+            }
+        }
     }
 }
 
@@ -245,19 +245,18 @@ pub(crate) fn replay_buffered_messages_to_host(
     replay_buffered_messages(&mut adapter, send_reporter);
 }
 
-pub(crate) fn drain_retry_waits_to_host(
-    reporter: &mut dyn crate::engine::Reporter,
-    send_reporter: &SendReporter,
-) {
-    let mut adapter = HostReporterAdapter { inner: reporter };
-    drain_retry_waits(&mut adapter, send_reporter);
-}
-
 /// Run publish in parallel mode using `shipper`'s wrapped `RegistryClient`.
 ///
-/// This is the entry point called by `engine::run_publish`. It adapts the
-/// host crate's types (`crate::registry::RegistryClient`, `crate::engine::Reporter`)
-/// into the inner ones expected by the parallel engine.
+/// This lower-level entry point owns its invocation lock and validates retained
+/// evidence before notifications or workers. It reloads durable state under
+/// that ownership; supplied memory can initialize only a fresh, unattempted run.
+/// A caller already holding this invocation key is deliberately refused, even
+/// in the same process. Use `engine::run_publish` / `engine::run_resume` for the
+/// full execution lifecycle and receipt, or call this function without a
+/// separately held lock. The full orchestrator uses the private adapter below.
+/// Each admitted call records a new execution segment and completes coherent
+/// controlled-stop evidence on a recoverable failure. Success returns package
+/// receipts without writing a full receipt or an `ExecutionFinished` marker.
 ///
 /// Preserves the preconfigured registry client (including cache directory and
 /// transport configuration) while adapting host reporters for parallel
@@ -270,12 +269,63 @@ pub fn run_publish_parallel(
     reg: &RegistryClient,
     reporter: &mut dyn crate::engine::Reporter,
 ) -> Result<Vec<PackageReceipt>> {
+    crate::ops::process::interruption::check()?;
+    crate::config::validate_per_error_config(&opts.retry_per_error)?;
+    crate::engine::publish::admission::ensure_no_cleanup_hold(st)?;
+    // Direct calls always schedule complete dependency levels, independently
+    // of the flag used by the full orchestrator to select its scheduler.
+    let mut admission_opts = opts.clone();
+    admission_opts.parallel.enabled = true;
+    let require_existing =
+        crate::engine::publish::admission::precheck(ws, &admission_opts, state_dir, false)?;
+    if !require_existing {
+        crate::engine::publish::admission::validate_fresh_parallel_state(ws, st)
+            .context(crate::engine::PublishAdmissionError)?;
+    }
+    let (reservation, retained) = crate::engine::publish::admission::reserve_and_admit(
+        ws,
+        &admission_opts,
+        state_dir,
+        require_existing,
+    )?;
+    let fresh = retained.is_none();
+    let admitted = retained.unwrap_or_else(|| st.clone());
+    let _lock = reservation
+        .claim(Some(&ws.plan.plan_id))
+        .context(crate::engine::PublishAdmissionError)?;
+    if fresh {
+        crate::state::execution_state::save_state(state_dir, &admitted)?;
+    }
+    *st = admitted;
+    // This lower-level API owns start/controlled-stop evidence, but leaves
+    // successful receipt finalization to the full publish/resume orchestrator.
+    let events_path = events::events_path(state_dir);
+    let mut event_log = events::EventLog::new();
+    crate::engine::publish::bootstrap::record_execution_start(
+        ws,
+        opts,
+        &events_path,
+        &mut event_log,
+        chrono::Utc::now(),
+        &crate::ops::auth::collect_auth_evidence(&ws.plan.registry.name),
+        &reg.policy_evidence(),
+    )?;
     crate::engine::publish::notify_publish_started(ws, opts);
-    run_publish_parallel_without_start(ws, opts, st, state_dir, reg, reporter)
+    match run_publish_parallel_without_start(ws, opts, st, state_dir, reg, reporter) {
+        Ok(receipts) => Ok(receipts),
+        Err(error) => Err(crate::engine::publish::finalize::record_recoverable_stop(
+            error,
+            state_dir,
+            &events_path,
+            &mut event_log,
+            st,
+            reporter,
+        )?),
+    }
 }
 
-/// Host-reporter entry point for orchestration that has already emitted the
-/// run-level start notification.
+/// Private adapter for orchestration that already owns the invocation lock,
+/// admitted freshly loaded evidence, and emitted the run-start notification.
 pub(crate) fn run_publish_parallel_without_start(
     ws: &crate::plan::PlannedWorkspace,
     opts: &RuntimeOptions,
@@ -317,45 +367,25 @@ pub(crate) fn run_publish_parallel_inner(
 
     let mut all_receipts: Vec<PackageReceipt> = Vec::new();
 
-    // Track if we've reached the resume point if one was specified
-    let mut reached_resume_point = opts.resume_from.is_none();
+    let resume_start_level = parallel_resume_start_level(&levels, opts.resume_from.as_deref());
 
-    for level in &levels {
-        // If we haven't reached the resume point, check if it's in this level
-        if !reached_resume_point {
-            match determine_level_resume_action(
-                &level.packages,
-                &st_arc,
-                opts.resume_from.as_deref(),
-            )? {
-                LevelResumeAction::ReachedResumePoint => reached_resume_point = true,
-                LevelResumeAction::SkipAlreadyComplete => {
-                    reporter.info(&format!(
-                        "Level {}: already complete (skipping)",
-                        level.level
-                    ));
-                    record_terminal_resume_skips(
-                        &level.packages,
-                        &st_arc,
-                        &event_log,
-                        &events_path,
-                    )?;
-                    continue;
-                }
-                LevelResumeAction::SkipBeforeResumePoint(resume_point) => {
-                    reporter.warn(&format!(
-                        "Level {}: skipping (before resume point {})",
-                        level.level, resume_point
-                    ));
-                    record_terminal_resume_skips(
-                        &level.packages,
-                        &st_arc,
-                        &event_log,
-                        &events_path,
-                    )?;
-                    continue;
-                }
-            };
+    for (level_index, level) in levels.iter().enumerate() {
+        let before_resume_level = resume_start_level.is_none_or(|start| level_index < start);
+        if before_resume_level {
+            if is_level_already_complete(&level.packages, &st_arc)? {
+                reporter.info(&format!(
+                    "Level {}: already complete (skipping)",
+                    level.level
+                ));
+            } else {
+                reporter.warn(&format!(
+                    "Level {}: skipping (before resume point {})",
+                    level.level,
+                    opts.resume_from.as_deref().unwrap_or("<none>")
+                ));
+            }
+            record_terminal_resume_skips(&level.packages, &st_arc, &event_log, &events_path)?;
+            continue;
         }
 
         let level_receipts = run_publish_level(
@@ -372,8 +402,7 @@ pub(crate) fn run_publish_parallel_inner(
         );
         if let Err(err) = level_receipts {
             replay_buffered_messages(reporter, send_reporter.as_ref());
-            synchronize_parallel_state(st, &st_arc)?;
-            return Err(err);
+            return Err(synchronize_parallel_failure(st, &st_arc, err));
         }
         let level_receipts = level_receipts?;
         all_receipts.extend(level_receipts);
@@ -403,6 +432,19 @@ fn synchronize_parallel_state(
         .clone();
     *state = updated_state;
     Ok(())
+}
+
+fn synchronize_parallel_failure(
+    state: &mut ExecutionState,
+    state_arc: &Arc<Mutex<ExecutionState>>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    match synchronize_parallel_state(state, state_arc) {
+        Ok(()) => error,
+        Err(sync_error) => error.context(format!(
+            "additionally failed to synchronize parallel state: {sync_error}"
+        )),
+    }
 }
 
 fn record_terminal_resume_skips(

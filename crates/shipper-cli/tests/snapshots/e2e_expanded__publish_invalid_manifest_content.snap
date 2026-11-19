@@ -1,6 +1,6 @@
 ---
 source: crates/shipper-cli/tests/e2e_expanded.rs
-expression: "normalize_stderr(&stderr.replace(td.path().to_str().unwrap(),\n\"<TMPDIR>\").replace(&td.path().to_str().unwrap().replace('\\\\', \"/\"),\n\"<TMPDIR>\",),)"
+expression: "normalize_stderr(&normalize_tempdir_paths(&stderr, td.path()))"
 ---
 Error: failed to load release plan for `publish` - next steps:
   * verify `--manifest-path` points at the workspace Cargo.toml: <TMPDIR>/Cargo.toml
@@ -18,3 +18,8 @@ Caused by:
          |
        1 | this is not valid toml {{{{
          |      ^
+
+Result: failed — the publish plan could not be built
+Safe to rerun: unknown — no completed receipt exists to prove a safe rerun
+Next: resolve the reported failure before deciding whether to run publish again
+Evidence: none from a completed receipt

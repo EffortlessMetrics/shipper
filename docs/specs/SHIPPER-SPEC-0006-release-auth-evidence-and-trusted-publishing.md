@@ -105,7 +105,9 @@ Required fields:
 - `job`
 - `run_id`
 - `run_attempt`
-- `commit`
+- `commit`, the checked-out commit that matched the approved source SHA
+- `tree`, the checked-out tree that matched the approved source tree
+- `workflow_event_commit`, the GitHub event SHA recorded for run context
 - `environment`
 - `auth_action.name = "rust-lang/crates-io-auth-action@v1"`
 - `auth_action.outcome`
@@ -114,6 +116,12 @@ Required fields:
 - `fallback.used`
 - `selected_token_source`
 - `limits`
+
+Current producers validate both checkout values against the approval before
+writing evidence, including when an earlier step fails. Resume discards
+the restored predecessor auth receipt at the current-attempt path and
+uploads that path only when the current evidence step succeeds. Historical v1
+receipts predate the additive tree and event fields.
 
 `selected_token_source` may be `trusted_publishing`, `fallback_secret`, or
 `missing`. Token values must never be written. The artifact may prove that the

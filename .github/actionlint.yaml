@@ -1,5 +1,20 @@
 self-hosted-runner:
+  # jactionlint otherwise accepts arbitrary labels beside `self-hosted`.
+  # Keep the existing approved-label policy and enumerate built-in/hosted labels.
+  strict-labels: true
   labels:
+    - self-hosted
+    - linux
+    - macos
+    - windows
+    - x64
+    - arm
+    - arm64
+    - ubuntu-latest
+    - ubuntu-24.04
+    - macos-15-intel
+    - macos-15
+    - windows-2025
     - em-ci
     - trusted-pr
     - cx23

@@ -3,4 +3,5 @@
 //! These modules know about terminal capabilities. The library `shipper` crate
 //! must not.
 
+pub(crate) mod outcome;
 pub(crate) mod progress;

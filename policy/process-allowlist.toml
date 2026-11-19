@@ -30,7 +30,6 @@ allowed_processes = [
   "cargo-mutants",
   "cargo-llvm-cov",
   "cargo-nextest",
-  "sudo",
   "mkdir",
   "python3",
   "curl",
@@ -42,9 +41,9 @@ allowed_processes = [
   "tar",
 ]
 owner = "release/ci"
-reason = "CI compiles, lints, tests, fuzzes, and measures coverage, and smoke-tests the supported `cargo install --path crates/shipper --locked` facade path. Tools (cargo-fuzz, cargo-mutants, cargo-llvm-cov, cargo-nextest) are installed via taiki-e/install-action. `shipper` is the locally installed facade binary used only by the install-smoke job. `sudo` is used for cross-compile prep (apt-get install gcc-aarch64-linux-gnu); `curl`, `sha256sum`, `tar`, `mkdir`, `rm`, `df`, `ci-disk-guard`, and `sccache` support self-hosted runner scratch/cache cleanup and diagnostics; `python3` is used for small helper scripts."
+reason = "CI compiles, lints, tests, fuzzes, and measures coverage, and smoke-tests the supported `cargo install --path crates/shipper --locked` facade path. Tools (cargo-fuzz, cargo-mutants, cargo-llvm-cov, cargo-nextest) are installed via taiki-e/install-action. `shipper` is the locally installed facade binary used only by the install-smoke job. `curl`, `sha256sum`, `tar`, `mkdir`, `rm`, `df`, `ci-disk-guard`, and `sccache` support self-hosted runner scratch/cache cleanup and diagnostics; `python3` is used for small helper scripts."
 created = "2026-05-11"
-review_after = "2026-08-11"
+review_after = "2026-11-12"
 
 # ─── release ────────────────────────────────────────────────────────────────
 #
@@ -61,35 +60,25 @@ allowed_processes = [
   "rustc",
   "shipper",
   "gh",
+  "git",
+  "curl",
+  "jq",
+  "shasum",
   "tar",
   "sha256sum",
   "mkdir",
+  "python",
 ]
 owner = "release/ci"
-reason = "Release workflow dogfoods shipper itself, installs the supported facade path with `cargo install --path crates/shipper --locked`, packages release binaries (tar + sha256sum), creates the GitHub release with gh, attempts Trusted Publishing via OIDC, records auth evidence, and uses the configured fallback secret until Trusted Publishing default proof exists."
+reason = "Release workflow validates approved tag/source/tree identity with git and gh, dogfoods shipper itself, installs the supported facade path with `cargo install --path crates/shipper --locked`, verifies exact public versions through the crates.io API or sparse index with curl and jq, packages and independently verifies release binaries with tar, sha256sum or shasum, and jq, uses Python to extract and execute each native archive and validate its retained proof, creates the GitHub release with gh, attempts Trusted Publishing via OIDC, records auth evidence, and uses the configured fallback secret only when that posture is approved."
 created = "2026-05-11"
-review_after = "2026-08-11"
+review_after = "2026-11-12"
 
-# ─── droid ──────────────────────────────────────────────────────────────────
-#
-# Droid workflows: fetch the Factory CLI via curl + sh, configure MiniMax BYOK,
-# invoke the EffortlessMetrics/droid-action-safe action (which uses bun
-# internally for prepare.ts).
 
 [[profile]]
-name = "droid"
-allowed_processes = [
-  "bash",
-  "curl",
-  "sh",
-  "bun",
-  "mkdir",
-  "cat",
-  "chmod",
-  "git",
-  "jq",
-]
+name = "recovery-rehearsal"
+allowed_processes = ["cargo", "rustup", "rustc", "python3", "git", "gh", "bash", "jq"]
 owner = "release/ci"
-reason = "Droid workflows write the BYOK settings file (mkdir, cat heredoc), fetch the Factory CLI (curl --proto =https | sh), provide a constrained gh pr checkout shim on self-hosted runners (chmod + git fetch/checkout), and invoke the safe Droid action wrapper which uses bun for its prepare.ts entrypoint."
-created = "2026-05-11"
-review_after = "2026-08-11"
+reason = "Manual swarm-only fake-Cargo recovery rehearsal. Python verifies the immutable checkout and retained checkpoint; Git reads source identity; gh performs read-only Actions metadata/archive requests; Bash and jq execute the unchanged production artifact selector. No release environment, OIDC, registry publication or write API. Existing ci/release profiles are unchanged."
+created = "2026-11-04"
+review_after = "2027-02-04"

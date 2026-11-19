@@ -14,6 +14,7 @@ dense machine-maintained data.
 | `policy/clippy-exceptions.toml` | Permanent Clippy exceptions with business justification | `cargo xtask check-clippy-exceptions` |
 | `policy/no-panic-baseline.json` | Debt snapshot of existing panic-family calls (generated) | `cargo xtask no-panic check --mode blocking` |
 | `policy/non-rust-allowlist.toml` | General non-Rust files (docs, configs, templates) | `cargo xtask check-file-policy` |
+| `policy/non-rust-debt.toml` | Temporary non-Rust file debt awaiting cleanup or durable classification | `cargo xtask check-file-policy`; `cargo xtask non-rust propose` |
 | `policy/generated-allowlist.toml` | Machine-generated files (snapshots, baselines) | `cargo xtask check-generated` |
 | `policy/executable-allowlist.toml` | Files with execute permission | `cargo xtask check-executable-files` |
 | `policy/dependency-surface-allowlist.toml` | Dependency metadata and lock files | `cargo xtask check-dependency-surfaces` |
@@ -97,15 +98,21 @@ network_policy = "release"
 ### Process Policy Entry
 
 ```toml
-[[policy]]
+[[profile]]
 name = "release"
 allowed_processes = ["cargo", "rustup", "shipper", "gh", "tar", "sha256sum"]
+owner = "release/ci"
+reason = "Release automation builds, verifies, signs, and publishes artifacts."
+created = "2026-05-11"
+review_after = "2026-11-12"
 ```
+
+Profile `created` and `review_after` values must be exact `YYYY-MM-DD` calendar dates. `review_after` cannot be before `created`.
 
 ### Network Policy Entry
 
 ```toml
-[[policy]]
+[[profile]]
 name = "release"
 allowed_endpoints = [
   "crates.io",
@@ -113,6 +120,10 @@ allowed_endpoints = [
   "token.actions.githubusercontent.com",
   "api.github.com",
 ]
+owner = "release/ci"
+reason = "Release automation reaches registries, OIDC, and the GitHub API."
+created = "2026-05-11"
+review_after = "2026-11-12"
 ```
 
 ## Full Policy Report
@@ -129,6 +140,7 @@ It includes:
 - Clippy debt count and oldest expiry
 - No-panic baseline size and recent delta
 - File policy coverage percentage
+- Process/network unknown, missing, invalid, stale, and orphan profile counts
 - ripr status (if available)
 - CI budget utilization (if available)
 

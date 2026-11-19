@@ -36,7 +36,7 @@ allowed_endpoints = [
 owner = "release/ci"
 reason = "CI fetches actions, toolchains (rustup), crates (crates.io + sparse index), and uploads coverage reports to Codecov. dtolnay/rust-toolchain and taiki-e/install-action add the rustup and ghcr endpoints."
 created = "2026-05-11"
-review_after = "2026-08-11"
+review_after = "2026-11-12"
 
 # ─── release ────────────────────────────────────────────────────────────────
 
@@ -58,23 +58,4 @@ allowed_endpoints = [
 owner = "release/ci"
 reason = "Release workflow contacts token.actions.githubusercontent.com for the Trusted Publishing OIDC attempt, crates.io / index.crates.io / static.crates.io for publish and visibility verification, GitHub for artifact uploads and release creation, and the standard rustup/toolchain endpoints. Trusted Publishing default remains unpromoted until release evidence proves the short-lived-token path."
 created = "2026-05-11"
-review_after = "2026-08-11"
-
-# ─── droid ──────────────────────────────────────────────────────────────────
-
-[[profile]]
-name = "droid"
-allowed_endpoints = [
-  "github.com",
-  "api.github.com",
-  "raw.githubusercontent.com",
-  "objects.githubusercontent.com",
-  "token.actions.githubusercontent.com",
-  "app.factory.ai",
-  "api.factory.ai",
-  "api.minimax.io",
-]
-owner = "release/ci"
-reason = "Droid workflows fetch the Factory CLI from app.factory.ai/cli, exchange the GitHub OIDC token for a Factory app token (token.actions.githubusercontent.com -> api.factory.ai), and route MiniMax-M2.7 BYOK requests to api.minimax.io/anthropic. The actions/checkout + droid-action-safe action also need GitHub endpoints."
-created = "2026-05-11"
-review_after = "2026-08-11"
+review_after = "2026-11-12"

@@ -14,3 +14,8 @@ Error: failed to load release plan for `publish` - next steps:
 Caused by:
     0: failed to execute cargo metadata
     1: `cargo metadata` exited with an error: error: manifest path `<TMPDIR>/no-such/Cargo.toml` does not exist
+
+Result: failed — the publish plan could not be built
+Safe to rerun: unknown — no completed receipt exists to prove a safe rerun
+Next: resolve the reported failure before deciding whether to run publish again
+Evidence: none from a completed receipt

@@ -69,6 +69,11 @@ pub(crate) fn commit_attempt(
         );
     }
 
+    // Admission is this critical section, not a separate earlier check. A
+    // cleanup hold observed by any peer blocks every later attempt event.
+    super::publish::admission::ensure_no_cleanup_hold(state)?;
+    crate::ops::process::interruption::check()?;
+
     event_log.record(event);
     persist(
         state,
@@ -198,6 +203,7 @@ pub(crate) fn commit_pending_with_attempt_detail(
 /// Flush buffered explanatory events while appending attempt detail without
 /// changing the package state projection. This is used for retry scheduling,
 /// where the package remains pending between attempts.
+#[cfg(test)]
 pub(crate) fn commit_attempt_detail_pending(
     state: &mut ExecutionState,
     state_dir: &Path,
@@ -263,7 +269,7 @@ fn persist(
         progress.attempts = attempt;
     }
     if let Some(detail) = attempt_detail {
-        next_state.attempt_history.push(detail);
+        crate::state::record_attempt_detail(&mut next_state.attempt_history, detail);
     }
     progress.last_updated_at = Utc::now();
     next_state.updated_at = Utc::now();
@@ -338,6 +344,113 @@ mod tests {
             },
             package: "demo@1.0.0".to_string(),
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn file_sync_orders_events_before_projection_and_preserves_failed_commit() -> anyhow::Result<()>
+    {
+        use std::sync::{Arc, Mutex};
+
+        for failed_file in [None, Some("events.jsonl"), Some("state.tmp")] {
+            let dir = tempdir()?;
+            let events = events_path(dir.path());
+            let mut current = state();
+            crate::state::execution_state::save_state(dir.path(), &current)?;
+            let state_path = crate::state::execution_state::state_path(dir.path());
+            let prior_bytes = std::fs::read(&state_path)?;
+            let mut log = EventLog::new();
+            let order = Arc::new(Mutex::new(Vec::new()));
+            let observed_order = Arc::clone(&order);
+            let observed_state = state_path.clone();
+            let observed_prior = prior_bytes.clone();
+            let fault = crate::state::file_sync_test_support::observe(dir.path(), move |path| {
+                let name = path.file_name().unwrap().to_str().unwrap();
+                observed_order.lock().unwrap().push(name.to_string());
+                assert_eq!(std::fs::read(&observed_state).unwrap(), observed_prior);
+                if name == "events.jsonl" {
+                    let written = EventLog::read_from_file(path).unwrap();
+                    assert_eq!(written.len(), 1, "the event was flushed before sync");
+                    assert!(matches!(
+                        written.all_events()[0].event_type,
+                        EventType::PackageUploaded
+                    ));
+                } else {
+                    assert_eq!(name, "state.tmp");
+                    let written: ExecutionState =
+                        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                    assert_eq!(written.packages["demo@1.0.0"].state, PackageState::Uploaded);
+                }
+                if failed_file == Some(name) {
+                    return Err(std::io::Error::other(
+                        "injected transition file-sync failure",
+                    ));
+                }
+                Ok(())
+            });
+
+            let result = commit(
+                &mut current,
+                dir.path(),
+                &mut log,
+                &events,
+                "demo@1.0.0",
+                PackageState::Uploaded,
+                PublishEvent {
+                    event_type: EventType::PackageUploaded,
+                    ..published_event()
+                },
+            );
+            drop(fault);
+
+            let expected_order = if failed_file == Some("events.jsonl") {
+                vec!["events.jsonl"]
+            } else {
+                vec!["events.jsonl", "state.tmp"]
+            };
+            assert_eq!(*order.lock().unwrap(), expected_order);
+            let retained_events = std::fs::read(&events)?;
+            assert_eq!(EventLog::read_from_file(&events)?.len(), 1);
+            if let Some(failed_file) = failed_file {
+                let error = result.expect_err("required sync failure must stop the transition");
+                assert!(format!("{error:#}").contains(failed_file));
+                assert!(format!("{error:#}").contains("injected transition file-sync failure"));
+                assert!(error.downcast_ref::<std::io::Error>().is_some());
+                assert_eq!(current.packages["demo@1.0.0"].state, PackageState::Pending);
+                assert_eq!(std::fs::read(&state_path)?, prior_bytes);
+                let loaded = crate::state::execution_state::load_state(dir.path())?.unwrap();
+                assert_eq!(loaded.packages["demo@1.0.0"].state, PackageState::Pending);
+                if failed_file == "events.jsonl" {
+                    assert_eq!(log.len(), 1, "event sync failure retains the pending batch");
+                    assert!(!state_path.with_extension("tmp").exists());
+                } else {
+                    assert!(
+                        log.is_empty(),
+                        "successful event sync clears the pending batch"
+                    );
+                    assert!(state_path.with_extension("tmp").is_file());
+                    let rebuilt = crate::state::rebuild::rebuild_state_file_from_events(
+                        dir.path(),
+                        crate::state::rebuild::StateRebuildOptions::new(current.registry.clone())
+                            .with_fallback_plan_id(current.plan_id.clone()),
+                    )?;
+                    assert_eq!(rebuilt.packages["demo@1.0.0"].state, PackageState::Uploaded);
+                    assert_eq!(
+                        std::fs::read(&events)?,
+                        retained_events,
+                        "rebuild never rewrites truth"
+                    );
+                }
+            } else {
+                result?;
+                assert!(log.is_empty());
+                assert_eq!(current.packages["demo@1.0.0"].state, PackageState::Uploaded);
+                assert!(!state_path.with_extension("tmp").exists());
+                let loaded = crate::state::execution_state::load_state(dir.path())?.unwrap();
+                assert_eq!(loaded.packages["demo@1.0.0"].state, PackageState::Uploaded);
+            }
+        }
+        Ok(())
     }
 
     fn attempt_detail() -> AttemptDetail {

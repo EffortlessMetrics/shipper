@@ -206,6 +206,7 @@ fn check_architecture_contract(
         "`shipper` exists and depends on `shipper-cli` plus `shipper-core`",
         "`shipper-cli` exists and depends on `shipper-core`",
         "`shipper-core` exists and has no normal, dev, or build dependency on `shipper`, `shipper-cli`, `clap`, or `indicatif`",
+        "`shipper-types` exists and has no normal, dev, or build dependency on `shipper-webhook` or `shipper-retry`",
         "`xtask` is the only private workspace package",
     ];
     let mut violations = Vec::new();
@@ -213,10 +214,12 @@ fn check_architecture_contract(
     let shipper = workspace_package(packages, workspace_members, "shipper");
     let shipper_cli = workspace_package(packages, workspace_members, "shipper-cli");
     let shipper_core = workspace_package(packages, workspace_members, "shipper-core");
+    let shipper_types = workspace_package(packages, workspace_members, "shipper-types");
 
     require_package(shipper, "shipper", &mut violations);
     require_package(shipper_cli, "shipper-cli", &mut violations);
     require_package(shipper_core, "shipper-core", &mut violations);
+    require_package(shipper_types, "shipper-types", &mut violations);
 
     if let Some(package) = shipper {
         require_normal_dependency(package, "shipper-cli", &mut violations);
@@ -230,6 +233,15 @@ fn check_architecture_contract(
         forbid_dependency(package, "shipper-cli", &mut violations);
         forbid_dependency(package, "clap", &mut violations);
         forbid_dependency(package, "indicatif", &mut violations);
+    }
+    if let Some(package) = shipper_types {
+        // `shipper-types` is the domain-contract hub (#261). Behavior crates
+        // depend on it, never the reverse: a contract crate that pulls in an
+        // HTTP/TLS stack makes every types-only consumer pay for delivery
+        // machinery it does not use. Crates are added here as each inversion
+        // lands, so the direction cannot silently regress.
+        forbid_dependency(package, "shipper-webhook", &mut violations);
+        forbid_dependency(package, "shipper-retry", &mut violations);
     }
 
     let private_packages = packages
@@ -626,6 +638,83 @@ mod tests {
     }
 
     #[test]
+    fn architecture_contract_rejects_types_depending_on_a_behavior_crate() {
+        for behavior_crate in ["shipper-webhook", "shipper-retry"] {
+            let mut packages = product_graph_packages(vec![]);
+            let types = packages
+                .iter_mut()
+                .find(|package| package.name == "shipper-types")
+                .expect("fixture defines shipper-types");
+            types.dependencies.push(normal_dep(behavior_crate));
+            let workspace_members = workspace_members(&packages);
+
+            let contract = check_architecture_contract(&packages, &workspace_members);
+
+            assert_eq!(contract.status, ContractStatus::Fail, "{behavior_crate}");
+            assert!(
+                contract.violations.iter().any(|violation| {
+                    violation.contains(&format!(
+                        "`shipper-types` must not depend on `{behavior_crate}`"
+                    ))
+                }),
+                "{behavior_crate} not caught; violations: {:?}",
+                contract.violations
+            );
+        }
+    }
+
+    #[test]
+    fn architecture_contract_rejects_a_forbidden_dependency_in_any_kind() {
+        // The rule text promises "no normal, dev, or build dependency". A
+        // reintroduced edge is most likely to arrive as a dev-dependency in a
+        // test helper, so prove the non-normal kinds are caught too.
+        for kind in ["dev", "build"] {
+            let mut packages = product_graph_packages(vec![]);
+            let types = packages
+                .iter_mut()
+                .find(|package| package.name == "shipper-types")
+                .expect("fixture defines shipper-types");
+            types.dependencies.push(MetadataDependency {
+                name: "shipper-webhook".to_string(),
+                path: Some("/workspace/shipper-webhook".to_string()),
+                kind: Some(kind.to_string()),
+            });
+            let workspace_members = workspace_members(&packages);
+
+            let contract = check_architecture_contract(&packages, &workspace_members);
+
+            assert_eq!(contract.status, ContractStatus::Fail, "kind: {kind}");
+            assert!(
+                contract.violations.iter().any(|violation| {
+                    violation.contains("`shipper-types` must not depend on `shipper-webhook`")
+                }),
+                "kind {kind} not caught; violations: {:?}",
+                contract.violations
+            );
+        }
+    }
+
+    #[test]
+    fn architecture_contract_reports_a_missing_types_crate() {
+        let packages: Vec<MetadataPackage> = product_graph_packages(vec![])
+            .into_iter()
+            .filter(|package| package.name != "shipper-types")
+            .collect();
+        let workspace_members = workspace_members(&packages);
+
+        let contract = check_architecture_contract(&packages, &workspace_members);
+
+        assert_eq!(contract.status, ContractStatus::Fail);
+        assert!(
+            contract.violations.iter().any(|violation| {
+                violation.contains("required workspace package `shipper-types` is missing")
+            }),
+            "violations: {:?}",
+            contract.violations
+        );
+    }
+
+    #[test]
     fn architecture_contract_requires_xtask_as_only_private_package() {
         let mut packages = product_graph_packages(vec![]);
         packages.push(package("helper-task", Some(Vec::new()), vec![]));
@@ -648,6 +737,7 @@ mod tests {
             ),
             package("shipper-cli", None, vec![normal_dep("shipper-core")]),
             package("shipper-core", None, core_dependencies),
+            package("shipper-types", None, vec![]),
             package("xtask", Some(Vec::new()), vec![]),
         ]
     }

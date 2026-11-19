@@ -1,0 +1,6 @@
+kind: fixed
+body: Prevent GitContext::short_commit from panicking on caller-supplied or deserialized UTF-8 strings that cross the seven-byte boundary. Preserve ASCII abbreviations and return the full input when a seven-byte prefix is not valid UTF-8.
+time: 2026-10-29T06:20:41Z
+custom:
+  Audience: Embedders
+  Importance: Detailed

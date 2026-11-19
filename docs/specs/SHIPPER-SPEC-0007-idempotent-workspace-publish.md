@@ -75,6 +75,40 @@ shipper publish --policy safe
 | Ambiguous cargo result, registry cannot prove outcome | non-zero | Stop before unsafe retry |
 | CI interrupted mid-run | interrupted/non-zero | `shipper resume` continues without duplicate publish |
 
+### Retry configuration admission (#362)
+
+The selected release correction for
+[#362](https://github.com/EffortlessMetrics/shipper-swarm/issues/362) is explicit
+refusal of unsupported per-error configuration. It does not activate the broader
+class-policy execution proposed in draft
+[#367](https://github.com/EffortlessMetrics/shipper-swarm/pull/367).
+
+- A configured `retry.per_error.retryable`, `.ambiguous`, or `.permanent` class,
+  including an empty class subtable, fails with a diagnostic naming
+  `retry.per_error` and directing the caller to the global `[retry]` policy.
+- Apply the same pure check in config validation and at public engine execution
+  boundaries after options are resolved, including direct parallel execution,
+  preflight, and rehearsal. Refuse before state/event/receipt mutation, registry
+  requests, notifications, or Cargo invocation. A CLI may discover the workspace
+  with Cargo metadata before reading its configuration; it must not publish,
+  yank, or run a dry-run with the refused configuration.
+- Omitted `per_error` and an empty parent table remain valid. CLI retry/force
+  flags cannot erase or authorize an unsupported class. Unknown keys within the
+  per-error container fail decoding instead of disappearing into an empty value.
+- Keep known class records parseable for diagnostics. Preserve the existing
+  nested `max_attempts` serde default of zero versus the Rust `Default` value of
+  six; neither becomes executable class policy.
+- Preserve global retry/CLI precedence, the cumulative package ceiling,
+  registry-aware delay floors, terminal automatic `Permanent` handling, and
+  `Ambiguous -> reconcile -> retry only NotPublished`. Do not add an event variant,
+  class counter, effective class ceiling, or state-schema change for this refusal.
+
+Proof must exercise real config/CLI and direct engine paths, checking unchanged
+retained bytes and absent fresh state, zero network/Cargo effects, and positive
+omitted/empty controls that still reach global retries. Implementation sequencing
+and the retained #367 disposition are in
+[the refusal plan](../../plans/swarm/per-error-refusal.md).
+
 ## 4) Output and evidence requirements
 
 For `shipper publish --format json`, the command envelope must carry:
@@ -82,10 +116,32 @@ For `shipper publish --format json`, the command envelope must carry:
 - A stable schema version (`shipper.publish.v1`).
 - Per-package `packages[].state` values that distinguish published, skipped,
   failed, ambiguous, uploaded, and pending outcomes.
-- A top-level `safe_to_rerun` boolean. It is true only when the command-owned
+- A top-level `safe_to_rerun` boolean, mirrored by
+  `outcome.safe_to_rerun.value` with an explanatory
+  `outcome.safe_to_rerun.reason`. The value is true only when the command-owned
   package summary has no pending, uploaded, failed, or ambiguous packages; the
   detailed evidence remains the package states, receipt, and reconciliation
   artifact.
+- A pre-receipt controlled stop emits `shipper.publish.error.v1` on stderr,
+  keeps stdout empty in JSON mode, and does not claim or synthesize a receipt.
+  In this error envelope, its failed-retryable package therefore keeps
+  `safe_to_rerun.value: false` with a `safe_to_rerun.reason` that says direct
+  `publish` rerun is not authorized. When the exact state, event, and
+  `NotPublished` reconciliation evidence is retained and consistent, the
+  separate commandless next action may be `resume`. Missing, malformed,
+  incomplete, disagreeing, or latest-`StillUnknown` evidence remains
+  fail-closed.
+- Retry attempts are cumulative per package across publish and resume segments.
+  After controlled-stop evidence authorizes resume, a requested
+  `--max-attempts` ceiling that is not greater than a selected retryable
+  package's retained attempt count must be rejected before a new run segment,
+  Cargo publish attempt, registry request, or evidence mutation. Human stderr and
+  `shipper.resume.error.v1` JSON stderr identify the package and current,
+  requested, and minimum usable ceilings; they preserve
+  `safe_to_resume.value: true` and the retained commandless resume action when
+  a larger ceiling exists because the rejection does not consume the
+  controlled-stop authorization. An exhausted numeric ceiling range is
+  fail-closed instead.
 - Artifact paths for `.shipper/state.json`, `.shipper/events.jsonl`, and
   `.shipper/receipt.json` (plus reconciliation artifact when present).
 - A nested receipt that remains the detailed package-outcome authority.

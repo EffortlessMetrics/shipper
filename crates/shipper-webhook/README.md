@@ -17,6 +17,15 @@ Webhook notifications for shipper
 
 This crate is part of the [shipper](https://github.com/EffortlessMetrics/shipper) workspace.
 
+## Type ownership
+
+Delivery behavior lives here: HTTP transport, HMAC signing, and payload
+rendering. The configuration *values* — `WebhookConfig` and `WebhookType` — are
+defined in `shipper_types::webhook` and re-exported from this crate, so
+`shipper_webhook::WebhookConfig` remains the supported path. This keeps the
+domain-contract crate free of an HTTP/TLS dependency; see
+[docs/architecture.md](../../docs/architecture.md) and issue #261.
+
 ## Development commands
 
 ```bash

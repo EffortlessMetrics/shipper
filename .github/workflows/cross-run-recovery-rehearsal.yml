@@ -1,0 +1,93 @@
+name: Cross-run recovery rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: One controlled fixture phase; keep the same source for all three runs
+        required: true
+        type: choice
+        options: [seed, retry, finish]
+      predecessor_run_id:
+        description: Empty for seed; exact immediate predecessor run ID otherwise
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rehearse:
+    if: github.repository == 'EffortlessMetrics/shipper-swarm' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PHASE: ${{ inputs.phase }}
+      PREDECESSOR: ${{ inputs.predecessor_run_id }}
+      SHIPPER_CROSS_RUN_PHASE: ${{ inputs.phase }}
+      SHIPPER_LIVE_REHEARSAL_REGISTRY_ADDR: 127.0.0.1:39197
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify source and restore exact predecessor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHIPPER_LIVE_REHEARSAL_ROOT: ${{ runner.temp }}/shipper-cross-run-recovery
+        run: python3 scripts/ci/test-release-resume-artifacts.py --mode prepare --phase "$PHASE" --predecessor-run-id "$PREDECESSOR"
+
+      - name: Select checkout toolchain
+        run: python3 scripts/ci/test-release-resume-artifacts.py --mode select-toolchain
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+
+      - name: Verify actual toolchain
+        run: python3 scripts/ci/test-release-resume-artifacts.py --mode verify-toolchain
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: hosted-cross-run-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: hosted-cross-run-${{ runner.os }}-
+
+      - name: Execute one controlled recovery phase
+        env:
+          SHIPPER_LIVE_REHEARSAL_ROOT: ${{ runner.temp }}/shipper-cross-run-recovery
+        run: cargo "+$RUSTUP_TOOLCHAIN" test -p shipper-cli --test e2e_rehearse cross_run::hosted_recovery_phase --locked -- --ignored --exact --nocapture
+
+      - name: Verify and record continuation evidence
+        env:
+          SHIPPER_LIVE_REHEARSAL_ROOT: ${{ runner.temp }}/shipper-cross-run-recovery
+        run: python3 scripts/ci/test-release-resume-artifacts.py --mode record --phase "$PHASE" --predecessor-run-id "$PREDECESSOR"
+
+      - name: Upload latest checkpoint even after failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shipper-state-final
+          path: ${{ runner.temp }}/shipper-cross-run-recovery/.shipper/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload actual toolchain identity
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shipper-toolchain
+          path: ${{ runner.temp }}/shipper-toolchain.json
+          if-no-files-found: error
+          retention-days: 30

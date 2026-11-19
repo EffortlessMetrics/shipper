@@ -1,0 +1,6 @@
+kind: fixed
+body: Deliver sequential and parallel retry progress during the active wait, preserve mixed message order, and keep worker backoff independent of slow reporters without changing quiet or JSON output.
+time: 2026-10-29T04:12:11.532184364-04:00
+custom:
+    Audience: Mixed
+    Importance: Detailed

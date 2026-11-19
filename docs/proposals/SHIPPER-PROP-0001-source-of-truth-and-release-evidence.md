@@ -1,30 +1,30 @@
 # SHIPPER-PROP-0001: Source-of-Truth and Release Evidence
 
-Status: proposed
+Status: implemented
 Owner: EffortlessMetrics
 Created: 2026-05-13
 Milestone: 0.4.0
 Linked proposal:
-Linked specs:
-Linked ADRs:
-Linked plan:
+Linked specs: docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md; docs/specs/SHIPPER-SPEC-0002-release-readiness-proof.md
+Linked ADRs: docs/adr/SHIPPER-ADR-0001-claims-become-checkable-state.md
+Linked plan: plans/0.4.0/source-of-truth-stack.md; plans/0.4.0/release-readiness-proof.md
 Linked issues: #109, #195
 Linked PRs:
-Support-tier impact: future support-tier claim map
+Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: policy ledgers remain the source of truth for exceptions and receipts
 Proof commands: cargo xtask check-file-policy --mode blocking-allowlist; cargo xtask policy-report; cargo fmt --all -- --check
 
 ## Problem
 
-Shipper already has strong proof pieces: policy reports, file-policy gates,
-no-panic checks, Clippy policy, ripr advisory output, mutation routing, release
-dry-run work, and runtime events/receipts/state. Those pieces are not yet tied
-into a repo-native claim system.
+Shipper had strong proof pieces—policy reports, file-policy gates, no-panic
+checks, Clippy policy, advisory analysis, mutation routing, release dry-run work,
+and runtime events/receipts/state—but those pieces were not tied into a
+repo-native claim system.
 
-That makes drift easy. A user-facing claim can live in README prose while its
-proof lives in CI output, issue comments, local release notes, or chat history.
-An agent can also pick up a stale issue and execute the wrong lane. For a
-release tool whose product is trust, that is the wrong failure mode.
+That made drift easy. A user-facing claim could live in README prose while its
+proof lived in CI output, issue comments, local release notes, or chat history.
+An agent could also pick up a stale issue and execute the wrong lane. For a
+release tool whose product is trust, that was the wrong failure mode.
 
 ## Users and Value
 
@@ -43,22 +43,22 @@ They need to trace a claim or task to:
 
 ## Success Criteria
 
-- Codex can start from `.shipper-meta/goals/active.toml`, follow links to a plan
-  and spec, and run named proof commands without scraping issue prose.
+- Agents can follow linked plans and specs and run named proof commands without
+  reconstructing the contract from issue prose.
 - README and product claims map to support tiers before they are promoted as
   stable.
-- #195 can be executed from a release-readiness spec and implementation plan.
-- Registry reconciliation can be prepared through proposal, spec, ADR, and plan
-  before product behavior changes.
+- #195 was executed from a release-readiness spec and implementation plan.
+- Registry reconciliation was prepared through proposal, spec, ADR, and plan
+  before product behavior changed.
 - Policy exceptions remain in `policy/*.toml`; prose can explain them but cannot
   replace the receipt.
 
-## Proposed Shape
+## Implemented Shape
 
-Install a linked source-of-truth stack:
+The repository uses a linked source-of-truth stack:
 
 ```text
-proposal -> spec -> ADR -> plan -> active goal -> proof command -> artifact
+proposal -> spec -> ADR -> plan -> current execution state -> proof command -> artifact
 ```
 
 Each layer has one job:
@@ -67,14 +67,16 @@ Each layer has one job:
 - specs define behavior and required evidence
 - ADRs record durable architecture decisions
 - plans define PR sequencing, rollback, and proof commands
-- active goals define current machine-readable execution state
+- current execution records identify the bounded work now in flight
 - support tiers map claims to proof commands and artifacts
 - policy ledgers receipt exceptions and enforcement state
 - release artifacts record what happened for a specific version
 
-The Shipper-specific namespace rule is part of the proposal: repo-management
-goal state belongs under `.shipper-meta/goals/`, never under `.shipper/`.
-`.shipper/` remains Shipper runtime state and artifact space.
+The Shipper-specific namespace rule remains part of the proposal:
+repo-management control state must not be written under `.shipper/`.
+`.shipper/` remains Shipper runtime state and artifact space. The repository no
+longer treats a global active-goal pointer as required authority; current work
+is selected from the reviewed issue/PR/release program and its linked evidence.
 
 ## Alternatives Considered
 
@@ -93,17 +95,21 @@ with runtime publish state would make both surfaces less trustworthy.
 Rejected. README claims should be downstream of support tiers and proof
 artifacts, not the authority for what is stable.
 
-## Evidence Plan
+## Evidence Operation
 
-Initial proof is repository-local:
+Repository-local proof includes:
 
 - `cargo xtask check-file-policy --mode blocking-allowlist`
 - `cargo xtask policy-report`
 - `cargo fmt --all -- --check`
+- `cargo xtask check-doc-contracts --mode advisory`
 
-Later proof adds `cargo xtask check-doc-contracts --mode advisory`, then policy
-report integration, CI advisory reporting, and eventually blocking mode after
-the advisory reports have burned in.
+Release proof is exact-source evidence rather than a generic green status. The
+0.4.0 implementation record is `docs/release/0.4.0-readiness.md`; the current
+0.5.0 authority chain is tracked through the release preparation and
+promotion/rehearsal issues. Policy reports and doc checks can expose drift, but
+they do not authorize tags, publication, or public claim promotion by
+themselves.
 
 ## Risks
 
@@ -112,24 +118,23 @@ the advisory reports have burned in.
 - Agents infer missing links instead of fixing them in a separate PR.
 - Support tiers lag behind README claims.
 - Release artifacts describe future intent instead of recording what happened.
+- Historical plans are mistaken for current execution instructions.
 
 ## Non-Goals
 
-- Implementing registry reconciliation in this proposal.
-- Executing #195 before the release-readiness spec and plan exist.
 - Replacing policy ledgers with prose docs.
-- Adding doc-contract checker code in the proposal PR.
 - Moving Shipper runtime state out of `.shipper/`.
+- Treating a linked document graph as publication authorization.
+- Requiring one global repository scheduler or active-goal pointer.
+- Rewriting historical evidence to match later implementation.
 
-## Exit Criteria
+## Completion Evidence
 
-The lane is successful when:
+The implemented repository contains the proposal/spec/ADR/plan stack, support
+tiers, policy and document checks, release evidence artifacts, and the 0.4.0
+readiness record produced through that stack. Registry reconciliation has its
+own implemented proposal, spec, ADR, plan, tests, and support-tier mapping.
 
-- scaffold and templates exist
-- this proposal has linked specs, ADRs, plans, active goals, and support tiers
-- doc-contract checking exists in advisory mode
-- policy report includes doc-contract status
-- CI runs doc-contract checks in advisory mode
-- #195 release readiness proof is executed through the stack
-- Reconcile has proposal, spec, ADR, and implementation plan before behavior
-  changes begin
+The remaining maintenance obligation is to keep links, statuses, claims, and
+proof commands current. That obligation is ongoing repository hygiene; it does
+not return this proposal to `proposed`.

@@ -18,7 +18,13 @@ in-tree duplicate, including the webhook submodule and BDD tests).
 
 - `pub fn run_publish_parallel(ws, opts, st, state_dir, reg, reporter)` —
   main entry point. Takes the host crate's `crate::registry::RegistryClient`
-  and `crate::engine::Reporter` for seamless interop with `engine::mod`.
+  and `crate::engine::Reporter`. Owns the invocation lock, reloads durable state
+  and applies shared retained admission before notifications or workers. A caller
+  already holding the key is refused; use the full engine APIs or call without
+  a separate lock. Full orchestration uses the private already-admitted adapter.
+  Each direct call records a new execution segment and coherent controlled-stop
+  evidence on recoverable failure. Success returns package receipts; the full
+  engine owns `ExecutionFinished`, the final receipt and completion notification.
 - `pub struct ParallelConfig` — re-exported through `shipper_types`.
 - `pub trait Reporter` — local reporter trait used internally; the outer
   entry point adapts from `crate::engine::Reporter`.

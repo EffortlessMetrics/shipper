@@ -37,6 +37,57 @@ fn sample_state() -> ExecutionState {
     }
 }
 
+#[test]
+#[serial_test::serial]
+fn file_sync_failure_preserves_previous_state_before_atomic_replace() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    for existing in [false, true] {
+        let dir = tempdir().expect("temporary state directory");
+        let path = state_path(dir.path());
+        let before = sample_state();
+        if existing {
+            save_state(dir.path(), &before).expect("seed prior state");
+        }
+        let original = fs::read(&path).ok();
+        let mut after = before.clone();
+        after.packages.get_mut("demo@0.1.0").unwrap().state = PackageState::Published;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        let tmp = path.with_extension("tmp");
+        let expected_tmp = tmp.clone();
+        let _fault = crate::state::file_sync::test_support::observe(dir.path(), move |path| {
+            assert_eq!(path, expected_tmp);
+            let bytes = fs::read(path).expect("actual temporary file write preceded sync");
+            let state: ExecutionState =
+                serde_json::from_slice(&bytes).expect("complete state JSON");
+            assert_eq!(state.packages["demo@0.1.0"].state, PackageState::Published);
+            observed_calls.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::other("injected state file-sync failure"))
+        });
+
+        let error = save_state(dir.path(), &after)
+            .expect_err("a file-sync failure must stop before replacing prior state");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(format!("{error:#}").contains(&tmp.display().to_string()));
+        assert!(format!("{error:#}").contains("injected state file-sync failure"));
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+        assert_eq!(fs::read(&path).ok(), original, "destination is unchanged");
+        assert!(
+            tmp.is_file(),
+            "written bytes remain available for diagnosis"
+        );
+        if existing {
+            let loaded = load_state(dir.path()).expect("usable old state").unwrap();
+            assert_eq!(loaded.packages["demo@0.1.0"].state, PackageState::Pending);
+        } else {
+            assert!(load_state(dir.path()).expect("absent state").is_none());
+        }
+    }
+}
+
 fn sample_receipt() -> Receipt {
     Receipt {
         receipt_version: "shipper.receipt.v2".to_string(),

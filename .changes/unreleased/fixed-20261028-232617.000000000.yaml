@@ -1,0 +1,6 @@
+kind: fixed
+body: Check registry visibility before retrying a retained retryable failure, skipping already-published versions without another Cargo upload while preserving cumulative attempts and event history.
+time: 2026-10-28T23:26:17Z
+custom:
+  Audience: Mixed
+  Importance: Headline

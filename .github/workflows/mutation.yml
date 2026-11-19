@@ -12,6 +12,9 @@ name: Mutation Testing
 #                    `full-ci` label to a PR. Scopes mutation to the
 #                    files the PR changed via `cargo xtask mutants-pr
 #                    --changed`. Off the default PR hot path.
+#                    Canonical label metadata is source-owned by
+#                    policy/ci-trigger-labels.toml and audited with
+#                    `cargo xtask ci-labels check-live`.
 
 on:
   schedule:

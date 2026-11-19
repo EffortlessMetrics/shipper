@@ -17,6 +17,7 @@ end_state = [
   "EffortlessMetrics/shipper remains the release authority and receives swarm work only through non-squash merge commits.",
   "No release credentials, signing secrets, or crates.io publish tokens are moved into shipper-swarm.",
   "Support tiers, operation docs, and active goals do not claim more than the current proof supports.",
+  "By 2026-12-31, retained real-consumer evidence demonstrates Shipper package-release use and a supported follow-up inspection or rerun; release and adoption completion remain separate claims.",
 ]
 
 [[work_item]]
@@ -61,5 +62,39 @@ commands = [
   "cargo xtask check-process-policy --mode advisory",
   "cargo xtask check-network-policy --mode advisory",
   "cargo xtask policy-report",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "post-release-build-readiness-handoff"
+status = "planned"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md"
+plan = "plans/swarm/build-readiness.md"
+issue = "262"
+next_action = "Refresh #255 and the linked issue owners; select deferred implementation only after release-authority closeout reopens normal swarm development."
+commands = [
+  "gh issue view 255 --repo EffortlessMetrics/shipper-swarm --comments",
+  "gh issue view 262 --repo EffortlessMetrics/shipper-swarm --comments",
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask check-file-policy --mode blocking-allowlist",
+  "cargo xtask policy-report",
+  "git diff --check",
+]
+
+[[work_item]]
+id = "year-end-real-consumer-use"
+status = "planned"
+proposal = "docs/proposals/SHIPPER-PROP-0001-source-of-truth-and-release-evidence.md"
+spec = "docs/specs/SHIPPER-SPEC-0001-source-of-truth-stack.md"
+plan = "plans/swarm/build-readiness.md"
+issue = "251"
+next_action = "Land the selected truthful-plan/source/outcome repairs through #255, finish the existing release chain, and advance shipper#455 through its retained post-0.5 consumer prerequisites. Record actual use by 2026-12-31; do not infer publication authority from this goal."
+commands = [
+  "gh issue view 251 --repo EffortlessMetrics/shipper-swarm --comments",
+  "gh issue view 255 --repo EffortlessMetrics/shipper-swarm --comments",
+  "gh issue view 455 --repo EffortlessMetrics/shipper --comments",
+  "cargo xtask check-doc-contracts --mode advisory",
+  "cargo xtask check-file-policy --mode blocking-allowlist",
   "git diff --check",
 ]

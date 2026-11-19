@@ -8,21 +8,29 @@ use serde::Deserialize;
 
 /// Compute the Cargo sparse-index path for a crate name.
 ///
-/// Layout:
+/// Layout, measured in Unicode scalar values after lowercasing:
 /// - `1/{name}` for length 1
 /// - `2/{name}` for length 2
-/// - `3/{name[0]}/{name}` for length 3
-/// - `{name[0..2]}/{name[2..4]}/{name}` for length >= 4
+/// - `3/{first}/{name}` for length 3
+/// - `{first two}/{next two}/{name}` for length >= 4
 ///
-/// Names are lowercased using ASCII rules.
+/// This helper performs mechanical path derivation only. Individual registries
+/// may impose stricter crate-name policies, including ASCII-only names.
 pub fn sparse_index_path(crate_name: &str) -> String {
-    let lower = crate_name.to_ascii_lowercase();
-    match lower.len() {
+    let lower = crate_name.to_lowercase();
+    match lower.chars().count() {
         0 => "0/".to_string(),
         1 => format!("1/{}", lower),
         2 => format!("2/{}", lower),
-        3 => format!("3/{}/{}", &lower[..1], lower),
-        _ => format!("{}/{}/{}", &lower[..2], &lower[2..4], lower),
+        3 => {
+            let first = lower.chars().next().into_iter().collect::<String>();
+            format!("3/{first}/{lower}")
+        }
+        _ => {
+            let first_two = lower.chars().take(2).collect::<String>();
+            let next_two = lower.chars().skip(2).take(2).collect::<String>();
+            format!("{first_two}/{next_two}/{lower}")
+        }
     }
 }
 
@@ -42,9 +50,124 @@ pub fn contains_version(content: &str, version: &str) -> bool {
         .any(|entry| entry.vers == version)
 }
 
+/// Observe version presence without treating unreadable records as absence.
+///
+/// A valid matching record proves presence even if another record is malformed.
+/// Absence requires at least one record and every nonblank record to contain a
+/// valid Cargo semantic version. An empty or malformed response cannot authorize
+/// another upload. Callers with a conclusive HTTP 404 should handle that absence
+/// at the transport boundary.
+/// The permissive [`contains_version`] helper retains its existing contract.
+pub fn observe_version(content: &str, version: &str) -> Result<bool, InvalidIndexObservation> {
+    let mut records = 0;
+    let mut invalid = false;
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        records += 1;
+        match serde_json::from_str::<SparseIndexEntry>(line) {
+            Ok(entry) if semver::Version::parse(&entry.vers).is_ok() => {
+                if entry.vers == version {
+                    return Ok(true);
+                }
+            }
+            _ => invalid = true,
+        }
+    }
+    if records == 0 || invalid {
+        Err(InvalidIndexObservation)
+    } else {
+        Ok(false)
+    }
+}
+
+/// The index response could not establish absence. Contains no response bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidIndexObservation;
+
+impl std::fmt::Display for InvalidIndexObservation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("sparse index contains empty or invalid version records")
+    }
+}
+
+impl std::error::Error for InvalidIndexObservation {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observe_version_distinguishes_valid_absence_from_unreadable_records() {
+        assert_eq!(observe_version(r#"{"vers":"1.0.0"}"#, "2.0.0"), Ok(false));
+        for content in [
+            "",
+            " \n\t",
+            "not json",
+            r#"{"error":"secret"}"#,
+            r#"{"vers":null}"#,
+            r#"[{"vers":"1.0.0"}]"#,
+        ] {
+            assert_eq!(
+                observe_version(content, "2.0.0"),
+                Err(InvalidIndexObservation)
+            );
+        }
+        let mixed = "not json\n{\"vers\":\"1.0.0\"}\n";
+        assert_eq!(observe_version(mixed, "1.0.0"), Ok(true));
+        assert_eq!(
+            observe_version(mixed, "2.0.0"),
+            Err(InvalidIndexObservation)
+        );
+        assert!(!InvalidIndexObservation.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn observe_version_rejects_invalid_semver_without_losing_valid_presence() {
+        for invalid in [
+            "",
+            "not-a-version",
+            "1.0",
+            "01.0.0",
+            "1.0.0-",
+            "1.0.0+",
+            " 1.0.0",
+            "1.0.0\n",
+        ] {
+            let malformed = serde_json::json!({ "vers": invalid }).to_string();
+            assert_eq!(
+                observe_version(&malformed, "2.0.0"),
+                Err(InvalidIndexObservation),
+                "invalid version {invalid:?} must not prove absence"
+            );
+            assert_eq!(
+                observe_version(&malformed, invalid),
+                Err(InvalidIndexObservation)
+            );
+            assert!(
+                contains_version(&malformed, invalid),
+                "legacy search remains permissive"
+            );
+            for mixed in [
+                format!("{malformed}\n{{\"vers\":\"1.0.0\"}}"),
+                format!("{{\"vers\":\"1.0.0\"}}\n{malformed}"),
+            ] {
+                assert_eq!(observe_version(&mixed, "1.0.0"), Ok(true));
+                assert_eq!(
+                    observe_version(&mixed, "2.0.0"),
+                    Err(InvalidIndexObservation)
+                );
+            }
+        }
+        for valid in ["0.0.0", "1.2.3-alpha.1+build.7", "2.0.0+build.42"] {
+            let content = serde_json::json!({ "vers": valid }).to_string();
+            assert_eq!(observe_version(&content, valid), Ok(true));
+            assert_eq!(observe_version(&content, "9.9.9"), Ok(false));
+        }
+        assert_eq!(
+            observe_version(r#"{"vers":"1.2.3+build.7"}"#, "1.2.3+build.8"),
+            Ok(false),
+            "semantic validation must preserve exact version-string matching"
+        );
+    }
 
     #[test]
     fn sparse_index_path_matches_cargo_layout() {
@@ -140,10 +263,23 @@ not json
     }
 
     #[test]
-    #[should_panic(expected = "byte index")]
-    fn sparse_index_path_panics_on_multibyte_unicode() {
-        // Crate names must be ASCII; multi-byte chars cause an indexing panic
-        let _ = sparse_index_path("café");
+    fn sparse_index_path_handles_multibyte_unicode_by_character() {
+        assert_eq!(sparse_index_path("é"), "1/é");
+        assert_eq!(sparse_index_path("éß"), "2/éß");
+        assert_eq!(sparse_index_path("åßç"), "3/å/åßç");
+        assert_eq!(sparse_index_path("café"), "ca/fé/café");
+        assert_eq!(sparse_index_path("éclair"), "éc/la/éclair");
+    }
+
+    #[test]
+    fn sparse_index_path_shards_after_unicode_lowercasing() {
+        assert_eq!(sparse_index_path("İX"), "3/i/i̇x");
+    }
+
+    #[test]
+    fn sparse_index_path_treats_combining_marks_as_distinct_scalars() {
+        assert_eq!(sparse_index_path("éab"), "3/é/éab");
+        assert_eq!(sparse_index_path("e\u{301}ab"), "e\u{301}/ab/e\u{301}ab");
     }
 
     #[test]

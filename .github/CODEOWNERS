@@ -1,2 +1,9 @@
 # .github/CODEOWNERS
 /.github/settings.yml @EffortlessSteven
+/.github/PULL_REQUEST_TEMPLATE.md @EffortlessSteven
+/.agents/ @EffortlessSteven
+/.claude/ @EffortlessSteven
+/.factory/ @EffortlessSteven
+/docs/agent-context/review-currentness.md @EffortlessSteven
+/docs/agent-context/review-invariants.md @EffortlessSteven
+/xtask/tests/agent_review_flow.rs @EffortlessSteven

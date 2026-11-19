@@ -1,0 +1,7 @@
+kind: maintenance
+body: Add an exact, owned, review-dated exception ledger for unavoidable GitHub Actions authority.
+time: 2026-08-06T04:53:00Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance
+  PR: 281

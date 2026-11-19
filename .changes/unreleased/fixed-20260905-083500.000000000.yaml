@@ -1,0 +1,6 @@
+kind: fixed
+body: Repair doubly-encoded characters in shipper-types doc comments so published rustdoc renders the package state diagram, arrows, em dashes, and section dividers correctly.
+time: 2026-09-05T08:35:00Z
+custom:
+  Audience: Embedders
+  Importance: Detailed

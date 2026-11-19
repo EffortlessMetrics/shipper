@@ -1,0 +1,7 @@
+kind: fixed
+body: Bound Linux and macOS subprocess pipe drain and owned process-group cleanup. Retain incomplete cleanup as a distinct event and package hold that blocks later attempts, resume, rehearsal, and cleanup, with explicit unsafe-to-resume guidance and preservation during offline state rebuild. Multi-registry cleanup checks ownership and retained holds across every selected directory before deleting evidence. Preserve actionable state-parse diagnostics without exposing retained payloads. Allow offline event rebuild of corrupt state while preserving recognizable typed cleanup holds inside damaged projections.
+  The shipped Unix executables route termination signals through supervised cleanup, retain ambiguous interrupted attempts for fresh-process reconciliation, and prevent later commands without changing embedding signal policy.
+time: 2026-10-29T15:15:00Z
+custom:
+  Audience: Operators
+  Importance: Detailed

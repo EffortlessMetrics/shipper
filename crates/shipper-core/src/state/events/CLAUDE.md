@@ -22,4 +22,6 @@ has been deleted from the workspace.
 
 - Append-only: events are never deleted or reordered.
 - One event per JSON object per line.
-- File format is forward-compatible — readers ignore unknown event types.
+- Persistence success requires buffered JSONL flush and underlying file sync; an error may leave appended bytes and never authorizes deleting or blindly reappending them.
+- An attempted append/flush/sync failure holds that `EventLog` instance against later writes, including another path and after `clear()`. Keep pending evidence and the first error intact; subsequent refusals retain its diagnostic and I/O metadata. Pre-append create/open failures may be retried. This is not a persisted cross-invocation hold.
+- Strict readers reject incomplete, malformed, and unknown events; do not silently repair authoritative history. Parent-directory durability is not guaranteed.

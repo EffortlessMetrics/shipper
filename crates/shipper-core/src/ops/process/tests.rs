@@ -431,6 +431,122 @@ fn run_command_with_timeout_captures_stderr() {
     );
 }
 
+// Re-executing this test binary gives every supported platform the same child
+// process, with no shell, Python, or external output-generator dependency.
+#[test]
+#[ignore = "child process fixture invoked by the timeout capture tests"]
+fn timeout_capture_child() {
+    use std::io::Write;
+
+    let mode = std::fs::read_to_string("timeout-capture-mode").expect("fixture mode");
+    let mut stdout = std::io::stdout().lock();
+    let mut stderr = std::io::stderr().lock();
+    if mode == "quiet" {
+        writeln!(stdout, "quiet stdout").unwrap();
+        writeln!(stderr, "quiet stderr").unwrap();
+    } else {
+        let out = format!("{}\n", "O".repeat(4095));
+        let err = format!("{}\n", "E".repeat(4095));
+        for _ in 0..256 {
+            if mode != "stderr" {
+                stdout.write_all(out.as_bytes()).unwrap();
+            }
+            if mode != "stdout" {
+                stderr.write_all(err.as_bytes()).unwrap();
+            }
+        }
+        if mode != "stderr" {
+            writeln!(stdout, "stdout complete").unwrap();
+        }
+        if mode != "stdout" {
+            writeln!(stderr, "stderr complete").unwrap();
+        }
+    }
+    stdout.flush().unwrap();
+    stderr.flush().unwrap();
+    std::process::exit(if mode == "fail" { 42 } else { 0 });
+}
+
+fn run_timeout_capture_child(mode: &str, timeout: Option<Duration>) -> CommandOutput {
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    std::fs::write(tmp.path().join("timeout-capture-mode"), mode).expect("fixture mode");
+    let executable = std::env::current_exe().expect("test executable");
+    run_command_with_timeout(
+        executable.to_str().expect("test executable path"),
+        &[
+            "--exact",
+            "ops::process::tests::timeout_capture_child",
+            "--ignored",
+            "--nocapture",
+        ],
+        tmp.path(),
+        timeout,
+    )
+    .expect("run capture fixture")
+}
+
+fn assert_noisy_capture(mode: &str, timeout: Option<Duration>) {
+    let output = run_timeout_capture_child(mode, timeout);
+    assert!(
+        !output.timed_out,
+        "pipe backpressure manufactured a timeout"
+    );
+    assert_eq!(output.exit_code, if mode == "fail" { 42 } else { 0 });
+    if mode != "stderr" {
+        let payload = format!("{}\n", "O".repeat(4095)).repeat(256);
+        let expected = format!("{payload}stdout complete\n");
+        assert!(
+            output.stdout.ends_with(&expected),
+            "stdout payload was truncated"
+        );
+    }
+    if mode != "stdout" {
+        let payload = format!("{}\n", "E".repeat(4095)).repeat(256);
+        let expected = format!("{payload}stderr complete\n");
+        assert_eq!(output.stderr, expected, "stderr payload was truncated");
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn run_command_with_timeout_preserves_quiet_output() {
+    let output = run_timeout_capture_child("quiet", Some(Duration::from_secs(5)));
+    assert!(!output.timed_out);
+    assert_eq!(output.exit_code, 0);
+    assert!(output.stdout.ends_with("quiet stdout\n"));
+    assert_eq!(output.stderr, "quiet stderr\n");
+}
+
+#[test]
+#[serial_test::serial]
+fn run_command_with_timeout_drains_noisy_stdout() {
+    assert_noisy_capture("stdout", Some(Duration::from_secs(5)));
+}
+
+#[test]
+#[serial_test::serial]
+fn run_command_with_timeout_drains_noisy_stderr() {
+    assert_noisy_capture("stderr", Some(Duration::from_secs(5)));
+}
+
+#[test]
+#[serial_test::serial]
+fn run_command_with_timeout_drains_both_noisy_streams() {
+    assert_noisy_capture("both", Some(Duration::from_secs(5)));
+}
+
+#[test]
+#[serial_test::serial]
+fn run_command_with_timeout_preserves_noisy_failure_exit() {
+    assert_noisy_capture("fail", Some(Duration::from_secs(5)));
+}
+
+#[test]
+#[serial_test::serial]
+fn run_command_without_timeout_preserves_noisy_output() {
+    assert_noisy_capture("both", None);
+}
+
 // CommandOutput tests
 
 #[test]

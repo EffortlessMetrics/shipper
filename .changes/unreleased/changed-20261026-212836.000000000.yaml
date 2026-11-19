@@ -1,0 +1,6 @@
+kind: changed
+body: Record the merged whole-plan completion correction in the recovery roadmap while retaining the open retained-state and workflow-continuation gaps and exact-candidate proof requirement.
+time: 2026-10-26T21:28:36Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance

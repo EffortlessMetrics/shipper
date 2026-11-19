@@ -1,0 +1,6 @@
+kind: changed
+body: Define the webhook configuration contract (`WebhookConfig`, `WebhookType`) in `shipper-types` and consume it from `shipper-webhook`, so embedding `shipper-types` no longer pulls `reqwest`, `rustls`, `hyper`, and `tokio` into the dependency graph. The `shipper_webhook::{WebhookConfig, WebhookType}` paths are unchanged and the serialized form is identical.
+time: 2026-08-27T12:00:00Z
+custom:
+  Audience: Embedders
+  Importance: Detailed

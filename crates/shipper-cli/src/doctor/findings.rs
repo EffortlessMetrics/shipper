@@ -7,6 +7,7 @@ use serde::Serialize;
 pub(super) enum FindingLevel {
     Blocked,
     Warning,
+    Unknown,
 }
 
 impl FindingLevel {
@@ -14,6 +15,7 @@ impl FindingLevel {
         match self {
             FindingLevel::Blocked => "blocked",
             FindingLevel::Warning => "warning",
+            FindingLevel::Unknown => "unknown",
         }
     }
 }

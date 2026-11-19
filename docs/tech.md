@@ -44,12 +44,13 @@
 
 ## Build & install
 
-See [../CLAUDE.md](../CLAUDE.md) for the canonical command list. Quick reference:
+See the [Testing Guide](testing.md) for test selection and CI proof scope, and
+[../CLAUDE.md](../CLAUDE.md) for contributor commands. Quick reference:
 
 ```bash
 cargo build --release            # production binary (LTO + strip)
 cargo install --path crates/shipper --locked
-cargo test                       # workspace
+cargo test --workspace --all-features --locked # workspace tests + doc tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
@@ -62,11 +63,18 @@ live in [Tool Substrate Standard](ci/tool-substrate.md).
 
 ## CI
 
-GitHub Actions in `.github/workflows/`:
+GitHub Actions has separate proof lanes:
 
-- `ci.yml` — workspace test/lint/format/MSRV
-- `release.yml` — tag-triggered publish via Shipper itself (the dogfooding train)
-- Additional workflows for fuzz, security, docs as needed
+- [`em-ci-routed-rust.yml`](../.github/workflows/em-ci-routed-rust.yml) — routed
+  Linux PR checks, including workspace tests, doc tests, and package verification.
+- [`ci.yml`](../.github/workflows/ci.yml) — broader Linux proof on main pushes,
+  manual dispatch, and the weekly schedule, with an explicit manual hosted route.
+- [`release.yml`](../.github/workflows/release.yml) — release-authority-gated
+  binary builds, packaged-executable proof, and publication/resume operations.
+
+The [CI section of the Testing Guide](testing.md#ci-integration) describes
+property-test intensity, fuzz conditions, and platform limits. Configured jobs
+become evidence for a candidate only when the corresponding run actually passes.
 
 ## Conventions
 

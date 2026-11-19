@@ -17,11 +17,10 @@
 
 use std::env;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use super::bin_override;
+use super::{bin_override, repository_command};
 
 /// Check whether the git working tree is clean (no uncommitted changes).
 ///
@@ -43,9 +42,8 @@ pub fn is_git_clean(repo_root: &Path) -> Result<bool> {
 /// [`is_git_clean`] adds an extra `git status failed:` prefix for CLI
 /// backward-compatibility (see the module-level doc).
 pub(super) fn is_git_clean_default(path: &Path) -> Result<bool> {
-    let output = Command::new("git")
+    let output = repository_command(path, "git")
         .args(["status", "--porcelain"])
-        .current_dir(path)
         .output()
         .context("failed to run git status")?;
 
@@ -92,6 +90,7 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::fs;
+    use std::process::Command;
     use tempfile::tempdir;
 
     fn init_git_repo(dir: &Path) {

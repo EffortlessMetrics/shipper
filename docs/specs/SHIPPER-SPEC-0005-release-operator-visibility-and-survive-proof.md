@@ -61,6 +61,27 @@ Future changes in this lane must preserve and harden these rules:
 - live-runner interruption claims require a real rehearsal artifact before
   support-tier promotion
 
+### File-sync and interruption boundary
+
+The checked persistence contract is defined in
+[INVARIANTS](../INVARIANTS.md#persistence-boundary-and-failure-model).
+Event batches must flush and synchronize their file before a package projection
+commits. The plaintext atomic JSON writer must synchronize its temporary file
+before replacing state, receipts, or reconciliation evidence. A required sync
+failure returns an error, preserves already-written event bytes, and cannot
+produce a newly installed success receipt at the selected failure boundary.
+The previous projection remains usable when replacement has not committed.
+
+Controlled command errors, process termination, runner/artifact handoff, and
+host/power loss are distinct failure models. The injected failures prove the
+first contract and its ordering; the runner rehearsal proves only the artifacts
+it actually transfers. Neither certifies arbitrary termination points, hardware
+durability, or platform-specific directory persistence. Parent-directory sync
+remains best effort, and the separate encrypted helper implementation is outside
+the atomic JSON replacement claim. No support-tier promotion follows from
+conflating these boundaries. Malformed or truncated authoritative JSONL still
+fails strict reads; this work does not repair or discard event history.
+
 ## Non-Goals
 
 - Re-implementing attempt history, retry events, readiness events, or
@@ -115,6 +136,7 @@ Expected implementation proof:
 - `cargo test -p shipper-cli --test cli_e2e --locked`
 - `cargo test -p shipper-core drift --lib --locked`
 - `cargo test -p shipper-core rebuild --lib --locked`
+- `cargo test -p shipper-core --lib file_sync --locked`
 - `cargo test -p shipper-cli --test e2e_rehearse -- --nocapture`
 - `cargo xtask check-doc-contracts --mode advisory`
 - `cargo xtask policy-report`

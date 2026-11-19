@@ -1,0 +1,6 @@
+kind: added
+body: Capture a private Linux process identity in publish locks so future durable status guidance can distinguish an exact live publisher from inconclusive lock evidence.
+time: 2026-08-20T16:10:42Z
+custom:
+  Audience: Operators
+  Importance: Detailed

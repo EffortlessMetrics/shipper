@@ -1,4 +1,4 @@
-//! The `shipper-cli` binary — thin wrapper over [`shipper_cli::run`].
+//! The `shipper-cli` binary — thin wrapper over [`shipper_cli::run_process`].
 //!
 //! `shipper-cli` is a real CLI adapter (not a shim). Operators should
 //! prefer the `shipper` facade package. It installs a binary named
@@ -10,7 +10,7 @@
 //! 2. Local workspace development: `cargo run -p shipper-cli -- <args>`
 //!    is still a reasonable way to exercise the CLI without installing.
 fn main() -> std::process::ExitCode {
-    match shipper_cli::run() {
+    match shipper_cli::run_process() {
         Ok(code) => code,
         Err(e) => {
             shipper_cli::report_error(&e);

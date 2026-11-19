@@ -7,3 +7,7 @@ plan_id: <PLAN_ID>
 core-lib@0.2.0: published
 mid-lib@0.3.0: published
 top-app@0.4.0: published
+
+Result: all published
+Publication performed: no
+Next: every registry-eligible selected package version is visible in its effective target registry or registries

@@ -18,13 +18,17 @@ Generate a default configuration file by running:
 shipper config init
 ```
 
-This creates a `.shipper.toml` file in your current directory with sensible defaults and inline documentation.
-
-You can also specify a custom output path:
+This creates a new `.shipper.toml` file in your current directory with defaults
+and inline documentation. An existing destination, including a symlink, causes
+a nonzero refusal and is preserved. To keep an existing configuration and
+generate a separate template, choose an unused output path:
 
 ```bash
 shipper config init -o my-config.toml
 ```
+
+The parent directory must already exist. The global `--force` option controls
+release locks; it does not permit configuration overwrite.
 
 ## Validating a Configuration File
 
@@ -49,6 +53,20 @@ You can also specify a custom configuration file using the `--config` flag:
 ```bash
 shipper publish --config my-config.toml
 ```
+
+The effective registry is resolved before Shipper selects publishable packages
+or computes the plan ID. Values in `[registry]` apply unless the corresponding
+`--registry` or `--api-base` option overrides them. Configuration loaded from the
+workspace root also applies when `--manifest-path` points to a member crate.
+Equivalent configuration and CLI registry values produce the same plan.
+
+For a registry catalog, select entries with `--registries NAME` or
+`--all-registries`; declaring entries alone does not select them. `plan` and
+`preflight` accept one effective target per invocation. Run them with
+`--registries NAME` for each target before publishing to several registries.
+Each publish/resume target uses its own registry-eligible package graph and
+plan ID; multiple-target execution continues to keep state under each registry's
+subdirectory.
 
 ## Configuration Options
 
@@ -134,11 +152,29 @@ Controls how many lines of stdout/stderr are captured for each publish attempt. 
 
 ```toml
 [lock]
-# Lock timeout duration (locks older than this are considered stale)
+# Minimum age for confirmed abandoned legacy lock recovery
 timeout = "1h"
 ```
 
-Shipper uses a lock file to prevent concurrent publish operations. If a lock is older than the timeout, it's considered stale and can be overridden with `--force`.
+Shipper holds an exclusive operating-system guard for cooperating publishers
+and cleanup commands. Its sidecar (`lock.guard`, or `lock_<workspace-hash>.guard`)
+is persistent; do not delete it to force acquisition. The JSON lock record
+remains readable holder metadata, and its age does not establish ownership.
+
+After acquiring the guard, Shipper can recover an abandoned same-host record
+from the current ownership protocol. Legacy records additionally need positive
+same-host, same-process-scope evidence that the holder is absent and an age
+strictly greater than `timeout`; a future timestamp never proves abandonment.
+Corrupt, foreign, and otherwise unknown records are preserved by default.
+
+`--force` may override unknown metadata only after winning the guard. It assumes
+any noncooperating legacy or foreign publisher is quiescent. It cannot steal an
+active OS guard or a positively observed live legacy holder, and does not
+bypass retained-state admission or authorize another upload. `shipper clean`
+holds the same guard throughout deletion and leaves the guard sidecar in place.
+These guarantees require cooperating processes using the same lock key on a
+filesystem with supported OS locking; they do not establish distributed or
+network-filesystem exclusion.
 
 ### Retry
 
@@ -148,7 +184,7 @@ Shipper uses a lock file to prevent concurrent publish operations. If a lock is 
 policy = "default"
 # Retry strategy: immediate, exponential (default), linear, constant
 strategy = "exponential"
-# Max attempts per crate publish step
+# Cumulative max attempts per crate across publish and resume
 max_attempts = 6
 # Base backoff delay
 base_delay = "2s"
@@ -167,6 +203,18 @@ Controls retry behavior for failed publish operations.
 - **max_delay**: Maximum delay between retries (default: `2m`)
 - **jitter**: Jitter factor for randomized delays (default: `0.5`)
 
+`retry.per_error` class policies are unsupported. Earlier versions accepted
+them without changing execution; remove every `retryable`, `ambiguous`, or
+`permanent` class entry and use the global `[retry]` settings instead. `config
+validate`, validated configuration loading, and public engine execution entry
+points refuse configured classes before execution effects, even when CLI retry
+flags or force flags are supplied. An omitted value or empty `[retry.per_error]`
+table is allowed; an empty class subtable still configures that class and is
+refused. Unknown keys within `per_error` fail decoding. Diagnostic-only loaders
+can still inspect known class records, but those records cannot be executed.
+See [failure modes](failure-modes.md#global-retry-configuration) for migration and
+the unchanged retry safety rules.
+
 ### Flags
 
 ```toml
@@ -175,13 +223,13 @@ Controls retry behavior for failed publish operations.
 allow_dirty = false
 # Skip owners/permissions preflight (not recommended)
 skip_ownership_check = false
-# Fail preflight if ownership checks fail (recommended for production)
+# Require a token during strict preflight and before publish execution
 strict_ownership = false
 ```
 
 - **allow_dirty**: Allow publishing even with uncommitted changes. Not recommended for production.
 - **skip_ownership_check**: Skip checking if you have permission to publish to the registry. Not recommended for production.
-- **strict_ownership**: Fail preflight immediately if ownership checks fail or if no token is available. Recommended for production.
+- **strict_ownership**: Require a registry token during preflight and before publish execution. Preflight also fails when ownership verification fails; publish checks every selected registry before creating execution state but does not repeat preflight's registry ownership query. Recommended for production.
 
 ### Parallel
 
@@ -200,6 +248,20 @@ Controls parallel publishing behavior. When enabled, packages at the same depend
 - **enabled**: Enable parallel publishing (default: `false`, sequential publishing)
 - **max_concurrent**: Maximum number of concurrent publish operations (default: `4`)
 - **per_package_timeout**: Timeout for each individual package publish (default: `30m`)
+
+The per-package Cargo timeout applies in both sequential and parallel mode;
+the setting remains in `[parallel]` for configuration compatibility. Shipper
+drains stdout and stderr while Cargo runs, so verbose output does not block
+the child on a full pipe. The configured line tails are sanitized before
+being retained in events and receipts.
+
+After direct-child exit, timeout, or controlled interruption, Linux, macOS,
+and Windows allow up to one additional second to confirm owned-process cleanup
+and drain both output streams. Windows uses one Job Object per invocation.
+Shipper retains a cleanup hold when it cannot confirm cleanup. A timed-out
+publish requires registry reconciliation before Shipper can consider another
+upload. See [#412](https://github.com/EffortlessMetrics/shipper-swarm/issues/412)
+for platform qualification.
 
 ### Registry
 
@@ -287,7 +349,7 @@ jitter_factor = 0.5
 lines = 50
 
 [lock]
-# Lock timeout duration (locks older than this are considered stale)
+# Minimum age for confirmed abandoned legacy lock recovery
 timeout = "1h"
 
 [retry]
@@ -295,7 +357,7 @@ timeout = "1h"
 policy = "default"
 # Retry strategy: immediate, exponential (default), linear, constant
 strategy = "exponential"
-# Max attempts per crate publish step
+# Cumulative max attempts per crate across publish and resume
 max_attempts = 6
 # Base backoff delay
 base_delay = "2s"
@@ -309,7 +371,7 @@ jitter = 0.5
 allow_dirty = false
 # Skip owners/permissions preflight (not recommended)
 skip_ownership_check = false
-# Fail preflight if ownership checks fail (recommended)
+# Require a token during strict preflight and before publish execution
 strict_ownership = false
 
 [parallel]

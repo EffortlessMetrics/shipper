@@ -1,0 +1,6 @@
+kind: maintenance
+body: Reconcile the roadmap with landed recovery and narration repairs, distinguish native cleanup and release qualification gaps, and keep actual consumer use and post-release deferrals explicit.
+time: 2026-11-02T06:40:00Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

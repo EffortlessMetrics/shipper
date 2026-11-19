@@ -7,7 +7,7 @@ Print CI configuration snippets for various platforms
 Usage: shipper-cli ci [OPTIONS] <COMMAND>
 
 Commands:
-  github-actions  Print GitHub Actions workflow snippet
+  github-actions  Print fresh-publish GitHub Actions steps for jobs.publish.steps
   gitlab          Print GitLab CI workflow snippet
   circleci        Print CircleCI workflow snippet
   azure-devops    Print Azure DevOps pipeline snippet

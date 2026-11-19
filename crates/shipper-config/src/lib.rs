@@ -21,7 +21,7 @@
 //! | `[verify]`      | [`VerifyConfig`]       | Pre-publish compilation check         |
 //! | `[readiness]`   | [`ReadinessConfig`]    | Post-publish visibility polling       |
 //! | `[output]`      | [`OutputConfig`]       | Evidence capture line count           |
-//! | `[lock]`        | [`LockConfig`]         | Distributed lock timeout              |
+//! | `[lock]`        | [`LockConfig`]         | Legacy lock recovery age              |
 //! | `[retry]`       | [`RetryConfig`]        | Retry strategy and backoff            |
 //! | `[flags]`       | [`FlagsConfig`]        | Git-dirty, ownership, etc.            |
 //! | `[parallel]`    | [`ParallelConfig`]     | Concurrent publishing                 |
@@ -53,7 +53,10 @@ use shipper_types::storage::{CloudStorageConfig, StorageType};
 /// Runtime-options conversion helpers (previously `shipper-config-runtime`).
 pub mod runtime;
 
+mod retry_support;
 mod runtime_options;
+
+pub use retry_support::validate_per_error_config;
 
 /// Nested policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -78,7 +81,7 @@ pub struct RetryConfig {
     #[serde(default)]
     pub policy: RetryPolicy,
 
-    /// Max attempts per crate publish step (used when policy is custom or as fallback)
+    /// Cumulative max attempts per crate across publish and resume (used when policy is custom or as fallback)
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
 
@@ -106,7 +109,8 @@ pub struct RetryConfig {
     #[serde(default = "default_jitter")]
     pub jitter: f64,
 
-    /// Per-error-type retry configuration
+    /// Reserved per-error configuration. Nonempty class policies are unsupported
+    /// and rejected by validation; omit this field or leave it empty.
     #[serde(default)]
     pub per_error: PerErrorConfig,
 }
@@ -364,7 +368,7 @@ pub struct ShipperConfig {
 /// ```toml
 /// [rehearsal]
 /// enabled = true
-/// registry = "kellnr-local"  # name must match an entry in [[registries]]
+/// registry = "kellnr-local"  # name must match an entry in [[registries.registries]]
 /// # allow_loopback = true      # local HTTP test posture; does not enable the gate
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -379,7 +383,7 @@ pub struct RehearsalConfig {
     #[serde(default)]
     pub allow_loopback: bool,
 
-    /// Name of the registry (declared under `[[registries]]`) to use for
+    /// Name of the registry (declared under `[[registries.registries]]`) to use for
     /// rehearsal. Must differ from the live target registry.
     #[serde(default)]
     pub registry: Option<String>,
@@ -433,14 +437,7 @@ impl MultiRegistryConfig {
     pub fn get_registries(&self) -> Vec<RegistryConfig> {
         if self.registries.is_empty() {
             // Return default crates-io registry
-            vec![RegistryConfig {
-                name: "crates-io".to_string(),
-                api_base: "https://crates.io".to_string(),
-                index_base: Some("https://index.crates.io".to_string()),
-                token: None,
-                default: true,
-                allow_private: false,
-            }]
+            vec![crates_io_registry_config()]
         } else {
             self.registries.clone()
         }
@@ -453,14 +450,7 @@ impl MultiRegistryConfig {
             .find(|r| r.default)
             .or(self.registries.first())
             .cloned()
-            .unwrap_or_else(|| RegistryConfig {
-                name: "crates-io".to_string(),
-                api_base: "https://crates.io".to_string(),
-                index_base: Some("https://index.crates.io".to_string()),
-                token: None,
-                default: true,
-                allow_private: false,
-            })
+            .unwrap_or_else(crates_io_registry_config)
     }
 
     /// Find a registry by name
@@ -581,8 +571,10 @@ fn default_output_lines() -> usize {
     50
 }
 
+const CONFIG_SCHEMA_VERSION: &str = "shipper.config.v1";
+
 fn default_schema_version() -> String {
-    "shipper.config.v1".to_string()
+    CONFIG_SCHEMA_VERSION.to_string()
 }
 
 fn default_lock_timeout() -> Duration {
@@ -616,11 +608,22 @@ impl ShipperConfig {
     /// Load a workspace configuration for diagnostic reporting without
     /// applying value or registry-destination validation.
     pub fn load_from_workspace_for_diagnostics(workspace_root: &Path) -> Result<Option<Self>> {
+        Self::load_from_workspace_without_value_validation(workspace_root)
+    }
+
+    /// Parse a workspace configuration without applying value or registry-
+    /// destination validation.
+    ///
+    /// Callers must apply [`ShipperConfig::validate_with_loopback`] before
+    /// using the returned configuration for execution.
+    pub fn load_from_workspace_without_value_validation(
+        workspace_root: &Path,
+    ) -> Result<Option<Self>> {
         let config_path = workspace_root.join(".shipper.toml");
         if !config_path.exists() {
             return Ok(None);
         }
-        Self::load_from_file_for_diagnostics(&config_path).map(Some)
+        Self::load_from_file_without_value_validation(&config_path).map(Some)
     }
 
     /// Load configuration from a specific file path
@@ -635,6 +638,16 @@ impl ShipperConfig {
     /// without using it as a trusted destination. Callers must validate the
     /// returned configuration before using it for execution.
     pub fn load_from_file_for_diagnostics(path: &Path) -> Result<Self> {
+        Self::load_from_file_without_value_validation(path)
+    }
+
+    /// Parse configuration without applying value or registry-destination
+    /// validation.
+    ///
+    /// TOML decoding and schema-version validation remain fail closed. Callers
+    /// must apply [`ShipperConfig::validate_with_loopback`] before using the
+    /// returned configuration for execution.
+    pub fn load_from_file_without_value_validation(path: &Path) -> Result<Self> {
         Self::load_from_file_with_validation(path, false)
     }
 
@@ -645,13 +658,15 @@ impl ShipperConfig {
         let config: ShipperConfig = toml::from_str(&content)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
-        // Validate schema version
-        if let Err(e) = shipper_types::schema::validate_schema_version(
-            &config.schema_version,
-            "shipper.config.v1",
-            "config",
-        ) {
-            bail!("{} in file: {}", e, path.display());
+        // Config decoding is not forward-compatible by default: a future
+        // schema may assign different meaning to fields this binary ignores.
+        if config.schema_version != CONFIG_SCHEMA_VERSION {
+            bail!(
+                "unsupported config schema version '{}'; expected {} in file: {}",
+                config.schema_version,
+                CONFIG_SCHEMA_VERSION,
+                path.display()
+            );
         }
 
         // Validate configuration values (output, retry, lock, readiness,
@@ -684,6 +699,8 @@ impl ShipperConfig {
         // Validate schema version format
         shipper_types::schema::parse_schema_version(&self.schema_version)
             .context("invalid schema_version format")?;
+
+        validate_per_error_config(&self.retry.per_error)?;
 
         // Validate output_lines
         if self.output.lines == 0 {
@@ -810,6 +827,8 @@ impl ShipperConfig {
             bail!("only one registry can be marked as default");
         }
 
+        validate_rehearsal_registry_authorities(self, allow_loopback)?;
+
         Ok(())
     }
 
@@ -858,7 +877,7 @@ jitter_factor = 0.5
 lines = 50
 
 [lock]
-# Lock timeout duration (locks older than this are considered stale)
+# Minimum age for confirmed abandoned legacy lock recovery
 timeout = "1h"
 
 [retry]
@@ -868,7 +887,7 @@ timeout = "1h"
 # - conservative: linear backoff with 3 attempts, 5s base, 60s max
 # - custom: uses explicit strategy settings below
 policy = "default"
-# Max attempts per crate publish step (used when policy is custom)
+# Cumulative max attempts per crate across publish and resume (used when policy is custom)
 max_attempts = 6
 # Base backoff delay
 base_delay = "2s"
@@ -879,21 +898,7 @@ strategy = "exponential"
 # Jitter factor for randomized delays (0.0 = no jitter, 1.0 = full jitter)
 jitter = 0.5
 
-# Per-error-type retry configuration (optional)
-# Uncomment and customize to override retry behavior for specific error types
-# [retry.per_error.retryable]
-# strategy = "immediate"
-# max_attempts = 10
-# base_delay = "0s"
-# max_delay = "1s"
-# jitter = 0.0
-
-# [retry.per_error.ambiguous]
-# strategy = "exponential"
-# max_attempts = 5
-# base_delay = "1s"
-# max_delay = "60s"
-# jitter = 0.3
+# Per-error retry policies are unsupported. Configure the global policy above.
 
 [flags]
 # Allow publishing from a dirty git working tree (not recommended)
@@ -937,7 +942,10 @@ per_package_timeout = "30m"
     }
 }
 
-fn validate_registry_destination(registry: &RegistryConfig, allow_loopback: bool) -> Result<()> {
+fn validated_registry_destination(
+    registry: &RegistryConfig,
+    allow_loopback: bool,
+) -> Result<ValidatedRegistry> {
     let identity = Registry {
         name: registry.name.clone(),
         api_base: registry.api_base.clone(),
@@ -947,8 +955,79 @@ fn validate_registry_destination(registry: &RegistryConfig, allow_loopback: bool
         .with_private(registry.allow_private)
         .with_loopback(allow_loopback);
     ValidatedRegistry::new(identity, policy)
-        .map(|_| ())
         .with_context(|| format!("invalid registry '{}' destination", registry.name))
+}
+
+fn validate_registry_destination(registry: &RegistryConfig, allow_loopback: bool) -> Result<()> {
+    validated_registry_destination(registry, allow_loopback).map(|_| ())
+}
+
+fn validate_rehearsal_registry_authorities(
+    config: &ShipperConfig,
+    allow_loopback: bool,
+) -> Result<()> {
+    if !config.rehearsal.enabled {
+        return Ok(());
+    }
+    let Some(rehearsal_name) = config.rehearsal.registry.as_deref() else {
+        return Ok(());
+    };
+    let Some(rehearsal_config) = configured_registry(config, rehearsal_name) else {
+        // Static config validation is opportunistic. The engine resolves the
+        // effective CLI/runtime catalog and rejects a missing entry before any
+        // rehearsal side effect.
+        return Ok(());
+    };
+    let rehearsal = validated_registry_destination(
+        &rehearsal_config,
+        allow_loopback || config.rehearsal.enabled || config.rehearsal.allow_loopback,
+    )?;
+
+    for live_config in configured_live_registries(config) {
+        let live_allow_loopback = allow_loopback
+            || ((config.rehearsal.enabled || config.rehearsal.allow_loopback)
+                && config.rehearsal.registry.as_deref() == Some(live_config.name.as_str()));
+        let live = validated_registry_destination(&live_config, live_allow_loopback)?;
+        rehearsal.ensure_rehearsal_isolated_from(&live)?;
+    }
+
+    Ok(())
+}
+
+fn configured_registry(config: &ShipperConfig, name: &str) -> Option<RegistryConfig> {
+    config
+        .registry
+        .as_ref()
+        .filter(|registry| registry.name == name)
+        .cloned()
+        .or_else(|| config.registries.find_by_name(name))
+        .or_else(|| (name == "crates-io").then(crates_io_registry_config))
+}
+
+fn configured_live_registries(config: &ShipperConfig) -> Vec<RegistryConfig> {
+    if let Some(registry) = config.registry.as_ref() {
+        return vec![registry.clone()];
+    }
+    if !config.registries.default_registries.is_empty() {
+        return config
+            .registries
+            .default_registries
+            .iter()
+            .filter_map(|name| configured_registry(config, name))
+            .collect();
+    }
+    vec![config.registries.get_default()]
+}
+
+fn crates_io_registry_config() -> RegistryConfig {
+    RegistryConfig {
+        name: "crates-io".to_string(),
+        api_base: "https://crates.io".to_string(),
+        index_base: Some("https://index.crates.io".to_string()),
+        token: None,
+        default: true,
+        allow_private: false,
+    }
 }
 
 #[cfg(test)]
@@ -964,6 +1043,14 @@ mod tests {
         assert_eq!(config.retry.max_attempts, 6);
         assert!(!config.flags.allow_dirty);
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn parsed_retry_defaults_to_half_jitter() {
+        let config: ShipperConfig =
+            toml::from_str("[retry]\nmax_attempts = 6\n").expect("retry table must parse");
+
+        assert_eq!(config.retry.jitter, 0.5);
     }
 
     #[test]
@@ -989,6 +1076,15 @@ mod tests {
         config.retry.base_delay = Duration::from_secs(1);
         config.retry.max_delay = Duration::from_millis(500);
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn retry_max_delay_may_equal_base_delay() {
+        let mut config = ShipperConfig::default();
+        config.retry.base_delay = Duration::from_secs(3);
+        config.retry.max_delay = config.retry.base_delay;
+
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -1113,6 +1209,207 @@ mod tests {
             .validate()
             .expect_err("enabled rehearsal must not target live registry");
         assert!(err.to_string().contains("must differ"));
+    }
+
+    #[test]
+    fn rehearsal_live_target_conflicts_cover_each_resolution_route() {
+        let registry = |name: &str, default: bool| RegistryConfig {
+            name: name.to_string(),
+            api_base: format!("https://{name}.example/api"),
+            index_base: Some(format!("https://{name}.example/index")),
+            token: None,
+            default,
+            allow_private: false,
+        };
+
+        let mut legacy = ShipperConfig {
+            registry: Some(registry("live", true)),
+            ..ShipperConfig::default()
+        };
+        legacy.rehearsal.enabled = true;
+        legacy.rehearsal.registry = Some("live".to_string());
+        assert!(legacy.validate().is_err());
+        legacy.rehearsal.registry = Some("rehearsal".to_string());
+        assert!(legacy.validate().is_ok());
+
+        let mut configured = ShipperConfig {
+            registries: MultiRegistryConfig {
+                registries: vec![registry("first", false), registry("chosen", true)],
+                default_registries: vec!["published".to_string()],
+            },
+            ..ShipperConfig::default()
+        };
+        configured.rehearsal.enabled = true;
+        configured.rehearsal.registry = Some("published".to_string());
+        assert!(configured.validate().is_err());
+
+        configured.registries.default_registries.clear();
+        configured.rehearsal.registry = Some("chosen".to_string());
+        assert!(configured.validate().is_err());
+
+        configured.registries.registries[1].default = false;
+        configured.rehearsal.registry = Some("first".to_string());
+        assert!(configured.validate().is_err());
+
+        let mut crates_io = ShipperConfig::default();
+        crates_io.rehearsal.enabled = true;
+        crates_io.rehearsal.registry = Some("crates-io".to_string());
+        assert!(crates_io.validate().is_err());
+        crates_io.rehearsal.enabled = false;
+        assert!(crates_io.validate().is_ok());
+    }
+
+    #[test]
+    fn rehearsal_authority_validation_rejects_aliases_and_same_name_different_endpoint() {
+        let registry = |name: &str, api: &str, index: &str, default: bool| RegistryConfig {
+            name: name.to_string(),
+            api_base: api.to_string(),
+            index_base: Some(index.to_string()),
+            token: None,
+            default,
+            allow_private: false,
+        };
+        let live = registry(
+            "live",
+            "https://registry.example/api",
+            "https://index.registry.example/index",
+            true,
+        );
+        let mut config = ShipperConfig {
+            registries: MultiRegistryConfig {
+                registries: vec![
+                    live.clone(),
+                    registry(
+                        "alias",
+                        "https://registry.example/other-path",
+                        "https://index.registry.example/other-path",
+                        false,
+                    ),
+                ],
+                default_registries: vec![],
+            },
+            ..ShipperConfig::default()
+        };
+        config.rehearsal.enabled = true;
+        config.rehearsal.registry = Some("alias".to_string());
+        let error = config
+            .validate()
+            .expect_err("different-name authority alias must fail");
+        assert!(error.to_string().contains("authority overlaps"));
+
+        let mut same_name = ShipperConfig {
+            registry: Some(live),
+            registries: MultiRegistryConfig {
+                registries: vec![registry(
+                    "live",
+                    "https://rehearsal.example/api",
+                    "https://index.rehearsal.example/index",
+                    false,
+                )],
+                default_registries: vec![],
+            },
+            ..ShipperConfig::default()
+        };
+        same_name.rehearsal.enabled = true;
+        same_name.rehearsal.registry = Some("live".to_string());
+        let error = same_name
+            .validate()
+            .expect_err("same name must fail even with different endpoints");
+        assert!(error.to_string().contains("must differ"));
+    }
+
+    #[test]
+    fn rehearsal_authority_validation_rejects_crates_io_alias_and_accepts_distinct_loopback() {
+        let mut config = ShipperConfig {
+            registries: MultiRegistryConfig {
+                registries: vec![RegistryConfig {
+                    name: "public-alias".to_string(),
+                    api_base: "https://rehearsal.crates.io:444/api".to_string(),
+                    index_base: Some("https://index.rehearsal.crates.io:444/index".to_string()),
+                    token: None,
+                    default: false,
+                    allow_private: false,
+                }],
+                default_registries: vec!["crates-io".to_string()],
+            },
+            ..ShipperConfig::default()
+        };
+        config.rehearsal.enabled = true;
+        config.rehearsal.registry = Some("public-alias".to_string());
+        let error = config
+            .validate()
+            .expect_err("crates.io family alias must fail");
+        assert!(error.to_string().contains("crates.io family"));
+
+        config.registries.registries[0] = RegistryConfig {
+            name: "rehearsal".to_string(),
+            api_base: "http://127.0.0.1:18081/api".to_string(),
+            index_base: Some("http://127.0.0.1:18081/index".to_string()),
+            token: None,
+            default: false,
+            allow_private: false,
+        };
+        config.rehearsal.registry = Some("rehearsal".to_string());
+        config.rehearsal.allow_loopback = true;
+        let result = config.validate();
+        assert!(result.is_ok(), "distinct loopback authority: {result:?}");
+    }
+
+    #[test]
+    fn rehearsal_authority_validation_does_not_invent_missing_catalog_identity() {
+        let mut config = ShipperConfig::default();
+        config.rehearsal.enabled = true;
+        config.rehearsal.registry = Some("missing".to_string());
+
+        assert!(
+            config.validate().is_ok(),
+            "effective runtime resolution owns a missing rehearsal catalog entry"
+        );
+    }
+
+    #[test]
+    fn loopback_validation_requires_matching_rehearsal_posture() {
+        let local = RegistryConfig {
+            name: "local".to_string(),
+            api_base: "http://127.0.0.1:8080".to_string(),
+            index_base: Some("http://127.0.0.1:8080/index".to_string()),
+            token: None,
+            default: false,
+            allow_private: false,
+        };
+        let mut single = ShipperConfig {
+            registry: Some(local.clone()),
+            ..ShipperConfig::default()
+        };
+        single.rehearsal.allow_loopback = true;
+        single.rehearsal.registry = Some("local".to_string());
+        assert!(single.validate().is_ok());
+        single.rehearsal.registry = Some("other".to_string());
+        assert!(single.validate().is_err());
+
+        let mut multiple = ShipperConfig {
+            registries: MultiRegistryConfig {
+                registries: vec![
+                    RegistryConfig {
+                        name: "live".to_string(),
+                        api_base: "https://live.example/api".to_string(),
+                        index_base: Some("https://live.example/index".to_string()),
+                        token: None,
+                        default: true,
+                        allow_private: false,
+                    },
+                    local,
+                ],
+                default_registries: vec![],
+            },
+            ..ShipperConfig::default()
+        };
+        multiple.rehearsal.enabled = true;
+        multiple.rehearsal.registry = Some("local".to_string());
+        let result = multiple.validate();
+        assert!(result.is_ok(), "{result:?}");
+        multiple.rehearsal.registry = Some("other".to_string());
+        assert!(multiple.validate().is_err());
     }
 
     #[test]
@@ -3075,6 +3372,7 @@ mode = "turbo"
 #[cfg(test)]
 mod config_parsing_edge_case_tests {
     use super::*;
+    use serial_test::serial;
     use std::io::Write;
     use tempfile::tempdir;
 
@@ -3146,6 +3444,28 @@ api_base = "http://127.0.0.1:9/api"
             Some("unsafe-test")
         );
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn diagnostic_workspace_loader_distinguishes_absent_invalid_and_malformed() {
+        let td = tempdir().expect("tempdir");
+        assert!(
+            ShipperConfig::load_from_workspace_for_diagnostics(td.path())
+                .expect("absent config is not an error")
+                .is_none()
+        );
+
+        let config_path = td.path().join(".shipper.toml");
+        std::fs::write(&config_path, "[retry]\njitter = -0.25\n").expect("write invalid config");
+        let config = ShipperConfig::load_from_workspace_for_diagnostics(td.path())
+            .expect("diagnostic loading defers value validation")
+            .expect("present config must be returned");
+        assert_eq!(config.retry.jitter, -0.25);
+        assert!(config.validate().is_err());
+
+        std::fs::write(&config_path, "[retry\n").expect("write malformed config");
+        assert!(ShipperConfig::load_from_workspace_for_diagnostics(td.path()).is_err());
     }
 
     // ── Empty TOML file uses all defaults ────────────────────────────

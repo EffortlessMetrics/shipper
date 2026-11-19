@@ -8,7 +8,10 @@
 //!
 //! # Invariants
 //!
-//! - Writes are atomic: write to `.tmp` sibling, `sync_all`, then rename.
+//! - Plaintext JSON writes require `.tmp` write and `sync_all` success before
+//!   rename. Parent-directory sync is best effort, not a host-loss guarantee.
+//! - Encrypted helper writes have a separate persistence implementation and are
+//!   not covered by this atomic JSON contract.
 //! - Forward-compatible schema: unknown receipt versions are best-effort
 //!   deserialized.
 //! - v1 → v2 receipt migration fills missing `git_context` (null) and
@@ -323,9 +326,11 @@ pub fn load_receipt(state_dir: &Path) -> Result<Option<Receipt>> {
     migrate_receipt(&path).map(Some)
 }
 
-/// Best-effort fsync of the parent directory after a rename, ensuring the
-/// directory entry update is durable on crash.  Errors are silently ignored
-/// because not all platforms support opening a directory for sync (e.g. Windows).
+/// Best-effort fsync of the parent directory after a rename.
+///
+/// Errors are ignored for portability (some platforms cannot open directories
+/// for sync), so success of the file write does not guarantee that the directory
+/// entry survives a host crash or power loss.
 pub fn fsync_parent_dir(path: &Path) {
     if let Some(parent) = path.parent()
         && let Ok(dir) = fs::File::open(parent)
@@ -343,7 +348,8 @@ pub(crate) fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> 
             .with_context(|| format!("failed to create tmp file {}", tmp.display()))?;
         f.write_all(&data)
             .with_context(|| format!("failed to write tmp file {}", tmp.display()))?;
-        f.sync_all().ok();
+        super::file_sync::sync_all(&f, &tmp)
+            .with_context(|| format!("failed to sync tmp file {}", tmp.display()))?;
     }
 
     fs::rename(&tmp, path).with_context(|| {

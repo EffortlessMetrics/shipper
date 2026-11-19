@@ -13,8 +13,13 @@ EXAMPLES:
     # Continue the current workspace release from persisted state:
     shipper resume
 
-    # Resume from a specific crate after reviewing the saved state:
+    # Select a resume point after reviewing the saved state:
     shipper resume --resume-from shipper-core
+
+In sequential mode, `--resume-from` selects the named package and later plan
+entries. In parallel mode, it selects the target's whole dependency level and
+later levels; an earlier same-level sibling can therefore block retry-budget
+admission.
 
     # Force resume when the computed plan differs from saved state:
     shipper resume --force-resume
@@ -56,7 +61,7 @@ Options:
           Skip owners/permissions preflight
 
       --strict-ownership
-          Fail preflight if ownership checks fail or if no token is available.
+          Require a registry token during strict-ownership preflight and before publish execution. Preflight also fails when ownership verification fails.
           
           Note: crates.io token scopes may not allow querying owners; this is best-effort.
 
@@ -64,7 +69,7 @@ Options:
           Pass --no-verify to cargo publish
 
       --max-attempts <MAX_ATTEMPTS>
-          Max attempts per crate publish step (default: 6)
+          Cumulative max attempts per crate across publish and resume (default: 6)
 
       --base-delay <BASE_DELAY>
           Base backoff delay (e.g. 2s, 500ms; default: 2s)
@@ -100,10 +105,10 @@ Options:
           Force resume even if the computed plan differs from the state file
 
       --force
-          Force override of existing locks (use with caution)
+          Override unknown lock metadata; never an active OS guard
 
       --lock-timeout <LOCK_TIMEOUT>
-          Lock timeout duration (e.g. 1h, 30m; default: 1h). Locks older than this are considered stale
+          Minimum age for confirmed abandoned legacy locks (e.g. 1h, 30m; default: 1h)
 
       --policy <POLICY>
           Publish policy: safe (verify+strict), balanced (verify when needed), fast (no verify; default: safe)
@@ -139,10 +144,10 @@ Options:
           Publish to all configured registries
 
       --resume-from <RESUME_FROM>
-          Optional package name to resume from
+          Select where resume begins: sequential uses the named package and later plan entries; parallel uses its whole dependency level and later levels
 
       --rehearsal-registry <REHEARSAL_REGISTRY>
-          Name of a registry (from `[[registries]]` in `.shipper.toml`) to rehearse the publish against before live dispatch.
+          Name of a registry (from `[[registries.registries]]` in `.shipper.toml`) to rehearse the publish against before live dispatch.
           
           Runs the rehearsal publish flow against the alternate registry and enables the live-publish rehearsal gate when configured.
 

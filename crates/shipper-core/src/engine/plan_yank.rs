@@ -97,6 +97,20 @@ fn include(receipt: &PackageReceipt, filter: PlanYankFilter) -> bool {
 /// default â€” yanking a version that was never published is a no-op on
 /// the registry and would just produce noise.
 pub fn build_plan(receipt: &Receipt, filter: PlanYankFilter) -> YankPlan {
+    build_plan_with_reason(receipt, filter, None)
+}
+
+/// Build a reverse-topological yank plan from a receipt, applying an
+/// operator-approved reason to every selected entry when one is supplied.
+///
+/// The explicit reason takes precedence over a receipt entry's
+/// `compromised_by` value. Passing `None` is exactly the legacy [`build_plan`]
+/// behavior and preserves each selected entry's receipt-level fallback.
+pub fn build_plan_with_reason(
+    receipt: &Receipt,
+    filter: PlanYankFilter,
+    reason: Option<&str>,
+) -> YankPlan {
     let mut entries: Vec<YankEntry> = receipt
         .packages
         .iter()
@@ -104,7 +118,7 @@ pub fn build_plan(receipt: &Receipt, filter: PlanYankFilter) -> YankPlan {
         .map(|p| YankEntry {
             name: p.name.clone(),
             version: p.version.clone(),
-            reason: p.compromised_by.clone(),
+            reason: plan_entry_reason(reason, p),
         })
         .collect();
     entries.reverse();
@@ -118,6 +132,12 @@ pub fn build_plan(receipt: &Receipt, filter: PlanYankFilter) -> YankPlan {
         }),
         entries,
     }
+}
+
+fn plan_entry_reason(reason: Option<&str>, package: &PackageReceipt) -> Option<String> {
+    reason
+        .map(str::to_string)
+        .or_else(|| package.compromised_by.clone())
 }
 
 /// Build a reverse-topological yank plan rooted at a specific broken crate
@@ -183,7 +203,7 @@ pub fn build_plan_from_starting_crate(
             //   1. Operator-supplied `--reason <text>` (applies to all)
             //   2. Existing `compromised_by` on the receipt entry
             //   3. None
-            reason: reason.clone().or_else(|| p.compromised_by.clone()),
+            reason: plan_entry_reason(reason.as_deref(), p),
         })
         .collect();
     entries.reverse();
@@ -387,6 +407,45 @@ mod tests {
     }
 
     #[test]
+    fn receipt_filters_apply_explicit_reason_with_shared_precedence() {
+        let r = sample_receipt(vec![
+            pkg("a", PackageState::Published, Some("receipt fallback")),
+            pkg("b", PackageState::Published, None),
+        ]);
+
+        let all =
+            build_plan_with_reason(&r, PlanYankFilter::AllPublished, Some("operator approved"));
+        assert_eq!(all.entries.len(), 2);
+        for entry in &all.entries {
+            assert_eq!(entry.reason.as_deref(), Some("operator approved"));
+        }
+
+        let compromised = build_plan_with_reason(
+            &r,
+            PlanYankFilter::CompromisedOnly,
+            Some("operator approved"),
+        );
+        assert_eq!(compromised.entries.len(), 1);
+        assert_eq!(compromised.entries[0].name, "a");
+        assert_eq!(
+            compromised.entries[0].reason.as_deref(),
+            Some("operator approved")
+        );
+    }
+
+    #[test]
+    fn legacy_build_plan_preserves_receipt_reason_fallback() {
+        let r = sample_receipt(vec![
+            pkg("a", PackageState::Published, Some("receipt fallback")),
+            pkg("b", PackageState::Published, None),
+        ]);
+
+        let plan = build_plan(&r, PlanYankFilter::AllPublished);
+        assert_eq!(plan.entries[0].reason, None);
+        assert_eq!(plan.entries[1].reason.as_deref(), Some("receipt fallback"));
+    }
+
+    #[test]
     fn empty_plan_on_empty_receipt() {
         let r = sample_receipt(vec![]);
         let plan = build_plan(&r, PlanYankFilter::AllPublished);
@@ -480,7 +539,7 @@ mod tests {
     #[test]
     fn starting_crate_applies_explicit_reason_to_every_entry() {
         let r = sample_receipt(vec![
-            pkg("a", PackageState::Published, None),
+            pkg("a", PackageState::Published, Some("receipt fallback")),
             pkg("b", PackageState::Published, None),
         ]);
         let mut deps = BTreeMap::new();
@@ -493,6 +552,13 @@ mod tests {
         for entry in &plan.entries {
             assert_eq!(entry.reason.as_deref(), Some("CVE-2026-0001"));
         }
+
+        let fallback = build_plan_from_starting_crate(&r, &deps, "a", None).expect("plan");
+        assert_eq!(fallback.entries[0].reason, None);
+        assert_eq!(
+            fallback.entries[1].reason.as_deref(),
+            Some("receipt fallback")
+        );
     }
 
     #[test]

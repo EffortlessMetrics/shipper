@@ -1,0 +1,6 @@
+kind: fixed
+body: Require locked release builds and native execution of each archived binary, with exact-version and offline-plan receipts that the aggregate release gate validates before publication.
+time: 2026-10-28T12:00:02Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

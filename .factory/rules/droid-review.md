@@ -1,5 +1,8 @@
 # Droid Review Rules
 
+> **Status: retired / restoration-only.** No Factory Droid workflow currently
+> consumes these rules.
+
 Droid review output is an inter-agent repair queue and inspection record, not a human approval signal.
 
 ## Review target
@@ -23,6 +26,15 @@ Review changed behavior against:
 - docs/preflight.md
 - docs/readiness.md
 - docs/ci/*
+- docs/agent-context/review-currentness.md
+
+The currentness document defines shared semantics only. This Factory rule and `.factory/skills/review-guidelines/SKILL.md` are historical restoration inputs, not current executable authority; Claude and Codex use their complete provider-native skills.
+
+## Exact subject
+
+Bind the review to repository, PR number, head SHA, base ref and base SHA, merge-base SHA, synthetic merge/check commit where applicable, Factory skill/rules/model configuration, and relevant tool/schema/fixture/receipt identities. Head-only review is insufficient. If those identities cannot be established, report `NOT_PROVEN`.
+
+Reviewer identity alone does not create independence. State whether the reviewer authored or repaired the current head, what live evidence was reloaded, which external controls were used, correlated-failure risk, and author-side versus independent posture.
 
 ## Clean review requirement
 
@@ -30,15 +42,18 @@ Do not emit a naked `LGTM`.
 
 If no actionable findings are emitted, write an inspection record with:
 
+- reviewed effective subject;
 - inspected surfaces (concrete files, modules, invariants);
-- checks performed (which lenses were applied);
-- why no comments were emitted;
-- residual risk (what could still fail in production);
-- validation signal (Observed / Reported / Not verified).
+- challenge passes performed;
+- existing-finding disposition;
+- residual risk;
+- validation signal (Observed / Reported / Not verified);
+- independence posture;
+- `Candidate result: REVIEW_CURRENT`.
 
 ## Finding requirement
 
-Use:
+Before posting, inspect current threads and avoid duplicates. Prefer one review submission with exact-line inline comments anchored to the reviewed head. Use:
 
 ```
 [P0|P1|P2] title
@@ -48,6 +63,7 @@ Why here:
 Fix direction:
 Validation:
 Confidence:
+Evidence: Observed | Reported | Not verified
 ```
 
 Priorities:
@@ -56,17 +72,37 @@ Priorities:
 - `P1` — meaningful risk or contract violation worth fixing before merge.
 - `P2` — cleanup, documentation gap, or follow-up acceptable to defer.
 
-`Validation:` names a real local check (e.g., `cargo test -p shipper-core <name>`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`). Generic phrases like "run tests" are not acceptable.
+`Validation:` names a real local check. Generic phrases like "run tests" are not acceptable.
+
+## Candidate result
+
+Return one substantive result separately from GitHub checks and mergeability:
+
+```text
+REVIEW_CURRENT
+CHANGES_REQUIRED
+NOT_PROVEN
+BLOCKED_BY_PREREQUISITE
+SUPERSEDED_OR_CLOSE
+```
+
+A green check list, mergeability, approval, bot summary, or zero unresolved threads cannot substitute for the candidate result. A failed, cancelled, skipped, rate-limited, malformed, placeholder, or unavailable automated review is unavailable evidence, not a clean review.
 
 ## Evidence provenance
 
 Mark each claim:
 
 - `Observed:` directly inspected in this diff or in the listed source files.
-- `Reported:` taken from PR body, commit messages, prior CI logs, or another agent.
-- `Not verified:` referenced but not confirmed in this review.
+- `Reported:` taken from PR body, commits, logs, or another agent.
+- `Not verified:` referenced but not confirmed.
 
 Do not treat PR-body claims as independently verified facts.
+
+## Repair and re-review
+
+A valid finding receives a reply naming the fixing commit and focused proof, or an evidence-backed rejection, before resolution. Blanket automated thread resolution is forbidden. After repair, re-review affected findings, dimensions, and repair-created edge cases. Base or merge-base movement can invalidate review without a head change.
+
+Every PR in a stack receives its own candidate result before any campaign synthesis.
 
 ## Notification hygiene
 

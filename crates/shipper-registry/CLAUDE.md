@@ -31,7 +31,7 @@ Two properties are load-bearing and covered by tests in this crate:
 
 - **Local index reads are offline.** When `ReadinessConfig::index_path` is
   set, `visible_via_index` reads that file and parses it with
-  `shipper_sparse_index::contains_version`; it must not issue an HTTP
+  `shipper_sparse_index::observe_version`; it must not issue an HTTP
   request. Tests assert a request count of zero against a counting mock.
 - **`ReadinessEvidence::delay_before` is the delay actually slept**, carried
   forward in `pending_delay`, and equal to the `delay_ms` of the matching

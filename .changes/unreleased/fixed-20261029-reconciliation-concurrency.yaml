@@ -1,0 +1,6 @@
+kind: fixed
+body: Serialize concurrent reconciliation report snapshots and replacement so older evidence cannot overwrite newer records, while preserving report failures and concurrent Cargo execution.
+time: 2026-10-29T07:00:32Z
+custom:
+  Audience: Mixed
+  Importance: Detailed

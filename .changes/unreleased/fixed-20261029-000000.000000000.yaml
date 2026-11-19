@@ -1,0 +1,6 @@
+kind: fixed
+body: Bind containment yanks to the selected registry, workspace, and effective state directory. Pin crates.io explicitly, reject multi-registry selectors and conflicting reviewed plans, and keep receipt amendments and default planning receipts beside the selected workspace evidence.
+time: 2026-10-29T00:00:00Z
+custom:
+  Audience: Operators
+  Importance: Detailed

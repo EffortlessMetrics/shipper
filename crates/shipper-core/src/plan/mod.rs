@@ -41,6 +41,13 @@ pub fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     build_pipeline::build_plan(spec)
 }
 
+pub(crate) fn build_plan_from_metadata(
+    spec: &ReleaseSpec,
+    metadata: &cargo_metadata::Metadata,
+) -> Result<PlannedWorkspace> {
+    build_pipeline::build_plan_from_metadata(spec, metadata)
+}
+
 mod assembly;
 mod build_pipeline;
 pub(crate) mod chunking;

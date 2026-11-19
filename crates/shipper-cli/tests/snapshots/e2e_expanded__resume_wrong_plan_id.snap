@@ -2,17 +2,8 @@
 source: crates/shipper-cli/tests/e2e_expanded.rs
 expression: "normalize_output(&normalize_stderr(&normalize_tempdir_paths(&stderr,\ntd.path())))"
 ---
-Error: resume failed — next steps:
-  * if plan-ID mismatch: either `shipper clean` and start a fresh plan, or pass `--force-resume` if you understand the divergence
-  * inspect <STATE_DIR>/events.jsonl for the authoritative event log
-  * inspect <STATE_DIR>/state.json to see what was already published
-  * run `shipper status` to compare local versions to the registry
-  Common blockers to check:
-  * state mismatch: compare the current plan with the saved `plan_id` before forcing
-  * corrupt state: preserve `events.jsonl`, then rebuild or clean state intentionally
-  * stale lock: verify no other release process owns the lock before forcing
-  * ambiguous state: inspect `reconciliation.json` and let resume reconcile registry truth
+Error: resume was refused before changing retained evidence or dispatching a publish attempt; inspect the lock, state, events, and reconciliation evidence before retrying
 
 Caused by:
-    0: failed to parse state JSON <STATE_DIR>/state.json
-    1: invalid type: sequence, expected a map at line 1 column 44
+    0: publish admission was refused
+    1: existing state plan_id bogus-plan-id-12345 does not match current plan_id <PLAN_ID>; delete state or use --force-resume

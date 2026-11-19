@@ -1,0 +1,6 @@
+kind: fixed
+body: Bind archived-binary source verification to the actual checkout root and isolate inherited Git context, preserving detached worktrees while rejecting foreign, nested, dirty working-tree, or staged-index source evidence.
+time: 2026-11-02T06:27:00Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

@@ -21,7 +21,7 @@
 //! send_webhook(&config, &payload).expect("send");
 //! ```
 
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use hmac::{Hmac, Mac};
@@ -29,70 +29,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::Sha256;
 
-/// Webhook type
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WebhookType {
-    /// Generic webhook (POST JSON)
-    #[default]
-    Generic,
-    /// Slack incoming webhook
-    Slack,
-    /// Discord webhook
-    Discord,
-}
-
-/// Webhook configuration
-///
-/// `Debug` is implemented manually so signing secrets and credential-bearing
-/// webhook URLs are not copied into diagnostics, error chains, or evidence
-/// that formats configuration values.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct WebhookConfig {
-    /// Webhook URL
-    pub url: String,
-    /// Type of webhook
-    #[serde(default)]
-    pub webhook_type: WebhookType,
-    /// Optional secret for payload signing
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
-    /// Timeout in seconds
-    #[serde(default = "default_timeout")]
-    pub timeout_secs: u64,
-}
-
-fn default_timeout() -> u64 {
-    30
-}
-
-const REDACTED_SECRET: &str = "<redacted>";
-
-impl fmt::Debug for WebhookConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let safe_url = if self.url.is_empty() {
-            ""
-        } else {
-            REDACTED_SECRET
-        };
-        f.debug_struct("WebhookConfig")
-            .field("url", &safe_url)
-            .field("webhook_type", &self.webhook_type)
-            .field("secret", &self.secret.as_ref().map(|_| REDACTED_SECRET))
-            .field("timeout_secs", &self.timeout_secs)
-            .finish()
-    }
-}
-
-impl Default for WebhookConfig {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            webhook_type: WebhookType::default(),
-            secret: None,
-            timeout_secs: default_timeout(),
-        }
-    }
-}
+// The webhook *configuration* values live in `shipper-types` so the contract
+// crate can describe a configured webhook without inheriting this crate's HTTP
+// and signing dependencies. Delivery behavior stays here. These re-exports keep
+// `shipper_webhook::{WebhookConfig, WebhookType}` working as the public path.
+pub use shipper_types::webhook::{WebhookConfig, WebhookType};
 
 /// Webhook payload
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -121,12 +62,15 @@ pub struct WebhookPayload {
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-/// Send a webhook notification
+/// Send a webhook notification.
+///
+/// Transport errors expose only a failure category or HTTP status. Endpoint
+/// URLs, response bodies and the underlying HTTP error chain are never retained.
 pub fn send_webhook(config: &WebhookConfig, payload: &WebhookPayload) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(config.timeout_secs))
         .build()
-        .context("failed to create HTTP client")?;
+        .map_err(safe_transport_error)?;
 
     let body = match config.webhook_type {
         WebhookType::Generic => serde_json::to_string(payload)?,
@@ -150,25 +94,17 @@ pub fn send_webhook(config: &WebhookConfig, payload: &WebhookPayload) -> Result<
         request = request.header("X-Hub-Signature-256", signature);
     }
 
-    let response = request.send().context("failed to send webhook request")?;
-
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "webhook request failed with status {}: {}",
-            response.status(),
-            response.text().unwrap_or_default()
-        ));
-    }
-
-    Ok(())
+    let response = request.send().map_err(safe_transport_error)?;
+    check_delivery_status(response.status())
 }
 
-/// Send a webhook notification asynchronously
+/// Send a webhook notification asynchronously, with the same diagnostic
+/// non-disclosure boundary as [`send_webhook`].
 pub async fn send_webhook_async(config: &WebhookConfig, payload: &WebhookPayload) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.timeout_secs))
         .build()
-        .context("failed to create HTTP client")?;
+        .map_err(safe_transport_error)?;
 
     let body = match config.webhook_type {
         WebhookType::Generic => serde_json::to_string(payload)?,
@@ -192,19 +128,41 @@ pub async fn send_webhook_async(config: &WebhookConfig, payload: &WebhookPayload
         request = request.header("X-Hub-Signature-256", signature);
     }
 
-    let response = request
-        .send()
-        .await
-        .context("failed to send webhook request")?;
+    let response = request.send().await.map_err(safe_transport_error)?;
+    check_delivery_status(response.status())
+}
 
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "webhook request failed with status {}: {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
-        ));
+// Never wrap or format the original error: removing only its top-level URL
+// would still leave arbitrary nested transport diagnostics accessible through
+// anyhow's Debug, alternate Display or chain(). Keep only safe classifications.
+fn safe_transport_error(error: reqwest::Error) -> anyhow::Error {
+    let category = if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connection or TLS failure"
+    } else if error.is_redirect() {
+        "redirect failure"
+    } else if error.is_builder() {
+        "invalid request or HTTP client configuration"
+    } else if error.is_body() || error.is_decode() {
+        "response handling failure"
+    } else if error.is_request() {
+        "request failure"
+    } else {
+        "transport failure"
+    };
+    anyhow::anyhow!("webhook delivery failed: {category}")
+}
+
+fn check_delivery_status(status: reqwest::StatusCode) -> Result<()> {
+    if !status.is_success() {
+        // Do not read the response body. Endpoints may echo payloads, signing
+        // material or confidential diagnostic text even for ordinary 4xx/5xx.
+        anyhow::bail!(
+            "webhook request failed with HTTP status {}",
+            status.as_u16()
+        );
     }
-
     Ok(())
 }
 
@@ -2383,7 +2341,7 @@ mod tests {
     }
 
     #[test]
-    fn send_webhook_5xx_error_message_includes_body() {
+    fn send_webhook_5xx_error_message_excludes_body() {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let addr = server.server_addr().to_ip().unwrap();
 
@@ -2410,11 +2368,11 @@ mod tests {
         handle.join().unwrap();
         let err = result.unwrap_err().to_string();
         assert!(err.contains("500"));
-        assert!(err.contains("internal server error detail xyz"));
+        assert!(!err.contains("internal server error detail xyz"));
     }
 
     #[test]
-    fn send_webhook_4xx_error_message_includes_body() {
+    fn send_webhook_4xx_error_message_excludes_body() {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let addr = server.server_addr().to_ip().unwrap();
 
@@ -2441,7 +2399,7 @@ mod tests {
         handle.join().unwrap();
         let err = result.unwrap_err().to_string();
         assert!(err.contains("422"));
-        assert!(err.contains("invalid webhook payload format"));
+        assert!(!err.contains("invalid webhook payload format"));
     }
 
     #[tokio::test]

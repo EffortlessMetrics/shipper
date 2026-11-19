@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
-use cargo_metadata::PackageId;
+use cargo_metadata::{Metadata, PackageId};
 use chrono::Utc;
 use shipper_types::{PlannedWorkspace, ReleasePlan, ReleaseSpec};
 
@@ -13,6 +13,13 @@ use super::selection::resolve_included_packages;
 
 pub(super) fn build_plan(spec: &ReleaseSpec) -> Result<PlannedWorkspace> {
     let metadata = load_metadata(&spec.manifest_path)?;
+    build_plan_from_metadata(spec, &metadata)
+}
+
+pub(super) fn build_plan_from_metadata(
+    spec: &ReleaseSpec,
+    metadata: &Metadata,
+) -> Result<PlannedWorkspace> {
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
 
     let pkg_map = metadata

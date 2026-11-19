@@ -1,0 +1,6 @@
+kind: fixed
+body: Route actual Cargo publish process timeouts into registry reconciliation before output heuristics, preserving safe publish and resume behavior with empty or misleading diagnostic tails.
+time: 2026-10-28T21:00:00Z
+custom:
+  Audience: Mixed
+  Importance: Headline

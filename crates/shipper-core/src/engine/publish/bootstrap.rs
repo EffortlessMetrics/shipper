@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 
-use crate::engine::{Reporter, init_registry_client, init_state, rehearsal};
+use crate::engine::{
+    Reporter, init_registry_client, init_state, prevalidate_publish_registry_tokens, rehearsal,
+};
 use crate::git;
 use crate::lock;
 use crate::plan::PlannedWorkspace;
@@ -31,10 +32,7 @@ pub(in crate::engine) struct PublishBootstrap {
     pub(in crate::engine) run_started: DateTime<Utc>,
 }
 
-pub(in crate::engine) fn validate_resume_target(
-    ws: &PlannedWorkspace,
-    opts: &RuntimeOptions,
-) -> Result<()> {
+pub(crate) fn validate_resume_target(ws: &PlannedWorkspace, opts: &RuntimeOptions) -> Result<()> {
     if let Some(ref target) = opts.resume_from
         && !ws.plan.packages.iter().any(|p| &p.name == target)
     {
@@ -48,18 +46,25 @@ pub(in crate::engine) fn prepare_publish_run(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
     reporter: &mut dyn Reporter,
+    require_existing_state: bool,
 ) -> Result<PublishBootstrap> {
     let workspace_root = &ws.workspace_root;
     let state_dir = resolve_state_dir(workspace_root, &opts.state_dir);
+    prevalidate_publish_registry_tokens(ws, opts)?;
 
     // #97 PR 3: rehearsal hard gate. Only fires when a rehearsal registry
     // is configured; opt-in until rehearsal phase-2 is stable.
     rehearsal::enforce_gate(ws, opts, &state_dir, reporter)?;
 
-    let lock = acquire_publish_lock(&state_dir, workspace_root, opts, &ws.plan.plan_id)?;
+    let (reservation, retained) =
+        super::admission::reserve_and_admit(ws, opts, &state_dir, require_existing_state)?;
+    let lock = reservation
+        .claim(Some(&ws.plan.plan_id))
+        .context(crate::engine::PublishAdmissionError)?;
 
-    // Collect git context and environment fingerprint at start of execution.
-    let git_context = git::collect_git_context();
+    // Attribute evidence to the same workspace used by the cleanliness gate,
+    // even when an embedding caller or --manifest-path selects it from elsewhere.
+    let git_context = git::collect_git_context_at(workspace_root);
     let environment = environment::collect_environment_fingerprint();
     let auth_evidence = crate::ops::auth::collect_auth_evidence(&ws.plan.registry.name);
 
@@ -69,7 +74,7 @@ pub(in crate::engine) fn prepare_publish_run(
 
     let events_path = events::events_path(&state_dir);
     let mut event_log = events::EventLog::new();
-    let mut state = load_or_initialize_state(ws, opts, &state_dir, reporter)?;
+    let mut state = load_or_initialize_state(ws, opts, &state_dir, retained, reporter)?;
     let registry = init_registry_client(ws.plan.registry.clone(), &state_dir, opts)?;
 
     reporter.info(&format!("state dir: {}", state_dir.as_path().display()));
@@ -100,39 +105,16 @@ pub(in crate::engine) fn prepare_publish_run(
     })
 }
 
-fn acquire_publish_lock(
-    state_dir: &Path,
-    workspace_root: &Path,
-    opts: &RuntimeOptions,
-    plan_id: &str,
-) -> Result<lock::LockFile> {
-    let lock_timeout = if opts.force {
-        Duration::ZERO
-    } else {
-        opts.lock_timeout
-    };
-    let lock = lock::LockFile::acquire_with_timeout(state_dir, Some(workspace_root), lock_timeout)
-        .context("failed to acquire publish lock")?;
-    lock.set_plan_id(plan_id)?;
-    Ok(lock)
-}
-
 fn load_or_initialize_state(
     ws: &PlannedWorkspace,
     opts: &RuntimeOptions,
     state_dir: &Path,
+    retained: Option<ExecutionState>,
     reporter: &mut dyn Reporter,
 ) -> Result<ExecutionState> {
-    match state::load_state(state_dir)? {
+    match retained {
         Some(existing) => {
-            if existing.plan_id != ws.plan.plan_id {
-                if !opts.force_resume {
-                    bail!(
-                        "existing state plan_id {} does not match current plan_id {}; delete state or use --force-resume",
-                        existing.plan_id,
-                        ws.plan.plan_id
-                    );
-                }
+            if validate_existing_plan_id(&existing, ws, opts)? {
                 reporter.warn("forcing resume with mismatched plan_id (unsafe)");
             }
             Ok(existing)
@@ -141,7 +123,23 @@ fn load_or_initialize_state(
     }
 }
 
-fn record_execution_start(
+pub(in crate::engine) fn validate_existing_plan_id(
+    existing: &ExecutionState,
+    ws: &PlannedWorkspace,
+    opts: &RuntimeOptions,
+) -> Result<bool> {
+    let mismatched = existing.plan_id != ws.plan.plan_id;
+    if mismatched && !opts.force_resume {
+        bail!(
+            "existing state plan_id {} does not match current plan_id {}; delete state or use --force-resume",
+            existing.plan_id,
+            ws.plan.plan_id
+        );
+    }
+    Ok(mismatched)
+}
+
+pub(in crate::engine) fn record_execution_start(
     ws: &PlannedWorkspace,
     _opts: &RuntimeOptions,
     events_path: &Path,

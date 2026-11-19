@@ -1,0 +1,6 @@
+kind: changed
+body: Make preflight report the same typed finishability and context-preserving next action in human and JSON output without implying that publication occurred.
+time: 2026-08-14T12:00:00Z
+custom:
+  Audience: Operators
+  Importance: Detailed

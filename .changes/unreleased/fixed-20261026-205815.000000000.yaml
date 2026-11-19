@@ -1,0 +1,6 @@
+kind: fixed
+body: Preserve existing files and symlinks when initializing configuration. Refuse an occupied output path with guidance to choose another, and report success only after the new configuration is written.
+time: 2026-10-26T20:58:15Z
+custom:
+  Audience: Operators
+  Importance: Detailed

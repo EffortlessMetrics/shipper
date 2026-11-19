@@ -38,6 +38,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -164,6 +165,7 @@ exit 0\n";
 
 struct RegistryHandles {
     never_flip: Arc<Mutex<Vec<&'static str>>>,
+    per_path_hits: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 impl RegistryHandles {
@@ -172,6 +174,9 @@ impl RegistryHandles {
     }
     fn clear_pins(&self) {
         self.never_flip.lock().expect("lock").clear();
+    }
+    fn total_hits(&self) -> usize {
+        self.per_path_hits.lock().expect("lock").values().sum()
     }
 }
 
@@ -232,7 +237,72 @@ fn spawn_registry_at(addr: &str) -> (String, std::sync::mpsc::Sender<()>, Regist
         }
     });
 
-    (base_url, stop_tx, RegistryHandles { never_flip })
+    (
+        base_url,
+        stop_tx,
+        RegistryHandles {
+            never_flip,
+            per_path_hits,
+        },
+    )
+}
+
+fn spawn_counting_registry(status: u16) -> (String, std::sync::mpsc::Sender<()>, Arc<AtomicUsize>) {
+    let server = Server::http("127.0.0.1:0").expect("server");
+    let base_url = format!("http://{}", server.server_addr());
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let requests_for_thread = Arc::clone(&requests);
+
+    thread::spawn(move || {
+        loop {
+            if stop_rx.try_recv().is_ok() {
+                break;
+            }
+            match server.recv_timeout(Duration::from_millis(100)) {
+                Ok(Some(request)) => {
+                    requests_for_thread.fetch_add(1, Ordering::SeqCst);
+                    request
+                        .respond(
+                            Response::from_string("{}")
+                                .with_status_code(StatusCode(status))
+                                .with_header(
+                                    Header::from_bytes("Content-Type", "application/json")
+                                        .expect("header"),
+                                ),
+                        )
+                        .expect("respond");
+                }
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+    });
+
+    (base_url, stop_tx, requests)
+}
+
+fn write_rehearsal_isolation_config(root: &Path, live_url: &str, rehearsal_url: &str) {
+    write_file(
+        &root.join(".shipper.toml"),
+        &format!(
+            r#"[registry]
+name = "live"
+api_base = "{live_url}"
+index_base = "{live_url}"
+
+[[registries.registries]]
+name = "rehearsal"
+api_base = "{rehearsal_url}"
+index_base = "{rehearsal_url}"
+
+[rehearsal]
+enabled = true
+allow_loopback = true
+registry = "rehearsal"
+"#
+        ),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +444,97 @@ fn count_fake_cargo_publishes(log_path: &Path, crate_name: &str) -> usize {
         .count()
 }
 
+#[test]
+#[serial]
+fn rehearsal_authority_alias_is_rejected_before_publish_network_or_state() {
+    let td = tempdir().expect("tempdir");
+    create_three_crate_workspace(td.path());
+    let bin = td.path().join("bin");
+    fs::create_dir_all(&bin).expect("mkdir bin");
+    let fake_cargo = write_fake_cargo(&bin);
+    let cargo_log = td.path().join("cargo.log");
+    let state_dir = td.path().join("evidence");
+    let (registry_url, stop, requests) = spawn_counting_registry(200);
+    write_rehearsal_isolation_config(td.path(), &registry_url, &registry_url);
+
+    let output = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--registries")
+        .arg("rehearsal")
+        .arg("--rehearsal-registry")
+        .arg("rehearsal")
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("rehearse")
+        .env("SHIPPER_CARGO_BIN", &fake_cargo)
+        .env("SHIPPER_FAKE_CARGO_LOG", &cargo_log)
+        .output()
+        .expect("run rehearse");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("authority overlaps"), "stderr: {stderr}");
+    assert!(!state_dir.exists(), "no rehearsal evidence may be created");
+    assert!(!cargo_log.exists(), "publish/smoke Cargo must not run");
+    assert_eq!(requests.load(Ordering::SeqCst), 0, "registry requests");
+    let _ = stop.send(());
+}
+
+#[test]
+#[serial]
+fn rehearsal_authority_distinct_loopback_runs_selected_catalog_entry() {
+    let td = tempdir().expect("tempdir");
+    create_three_crate_workspace(td.path());
+    let bin = td.path().join("bin");
+    fs::create_dir_all(&bin).expect("mkdir bin");
+    let fake_cargo = write_fake_cargo(&bin);
+    let cargo_log = td.path().join("cargo.log");
+    let state_dir = td.path().join("evidence");
+    let (live_url, live_stop, live_requests) = spawn_counting_registry(200);
+    let (rehearsal_url, rehearsal_stop, rehearsal_requests) = spawn_counting_registry(200);
+    write_rehearsal_isolation_config(td.path(), &live_url, &rehearsal_url);
+
+    let output = loopback_shipper_cmd()
+        .arg("--manifest-path")
+        .arg(td.path().join("Cargo.toml"))
+        .arg("--registries")
+        .arg("rehearsal")
+        .arg("--rehearsal-registry")
+        .arg("rehearsal")
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("rehearse")
+        .env("SHIPPER_CARGO_BIN", &fake_cargo)
+        .env("SHIPPER_FAKE_CARGO_LOG", &cargo_log)
+        .output()
+        .expect("run rehearse");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("rehearsal OK: 3 packages"));
+    let cargo_calls = fs::read_to_string(&cargo_log).expect("cargo log");
+    assert_eq!(cargo_calls.lines().count(), 3, "cargo calls: {cargo_calls}");
+    assert!(
+        cargo_calls
+            .lines()
+            .all(|line| { line.contains("publish") && line.contains("--registry rehearsal") })
+    );
+    assert_eq!(rehearsal_requests.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        live_requests.load(Ordering::SeqCst),
+        0,
+        "live trust metadata must not make the live registry dispatchable"
+    );
+    assert!(state_dir.join("events.jsonl").exists());
+    assert!(state_dir.join("rehearsal.json").exists());
+    let _ = live_stop.send(());
+    let _ = rehearsal_stop.send(());
+}
+
 fn assert_live_rehearsal_interrupted_state(state_dir: &Path) {
     let state_path = state_dir.join("state.json");
     let events_path = state_dir.join("events.jsonl");
@@ -482,6 +643,8 @@ fn rehearsal_interrupted_publish_then_resume_preserves_invariants() {
     let state_dir = root.join(".shipper");
     let state_path = state_dir.join("state.json");
     let events_path = state_dir.join("events.jsonl");
+    let reconciliation_path = state_dir.join("reconciliation.json");
+    let cargo_log = state_dir.join("fake-cargo.log");
 
     // ── Run 1: publish with crate-c failing ──────────────────────────────
     // This is the "interrupted run" — a + b succeed, c fails. Shipper
@@ -496,6 +659,7 @@ fn rehearsal_interrupted_publish_then_resume_preserves_invariants() {
         &fake_cargo,
     );
     cmd.arg("publish")
+        .env("SHIPPER_FAKE_CARGO_LOG", &cargo_log)
         .env("SHIPPER_FAKE_EXIT_FOR_A", "0")
         .env("SHIPPER_FAKE_EXIT_FOR_B", "0")
         .env("SHIPPER_FAKE_EXIT_FOR_C", "1");
@@ -540,6 +704,118 @@ fn rehearsal_interrupted_publish_then_resume_preserves_invariants() {
         "PackagePublished events after run 1 should equal succeeded crates (2 = a + b); got {published_r1}"
     );
 
+    // A resume with the same cumulative ceiling cannot make another attempt.
+    // It must reject before appending a new run segment, touching retained
+    // evidence, dispatching Cargo, or querying the registry. Human and JSON
+    // envelopes expose the same typed current/requested/minimum values.
+    let state_before_budget_rejection = fs::read(&state_path).expect("state before rejection");
+    let events_before_budget_rejection = fs::read(&events_path).expect("events before rejection");
+    let reconciliation_before_budget_rejection =
+        fs::read(&reconciliation_path).expect("reconciliation before rejection");
+    let cargo_before_budget_rejection = fs::read(&cargo_log).expect("cargo before rejection");
+    let requests_before_budget_rejection = registry.total_hits();
+    let secret = "issue346-retry-budget-secret";
+
+    let mut same_ceiling_human = loopback_shipper_cmd();
+    common_args(
+        &mut same_ceiling_human,
+        &root.join("Cargo.toml"),
+        &registry_url,
+        &state_dir,
+        &fake_cargo,
+    );
+    let human_output = same_ceiling_human
+        .arg("resume")
+        .env("SHIPPER_FAKE_CARGO_LOG", &cargo_log)
+        .env("SHIPPER_FAKE_EXIT_FOR_C", "0")
+        .env("CARGO_REGISTRY_TOKEN", secret)
+        .output()
+        .expect("run same-ceiling human resume");
+    assert!(!human_output.status.success());
+    let human_stderr = String::from_utf8_lossy(&human_output.stderr);
+    for expected in [
+        "crate-c@0.1.0",
+        "persisted attempts 1",
+        "requested --max-attempts 1",
+        "--max-attempts 2 or greater",
+        "Safe to resume: yes",
+    ] {
+        assert!(
+            human_stderr.contains(expected),
+            "missing {expected:?} from human error: {human_stderr}"
+        );
+    }
+    assert!(!human_stderr.contains(secret));
+
+    let mut same_ceiling_json = loopback_shipper_cmd();
+    common_args(
+        &mut same_ceiling_json,
+        &root.join("Cargo.toml"),
+        &registry_url,
+        &state_dir,
+        &fake_cargo,
+    );
+    let json_output = same_ceiling_json
+        .args(["--format", "json", "resume"])
+        .env("SHIPPER_FAKE_CARGO_LOG", &cargo_log)
+        .env("SHIPPER_FAKE_EXIT_FOR_C", "0")
+        .env("CARGO_REGISTRY_TOKEN", secret)
+        .output()
+        .expect("run same-ceiling JSON resume");
+    assert!(!json_output.status.success());
+    let json_stderr = String::from_utf8_lossy(&json_output.stderr);
+    let json: serde_json::Value =
+        serde_json::from_str(&json_stderr).expect("same-ceiling error is JSON");
+    assert_eq!(json["schema_version"], "shipper.resume.error.v1");
+    assert_eq!(json["package"], "crate-c@0.1.0");
+    assert_eq!(json["current_attempts"], 1);
+    assert_eq!(json["requested_max_attempts"], 1);
+    assert_eq!(json["minimum_max_attempts"], 2);
+    assert_eq!(json["safe_to_resume"]["value"], true);
+    assert_eq!(json["next_action"]["kind"], "resume");
+    let safe_reason = json["safe_to_resume"]["reason"]
+        .as_str()
+        .expect("JSON safe-to-resume reason");
+    assert!(human_stderr.contains(safe_reason));
+    assert!(!json_stderr.contains(secret));
+
+    assert_eq!(
+        fs::read(&state_path).expect("state after rejection"),
+        state_before_budget_rejection
+    );
+    assert_eq!(
+        fs::read(&events_path).expect("events after rejection"),
+        events_before_budget_rejection
+    );
+    assert_eq!(
+        fs::read(&reconciliation_path).expect("reconciliation after rejection"),
+        reconciliation_before_budget_rejection
+    );
+    assert_eq!(
+        fs::read(&cargo_log).expect("cargo after rejection"),
+        cargo_before_budget_rejection
+    );
+    assert_eq!(registry.total_hits(), requests_before_budget_rejection);
+    assert!(!state_dir.join("receipt.json").exists());
+
+    let mut durable = loopback_shipper_cmd();
+    let durable_output = durable
+        .args(["--format", "json"])
+        .arg("--manifest-path")
+        .arg(root.join("Cargo.toml"))
+        .arg("--api-base")
+        .arg(&registry_url)
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .args(["status", "--durable"])
+        .output()
+        .expect("run durable status after budget rejection");
+    assert!(durable_output.status.success());
+    let durable_json: serde_json::Value = serde_json::from_slice(&durable_output.stdout)
+        .expect("durable status JSON after budget rejection");
+    assert_eq!(durable_json["outcome"]["status"], "interrupted");
+    assert_eq!(durable_json["outcome"]["safe_to_resume"]["value"], true);
+
     // ── Run 2: resume with crate-c succeeding ────────────────────────────
     // Unpin crate-c; keep per-path hit counters intact. Since crate-c's
     // preflight already fired in run 1 (counter > 1), run 2's post-publish
@@ -559,6 +835,7 @@ fn rehearsal_interrupted_publish_then_resume_preserves_invariants() {
         "2",
     );
     resume.arg("resume").env("SHIPPER_FAKE_EXIT_FOR_C", "0");
+    resume.env("SHIPPER_FAKE_CARGO_LOG", &cargo_log);
     resume.assert().success();
 
     let _ = registry_stop.send(());
@@ -617,6 +894,146 @@ fn rehearsal_interrupted_publish_then_resume_preserves_invariants() {
         "ExecutionStarted events should be exactly 2 (one per run); got {execution_started}. \
          < 2 means events.jsonl was truncated somewhere — append-only invariant broken."
     );
+}
+
+/// Model upload-artifact's directory contents and download-artifact's single-ID
+/// extraction into the requested path. Names come from the production workflow;
+/// the selector's API/refusal behavior is executed by the xtask workflow test.
+fn transfer_release_artifact(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).expect("artifact destination");
+    for entry in fs::read_dir(source).expect("source artifact must exist") {
+        let entry = entry.expect("artifact entry");
+        let target = destination.join(entry.file_name());
+        if entry.file_type().expect("artifact type").is_dir() {
+            transfer_release_artifact(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).expect("copy retained artifact byte-for-byte");
+        }
+    }
+}
+
+fn release_artifact_step(job: &str, name: &str) -> &'static str {
+    let workflow = include_str!("../../../.github/workflows/release.yml");
+    workflow
+        .split(&format!("  {job}:\n"))
+        .nth(1)
+        .expect("release job")
+        .split(&format!("      - name: {name}\n"))
+        .nth(1)
+        .expect("release artifact step")
+        .split("\n      - ")
+        .next()
+        .expect("release step body")
+}
+
+#[test]
+#[serial]
+fn release_artifact_supports_publish_then_two_resume_dispatches() {
+    let upload_name = |job, step| {
+        release_artifact_step(job, step)
+            .lines()
+            .find_map(|line| line.strip_prefix("          name: "))
+            .expect("literal artifact upload name")
+    };
+    let publish_name = upload_name("publish-crates-io", "Upload .shipper/ (final state)");
+    let resume_name = upload_name("release-resume", "Upload .shipper/ (post-resume state)");
+    let selected_name =
+        release_artifact_step("release-resume", "Select prior .shipper/ state artifact")
+            .split("select(.name == \"")
+            .nth(1)
+            .expect("exact artifact name selector")
+            .split('"')
+            .next()
+            .expect("selected artifact name");
+
+    let td = tempdir().expect("tempdir");
+    let root = td.path();
+    create_three_crate_workspace(root);
+    let bin = root.join("fake-bin");
+    fs::create_dir(&bin).expect("fake cargo directory");
+    let fake_cargo = write_fake_cargo(&bin);
+    let (registry_url, registry_stop, registry) = spawn_registry();
+    registry.pin_404("crate-c");
+    let artifact_store = root.join("artifacts");
+    let mut previous_events = Vec::new();
+
+    for (run, command, ceiling) in [(1, "publish", "1"), (2, "resume", "2"), (3, "resume", "3")] {
+        let state_dir = root.join(format!("run-{run}/.shipper"));
+        if run > 1 {
+            let predecessor = artifact_store
+                .join(format!("run-{}", run - 1))
+                .join(selected_name);
+            transfer_release_artifact(&predecessor, &state_dir);
+            assert_eq!(
+                fs::read(state_dir.join("events.jsonl")).expect("transferred events"),
+                previous_events
+            );
+            let state: serde_json::Value = serde_json::from_slice(
+                &fs::read(state_dir.join("state.json")).expect("transferred state"),
+            )
+            .expect("state JSON");
+            assert_eq!(state["packages"]["crate-c@0.1.0"]["attempts"], run - 1);
+        }
+        if run == 3 {
+            // The two prior failed attempts are now visible at the registry.
+            // Following the latest artifact must retain both attempts and skip
+            // this already-visible version without issuing another upload.
+            registry.clear_pins();
+        }
+        let mut cmd = loopback_shipper_cmd();
+        common_args_with_max_attempts(
+            &mut cmd,
+            &root.join("Cargo.toml"),
+            &registry_url,
+            &state_dir,
+            &fake_cargo,
+            ceiling,
+        );
+        cmd.arg(command)
+            .env("SHIPPER_FAKE_CARGO_LOG", fake_cargo_log(&state_dir))
+            .env("SHIPPER_FAKE_EXIT_FOR_C", "1");
+        if run < 3 {
+            cmd.assert().failure();
+            assert_live_rehearsal_interrupted_state(&state_dir);
+        } else {
+            cmd.assert().success();
+        }
+        let events = fs::read(state_dir.join("events.jsonl")).expect("current events");
+        assert!(
+            events.starts_with(&previous_events),
+            "every continuation must retain the complete predecessor event history"
+        );
+        previous_events = events;
+        let state: serde_json::Value =
+            serde_json::from_slice(&fs::read(state_dir.join("state.json")).expect("current state"))
+                .expect("state JSON");
+        assert_eq!(
+            count_fake_cargo_publishes(&fake_cargo_log(&state_dir), "crate-c"),
+            run.min(2),
+            "a version already visible before the final continuation must not be uploaded again"
+        );
+        assert_eq!(state["packages"]["crate-c@0.1.0"]["attempts"], run.min(2));
+        assert_eq!(
+            count_fake_cargo_publishes(&fake_cargo_log(&state_dir), "crate-a"),
+            1
+        );
+        assert_eq!(
+            count_fake_cargo_publishes(&fake_cargo_log(&state_dir), "crate-b"),
+            1
+        );
+        assert_eq!(
+            count_events_matching(&read_events(&state_dir.join("events.jsonl")), |event| {
+                event_type_matches(event, "ExecutionStarted")
+            }),
+            run
+        );
+        let name = if run == 1 { publish_name } else { resume_name };
+        transfer_release_artifact(
+            &state_dir,
+            &artifact_store.join(format!("run-{run}")).join(name),
+        );
+    }
+    let _ = registry_stop.send(());
 }
 
 #[test]
@@ -732,3 +1149,6 @@ fn live_runner_interruption_resume_downloaded_artifact_preserves_invariants() {
         "crate-c should be attempted once before interruption and once during resume"
     );
 }
+
+#[path = "recovery/cross_run.rs"]
+mod cross_run;

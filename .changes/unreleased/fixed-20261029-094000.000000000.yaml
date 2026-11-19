@@ -1,0 +1,6 @@
+kind: fixed
+body: Classify registry ownership verification by the HTTP response status so transport and malformed-response errors remain errors when their text resembles an authentication or missing-crate response.
+time: 2026-10-29T09:40:00Z
+custom:
+  Audience: Mixed
+  Importance: Detailed

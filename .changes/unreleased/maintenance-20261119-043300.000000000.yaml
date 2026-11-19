@@ -1,0 +1,6 @@
+kind: maintenance
+body: Bind the dedicated Rust 1.95 CI check to the actual checkout, compiler and locked dependency graph on both full-CI routes.
+time: 2026-11-19T04:33:00Z
+custom:
+  Audience: Maintainers
+  Importance: Detailed

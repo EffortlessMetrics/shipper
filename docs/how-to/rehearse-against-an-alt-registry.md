@@ -22,16 +22,21 @@ publish shape has changed, rehearse.
 
 ## Prerequisites
 
-- An **alternate registry**. Options, rough-ordered by effort:
+- An **isolated, non-live registry on a distinct configured authority** whose rehearsal
+  artifacts can be discarded without public impact. Options, rough-ordered by
+  effort:
   - **kellnr** (recommended for CI): self-host a registry sidecar per
     release. [kellnr docs](https://kellnr.io/documentation). Short-
     lived instance — spin up, rehearse, tear down.
-  - **Throwaway crates.io account**: works but pollutes the real
-    registry with rehearsal versions. Use different crate names if
-    you go this route.
-  - **Your existing private registry**: if your org already has one
-    (cloudsmith / Artifactory / JFrog / Cargo-hosted), a dedicated
-    `rehearsal-*` namespace works.
+  - **A non-production private registry**: if your organization already has
+    one (Cloudsmith, Artifactory, JFrog, or Cargo-hosted), use a dedicated
+    non-production instance on an authority distinct from the live target.
+    A namespace or account on the same authority is not an isolation boundary.
+
+> **Destructive target fence:** crates.io is not a rehearsal registry. A
+> throwaway account or different crate name still creates permanent public
+> registry history. Testing against crates.io belongs only to a separately
+> authorized release-authority operation, not this default guide.
 
 - Registry URL + token configured in Cargo so `cargo publish --registry`
   works.
@@ -43,7 +48,12 @@ publish shape has changed, rehearse.
 ### Via `.shipper.toml`
 
 ```toml
-[[registries]]
+[registry]
+name = "crates-io"
+api_base = "https://crates.io"
+index_base = "https://index.crates.io"
+
+[[registries.registries]]
 name = "rehearsal"
 api_base = "https://rehearsal.internal.example.com"
 index_base = "https://rehearsal.internal.example.com/api/v1/crates"
@@ -53,29 +63,33 @@ enabled = true
 registry = "rehearsal"
 ```
 
-`[[registries]]` teaches Shipper about the registry's URLs.
-`[rehearsal]` says "when running `shipper rehearse`, target this one."
+`[[registries.registries]]` teaches Shipper about the registry's URLs.
+`[rehearsal]` records which declared entry is the rehearsal target; the command
+still selects that entry explicitly.
 
 ### Via CLI
 
 ```bash
-shipper rehearse --rehearsal-registry rehearsal
+shipper rehearse --registries rehearsal --rehearsal-registry rehearsal
 ```
 
-Opts in ad-hoc without editing config. Useful for CI jobs that override
-behavior per-run.
+The first flag selects the configured catalog entry for this command; the
+second activates rehearsal against that selected entry. This does not change
+the live `[registry]` target.
 
-## Step 2 — Dry-run in isolation
+## Step 2 — Rehearse against the isolated registry
 
 ```bash
-shipper rehearse
+shipper rehearse --registries rehearsal --rehearsal-registry rehearsal
 ```
 
 What this does:
 
-1. Validates that the rehearsal registry is configured and differs
-   from the live target. (Rehearsing against crates.io would defeat
-   the point.)
+1. Validates that the rehearsal registry is configured, has a different name,
+   and has no normalized API/index authority overlap with the live target.
+   Every `crates.io` or `.crates.io` host is rejected as a rehearsal target.
+   This configured-identity guard does not prove DNS/CNAME, resolved-IP, or
+   administrative isolation; independently verify the non-live service.
 2. For each crate in the plan (topological order):
    - Runs `cargo publish --registry rehearsal -p <crate>`.
    - Waits for the crate to appear on the rehearsal registry's
@@ -119,7 +133,8 @@ Decision tree:
 2. `--skip-rehearsal` flag set → publish proceeds with a loud warning.
    No fake-passing receipt is synthesized; the audit trail shows the
    bypass honestly. Use sparingly (incident response, bootstrap runs).
-3. No `rehearsal.json` → refuse. Run `shipper rehearse` first.
+3. No `rehearsal.json` → refuse. Run
+   `shipper rehearse --registries NAME --rehearsal-registry NAME` first.
 4. `rehearsal.json`'s `plan_id` differs from the current plan →
    refuse (stale). The workspace changed between rehearse and publish.
 5. `passed: false` → refuse, citing the rehearsal summary.
@@ -150,8 +165,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install shipper --locked
 
-      # Point Cargo at the kellnr sidecar
-      - name: Configure Cargo registry
+      # Point both Cargo and Shipper at the kellnr sidecar while retaining
+      # crates.io as the explicit live target.
+      - name: Configure rehearsal registry
         run: |
           mkdir -p ~/.cargo
           cat >> ~/.cargo/config.toml <<EOF
@@ -162,11 +178,27 @@ jobs:
           [registries.rehearsal]
           token = "Bearer ${{ secrets.KELLNR_TOKEN }}"
           EOF
+          cat > .shipper.toml <<EOF
+          [registry]
+          name = "crates-io"
+          api_base = "https://crates.io"
+          index_base = "https://index.crates.io"
+
+          [[registries.registries]]
+          name = "rehearsal"
+          api_base = "http://localhost:8000"
+          index_base = "http://localhost:8000/api/v1/crates"
+
+          [rehearsal]
+          enabled = true
+          allow_loopback = true
+          registry = "rehearsal"
+          EOF
 
       - name: Rehearse
         env:
           CARGO_REGISTRIES_REHEARSAL_TOKEN: ${{ secrets.KELLNR_TOKEN }}
-        run: shipper rehearse --rehearsal-registry rehearsal
+        run: shipper rehearse --allow-loopback --registries rehearsal --rehearsal-registry rehearsal
 
       - name: Upload rehearsal artifacts (always)
         if: always()
@@ -206,25 +238,32 @@ Key points:
 ### "rehearsal registry 'X' is not configured"
 
 You passed `--rehearsal-registry X` or set `[rehearsal] registry = "X"`
-but there's no matching `[[registries]]` entry. Add one, or pass the
-registries explicitly via `--registries X,crates-io`.
+but there's no matching `[[registries.registries]]` entry. Declare that entry,
+then select it explicitly with
+`--registries X --rehearsal-registry X`.
 
-### "rehearsal registry must differ from the live target"
+### "rehearsal registry is not isolated from live registry"
 
-You configured the rehearsal to point at crates.io. That defeats the
-point — rehearsal is supposed to be a sandbox. Point at a different
-registry.
+The configured rehearsal registry has a name collision, overlaps the live
+API/index authority, belongs to the crates.io host family, or violates more
+than one of those guards. Point it at a separately named non-production
+registry on a distinct authority. The diagnostic contains sanitized normalized
+authorities only. Rejection occurs before rehearsal state/events, registry
+requests, and publish/smoke Cargo; workspace discovery may already have run
+`cargo metadata`.
 
 ### "rehearsal receipt is stale: plan_id mismatch"
 
 The workspace changed between `shipper rehearse` and `shipper publish`.
-Re-run `shipper rehearse` on the current workspace state.
+Re-run `shipper rehearse --registries NAME --rehearsal-registry NAME` on the
+current workspace state.
 
 ### "no rehearsal receipt was found"
 
 The hard gate fires when a rehearsal registry is configured but
-`rehearsal.json` is missing. Either run `shipper rehearse` first, or
-pass `--skip-rehearsal` to bypass (not recommended).
+`rehearsal.json` is missing. Either run
+`shipper rehearse --registries NAME --rehearsal-registry NAME` first, or pass
+`--skip-rehearsal` to bypass (not recommended).
 
 ## What rehearsal does NOT cover automatically
 

@@ -96,6 +96,61 @@ merge commit so the next swarm development commit again starts from
 check returns `0 N` again. If the merge-base command fails, use the
 source-backfill path instead; do not force push or squash the sync commit.
 
+## Release Freeze and Promotion Evidence
+
+A release candidate is an exact merged `shipper-swarm/main` commit, not a PR
+head, merge ref, branch name, or collection of green checks from different
+SHAs. Use the [release preparation checklist](../release/release-preparation-checklist.md)
+to record at least:
+
+- frozen swarm candidate SHA and tree;
+- exact candidate-head Rust, policy, package, compatibility, and Changie proof;
+- promotion PR, non-fast-forward merge SHA, and merge tree;
+- release-authority approved SHA and tree after any separately reviewed
+  release-only change;
+- rehearsal, binary, interruption/resume, tag, publish, and final artifact
+  identities;
+- final release-authority-to-swarm backfill SHA.
+
+When a candidate is frozen:
+
+1. pause normal swarm merges;
+2. prove the merged candidate, including `cargo changelog-roundtrip` locally
+   with the pinned Changie binary;
+3. record `git rev-parse HEAD` and `git rev-parse HEAD^{tree}`;
+4. promote with `git merge --no-ff "$SWARM_SHA"` from current `shipper/main`,
+   after verifying the fetched `swarm/main` ref still equals the recorded
+   frozen SHA and tree;
+5. require the promotion merge tree to equal the frozen swarm tree before any
+   separately reviewed release-authority-only change;
+6. merge the promotion PR with a merge commit;
+7. keep normal swarm development paused until the resulting source merge and
+   any final release-only commits are backfilled.
+
+The tree-equality check is blocking:
+
+```bash
+test "$(git rev-parse swarm/main)" = "$SWARM_SHA"
+test "$(git rev-parse "$SWARM_SHA^{tree}")" = "$SWARM_TREE"
+test "$(git rev-parse HEAD^{tree})" = "$SWARM_TREE"
+```
+
+A conflict, manual content edit, or tree mismatch is not ordinary release
+preparation. Stop, restore the source/swarm ancestry relationship through a
+reviewed backfill, rebuild the swarm candidate, and promote again.
+
+Any commit after the frozen swarm SHA supersedes that candidate. Historical
+semver, binary, compatibility, or security proof may support an unchanged claim
+only when the new candidate record names both SHAs, records the complete diff
+boundary, and explains why the diff cannot affect the claim. The exact-head
+Rust gate and release-authority rehearsal are always rerun.
+
+A green swarm candidate is not publication authorization. Tags, rehearsal,
+resume, crates.io publication, GitHub Release creation, signing, and release
+credentials remain release-authority operations in `EffortlessMetrics/shipper`.
+Follow the [release operator runbook](../release-runbook.md) and do not tag while
+the checklist contains a blocking, unavailable, pending, or superseded proof.
+
 ## Source-Backfill Exception
 
 Release-authority PRs may land directly in `shipper` for release evidence,
@@ -130,10 +185,11 @@ bump opens in `EffortlessMetrics/shipper`, close the source-repo PR as duplicate
 maintenance work and let the accepted swarm commit flow back through the normal
 non-squash source sync.
 
-Dependabot and other bot-authored PRs intentionally skip the secret-bearing
-automatic Droid review workflow. The required Rust gate still evaluates bot
-diffs through its explicit GitHub-hosted fallback. When an LLM review is useful,
-use the maintainer refresh procedure in
+Factory Droid is retired, so bot-authored and human-authored PRs use the same
+current substantive-review requirement, satisfied through Codex, Claude, or a
+human reviewer. The required Rust gate evaluates bot diffs through its explicit
+GitHub-hosted fallback. When a
+maintainer-authored refresh is needed, use the procedure in
 [`docs/ci/test-evidence-lanes.md`](../ci/test-evidence-lanes.md) and
 [`docs/how-to/shipper-swarm-migration-runbook.md`](../how-to/shipper-swarm-migration-runbook.md):
 inspect the diff, run focused validation, push a maintainer-authored refresh or

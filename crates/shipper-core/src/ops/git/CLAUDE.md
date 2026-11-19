@@ -43,9 +43,9 @@ Crate-internal helpers live in the sibling sub-modules:
   failed: …`). Do not change this wording without updating
   `crates/shipper-cli/tests/snapshots/e2e_expanded__preflight_*.snap`.
 - **Short commit slicing.** `GitContext::short_commit` on `shipper-types`
-  slices by BYTE index (not char index). This matches the original
-  `shipper-git` crate — commit hashes are always ASCII hex so byte = char, but
-  arbitrary inputs shorter than 7 bytes are returned verbatim.
+  uses a checked seven-byte prefix, not a character count. ASCII abbreviations
+  are unchanged. Inputs shorter than seven bytes, or with byte seven inside a
+  UTF-8 character, are returned verbatim. The helper does not validate Git hashes.
 - **Collector is override-strict.** When `SHIPPER_GIT_BIN` is set,
   `collect_git_context` uses only the override helpers; there is no silent
   fallback to the default `git` binary for any sub-query.

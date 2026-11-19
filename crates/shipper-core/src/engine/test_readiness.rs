@@ -94,12 +94,11 @@ fn verify_published_inner(
             return Err(error);
         }
     };
+    let attempts = evidence.last().map_or(0, |poll| poll.attempt);
     if visible {
         reporter.info(&format!(
             "{}@{}: visible after {} checks",
-            crate_name,
-            version,
-            evidence.len()
+            crate_name, version, attempts
         ));
         if let Err(error) = record_readiness_event(
             event_log,
@@ -108,7 +107,7 @@ fn verify_published_inner(
                 timestamp: Utc::now(),
                 event_type: EventType::ReadinessComplete {
                     duration_ms: started_at.elapsed().as_millis() as u64,
-                    attempts: evidence.len() as u32,
+                    attempts,
                 },
                 package: pkg_label.to_string(),
             },
@@ -124,9 +123,7 @@ fn verify_published_inner(
     } else {
         reporter.warn(&format!(
             "{}@{}: not visible after {} checks",
-            crate_name,
-            version,
-            evidence.len()
+            crate_name, version, attempts
         ));
         if let Err(error) = record_readiness_event(
             event_log,

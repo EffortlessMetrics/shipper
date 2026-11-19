@@ -1,6 +1,6 @@
 # Plan: 0.4.0 Release Readiness Proof
 
-Status: proposed
+Status: implemented
 Owner: EffortlessMetrics
 Created: 2026-05-13
 Milestone: 0.4.0
@@ -14,6 +14,15 @@ Support-tier impact: docs/status/SUPPORT_TIERS.md
 Policy impact: policy ledgers remain authoritative for exceptions and receipts
 Proof commands: cargo xtask check-doc-contracts --mode advisory; cargo xtask policy-report; cargo fmt --all -- --check
 
+## Completion Status
+
+This historical plan was executed for the stable 0.4.0 release. The
+contemporaneous result is `docs/release/0.4.0-readiness.md`, including its exact
+evidence-base commit, tag commit, plan ID, rehearsal, auth result, package
+surface, public verification, and carry-over. The `0.4.0-rc.1` snapshot below
+records the planning state on 2026-05-13; it is not a current release command or
+a substitute for later exact-source release evidence.
+
 ## End State
 
 The 0.4.0 release candidate has a committed readiness artifact at
@@ -21,12 +30,12 @@ The 0.4.0 release candidate has a committed readiness artifact at
 commit, Shipper plan id, gate results, advisory signals, per-crate dry-run
 evidence, known carry-over, and sign-off.
 
-This plan does not publish, tag, or implement Reconcile. It makes #195
-executable from a spec and plan instead of issue prose.
+This plan did not publish, tag, or implement Reconcile. It made #195 executable
+from a spec and plan instead of issue prose.
 
-## Current Plan Snapshot
+## Historical Plan Snapshot
 
-Run this before executing #195:
+The plan required this command before executing #195:
 
 ```bash
 cargo run -p shipper -- plan
@@ -57,8 +66,9 @@ The observed order was:
 | 12 | shipper-cli | 0.4.0-rc.1 |
 | 13 | shipper | 0.4.0-rc.1 |
 
-If a later `shipper plan` run disagrees, the later command output is
-authoritative for the release-readiness proof.
+The final 0.4.0 evidence used the later plan output recorded in the readiness
+artifact. That later command output is authoritative over this planning
+snapshot.
 
 ## PR Sequence
 
@@ -106,7 +116,7 @@ Blocked by: PR 1
 
 #### Goal
 
-Produce `docs/release/0.4.0-readiness.md` for `0.4.0-rc.1`.
+Produce `docs/release/0.4.0-readiness.md` for the 0.4 release line.
 
 #### Production Delta
 

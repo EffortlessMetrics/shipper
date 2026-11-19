@@ -8,7 +8,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use cargo_metadata::{Metadata, MetadataCommand, Package};
 use serde::{Deserialize, Serialize};
 pub use shipper_output_sanitizer::redact_sensitive;
@@ -24,6 +24,19 @@ pub struct CargoOutput {
     pub duration: Duration,
     pub timed_out: bool,
 }
+
+/// Typed completeness stays internal so public CargoOutput struct literals remain
+/// compatible. Engine decisions must not parse the human omission summary.
+pub(crate) struct CapturedCargoPublish {
+    pub(crate) output: CargoOutput,
+    pub(crate) capture: process::CaptureStatus,
+    pub(crate) cleanup_failure: Option<process::CleanupFailure>,
+    pub(crate) interrupted: bool,
+    pub(crate) _interruption_lease: Option<process::interruption::InterruptionLease>,
+}
+
+pub(crate) const PUBLISH_CAPTURE_OMITTED: &str =
+    "[shipper: Cargo diagnostics omitted after capture loss]";
 
 fn tail_lines(s: &str, n: usize) -> String {
     sanitize_tail_lines(s, n)
@@ -52,15 +65,18 @@ pub fn cargo_yank(
     output_lines: usize,
     timeout: Option<Duration>,
 ) -> Result<CargoOutput> {
+    anyhow::ensure!(
+        !registry_name.trim().is_empty(),
+        "cargo yank requires an explicit registry name"
+    );
     let start = Instant::now();
     let version_arg = format!("--version={version}");
     let mut args: Vec<&str> = vec!["yank", package_name, &version_arg];
 
-    // If the user configured a non-default registry, pass it through.
-    if !registry_name.trim().is_empty() && registry_name != "crates-io" {
-        args.push("--registry");
-        args.push(registry_name);
-    }
+    // Pin even crates.io: omitting this lets Cargo's registry.default silently
+    // retarget a reviewed containment action.
+    args.push("--registry");
+    args.push(registry_name);
 
     let output =
         process::run_command_with_timeout(&cargo_program(), &args, workspace_root, timeout)
@@ -126,6 +142,9 @@ pub fn cargo_install_smoke(
     })
 }
 
+/// Publish with bounded diagnostic tails. If either stream exceeds a capture
+/// limit or cannot be read, both tails are omitted and stderr contains a fixed
+/// summary (unless output_lines is zero). Exit status and timeout stay intact.
 pub fn cargo_publish(
     workspace_root: &Path,
     package_name: &str,
@@ -135,6 +154,36 @@ pub fn cargo_publish(
     output_lines: usize,
     timeout: Option<Duration>,
 ) -> Result<CargoOutput> {
+    let captured = cargo_publish_with_capture(
+        workspace_root,
+        package_name,
+        registry_name,
+        allow_dirty,
+        no_verify,
+        output_lines,
+        timeout,
+    )?;
+    if let Some(failure) = captured.cleanup_failure {
+        bail!(
+            "cargo publish cleanup incomplete: {}; upload outcome remains unknown; stop before retrying",
+            failure.description()
+        );
+    }
+    if captured.interrupted || process::interruption::requested() {
+        return Err(process::interruption::Interrupted.into());
+    }
+    Ok(captured.output)
+}
+
+pub(crate) fn cargo_publish_with_capture(
+    workspace_root: &Path,
+    package_name: &str,
+    registry_name: &str,
+    allow_dirty: bool,
+    no_verify: bool,
+    output_lines: usize,
+    timeout: Option<Duration>,
+) -> Result<CapturedCargoPublish> {
     let start = Instant::now();
     let mut args: Vec<&str> = Vec::new();
     args.push("publish");
@@ -154,25 +203,75 @@ pub fn cargo_publish(
         args.push("--no-verify");
     }
 
-    let output =
-        process::run_command_with_timeout(&cargo_program(), &args, workspace_root, timeout)
-            .context("failed to execute cargo publish; is Cargo installed?")?;
+    let captured = process::run_command_with_publish_capture(
+        &cargo_program(),
+        &args,
+        workspace_root,
+        timeout,
+        output_lines,
+    )
+    .context("failed to execute cargo publish; is Cargo installed?")?;
+
+    Ok(finish_publish_capture(
+        captured,
+        output_lines,
+        start.elapsed(),
+    ))
+}
+
+fn finish_publish_capture(
+    captured: process::CapturedCommandOutput,
+    output_lines: usize,
+    duration: Duration,
+) -> CapturedCargoPublish {
+    let mut capture = captured.capture;
+    let output = captured.output;
 
     let exit_code = output.exit_code;
     let stdout = output.stdout;
     let stderr = output.stderr;
     let timed_out = output.timed_out;
 
-    let duration = start.elapsed();
-
-    Ok(CargoOutput {
-        exit_code,
-        stdout_tail: tail_lines(&stdout, output_lines),
-        stderr_tail: tail_lines(&stderr, output_lines),
-        duration,
-        timed_out,
-    })
+    let mut stdout_tail = tail_lines(&stdout, output_lines);
+    let mut stderr_tail = tail_lines(&stderr, output_lines);
+    // Redaction may expand short values into longer placeholders. Its bounded
+    // input bounds temporary allocation; also cap the final persisted payload.
+    if stdout_tail.len() > process::PUBLISH_TAIL_BYTES {
+        capture
+            .stdout
+            .get_or_insert(process::CaptureLoss::TailBytes);
+    }
+    if stderr_tail.len() > process::PUBLISH_TAIL_BYTES {
+        capture
+            .stderr
+            .get_or_insert(process::CaptureLoss::TailBytes);
+    }
+    if !capture.is_complete() {
+        // Do not expose a surviving suffix/continuation from either stream.
+        stdout_tail.clear();
+        stderr_tail = if output_lines == 0 {
+            String::new()
+        } else {
+            PUBLISH_CAPTURE_OMITTED.into()
+        };
+    }
+    CapturedCargoPublish {
+        cleanup_failure: captured.cleanup_failure,
+        interrupted: captured.interrupted,
+        _interruption_lease: captured.interruption_lease,
+        output: CargoOutput {
+            exit_code,
+            stdout_tail,
+            stderr_tail,
+            duration,
+            timed_out,
+        },
+        capture,
+    }
 }
+
+#[cfg(test)]
+mod bounded_capture_tests;
 
 pub fn cargo_publish_dry_run_workspace(
     workspace_root: &Path,
@@ -704,7 +803,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn cargo_yank_omits_registry_for_crates_io() {
+    fn cargo_yank_pins_crates_io_registry() {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         fs::create_dir_all(&bin).expect("mkdir");
@@ -730,9 +829,37 @@ mod tests {
                 let _ = cargo_yank(&ws, "my-crate", "0.1.0", "crates-io", 50, None).expect("yank");
 
                 let args = fs::read_to_string(&args_log).expect("args");
-                assert!(!args.contains("--registry"));
+                assert!(args.contains("--registry"));
+                assert!(args.contains("crates-io"));
                 assert!(args.contains("yank"));
                 assert!(args.contains("--version=0.1.0"));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cargo_yank_rejects_empty_registry_before_spawning() {
+        let td = tempdir().expect("tempdir");
+        let bin = td.path().join("bin");
+        fs::create_dir_all(&bin).expect("mkdir");
+        let fake_cargo = write_fake_cargo(&bin);
+        let args_log = td.path().join("args.txt");
+        let cwd_log = td.path().join("cwd.txt");
+        temp_env::with_vars(
+            [
+                ("SHIPPER_CARGO_BIN", Some(fake_cargo.to_str().unwrap())),
+                ("SHIPPER_ARGS_LOG", Some(args_log.to_str().unwrap())),
+                ("SHIPPER_CWD_LOG", Some(cwd_log.to_str().unwrap())),
+                ("SHIPPER_EXIT_CODE", Some("0")),
+            ],
+            || {
+                for registry in ["", " ", "\n"] {
+                    let error = cargo_yank(td.path(), "my-crate", "0.1.0", registry, 50, None)
+                        .expect_err("empty registry must be refused");
+                    assert!(error.to_string().contains("explicit registry name"));
+                    assert!(!args_log.exists(), "refusal must not start Cargo");
+                }
             },
         );
     }

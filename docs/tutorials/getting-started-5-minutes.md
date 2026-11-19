@@ -13,19 +13,21 @@ will do and which proof gaps remain before the first irreversible command.
 
 ## 1. Install Shipper
 
-After the stable `0.4.0` release is published, the user-facing package is
-`shipper`:
+The supported install package is the `shipper` facade. The unversioned command
+resolves whatever version the public registry exposes when you run it:
 
 ```bash
 cargo install shipper --locked
 shipper --version
 ```
 
-If you are validating this repository from a checkout before release:
+The retained public-install evidence for this source line covers 0.4.0. Source
+or README text does not prove that a later candidate has been published; check
+the live registry and release evidence. From a checkout, exercise the current
+source without installing it:
 
 ```bash
-cargo install --path crates/shipper --locked
-shipper --help
+cargo run -p shipper -- --help
 ```
 
 ## 2. Ask Doctor for local blockers
@@ -38,6 +40,12 @@ shipper doctor
 Treat blocked findings as setup work before planning a publish. Common first
 fixes are logging in to crates.io, cleaning the git tree, or adding missing
 package metadata.
+
+Configuration is optional. To create a documented starting point, run
+`shipper config init`. It preserves an existing `.shipper.toml` and refuses to
+overwrite it. Use `shipper config init --output shipper-example.toml` with an
+unused path to generate a separate template, then review any settings you want
+to copy into your existing configuration.
 
 ## 3. Generate the publish plan
 
@@ -68,9 +76,9 @@ Read the finishability result as a release decision:
 
 | Result | Meaning | Next action |
 |---|---|---|
-| `Proven` | Local packaging and registry checks passed for the configured policy. | You can proceed to `shipper publish` if the version and changelog are already final. |
-| `NotProven` | Nothing definitive failed, but at least one proof cannot be completed locally. | Review the listed gaps, then decide whether to publish, add rehearsal proof, or change policy. |
-| `Failed` | A blocker was found before publish. | Fix the finding and rerun `shipper preflight`. |
+| `PROVEN` | Local packaging and registry checks passed for the configured policy. | Follow the typed `next_action`; complete required non-live rehearsal and release authorization before any publish. |
+| `NOT PROVEN` | Nothing definitive failed, but at least one proof cannot be completed locally. | Follow the typed `next_action`. Only the all-new, dry-run-passed first-publish case offers publish-with-confirmation, and it still requires rehearsal plus release authorization. Investigate every other gap and rerun preflight. |
+| `FAILED` | A blocker was found before publish. | Fix the finding and rerun `shipper preflight`. |
 
 ## 5. Stop before the irreversible step
 

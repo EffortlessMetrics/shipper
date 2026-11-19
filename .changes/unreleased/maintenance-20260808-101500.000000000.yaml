@@ -1,0 +1,7 @@
+kind: maintenance
+body: Reconcile workflow authority findings against the exact exception ledger. In the blocking modes, every unexcepted, expired, drifted, unused, or invalid state now fails closed; advisory mode reports the same states without failing.
+time: 2026-08-08T10:15:00Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance
+  PR: 286

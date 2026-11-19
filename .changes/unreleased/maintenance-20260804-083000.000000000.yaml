@@ -1,0 +1,7 @@
+kind: maintenance
+body: Harden the local pre-commit dispatcher to execute staged sources from private snapshots.
+time: 2026-08-04T08:30:00Z
+custom:
+  Audience: Maintainers
+  Importance: Maintenance
+  PR: 246

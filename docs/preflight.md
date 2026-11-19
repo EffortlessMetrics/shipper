@@ -256,13 +256,19 @@ Preflight produces one of three finishability states:
 
 All checks passed — dry-runs succeeded and ownership was verified for every package. Your workspace is ready to publish.
 
-**Action:** Proceed with `shipper publish`.
+**Action:** Deliberately publish or rehearse with the same manifest, package,
+configuration, and registry selection. Shipper does not reconstruct a command
+that could silently drop that context.
 
 ### NotProven
 
 Dry-runs passed, but ownership could not be verified for one or more packages. This typically happens when no token is available, the token lacks the required scope, or the ownership API returned an error in non-strict mode.
 
-**Action:** Review the warnings and proceed if you're confident, or provide a token and run preflight again.
+**Action:** If every selected package is a first-publish candidate, review the
+advisory and deliberately publish or rehearse with the same selection. If the
+selection includes an existing crate, inspect authentication and ownership
+before rerunning preflight; Shipper does not treat that mixed-selection
+uncertainty as permission to publish.
 
 ### Failed
 
@@ -302,9 +308,8 @@ Summary:
   Ownership verified: 2
   Dry-run passed: 2
 
-What to do next:
------------------
-✓ All checks passed. Ready to publish with: shipper publish
+Result: preflight proved the selected release inputs; no packages were published
+Next: publish or rehearse with the same manifest, package, configuration, and registry selection
 ```
 
 ### JSON Output
@@ -323,6 +328,7 @@ agents and CI can route on:
 | Field | Meaning |
 |-------|---------|
 | `schema_version` | JSON contract version, currently `shipper.preflight.v1` |
+| `outcome` | Typed finishability, no-publication posture, and context-preserving next action used by both human and JSON rendering |
 | `proofs[]` | Checks Shipper completed and can treat as evidence |
 | `gaps[]` | Checks that did not prove a release prerequisite |
 | `failed_checks[]` | Checks that failed and block a proven release |

@@ -16,6 +16,7 @@
 
 use std::env;
 use std::path::Path;
+use std::process::Command;
 
 pub(crate) mod bin_override;
 pub(crate) mod cleanliness;
@@ -26,6 +27,35 @@ pub(crate) mod context;
 pub use cleanliness::{ensure_git_clean, is_git_clean};
 
 use crate::types::GitContext;
+
+/// Run Git against the selected path, not a repository inherited from a hook
+/// or embedding process. `current_dir` alone does not override these variables.
+fn repository_command(repo_root: &Path, git_program: &str) -> Command {
+    let mut command = Command::new(git_program);
+    command.current_dir(repo_root);
+    // Repository-local location, storage and view settings reported by
+    // `git rev-parse --local-env-vars`, plus the reference namespace override.
+    // Keep Git configuration and authentication settings: those may be needed
+    // by the caller's Git installation or SHIPPER_GIT_BIN wrapper.
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_PREFIX",
+        "GIT_GRAFT_FILE",
+        "GIT_SHALLOW_FILE",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_NAMESPACE",
+    ] {
+        command.env_remove(variable);
+    }
+    command
+}
 
 /// Collect a [`GitContext`] for the current working directory.
 ///
@@ -42,6 +72,8 @@ pub fn collect_git_context() -> Option<GitContext> {
 /// Collect a [`GitContext`] for a specific workspace or repository path.
 ///
 /// Returns `None` when `repo_root` is not inside a git repository.
+/// Inherited repository-location and storage overrides do not change the
+/// selected path; Git configuration and `SHIPPER_GIT_BIN` are preserved.
 pub fn collect_git_context_at(repo_root: &Path) -> Option<GitContext> {
     let git_program = bin_override::git_program();
     if !bin_override::is_repo_root(repo_root, &git_program) {

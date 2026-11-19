@@ -29,11 +29,17 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_with::{DurationMilliSeconds, serde_as};
 
+use crate::webhook::WebhookConfig;
 pub use shipper_duration::{deserialize_duration, serialize_duration};
 use shipper_encrypt::EncryptionConfig as EncryptionSettings;
-use shipper_webhook::WebhookConfig;
 
 pub mod storage;
+
+/// Pure webhook contract values consumed by `shipper-webhook`'s delivery layer.
+pub mod webhook;
+
+/// Pure retry contract values consumed by `shipper-retry`'s execution layer.
+pub mod retry;
 
 /// Schema version parsing and compatibility validation for shipper state files.
 ///
@@ -373,7 +379,7 @@ pub enum ReadinessMethod {
 /// - `max_delay`: 60 seconds
 /// - `max_total_wait`: 300 seconds (5 minutes)
 /// - `poll_interval`: 2 seconds
-/// - `jitter_factor`: 0.5 (Ãƒâ€šÃ‚Â±50%)
+/// - `jitter_factor`: 0.5 (±50%)
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -422,11 +428,11 @@ pub struct ReadinessConfig {
         serialize_with = "serialize_duration"
     )]
     pub poll_interval: Duration,
-    /// Jitter factor (Ãƒâ€šÃ‚Â±50% means 0.5)
+    /// Jitter factor (±50% means 0.5)
     ///
     /// Adds randomness to poll intervals to reduce thundering herd
     /// when many clients are checking simultaneously. A value of 0.5
-    /// means the actual interval varies by Ãƒâ€šÃ‚Â±50%.
+    /// means the actual interval varies by ±50%.
     pub jitter_factor: f64,
     /// Custom index path for testing (optional)
     ///
@@ -586,11 +592,12 @@ pub struct RuntimeOptions {
     /// Upper bound on backoff delay.
     pub max_delay: Duration,
     /// Retry strategy type: immediate, exponential, linear, constant
-    pub retry_strategy: shipper_retry::RetryStrategyType,
+    pub retry_strategy: crate::retry::RetryStrategyType,
     /// Jitter factor for retry delays
     pub retry_jitter: f64,
-    /// Per-error-type retry configuration
-    pub retry_per_error: shipper_retry::PerErrorConfig,
+    /// Reserved per-error configuration; public engine entry points reject
+    /// configured classes. Leave empty to use the global retry policy.
+    pub retry_per_error: crate::retry::PerErrorConfig,
     /// Timeout for the workspace-level dry-run verification step.
     pub verify_timeout: Duration,
     /// Poll interval for the dry-run verification step.
@@ -607,9 +614,9 @@ pub struct RuntimeOptions {
     pub readiness: ReadinessConfig,
     /// Number of stdout/stderr lines to capture as evidence.
     pub output_lines: usize,
-    /// Force override of existing locks
+    /// Explicitly override unknown lock metadata after acquiring OS ownership.
     pub force: bool,
-    /// Lock timeout duration (after which locks are considered stale)
+    /// Minimum age for positively abandoned legacy lock recovery.
     pub lock_timeout: Duration,
     /// Parallel publishing configuration
     pub parallel: ParallelConfig,
@@ -623,14 +630,14 @@ pub struct RuntimeOptions {
     pub registry_policies: BTreeMap<String, RegistryTrustOptions>,
     /// Optional package name to resume from (skips all packages before this one)
     pub resume_from: Option<String>,
-    /// Rehearsal registry name (#97) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â if `Some`, `shipper rehearse` publishes
+    /// Rehearsal registry name (#97) — if `Some`, `shipper rehearse` publishes
     /// to this registry as phase-2 proof before live dispatch. `None` means
     /// rehearsal is disabled (the default; opt-in until phase-2 stabilizes).
     ///
     /// The name must resolve against the configured [`Self::registries`] at
     /// runtime; `engine::run_rehearsal` errors clean otherwise.
     pub rehearsal_registry: Option<String>,
-    /// Operator override ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â explicitly skip rehearsal even if a
+    /// Operator override — explicitly skip rehearsal even if a
     /// [`Self::rehearsal_registry`] is configured (#97). Default `false`.
     /// When the hard gate lands (#97 PR 3), live publish will refuse to run
     /// without this flag if rehearsal has not passed for the current `plan_id`.
@@ -638,7 +645,7 @@ pub struct RuntimeOptions {
     /// Crate name to install via `cargo install --registry <rehearsal>`
     /// after all rehearsal publishes succeed (#97 PR 4). This is the
     /// install/smoke check that proves end-to-end registry-index
-    /// resolution ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the scenario that killed the rc.1 first-publish.
+    /// resolution — the scenario that killed the rc.1 first-publish.
     /// `None` means no smoke install (opt-in). The named crate must
     /// exist in the plan AND have a `[[bin]]` target.
     pub rehearsal_smoke_install: Option<String>,
@@ -974,10 +981,10 @@ where
 /// # State Transitions
 ///
 /// ```text
-/// Pending ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Uploaded ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Published
-///              ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Å“
+/// Pending → Uploaded → Published
+///              ↓
 ///            Failed
-///              ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Å“
+///              ↓
 ///           Pending (retry)
 /// ```
 ///
@@ -1012,9 +1019,21 @@ pub enum PackageState {
     Pending,
     Uploaded,
     Published,
-    Skipped { reason: String },
-    Failed { class: ErrorClass, message: String },
-    Ambiguous { message: String },
+    Skipped {
+        reason: String,
+    },
+    Failed {
+        class: ErrorClass,
+        message: String,
+    },
+    Ambiguous {
+        message: String,
+    },
+    /// The preceding Cargo invocation could not be confirmed stopped. Registry
+    /// visibility cannot clear this local safety hold or authorize another upload.
+    CleanupIncomplete {
+        message: String,
+    },
 }
 
 /// Classification of errors encountered during publishing.
@@ -1040,19 +1059,19 @@ pub enum PackageState {
 ///
 /// # Classification is a hint, not truth
 ///
-/// This enum is produced by parsing cargo's stdout/stderr ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a human-facing
+/// This enum is produced by parsing cargo's stdout/stderr — a human-facing
 /// log that is explicitly not a stable machine protocol. Pattern-matching on
 /// cargo text gives Shipper a fast first-pass signal, but **it must never be
 /// treated as the final word** on what actually happened:
 ///
 /// - [`ErrorClass::Permanent`] and [`ErrorClass::Retryable`] are still
-///   hints ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â they drive retry scheduling, but every retry attempt re-checks
+///   hints — they drive retry scheduling, but every retry attempt re-checks
 ///   the registry before and after the next `cargo publish`.
 /// - [`ErrorClass::Ambiguous`] is the dangerous case. Cargo's publish flow
 ///   uploads to the registry first and polls the index afterwards; the poll
 ///   can time out without affecting the upload. So a non-zero cargo exit
 ///   can coexist with a successful upload. Ambiguous outcomes MUST be
-///   reconciled against registry truth before any further action ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never
+///   reconciled against registry truth before any further action — never
 ///   blind-retry. See [`ReconciliationOutcome`] and the reconciliation flow
 ///   in `shipper::engine::reconcile`.
 ///
@@ -1063,11 +1082,11 @@ pub enum PackageState {
 /// # Classification Heuristics (hints)
 ///
 /// Shipper uses various heuristics to classify errors:
-/// - HTTP 429 (Too Many Requests) ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Retryable
-/// - HTTP 401/403 (Auth errors) ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Permanent
-/// - HTTP 409 (Version conflict) ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Permanent
-/// - Network timeouts ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Retryable
-/// - Unknown errors ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Ambiguous (triggers registry reconciliation)
+/// - HTTP 429 (Too Many Requests) → Retryable
+/// - HTTP 401/403 (Auth errors) → Permanent
+/// - HTTP 409 (Version conflict) → Permanent
+/// - Network timeouts → Retryable
+/// - Unknown errors → Ambiguous (triggers registry reconciliation)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorClass {
@@ -1081,7 +1100,7 @@ pub enum ErrorClass {
 /// Per [`docs/INVARIANTS.md`](https://github.com/EffortlessMetrics/shipper/blob/main/docs/INVARIANTS.md),
 /// `events.jsonl` is the authoritative source of truth and `state.json` is a
 /// projection derived from it. They should always agree about which packages
-/// were published. A drift is a bug ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â this struct captures which side claims
+/// were published. A drift is a bug — this struct captures which side claims
 /// what, so the end-of-run consistency check can surface it loudly rather
 /// than silently corrupting resume.
 ///
@@ -1230,6 +1249,10 @@ pub struct PackageProgress {
     pub version: String,
     pub attempts: u32,
     pub state: PackageState,
+    /// Ordinary live transitions sample the projection update time. Cleanup-hold
+    /// persistence fallback can retain the observed attempt end time instead.
+    /// Event replay uses the last appended event that updates this package;
+    /// this timestamp need not increase.
     pub last_updated_at: DateTime<Utc>,
 }
 
@@ -1244,7 +1267,14 @@ pub struct AttemptDetail {
     pub version: String,
     pub attempt: u32,
     pub max_attempts: u32,
+    /// Original wall-clock start observation, not a sequence number.
     pub started_at: DateTime<Utc>,
+    /// End observation selected by the live or replay completion path, which
+    /// can precede `started_at` after clock rollback. Replaying a `StillUnknown`
+    /// reconciliation can replace an earlier failure end with the reconciliation
+    /// event time, while the live detail retains the failure end. These values
+    /// are not universally identical. Replay uses the start time for an
+    /// unfinished attempt without an end observation.
     pub ended_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_class: Option<ErrorClass>,
@@ -1289,10 +1319,19 @@ pub struct ExecutionState {
     pub state_version: String,
     pub plan_id: String,
     pub registry: Registry,
+    /// Live projection creation time. Rebuilding a nonempty log uses the
+    /// first appended event's timestamp, not the minimum timestamp.
     pub created_at: DateTime<Utc>,
+    /// Ordinary live transitions sample the wall clock at projection update;
+    /// cleanup-hold persistence fallback can retain the observed attempt end.
+    /// Rebuilding a nonempty log uses the last appended event's timestamp,
+    /// not the maximum; this can precede `created_at`. An empty rebuild uses
+    /// the rebuild time for both fields.
     pub updated_at: DateTime<Utc>,
     /// Per-attempt timeline written during publish, before final receipt
     /// construction. Defaults empty so older state files remain readable.
+    /// Package and attempt identity establish causal relationships; this
+    /// array is not guaranteed to be sorted by its wall-clock fields.
     #[serde(default)]
     pub attempt_history: Vec<AttemptDetail>,
     pub packages: BTreeMap<String, PackageProgress>,
@@ -1338,7 +1377,7 @@ pub struct PackageReceipt {
     pub duration_ms: u128,
     pub evidence: PackageEvidence,
 
-    // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Remediate pillar (#98) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compromised-release tracking ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+    // ── Remediate pillar (#98) — compromised-release tracking ──
     // All three fields are additive Options; existing receipts read back
     // cleanly without migration. Shipper populates them via `shipper yank`
     // / `shipper plan-yank --mark-compromised` (PR 2) and
@@ -1509,15 +1548,16 @@ impl GitContext {
         self.dirty.unwrap_or(true)
     }
 
-    /// Get a short commit hash (first 7 bytes).
+    /// Get the first seven bytes of the commit when they form a valid UTF-8 prefix.
     ///
-    /// Returns `None` if the context has no commit. The original `shipper-git`
-    /// implementation sliced by byte index assuming ASCII hex; we preserve the
-    /// same behavior here (input shorter than 7 bytes is returned verbatim).
+    /// Returns the full input when it is shorter than seven bytes or byte seven
+    /// falls inside a UTF-8 character, and `None` when no commit is present.
+    /// ASCII values retain the usual seven-byte abbreviation. This method does
+    /// not validate whether the input is a Git hash.
     pub fn short_commit(&self) -> Option<&str> {
         self.commit
-            .as_ref()
-            .map(|c| if c.len() > 7 { &c[..7] } else { c.as_str() })
+            .as_deref()
+            .map(|commit| commit.get(..7).unwrap_or(commit))
     }
 }
 
@@ -1587,6 +1627,9 @@ pub struct Receipt {
 ///
 /// Events are written to an append-only JSONL file during publishing.
 /// This provides a detailed timeline for debugging and auditing.
+/// Append order is authoritative for replay and preserves each package's
+/// causal event sequence. Events from different workers can interleave;
+/// their wall-clock timestamps do not establish a global sequence.
 ///
 /// # Example
 ///
@@ -1602,6 +1645,9 @@ pub struct Receipt {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishEvent {
+    /// Original wall-clock observation time, which can precede the append or
+    /// an earlier line's timestamp. Delayed workers and clock rollback do not
+    /// cause this value to be replaced, clamped, or used to reorder the log.
     pub timestamp: DateTime<Utc>,
     pub event_type: EventType,
     pub package: String, // "name@version"
@@ -1667,6 +1713,12 @@ pub enum EventType {
     ExecutionFinished {
         result: ExecutionResult,
     },
+    /// The engine deliberately ended an unfinished run after persisting a
+    /// coherent, recoverable registry-truth decision. Unlike
+    /// `ExecutionFinished`, this marker never implies that a receipt exists.
+    ExecutionStopped {
+        reason: ControlledStopReason,
+    },
     AuthEvidenceRecorded {
         evidence: AuthEvidence,
     },
@@ -1693,11 +1745,28 @@ pub enum EventType {
         stdout_tail: String,
         stderr_tail: String,
     },
+    /// The supervisor proved this invocation could not launch Cargo.
+    PackageNotLaunched {
+        attempt: u32,
+        message: String,
+    },
+    /// Cargo exited unsuccessfully and registry visibility is still unknown.
+    /// The class and message describe the Cargo attempt.
+    PackageUploadUnconfirmed {
+        class: ErrorClass,
+        message: String,
+    },
     PackagePublished {
         duration_ms: u64,
     },
     PackageFailed {
         class: ErrorClass,
+        message: String,
+    },
+    /// A local process-cleanup hold, independent of registry truth. This may
+    /// follow publication or rehearsal and blocks further publication in the
+    /// same state directory until the retained safety evidence is resolved.
+    PackageCleanupIncomplete {
         message: String,
     },
     PackageSkipped {
@@ -1752,7 +1821,7 @@ pub enum EventType {
     // `shipper rehearse` so an auditor can replay the rehearsal from the
     // event log without re-running it.
     //
-    // `plan_id` is NOT carried in the event payload ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the enclosing
+    // `plan_id` is NOT carried in the event payload — the enclosing
     // `PublishEvent.package` field already disambiguates per-package events,
     // and the end-of-run `RehearsalComplete` is sufficient for plan-level
     // correlation since events.jsonl is append-only scoped to one state dir.
@@ -1783,9 +1852,9 @@ pub enum EventType {
         summary: String,
     },
 
-    // #97 PR 4 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â install/smoke check. Opt-in post-publish step that runs
+    // #97 PR 4 — install/smoke check. Opt-in post-publish step that runs
     // `cargo install --registry <rehearsal> <crate>` to prove end-to-end
-    // registry-index resolution ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the scenario that killed the rc.1
+    // registry-index resolution — the scenario that killed the rc.1
     // first-publish. Events bracket the check so an auditor replaying
     // events.jsonl can see the proof (or failure) inline with publishes.
     RehearsalSmokeCheckStarted {
@@ -1804,7 +1873,7 @@ pub enum EventType {
         message: String,
     },
 
-    // Retry visibility (#91) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â emitted immediately before Shipper sleeps on a
+    // Retry visibility (#91) — emitted immediately before Shipper sleeps on a
     // retry backoff. `attempt` is the just-failed attempt number (1-indexed),
     // so the next attempt will be `attempt + 1` of `max_attempts`. `reason`
     // classifies why the retry is happening; `message` is the one-line
@@ -1883,6 +1952,15 @@ pub enum EventType {
     PreflightComplete {
         finishability: Finishability,
     },
+}
+
+/// Why the engine deliberately stopped before receipt finalization.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlledStopReason {
+    /// Cargo's result was ambiguous, but registry reconciliation conclusively
+    /// proved the package absent when the retry budget was exhausted.
+    NotPublishedRetryBudgetExhausted,
 }
 
 #[inline]
@@ -2139,6 +2217,35 @@ pub struct PreflightPackage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_incomplete_vocabulary_roundtrips_without_ordinary_state_changes() {
+        let state = PackageState::CleanupIncomplete {
+            message: "cleanup not confirmed".into(),
+        };
+        let raw = serde_json::to_value(&state).unwrap();
+        assert_eq!(
+            raw,
+            serde_json::json!({ "state": "cleanup_incomplete", "message": "cleanup not confirmed" })
+        );
+        assert_eq!(serde_json::from_value::<PackageState>(raw).unwrap(), state);
+        let event = EventType::PackageCleanupIncomplete {
+            message: "cleanup not confirmed".into(),
+        };
+        let raw = serde_json::to_value(event).unwrap();
+        assert_eq!(
+            raw,
+            serde_json::json!({ "type": "package_cleanup_incomplete", "message": "cleanup not confirmed" })
+        );
+        assert!(matches!(
+            serde_json::from_value::<EventType>(raw).unwrap(),
+            EventType::PackageCleanupIncomplete { .. }
+        ));
+        assert_eq!(
+            serde_json::to_value(PackageState::Pending).unwrap(),
+            serde_json::json!({ "state": "pending" })
+        );
+    }
 
     #[test]
     fn crates_io_registry_defaults_are_expected() {
@@ -2862,9 +2969,9 @@ mod tests {
             max_attempts: 3,
             base_delay: Duration::from_secs(1),
             max_delay: Duration::from_mins(1),
-            retry_strategy: shipper_retry::RetryStrategyType::Exponential,
+            retry_strategy: crate::retry::RetryStrategyType::Exponential,
             retry_jitter: 0.5,
-            retry_per_error: shipper_retry::PerErrorConfig::default(),
+            retry_per_error: crate::retry::PerErrorConfig::default(),
             verify_timeout: Duration::from_mins(10),
             verify_poll_interval: Duration::from_secs(10),
             state_dir: PathBuf::from(".shipper"),
@@ -3042,6 +3149,25 @@ mod tests {
             let json = serde_json::to_string(result).unwrap();
             assert_eq!(&json, exp);
         }
+    }
+
+    #[test]
+    fn controlled_stop_event_serde_contract() {
+        let event = EventType::ExecutionStopped {
+            reason: ControlledStopReason::NotPublishedRetryBudgetExhausted,
+        };
+        let json = serde_json::to_string(&event).expect("serialize controlled stop");
+        assert_eq!(
+            json,
+            r#"{"type":"execution_stopped","reason":"not_published_retry_budget_exhausted"}"#
+        );
+        let parsed: EventType = serde_json::from_str(&json).expect("parse controlled stop");
+        assert!(matches!(
+            parsed,
+            EventType::ExecutionStopped {
+                reason: ControlledStopReason::NotPublishedRetryBudgetExhausted
+            }
+        ));
     }
 
     // ===== AuthType =====
@@ -5093,7 +5219,7 @@ mod tests {
                 // Terminal states
                 PackageState::Published => vec![],
                 PackageState::Skipped { .. } => vec![],
-                PackageState::Ambiguous { .. } => vec![],
+                PackageState::Ambiguous { .. } | PackageState::CleanupIncomplete { .. } => vec![],
             }
         }
 
@@ -5513,9 +5639,9 @@ mod tests {
                     max_attempts: 3,
                     base_delay: Duration::from_millis(base_delay_ms),
                     max_delay: Duration::from_millis(max_delay_ms),
-                    retry_strategy: shipper_retry::RetryStrategyType::Exponential,
+                    retry_strategy: crate::retry::RetryStrategyType::Exponential,
                     retry_jitter: 0.5,
-                    retry_per_error: shipper_retry::PerErrorConfig::default(),
+                    retry_per_error: crate::retry::PerErrorConfig::default(),
                     verify_timeout: Duration::from_millis(verify_timeout_ms),
                     verify_poll_interval: Duration::from_millis(verify_poll_ms),
                     state_dir: PathBuf::from(".shipper"),
@@ -5712,9 +5838,9 @@ mod tests {
                 PackageState::Pending => 0,
                 PackageState::Uploaded => 1,
                 PackageState::Published => 2,
-                PackageState::Skipped { .. } => 2,   // terminal
-                PackageState::Failed { .. } => 1,    // same level as Uploaded
-                PackageState::Ambiguous { .. } => 2, // terminal
+                PackageState::Skipped { .. } => 2, // terminal
+                PackageState::Failed { .. } => 1,  // same level as Uploaded
+                PackageState::Ambiguous { .. } | PackageState::CleanupIncomplete { .. } => 2, // terminal
             }
         }
 
@@ -5925,7 +6051,7 @@ mod tests {
                 assert!(!debug.is_empty());
             }
 
-            /// The happy path PendingÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢UploadedÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢Published always completes in 2 transitions
+            /// The happy path Pending→Uploaded→Published always completes in 2 transitions
             #[test]
             fn happy_path_always_reaches_published(_seed in 0u64..100) {
                 let mut state = PackageState::Pending;
@@ -6316,6 +6442,53 @@ mod tests {
     fn git_context_short_commit_returns_none_when_no_commit() {
         let ctx = GitContext::new();
         assert_eq!(ctx.short_commit(), None);
+    }
+
+    #[test]
+    fn git_context_short_commit_utf8_boundary_matrix() {
+        let cases = [
+            (Some("aaaaaaé"), Some("aaaaaaé")),
+            (None, None),
+            (Some(""), Some("")),
+            (Some("abcdef"), Some("abcdef")),
+            (Some("abcdefg"), Some("abcdefg")),
+            (Some("abcdefgh"), Some("abcdefg")),
+            (Some("0123456789abcdef"), Some("0123456")),
+            (Some("é"), Some("é")),
+            (Some("€"), Some("€")),
+            (Some("🦀"), Some("🦀")),
+            (Some("ééé"), Some("ééé")),
+            (Some("aaaaaé"), Some("aaaaaé")),
+            (Some("aaaaaé-tail"), Some("aaaaaé")),
+            (Some("aaaa€-tail"), Some("aaaa€")),
+            (Some("aaa🦀-tail"), Some("aaa🦀")),
+            (Some("aaaaaaé-tail"), Some("aaaaaaé-tail")),
+            (Some("aaaaa€"), Some("aaaaa€")),
+            (Some("aaaaaa€"), Some("aaaaaa€")),
+            (Some("aaaa🦀"), Some("aaaa🦀")),
+            (Some("aaaaa🦀"), Some("aaaaa🦀")),
+            (Some("aaaaaa🦀"), Some("aaaaaa🦀")),
+        ];
+
+        for (commit, expected) in cases {
+            let direct = GitContext {
+                commit: commit.map(str::to_owned),
+                ..GitContext::default()
+            };
+            assert_eq!(direct.short_commit(), expected, "direct input {commit:?}");
+
+            let decoded: GitContext =
+                serde_json::from_value(serde_json::json!({ "commit": commit }))
+                    .expect("deserialize public GitContext");
+            assert_eq!(
+                decoded.short_commit(),
+                expected,
+                "deserialized input {commit:?}"
+            );
+        }
+
+        let absent: GitContext = serde_json::from_str("{}").expect("absent commit field");
+        assert_eq!(absent.short_commit(), None);
     }
 
     // ===== group_packages_by_levels generic edge cases =====

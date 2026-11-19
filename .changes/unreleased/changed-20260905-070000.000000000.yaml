@@ -1,0 +1,6 @@
+kind: changed
+body: Define the retry configuration contract (`RetryStrategyType`, `RetryStrategyConfig`, `PerErrorConfig`) in `shipper-types` and consume it from `shipper-retry`, so embedding `shipper-types` no longer pulls `rand` and its CSPRNG chain into the dependency graph for jitter it never applies. The `shipper_retry::*` paths are unchanged and the serialized form is identical.
+time: 2026-09-05T07:00:00Z
+custom:
+  Audience: Embedders
+  Importance: Detailed

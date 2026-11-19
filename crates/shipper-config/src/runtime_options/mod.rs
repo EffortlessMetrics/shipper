@@ -100,3 +100,36 @@ fn resolve_rehearsal_registry(config: &ShipperConfig, cli: &CliOverrides) -> Opt
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_rehearsal_registry;
+    use crate::{CliOverrides, ShipperConfig};
+
+    #[test]
+    fn rehearsal_registry_resolution_prefers_cli_then_enabled_config() {
+        let mut config = ShipperConfig::default();
+        config.rehearsal.enabled = true;
+        config.rehearsal.registry = Some("configured".to_string());
+
+        assert_eq!(
+            resolve_rehearsal_registry(&config, &CliOverrides::default()).as_deref(),
+            Some("configured")
+        );
+
+        let cli = CliOverrides {
+            rehearsal_registry: Some("cli".to_string()),
+            ..CliOverrides::default()
+        };
+        assert_eq!(
+            resolve_rehearsal_registry(&config, &cli).as_deref(),
+            Some("cli")
+        );
+
+        config.rehearsal.enabled = false;
+        assert_eq!(
+            resolve_rehearsal_registry(&config, &CliOverrides::default()),
+            None
+        );
+    }
+}

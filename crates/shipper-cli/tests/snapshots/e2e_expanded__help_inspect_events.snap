@@ -8,6 +8,10 @@ Reads `<state-dir>/events.jsonl`, which is the truth source for publish and
 resume state transitions. Use `--follow` while another terminal is running
 publish or resume.
 
+Events are printed in append order within each log, preserving their original
+wall-clock timestamps. Timestamps can move backward; they do not define replay
+order.
+
 EXAMPLES:
     # Print the current event log:
     shipper inspect-events

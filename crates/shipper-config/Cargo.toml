@@ -26,5 +26,6 @@ shipper-registry.workspace = true
 tempfile = "3"
 proptest = { workspace = true }
 insta = { workspace = true }
+serial_test = { workspace = true }
 [lints]
 workspace = true
