@@ -52,6 +52,23 @@ checkpoint retains the Cargo end time and classification while reconciliation
 updates package progress. Use package and attempt identity to interpret
 causality.
 
+When resuming a v0.4.0 run, unfinished inspection and receipt finalization
+recognize that the old writer sampled Cargo's completion before appending
+`package_output` and kept that earlier timestamp in `state.json`. Replay
+derives its completion from later outcome events. A differing end is
+compatible only for the same package, version, attempt number and start time,
+with a unique attempt that omits the ceiling and a single Cargo output
+preceding its outcome in the pre-0.5 journal prefix. Output without a fresh
+attempt invalidates that exception even across executions. A standalone
+`still_unknown` reconciliation can close replay, but it cannot replace the
+`package_failed` event that v0.4.0 wrote before reconciling a Cargo failure.
+The retained end must fall between the recorded start and output, with the
+output no later than the replayed end. A missing old retry ceiling
+can use the replay fallback only if the journal did not record a retry
+schedule. Outcome, class, redacted message, and retry time still have to
+agree. Appending a 0.5 attempt does not revoke the earlier evidence or
+rewrite its timestamps; 0.5 attempts still require exact agreement.
+
 A checkpointed attempt keeps the history slot of its first durable detail.
 Later reconciliation and retry events refine the same slot in live state and
 replay. Other completed attempt details follow replay finalization, and open

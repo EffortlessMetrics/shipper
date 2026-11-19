@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
 
 use shipper_types::{
     ErrorClass, EventType, ExecutionResult, ExecutionState, PackageState, Receipt,
@@ -110,7 +111,7 @@ pub(crate) fn verify_unfinished_consistency(
         state,
         &rebuilt_state,
         &trusted_resume_terminal_skips(&event_log),
-        legacy_attempt_metadata(&event_log),
+        &event_log,
         &mut findings,
     );
     verify_reconciliation_evidence(
@@ -464,13 +465,12 @@ pub fn verify_finalization_consistency(
 
     let mut findings = Vec::new();
     let trusted_resume_terminal_skips = trusted_resume_terminal_skips(&event_log);
-    let legacy_attempt_metadata = legacy_attempt_metadata(&event_log);
     verify_plan_ids(receipt, &rebuilt_state, &mut findings);
     verify_state_matches_events(
         state,
         &rebuilt_state,
         &trusted_resume_terminal_skips,
-        legacy_attempt_metadata,
+        &event_log,
         &mut findings,
     );
     verify_receipt_matches_state(state, receipt, &mut findings);
@@ -509,7 +509,7 @@ fn verify_state_matches_events(
     state: &ExecutionState,
     rebuilt_state: &ExecutionState,
     trusted_resume_terminal_skips: &BTreeSet<String>,
-    legacy_attempt_metadata: bool,
+    event_log: &EventLog,
     findings: &mut Vec<String>,
 ) {
     for (key, progress) in &state.packages {
@@ -551,7 +551,7 @@ fn verify_state_matches_events(
         state,
         rebuilt_state,
         trusted_resume_terminal_skips,
-        legacy_attempt_metadata,
+        event_log,
     ) {
         let mut detail = format!(
             "attempt_history drift: state has {} entries but events project {} entries",
@@ -608,54 +608,139 @@ fn verify_state_matches_events(
     }
 }
 
-fn legacy_attempt_metadata(event_log: &EventLog) -> bool {
-    // 0.4 serialized PackageAttempted without max_attempts. Serde therefore
-    // leaves it at zero, which the rebuild path treats as the attempt number.
-    // Modern writers always persist a nonzero max_attempts value.
-    let attempts = event_log
-        .all_events()
-        .iter()
-        .filter_map(|event| match &event.event_type {
-            EventType::PackageAttempted { max_attempts, .. } => Some(*max_attempts),
-            _ => None,
-        });
+#[derive(Debug)]
+struct LegacyAttemptTiming {
+    started_at: DateTime<Utc>,
+    output_at: Option<DateTime<Utc>>,
+    saw_outcome: bool,
+}
 
-    let mut saw_attempt = false;
-    for max_attempts in attempts {
-        saw_attempt = true;
-        if max_attempts != 0 {
-            return false;
+// Only an unambiguous attempt in the historical prefix can explain a
+// timestamp boundary the old writer did not record. Keep tracking duplicate
+// identities after the boundary, but never qualify another legacy attempt.
+fn legacy_attempt_timings(
+    event_log: &EventLog,
+) -> BTreeMap<(&str, u32), Option<LegacyAttemptTiming>> {
+    let mut timings = BTreeMap::<(&str, u32), Option<LegacyAttemptTiming>>::new();
+    // An execution boundary ends eligibility to attribute new outcomes, not
+    // responsibility for rejecting output without a new attempt to own it.
+    let mut last_legacy = BTreeMap::<&str, u32>::new();
+    let mut active = BTreeSet::<&str>::new();
+    let mut modern = false;
+    for event in event_log.all_events() {
+        let package = event.package.as_str();
+        if !modern
+            && matches!(
+                event.event_type,
+                EventType::PackageAttempted {
+                    max_attempts: 1..,
+                    ..
+                } | EventType::PackageUploaded
+                    | EventType::PackageNotLaunched { .. }
+                    | EventType::PackageUploadUnconfirmed { .. }
+                    | EventType::PackageCleanupIncomplete { .. }
+                    | EventType::ExecutionStopped { .. }
+                    | EventType::RegistryPolicyApplied { .. }
+                    | EventType::ReadinessError { .. }
+            )
+        {
+            modern = true;
+            active.clear();
+        }
+
+        match &event.event_type {
+            EventType::PackageAttempted { attempt, .. } => {
+                active.remove(package);
+                last_legacy.remove(package);
+                let key = (package, *attempt);
+                if let Some(prior) = timings.get_mut(&key) {
+                    *prior = None;
+                } else if !modern && *attempt > 0 {
+                    timings.insert(
+                        key,
+                        Some(LegacyAttemptTiming {
+                            started_at: event.timestamp,
+                            output_at: None,
+                            saw_outcome: false,
+                        }),
+                    );
+                    last_legacy.insert(package, *attempt);
+                    active.insert(package);
+                }
+            }
+            EventType::ExecutionStarted | EventType::ExecutionFinished { .. } => active.clear(),
+            EventType::PackageStarted { .. } | EventType::PackageSkipped { .. } => {
+                active.remove(package);
+            }
+            EventType::PackageOutput { .. } => {
+                let Some(attempt) = last_legacy.get(package) else {
+                    continue;
+                };
+                let Some(entry) = timings.get_mut(&(package, *attempt)) else {
+                    continue;
+                };
+                let Some(timing) = entry.as_mut() else {
+                    continue;
+                };
+                if !active.contains(package) || timing.saw_outcome || timing.output_at.is_some() {
+                    *entry = None;
+                } else {
+                    timing.output_at = Some(event.timestamp);
+                }
+            }
+            // v0.4.0 logged PackageFailed before reconciling an ambiguous
+            // Cargo exit. StillUnknown can set replay's end, but on its own
+            // it is not evidence of the Cargo outcome for this attempt.
+            EventType::ReadinessStarted { .. }
+            | EventType::PackageFailed { .. }
+            | EventType::PackagePublished { .. }
+                if active.contains(package) =>
+            {
+                if let Some(attempt) = last_legacy.get(package)
+                    && let Some(Some(timing)) = timings.get_mut(&(package, *attempt))
+                {
+                    timing.saw_outcome = true;
+                }
+            }
+            _ => {}
         }
     }
-    saw_attempt
+    timings
 }
 
 fn attempt_histories_match(
     state: &ExecutionState,
     rebuilt_state: &ExecutionState,
     trusted_resume_terminal_skips: &BTreeSet<String>,
-    legacy_attempt_metadata: bool,
+    event_log: &EventLog,
 ) -> bool {
     if state.attempt_history == rebuilt_state.attempt_history {
         return true;
     }
 
-    if !legacy_attempt_metadata
-        || state.attempt_history.len() != rebuilt_state.attempt_history.len()
-    {
+    if state.attempt_history.len() != rebuilt_state.attempt_history.len() {
         return false;
     }
 
-    // 0.4 state ended an attempt when upload completed, while its later
-    // readiness and PackagePublished events let the event projection end it
-    // later. Compare the durable identity and failure semantics strictly, and
-    // leave only those legacy-unknown timing/retry fields tolerant.
+    // v0.4 state sampled the Cargo end before recording its output; replay
+    // derives an end from the subsequent outcome. Neither observation should
+    // replace the other. Only the same historical row can use that distinction.
+    let legacy_attempts = legacy_attempt_timings(event_log);
     state
         .attempt_history
         .iter()
         .zip(rebuilt_state.attempt_history.iter())
         .all(|(live, rebuilt)| {
+            if live == rebuilt {
+                return true;
+            }
             let key = format!("{}@{}", live.package, live.version);
+            let Some(Some(legacy)) = legacy_attempts.get(&(key.as_str(), live.attempt)) else {
+                return false;
+            };
+            let Some(output_at) = legacy.output_at.filter(|_| legacy.saw_outcome) else {
+                return false;
+            };
             let same_terminal_state = state
                 .packages
                 .get(&key)
@@ -681,9 +766,15 @@ fn attempt_histories_match(
                 && live.next_attempt_at == rebuilt.next_attempt_at
                 && live.redacted_message == rebuilt.redacted_message
                 && live.started_at == rebuilt.started_at
-                && live.ended_at <= rebuilt.ended_at
-                && rebuilt.max_attempts == rebuilt.attempt
-                && live.max_attempts >= rebuilt.max_attempts
+                && legacy.started_at == live.started_at
+                && (live.ended_at == rebuilt.ended_at
+                    || (live.started_at <= live.ended_at
+                        && live.ended_at <= output_at
+                        && output_at <= rebuilt.ended_at))
+                && (live.max_attempts == rebuilt.max_attempts
+                    || (rebuilt.next_attempt_at.is_none()
+                        && rebuilt.max_attempts == rebuilt.attempt
+                        && live.max_attempts >= rebuilt.max_attempts))
         })
 }
 
@@ -1797,6 +1888,352 @@ mod tests {
 
         verify_finalization_consistency(&td.path().join(EVENTS_FILE), &state, &receipt, None)
             .expect("legacy unknown attempt metadata should remain resumable");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn legacy_attempt_metadata_mixed_resume_keeps_old_ends_and_matches_modern_exactly() -> Result<()>
+    {
+        let td = tempdir()?;
+        let t0 = Utc::now();
+        let at = |ms| t0 + Duration::milliseconds(ms);
+        let event = |ms, package: &str, event_type| PublishEvent {
+            timestamp: at(ms),
+            package: package.to_owned(),
+            event_type,
+        };
+        let attempted = |attempt, max_attempts| EventType::PackageAttempted {
+            attempt,
+            max_attempts,
+            command: "cargo publish".into(),
+        };
+        let output = || EventType::PackageOutput {
+            stdout_tail: String::new(),
+            stderr_tail: String::new(),
+        };
+        let published = || EventType::PackagePublished { duration_ms: 10 };
+        let a = "a@1.0.0";
+        let c = "c@1.0.0";
+        let ambiguous = "publish outcome ambiguous; registry did not show version";
+        let failed = || EventType::PackageFailed {
+            class: ErrorClass::Ambiguous,
+            message: ambiguous.into(),
+        };
+        let absent = ReconciliationOutcome::NotPublished {
+            attempts: 1,
+            elapsed_ms: 0,
+        };
+
+        // v0.4.0 wrote an attempt with no ceiling, followed by Cargo output
+        // and a later outcome. The state already held Cargo's earlier end.
+        // Resume skips A, reconciles C, then writes a modern C attempt.
+        let old_only = vec![
+            plan_created_event(),
+            event(10, a, attempted(1, 0)),
+            event(13, a, output()),
+            event(
+                15,
+                a,
+                EventType::ReadinessStarted {
+                    method: shipper_types::ReadinessMethod::Api,
+                },
+            ),
+            event(18, a, published()),
+            event(20, c, attempted(1, 0)),
+            event(23, c, output()),
+            event(24, c, failed()),
+            event(
+                25,
+                c,
+                EventType::PublishReconciled {
+                    outcome: absent.clone(),
+                },
+            ),
+            event(26, c, failed()),
+        ];
+        let suffix = vec![
+            event(30, "all", EventType::ExecutionStarted),
+            event(
+                31,
+                a,
+                EventType::PackageSkipped {
+                    reason: "resume: state already published".into(),
+                },
+            ),
+            event(
+                32,
+                c,
+                EventType::PackageStarted {
+                    name: "c".into(),
+                    version: "1.0.0".into(),
+                },
+            ),
+            event(
+                33,
+                c,
+                EventType::PublishReconciled {
+                    outcome: absent.clone(),
+                },
+            ),
+            event(34, c, attempted(2, 2)),
+            event(37, c, output()),
+            event(36, c, EventType::PackageUploaded),
+            event(40, c, published()),
+        ];
+        write_events(td.path(), old_only);
+        let events_path = td.path().join(EVENTS_FILE);
+        let before = std::fs::read(&events_path)?;
+        write_events(td.path(), suffix);
+        assert!(std::fs::read(&events_path)?.starts_with(&before));
+
+        let rebuilt = rebuild_state_from_events(
+            &events_path,
+            StateRebuildOptions::new(Registry::crates_io()),
+        )?;
+        assert_eq!(rebuilt.attempt_history.len(), 3);
+        assert_eq!(rebuilt.attempt_history[0].ended_at, at(15));
+        assert_eq!(rebuilt.attempt_history[1].ended_at, at(24));
+        assert_eq!(rebuilt.attempt_history[2].ended_at, at(36));
+
+        let mut state = rebuilt.clone();
+        state.packages.get_mut(a).expect("old published A").state = PackageState::Published;
+        state.attempt_history[0].ended_at = at(12);
+        state.attempt_history[0].max_attempts = 3;
+        state.attempt_history[1].ended_at = at(22);
+        let receipt = receipt(vec![package_receipt("c", "1.0.0", PackageState::Published)]);
+        let mut report = reconciliation_report(c);
+        report.records[0].operator_action = ReconciliationOperatorAction::RetryAllowed;
+        report.records[0].outcome = absent;
+        report.records.push(report.records[0].clone());
+
+        verify_finalization_consistency(&events_path, &state, &receipt, Some(&report))?;
+        verify_unfinished_consistency(&events_path, &state, Some(&report))?;
+        assert_eq!(state.attempt_history[0].ended_at, at(12));
+        assert_eq!(state.attempt_history[1].ended_at, at(22));
+        assert!(std::fs::read(&events_path)?.starts_with(&before));
+
+        for (row, ended_at) in [(0, at(9)), (0, at(14)), (1, at(25)), (2, at(35))] {
+            let mut tampered = state.clone();
+            tampered.attempt_history[row].ended_at = ended_at;
+            let error =
+                verify_finalization_consistency(&events_path, &tampered, &receipt, Some(&report))
+                    .expect_err("contradictory historical bounds or modern time must refuse");
+            assert!(
+                error.to_string().contains("attempt_history drift"),
+                "{error:#}"
+            );
+        }
+        let mut wrong_identity = state.clone();
+        wrong_identity.attempt_history[0].started_at = at(11);
+        let error = verify_unfinished_consistency(&events_path, &wrong_identity, Some(&report))
+            .expect_err("legacy tolerance must match the exact starting event");
+        assert!(
+            error.to_string().contains("attempt_history drift"),
+            "{error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn legacy_timing_refuses_unproven_attempt_origin_or_output() -> Result<()> {
+        let t0 = Utc::now();
+        let at = |s| t0 + Duration::seconds(s);
+        let old = "demo@1.0.0";
+        let event = |s, package: &str, event_type| PublishEvent {
+            timestamp: at(s),
+            package: package.into(),
+            event_type,
+        };
+        let attempt = |max_attempts| EventType::PackageAttempted {
+            attempt: 1,
+            max_attempts,
+            command: "cargo publish".into(),
+        };
+        let output = || EventType::PackageOutput {
+            stdout_tail: String::new(),
+            stderr_tail: String::new(),
+        };
+        let published = || EventType::PackagePublished { duration_ms: 10 };
+
+        for (name, prefix, middle, tail) in [
+            (
+                "omitted ceiling after modern attempt",
+                Some(event(1, "modern@1.0.0", attempt(1))),
+                None,
+                vec![],
+            ),
+            (
+                "omitted ceiling after modern checkpoint",
+                Some(event(1, "modern@1.0.0", EventType::PackageUploaded)),
+                None,
+                vec![],
+            ),
+            (
+                "duplicate attempt identity",
+                None,
+                None,
+                vec![event(6, old, attempt(1))],
+            ),
+            (
+                "duplicate Cargo output",
+                None,
+                Some(event(4, old, output())),
+                vec![],
+            ),
+            (
+                "output after outcome",
+                None,
+                None,
+                vec![event(6, old, output())],
+            ),
+            (
+                "orphan output after an execution boundary",
+                None,
+                None,
+                vec![
+                    event(
+                        6,
+                        "all",
+                        EventType::ExecutionFinished {
+                            result: ExecutionResult::Success,
+                        },
+                    ),
+                    event(7, "all", EventType::ExecutionStarted),
+                    event(8, old, output()),
+                ],
+            ),
+            (
+                "outcome belonging to another execution",
+                None,
+                Some(event(4, "all", EventType::ExecutionStarted)),
+                vec![],
+            ),
+            ("missing Cargo output", None, None, vec![]),
+        ] {
+            let td = tempdir()?;
+            let mut events = vec![plan_created_event()];
+            events.extend(prefix);
+            events.push(event(2, old, attempt(0)));
+            if name != "missing Cargo output" {
+                events.push(event(3, old, output()));
+            }
+            events.extend(middle);
+            events.push(event(5, old, published()));
+            events.extend(tail);
+            write_events(td.path(), events);
+            let path = td.path().join(EVENTS_FILE);
+            let mut state =
+                rebuild_state_from_events(&path, StateRebuildOptions::new(Registry::crates_io()))?;
+            verify_unfinished_consistency(&path, &state, None)?;
+            let original = state
+                .attempt_history
+                .iter_mut()
+                .find(|detail| detail.package == "demo" && detail.started_at == at(2))
+                .expect("original demo attempt");
+            assert_eq!(original.ended_at, at(5));
+            original.ended_at = at(3);
+            let error = verify_unfinished_consistency(&path, &state, None).expect_err(name);
+            assert!(
+                error.to_string().contains("attempt_history drift"),
+                "{name}: {error:#}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn legacy_still_unknown_requires_the_old_cargo_failure_event() -> Result<()> {
+        let t0 = Utc::now();
+        let package = "demo@1.0.0";
+        let event = |offset, event_type| PublishEvent {
+            timestamp: t0 + Duration::seconds(offset),
+            package: package.into(),
+            event_type,
+        };
+        let cargo_message = "ambiguous Cargo exit";
+        let registry_message = "registry could not confirm visibility";
+        let outcome = ReconciliationOutcome::StillUnknown {
+            attempts: 1,
+            elapsed_ms: 10,
+            reason: registry_message.into(),
+        };
+        let mut report = reconciliation_report(package);
+        report.records[0].outcome = outcome.clone();
+        report.records[0].operator_action = ReconciliationOperatorAction::OperatorActionRequired;
+
+        for has_failure in [true, false] {
+            let td = tempdir()?;
+            let mut events = vec![
+                plan_created_event(),
+                event(
+                    1,
+                    EventType::PackageAttempted {
+                        attempt: 1,
+                        max_attempts: 0,
+                        command: "cargo publish".into(),
+                    },
+                ),
+                event(
+                    3,
+                    EventType::PackageOutput {
+                        stdout_tail: String::new(),
+                        stderr_tail: String::new(),
+                    },
+                ),
+            ];
+            if has_failure {
+                events.push(event(
+                    4,
+                    EventType::PackageFailed {
+                        class: ErrorClass::Ambiguous,
+                        message: cargo_message.into(),
+                    },
+                ));
+            }
+            events.extend([
+                event(
+                    5,
+                    EventType::PublishReconciling {
+                        method: shipper_types::ReadinessMethod::Api,
+                    },
+                ),
+                event(
+                    6,
+                    EventType::PublishReconciled {
+                        outcome: outcome.clone(),
+                    },
+                ),
+            ]);
+            write_events(td.path(), events);
+            let path = td.path().join(EVENTS_FILE);
+            let mut state =
+                rebuild_state_from_events(&path, StateRebuildOptions::new(Registry::crates_io()))?;
+            let actual = &mut state.attempt_history[0];
+            assert_eq!(actual.ended_at, t0 + Duration::seconds(6));
+            assert_eq!(actual.error_class, Some(ErrorClass::Ambiguous));
+            assert_eq!(
+                actual.redacted_message.as_deref(),
+                Some(if has_failure {
+                    cargo_message
+                } else {
+                    registry_message
+                })
+            );
+            actual.ended_at = t0 + Duration::seconds(2);
+            let result = verify_unfinished_consistency(&path, &state, Some(&report));
+            if has_failure {
+                result?;
+            } else {
+                let error = result.expect_err("no evidence of the original Cargo failure");
+                assert!(
+                    error.to_string().contains("attempt_history drift"),
+                    "{error:#}"
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]
