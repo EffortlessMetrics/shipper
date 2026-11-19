@@ -30,9 +30,9 @@ pub(crate) use self::run::{
     run_command, run_command_in_dir, run_command_simple, run_command_streaming,
     run_command_with_env,
 };
-pub(crate) use self::timeout::run_command_with_publish_capture;
 #[allow(unused_imports)]
 pub(crate) use self::timeout::run_command_with_timeout;
+pub(crate) use self::timeout::{CommandNotLaunched, run_command_with_publish_capture};
 #[allow(unused_imports)]
 pub(crate) use self::types::{CommandOutput, CommandResult};
 #[allow(unused_imports)]

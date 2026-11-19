@@ -51,6 +51,11 @@ sha2 = "0.11"
 # Safe nonblocking pipes and process-group supervision; already locked transitively.
 rustix = { version = "1.1.4", features = ["fs", "process"] }
 
+[target.'cfg(windows)'.dependencies]
+interprocess = "=2.4.4"
+processkit = { version = "=3.3.4", default-features = false, features = ["process-control", "stats"] }
+windows-spawn = "=0.1.0"
+
 [lints]
 workspace = true
 

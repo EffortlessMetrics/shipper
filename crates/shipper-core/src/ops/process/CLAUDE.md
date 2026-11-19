@@ -16,8 +16,9 @@ result types.
   `run_command_with_env`, `run_command_streaming`, `run_command_simple`.
 - `timeout` — generic timed execution and bounded publish capture. On Linux and
   macOS, nonblocking pipe reads share a polling loop with an invocation-owned
-  process group and a separate one-second cleanup allowance. Other platforms
-  retain the direct-child/blocking-reader implementation.
+  process group. Windows uses a Job Object and nonwaiting named-pipe reads.
+  Both have a separate one-second cleanup allowance. Other platforms retain
+  the direct-child/blocking-reader implementation.
 - `capture` — full capture or opt-in publish diagnostic tails. Publish readers
   use 8 KiB chunks, a 64 KiB partial-line limit, a 256 KiB retained/rendered
   payload limit per stream, and at most 4096 entries. Never allocate from an
@@ -77,8 +78,10 @@ that reaps orphaned children; zombie-only groups are not treated as absent.
 The group contains cooperative descendants, not descendants that deliberately
 change groups/sessions. An escaped pipe holder produces incomplete cleanup; an
 escaped process that closes both pipes cannot be discovered by this mechanism.
-Windows and other legacy platforms still need their own bounded ownership/I/O
-implementation and native proof; do not imply these Unix guarantees apply there.
+Windows assigns the suspended child to an unnamed kill-on-close job before
+resume. Direct-child status comes from its process handle. Job accounting and
+pipe EOF independently confirm cleanup. The Windows polling path avoids Tokio
+child-pipe adapters, which submit blocking reads on this platform.
 
 ## History
 

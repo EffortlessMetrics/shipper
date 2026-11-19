@@ -25,8 +25,9 @@ registry and credential checks stop unsafe work earlier.
 
 Read the [0.5.0 migration guide](https://github.com/EffortlessMetrics/shipper/blob/v0.5.0/docs/release/0.5.0-migration.md) if you:
 
-- construct `RuntimeOptions` with a Rust struct literal;
-- exhaustively match public event enums;
+- construct `RuntimeOptions` or `Receipt` with a Rust struct literal;
+- construct or match `EventType::PackageAttempted`, or exhaustively match
+  public event or state enums;
 - parse `events.jsonl`, `state.json`, `receipt.json`, or command JSON;
 - depend on exit status `2` or generate resume commands;
 - use custom, private, loopback, or multiple registries;
@@ -50,8 +51,8 @@ used to inspect or resume a run.
 The short compatibility summary is:
 
 - old durable artifacts remain readable within the tested contract;
-- new fields and event variants are additive, but older Shipper versions are
-  not promised to understand every artifact written by 0.5;
+- new Rust fields and variants require source updates in some consumers; do
+  not resume journals containing new 0.5 records with a 0.4 binary;
 - new encrypted artifacts use KDF v2 while v1 reads remain supported;
 - `parallel.per_package_timeout` remains the shared timeout key for one
   migration cycle;

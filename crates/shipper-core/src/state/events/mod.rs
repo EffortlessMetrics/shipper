@@ -248,6 +248,12 @@ impl EventLog {
 
         let mut writer = std::io::BufWriter::new(file);
         let result = (|| {
+            #[cfg(test)]
+            super::file_sync::test_support::before_io(
+                super::file_sync::test_support::Point::EventAppend,
+                path,
+            )
+            .with_context(|| format!("failed to append events file {}", path.display()))?;
             self.write_events_to(&mut writer)
                 .with_context(|| format!("failed to append events file {}", path.display()))?;
             writer

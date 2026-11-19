@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use anyhow::anyhow;
 use anyhow::{Result, ensure};
 
@@ -65,7 +65,7 @@ pub(crate) fn check() -> Result<()> {
 pub(crate) struct InterruptionLease(&'static Context);
 
 impl InterruptionLease {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     pub(crate) fn acquire() -> Result<Option<Self>> {
         let Some(context) = CONTEXT.get() else {
             return Ok(None);

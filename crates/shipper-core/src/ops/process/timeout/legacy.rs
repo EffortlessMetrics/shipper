@@ -1,5 +1,4 @@
 //! Existing direct-child runner on platforms without bounded supervision.
-//! Windows job ownership and cancellable pipes remain tracked by #412.
 
 use std::process::{Child, Command, Stdio};
 use std::thread;

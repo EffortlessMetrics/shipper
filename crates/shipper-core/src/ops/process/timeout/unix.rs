@@ -51,6 +51,29 @@ pub(super) fn run_supervised(
                 .context("command timeout exceeds the monotonic clock range")
         })
         .transpose()?;
+    // Only an explicit absolute publish executable can be checked without
+    // changing Command's CWD/PATH resolution. A negative metadata check
+    // prevents this invocation from entering spawn; a successful lookup
+    // (including through a symlink) proves nothing about what spawn will do.
+    let executable = Path::new(program);
+    if matches!(capture, CaptureMode::PublishTail(_)) && executable.is_absolute() {
+        let metadata = executable.metadata();
+        super::super::interruption::check()?;
+        if let Err(error) = metadata
+            && matches!(
+                error.kind(),
+                ErrorKind::NotFound | ErrorKind::PermissionDenied
+            )
+        {
+            return Err(super::CommandNotLaunched::for_publish(
+                anyhow::Error::new(error).context(format!("failed to spawn command: {program}")),
+                capture,
+                interruption_lease,
+            ));
+        }
+    }
+
+    // Never infer no-launch from an error returned after entering spawn.
     let mut command = Command::new(program);
     command
         .args(args)
@@ -426,6 +449,37 @@ mod tests {
             assert_eq!(result.output.exit_code, -1);
             assert!(!result.output.timed_out);
             assert!(result.capture.is_complete());
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn absolute_visibility_does_not_classify_a_raw_spawn_error_as_no_launch() {
+        let directory = tempfile::tempdir().unwrap();
+        let present = directory.path().join("not-executable");
+        File::create(&present).unwrap();
+        let missing_link = directory.path().join("dangling-executable");
+        std::os::unix::fs::symlink(directory.path().join("missing"), &missing_link).unwrap();
+
+        for (path, expected_kind, proved) in [
+            (present, ErrorKind::PermissionDenied, false),
+            (missing_link, ErrorKind::NotFound, true),
+        ] {
+            let error = run_supervised(
+                path.to_str().unwrap(),
+                &[],
+                directory.path(),
+                None,
+                CaptureMode::PublishTail(1),
+            )
+            .err()
+            .expect("invalid executable must fail");
+            assert_eq!(error.is::<super::super::CommandNotLaunched>(), proved);
+            assert_eq!(
+                error.downcast_ref::<io::Error>().map(io::Error::kind),
+                Some(expected_kind)
+            );
+            assert!(format!("{error:#}").contains("failed to spawn command"));
         }
     }
 

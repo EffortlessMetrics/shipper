@@ -46,15 +46,17 @@ timestamps.
 
 Attempt timestamps follow the existing completion semantics without clock
 normalization: a recorded failure can end before its attempt's start after clock
-rollback, and a later retry decision does not move that end time. Replaying a
-`StillUnknown` reconciliation can replace the earlier failure end with the
-reconciliation event time, while the live executor retains the failure end.
-Live and rebuilt attempt ends therefore need not be identical. Use package and
-attempt identity to interpret causality.
-Completed attempt details follow replay finalization; still-open attempts keep
-the existing deterministic fallback ordering at the end of replay. The entire
-`attempt_history` array is not a globally chronological sequence. These rules
-do not introduce a logical clock or change artifact schemas.
+rollback, and a later retry decision does not move that end time. For journals without an upload checkpoint, replay can use the
+`StillUnknown` reconciliation time as the attempt end. A modern upload
+checkpoint retains the Cargo end time and classification while reconciliation
+updates package progress. Use package and attempt identity to interpret
+causality.
+
+A checkpointed attempt keeps the history slot of its first durable detail.
+Later reconciliation and retry events refine the same slot in live state and
+replay. Other completed attempt details follow replay finalization, and open
+attempts without a checkpoint keep the deterministic fallback ordering at the
+end of replay. The history array need not be globally chronological.
 
 ## The invariant
 
@@ -87,9 +89,13 @@ Never derive critical decisions from CLI stdout alone. Stdout is a human-facing 
 `EventType::PackageUploaded` is emitted only after Cargo has accepted an
 upload. It is now the durable checkpoint for `PackageState::Uploaded`:
 state rebuild maps that event to `uploaded`, and a later `package_published`
-event advances the projection to `published`. `EventType::ReadinessStarted`
-continues to map to `uploaded` for backward compatibility with historical
-event logs.
+event advances the projection to `published`.
+
+For historical logs, replay infers `uploaded` from `EventType::ReadinessStarted`
+only when the package's current `PackageAttempted` has no recorded attempt
+ceiling, a `PackageOutput` follows it, and the active attempt in replay still
+matches. A modern diagnostic registry visibility probe alone cannot establish
+Cargo acceptance.
 
 ## Persistence boundary and failure model
 

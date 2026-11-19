@@ -128,8 +128,7 @@ fn visibility_error_retains_cargo_failure(parallel: bool) -> Result<()> {
 
     let state = execution_state::load_state(&state_dir)?.context("persisted execution state")?;
     let progress = state.packages.get("demo@0.1.0").context("demo progress")?;
-    let expected = PackageState::Failed {
-        class: ErrorClass::Retryable,
+    let expected = PackageState::Ambiguous {
         message: "transient failure (retryable)".to_owned(),
     };
     ensure!(
@@ -156,17 +155,16 @@ fn visibility_error_retains_cargo_failure(parallel: bool) -> Result<()> {
     let event_path = state_dir.join("events.jsonl");
     let log = EventLog::read_from_file(&event_path)?;
     let events = log.all_events();
-    let failed = events
+    let mut unconfirmed = events
         .iter()
-        .filter(|event| matches!(event.event_type, EventType::PackageFailed { .. }))
-        .collect::<Vec<_>>();
-    ensure!(failed.len() == 1);
-    let failure = failed.first().context("Cargo failure event")?;
-    ensure!(failure.package == "demo@0.1.0");
+        .filter(|event| matches!(event.event_type, EventType::PackageUploadUnconfirmed { .. }));
+    let checkpoint = unconfirmed.next().context("unconfirmed Cargo checkpoint")?;
+    ensure!(unconfirmed.next().is_none());
+    ensure!(checkpoint.package == "demo@0.1.0");
     ensure!(
-        matches!(&failure.event_type, EventType::PackageFailed { class: ErrorClass::Retryable, message } if message == "transient failure (retryable)")
+        matches!(&checkpoint.event_type, EventType::PackageUploadUnconfirmed { class: ErrorClass::Retryable, message } if message == "transient failure (retryable)")
     );
-    ensure!(failure.timestamp == detail.ended_at);
+    ensure!(checkpoint.timestamp == detail.ended_at);
     let attempted = events
         .iter()
         .position(|event| matches!(event.event_type, EventType::PackageAttempted { .. }))
@@ -175,15 +173,16 @@ fn visibility_error_retains_cargo_failure(parallel: bool) -> Result<()> {
         .iter()
         .position(|event| matches!(event.event_type, EventType::PackageOutput { .. }))
         .context("Cargo output event")?;
-    let failed_event = events
+    let checkpoint_position = events
         .iter()
-        .position(|event| matches!(event.event_type, EventType::PackageFailed { .. }))
-        .context("failure event position")?;
-    ensure!(attempted < output_event && output_event < failed_event);
+        .position(|event| matches!(event.event_type, EventType::PackageUploadUnconfirmed { .. }))
+        .context("checkpoint event position")?;
+    ensure!(attempted < output_event && output_event < checkpoint_position);
     ensure!(
         !events.iter().any(|event| matches!(
             event.event_type,
-            EventType::PublishReconciling { .. }
+            EventType::PackageFailed { .. }
+                | EventType::PublishReconciling { .. }
                 | EventType::PublishReconciled { .. }
                 | EventType::ExecutionStopped { .. }
                 | EventType::RetryScheduled { .. }
@@ -207,11 +206,13 @@ fn visibility_error_retains_cargo_failure(parallel: bool) -> Result<()> {
 }
 
 #[test]
-fn sequential_registry_error_retains_failed_projection_and_attempt() -> Result<()> {
+#[serial_test::serial]
+fn sequential_registry_error_retains_unconfirmed_projection_and_attempt() -> Result<()> {
     visibility_error_retains_cargo_failure(false)
 }
 
 #[test]
-fn parallel_registry_error_retains_failed_projection_and_attempt() -> Result<()> {
+#[serial_test::serial]
+fn parallel_registry_error_retains_unconfirmed_projection_and_attempt() -> Result<()> {
     visibility_error_retains_cargo_failure(true)
 }

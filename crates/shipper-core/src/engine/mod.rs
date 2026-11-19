@@ -4598,23 +4598,92 @@ mod tests {
         );
     }
 
+    fn assert_unverified_accepted_upload(state_dir: &Path, key: &str, cargo_log: &Path) {
+        let state = state::load_state(state_dir).expect("load").expect("exists");
+        let package = state.packages.get(key).expect("package");
+        assert_eq!(package.state, PackageState::Uploaded);
+        assert_eq!(package.attempts, 1);
+        let history: Vec<_> = state
+            .attempt_history
+            .iter()
+            .filter(|attempt| attempt.package == package.name && attempt.version == package.version)
+            .collect();
+        let [accepted] = history.as_slice() else {
+            panic!("expected a single accepted attempt for {key}");
+        };
+        assert_eq!(accepted.attempt, 1);
+        assert!(accepted.error_class.is_none());
+        assert!(accepted.next_attempt_at.is_none());
+        let calls = fs::read_to_string(cargo_log).expect("mock Cargo calls");
+        assert_eq!(
+            calls
+                .lines()
+                .filter(|call| {
+                    call.split_whitespace().next() == Some("publish")
+                        && call.split_whitespace().any(|arg| arg == package.name)
+                })
+                .count(),
+            1
+        );
+        let path = crate::state::events::events_path(state_dir);
+        let log = crate::state::events::EventLog::read_from_file(&path).expect("events");
+        let events = log.all_events();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.package == key
+                    && matches!(event.event_type, EventType::PackageUploaded))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| event.package == key
+            && matches!(event.event_type, EventType::ReadinessTimeout { .. })));
+        assert!(!events.iter().any(|event| event.package == key
+            && matches!(event.event_type, EventType::PackagePublished { .. })));
+        assert!(!events.iter().any(|event| matches!(
+            event.event_type,
+            EventType::ExecutionFinished {
+                result: ExecutionResult::Success
+            }
+        )));
+        let replay = crate::state::rebuild::rebuild_state_from_events(
+            &path,
+            crate::state::rebuild::StateRebuildOptions::new(state.registry.clone()),
+        )
+        .expect("replay events");
+        assert_eq!(replay.packages[key].state, PackageState::Uploaded);
+        assert_eq!(replay.attempt_history, state.attempt_history);
+    }
+
     #[test]
     #[serial]
-    fn run_publish_marks_ambiguous_failure_after_success_without_registry_visibility() {
+    fn run_publish_retains_accepted_upload_without_registry_visibility() {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
+        let cargo_log = td.path().join("cargo.log");
         with_test_env(
             &bin,
-            vec![("SHIPPER_CARGO_EXIT", Some("0".to_string()))],
+            vec![
+                ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+                (
+                    "SHIPPER_CARGO_ARGS_LOG",
+                    Some(cargo_log.to_string_lossy().into_owned()),
+                ),
+            ],
             || {
-                // 3 requests: initial version_exists, readiness check, final chance check
+                // Initial visibility remains absent; the next invocation can verify it.
                 let server = spawn_registry_server(
                     std::collections::BTreeMap::from([(
                         "/api/v1/crates/demo/0.1.0".to_string(),
-                        vec![(404, "{}".to_string()), (404, "{}".to_string())],
+                        vec![
+                            (404, "{}".to_string()),
+                            (404, "{}".to_string()),
+                            (404, "{}".to_string()),
+                            (200, "{}".to_string()),
+                        ],
                     )]),
-                    3,
+                    4,
                 );
                 let ws = planned_workspace(td.path(), server.base_url.clone());
                 let mut opts = default_opts(PathBuf::from(".shipper"));
@@ -4623,19 +4692,22 @@ mod tests {
 
                 let mut reporter = CollectingReporter::default();
                 let err = run_publish(&ws, &opts, &mut reporter).expect_err("must fail");
-                assert!(format!("{err:#}").contains("failed"));
+                assert!(format!("{err:#}").contains("version not observed on registry"));
 
-                let st = state::load_state(&td.path().join(".shipper"))
-                    .expect("load")
-                    .expect("exists");
-                let pkg = st.packages.get("demo@0.1.0").expect("pkg");
-                assert!(matches!(
-                    pkg.state,
-                    PackageState::Failed {
-                        class: ErrorClass::Ambiguous,
-                        ..
-                    }
-                ));
+                assert_unverified_accepted_upload(
+                    &td.path().join(".shipper"),
+                    "demo@0.1.0",
+                    &cargo_log,
+                );
+                let original_calls = fs::read(&cargo_log).expect("initial mock Cargo calls");
+                let receipt = run_resume(&ws, &opts, &mut CollectingReporter::default())
+                    .expect("positive visibility can finish the accepted upload");
+                assert_eq!(receipt.packages[0].state, PackageState::Published);
+                assert_eq!(receipt.packages[0].attempts, 1);
+                assert_eq!(
+                    fs::read(&cargo_log).expect("resumed mock Cargo calls"),
+                    original_calls
+                );
                 server.join();
             },
         );
@@ -7489,9 +7561,16 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
+        let cargo_log = td.path().join("cargo.log");
         with_test_env(
             &bin,
-            vec![("SHIPPER_CARGO_EXIT", Some("0".to_string()))],
+            vec![
+                ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+                (
+                    "SHIPPER_CARGO_ARGS_LOG",
+                    Some(cargo_log.to_string_lossy().into_owned()),
+                ),
+            ],
             || {
                 // cargo succeeds, but registry never shows the version
                 let server = spawn_registry_server(
@@ -7514,11 +7593,11 @@ mod tests {
                 let err = run_publish(&ws, &opts, &mut reporter).expect_err("must fail");
                 assert!(format!("{err:#}").contains("failed"));
 
-                let st = state::load_state(&td.path().join(".shipper"))
-                    .expect("load")
-                    .expect("exists");
-                let pkg = st.packages.get("demo@0.1.0").expect("pkg");
-                assert!(matches!(pkg.state, PackageState::Failed { .. }));
+                assert_unverified_accepted_upload(
+                    &td.path().join(".shipper"),
+                    "demo@0.1.0",
+                    &cargo_log,
+                );
                 server.join();
             },
         );
@@ -7531,9 +7610,16 @@ mod tests {
         let td = tempdir().expect("tempdir");
         let bin = td.path().join("bin");
         write_fake_tools(&bin);
+        let cargo_log = td.path().join("cargo.log");
         with_test_env(
             &bin,
-            vec![("SHIPPER_CARGO_EXIT", Some("0".to_string()))],
+            vec![
+                ("SHIPPER_CARGO_EXIT", Some("0".to_string())),
+                (
+                    "SHIPPER_CARGO_ARGS_LOG",
+                    Some(cargo_log.to_string_lossy().into_owned()),
+                ),
+            ],
             || {
                 // alpha: 404 then 200 (publishes ok)
                 // beta: 404 then always 404 (readiness never passes)
@@ -7577,11 +7663,10 @@ mod tests {
                     "alpha should be Published, got {:?}",
                     alpha.state
                 );
-                let beta = st.packages.get("beta@2.0.0").expect("beta");
-                assert!(
-                    matches!(beta.state, PackageState::Failed { .. }),
-                    "beta should be Failed, got {:?}",
-                    beta.state
+                assert_unverified_accepted_upload(
+                    &td.path().join(".shipper"),
+                    "beta@2.0.0",
+                    &cargo_log,
                 );
                 server.join();
             },

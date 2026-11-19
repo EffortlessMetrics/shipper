@@ -1696,12 +1696,12 @@ fn is_registry_destination_validation_error(error: &anyhow::Error) -> bool {
 /// Executable-only entry point with process-lifetime termination handling.
 /// Embedders should call [`run`] and retain ownership of their signal policy.
 pub fn run_process() -> Result<std::process::ExitCode> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     process_signals::install()?;
     run()
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod process_signals;
 
 /// Parse and execute CLI arguments without installing process signal handlers.
@@ -5901,6 +5901,7 @@ fn event_type_is_active_progress(event_type: &EventType) -> bool {
         EventType::PackageStarted { .. }
             | EventType::PackageAttempted { .. }
             | EventType::PackageOutput { .. }
+            | EventType::PackageUploadUnconfirmed { .. }
             | EventType::PublishWaiting { .. }
             | EventType::RateLimitObserved { .. }
             | EventType::PublishReconciling { .. }
@@ -6046,6 +6047,8 @@ fn event_type_name(event_type: &EventType) -> &'static str {
         EventType::PackageStarted { .. } => "package_started",
         EventType::PackageAttempted { .. } => "package_attempted",
         EventType::PackageOutput { .. } => "package_output",
+        EventType::PackageNotLaunched { .. } => "package_not_launched",
+        EventType::PackageUploadUnconfirmed { .. } => "package_upload_unconfirmed",
         EventType::PackageUploaded => "package_uploaded",
         EventType::PackagePublished { .. } => "package_published",
         EventType::PackageFailed { .. } => "package_failed",
@@ -6097,6 +6100,9 @@ fn summarize_event(event: &PublishEvent) -> String {
             format!("published in {}", format_millis(*duration_ms))
         }
         EventType::PackageUploaded => "upload accepted by cargo".to_string(),
+        EventType::PackageNotLaunched { message, .. } => {
+            shipper_output_sanitizer::redact_sensitive(message)
+        }
         EventType::PackageFailed { class, message } => format!("failed ({:?}): {}", class, message),
         EventType::PackageCleanupIncomplete { message } => format!(
             "cleanup incomplete: {}",

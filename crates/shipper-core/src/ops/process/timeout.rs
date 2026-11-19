@@ -6,6 +6,7 @@ use anyhow::{Result, bail};
 
 use super::CapturedCommandOutput;
 use super::capture::CaptureMode;
+use super::interruption::InterruptionLease;
 use super::run::run_command_in_dir;
 use super::types::CommandOutput;
 
@@ -14,9 +15,14 @@ mod unix;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use unix::run_supervised;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::run_supervised;
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 mod legacy;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 use legacy::run_supervised;
 
 /// Run a command with optional timeout and captured output.
@@ -54,6 +60,42 @@ pub(crate) fn run_command_with_timeout(
     Ok(captured.output)
 }
 
+/// A supervisor proved that the invocation never launched Cargo. The error
+/// carries its lease through the caller's durable no-launch checkpoint.
+pub(crate) struct CommandNotLaunched(Option<InterruptionLease>);
+
+impl CommandNotLaunched {
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    fn for_publish(
+        error: anyhow::Error,
+        capture: CaptureMode,
+        lease: Option<InterruptionLease>,
+    ) -> anyhow::Error {
+        if matches!(capture, CaptureMode::PublishTail(_)) {
+            return error.context(Self(lease));
+        }
+        error
+    }
+
+    pub(crate) fn take_lease(&mut self) -> Option<InterruptionLease> {
+        self.0.take()
+    }
+}
+
+impl std::fmt::Debug for CommandNotLaunched {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommandNotLaunched")
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for CommandNotLaunched {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("command was not launched")
+    }
+}
+
 /// Publish diagnostics opt into bounded retention; generic stdout stays complete.
 pub(crate) fn run_command_with_publish_capture(
     program: &str,
@@ -73,3 +115,6 @@ pub(crate) fn run_command_with_publish_capture(
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod cleanup_tests;
+
+#[cfg(all(test, windows))]
+mod windows_tests;

@@ -106,6 +106,14 @@ ambiguous outcomes. The plan ID covers the registry API base and ordered
 package names/versions; it does not bind source bytes, workspace path, or run
 identity.
 
+On Linux and macOS, an explicit absolute `SHIPPER_CARGO_BIN` path that
+is missing or inaccessible at the pre-spawn check can produce a
+`package_not_launched` event. A failed bare `cargo` lookup on `PATH` or an
+error returned by spawn does not produce that proof; an unresolved attempt
+still blocks retry. If Cargo is missing during CLI planning, the command
+normally stops before any publish attempt. Replacing Cargo cannot make an
+older ambiguous attempt safe to retry; keep its evidence and investigate.
+
 Do not use `--force-resume` as routine recovery. It overrides a plan guard and
 requires a separate operator risk decision.
 

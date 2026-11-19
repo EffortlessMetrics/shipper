@@ -24,6 +24,7 @@ use crate::runtime::execution::{
 };
 use crate::state::events;
 use crate::state::execution_state as state;
+use crate::state::upload_evidence::UploadWitness;
 use shipper_types::{
     AttemptDetail, AttemptEvidence, ErrorClass, EventType, ExecutionState, PackageEvidence,
     PackageReceipt, PackageState, PlannedPackage, PublishEvent, PublishRegime, ReadinessConfig,
@@ -340,27 +341,6 @@ fn commit_pending_with_attempt_detail_transition(
     })
 }
 
-fn commit_attempt_detail_transition(
-    st: &Arc<Mutex<ExecutionState>>,
-    state_dir: &Path,
-    event_log: &Arc<Mutex<events::EventLog>>,
-    events_path: &Path,
-    key: &str,
-    detail: AttemptDetail,
-    pending_events: Vec<PublishEvent>,
-) -> Result<()> {
-    with_package_event_batch(st, event_log, key, pending_events, |state, log| {
-        crate::engine::transition::commit_attempt_detail_pending(
-            state,
-            state_dir,
-            log,
-            events_path,
-            key,
-            detail,
-        )
-    })
-}
-
 fn validate_package_event_batch(key: &str, pending_events: &[PublishEvent]) -> Result<()> {
     if pending_events.is_empty() {
         bail!("missing domain event batch for package transition: {key}");
@@ -400,24 +380,6 @@ fn with_package_event_batch(
         .lock()
         .map_err(|_| anyhow::anyhow!("execution state lock poisoned during package transition"))?;
     commit(&mut state, &mut log)
-}
-
-fn flush_package_events(
-    event_log: &Arc<Mutex<events::EventLog>>,
-    events_path: &Path,
-    key: &str,
-    pending_events: Vec<PublishEvent>,
-) -> Result<()> {
-    validate_package_event_batch(key, &pending_events)?;
-    let mut log = event_log
-        .lock()
-        .map_err(|_| anyhow::anyhow!("event log lock poisoned while flushing package events"))?;
-    for event in pending_events {
-        log.record(event);
-    }
-    log.write_to_file(events_path)?;
-    log.clear();
-    Ok(())
 }
 
 /// Emit a [`EventType::RetryBackoffStarted`] event + a human-readable warn
@@ -794,10 +756,32 @@ pub(crate) fn publish_package_with_timeout(
         };
     }
 
-    // Record package started event
-    {
+    // Resolve legacy visibility-only work under the event writer lock, so a
+    // sibling cannot append while we read the retained upload evidence.
+    let verify_retained_upload = {
         let Ok(mut log) = event_log.lock() else {
             return poisoned_lock("event log");
+        };
+        let verify_legacy_exhaustion = if matches!(
+            progress.state,
+            PackageState::Failed {
+                class: ErrorClass::Ambiguous,
+                ..
+            }
+        ) {
+            match events::EventLog::read_from_file(events_path) {
+                Ok(retained) => retained
+                    .all_events()
+                    .iter()
+                    .filter(|event| event.package == pkg_label)
+                    .fold(UploadWitness::default(), |witness, event| {
+                        witness.observe(&event.event_type)
+                    })
+                    .requires_legacy_visibility_check(&progress),
+                Err(error) => return PackagePublishResult { result: Err(error) },
+            }
+        } else {
+            false
         };
         log.record(PublishEvent {
             timestamp: started_at,
@@ -816,10 +800,10 @@ pub(crate) fn publish_package_with_timeout(
             };
         }
         log.clear();
-    }
+        verify_legacy_exhaustion || progress.state == PackageState::Uploaded
+    };
 
-    let (mut attempt, was_uploaded, ambiguous_prior, check_existing_version) = {
-        let was_uploaded = matches!(progress.state, PackageState::Uploaded);
+    let (mut attempt, ambiguous_prior, check_existing_version) = {
         // Registry visibility may have changed between invocations. A retained
         // retryable failure needs the same pre-attempt check as pending work;
         // keep Ambiguous and Uploaded on their dedicated reconciliation paths.
@@ -836,22 +820,17 @@ pub(crate) fn publish_package_with_timeout(
             PackageState::Failed {
                 class: ErrorClass::Ambiguous,
                 message,
-            } => Some(message.clone()),
+            } if !verify_retained_upload => Some(message.clone()),
             _ => None,
         };
-        (
-            progress.attempts,
-            was_uploaded,
-            ambiguous_prior,
-            check_existing_version,
-        )
+        (progress.attempts, ambiguous_prior, check_existing_version)
     };
 
     reporter.info(&format!("{}@{}: publishing...", p.name, p.version));
     let mut last_err: Option<(ErrorClass, String)> = None;
     let mut attempt_evidence: Vec<AttemptEvidence> = Vec::new();
     let mut readiness_evidence: Vec<ReadinessEvidence> = Vec::new();
-    let mut cargo_succeeded = was_uploaded;
+    let mut cargo_succeeded = false;
 
     // Apply policy effects for readiness (Fix 7: parallel mode must respect PublishPolicy::Fast)
     let effects = policy_effects(opts);
@@ -1029,7 +1008,7 @@ pub(crate) fn publish_package_with_timeout(
         }
     }
 
-    if was_uploaded {
+    if verify_retained_upload {
         reporter.info(&format!(
             "{}@{}: resuming from uploaded (verifying registry visibility)",
             p.name, p.version
@@ -1136,19 +1115,15 @@ pub(crate) fn publish_package_with_timeout(
                     return PackagePublishResult { result: Err(e) };
                 }
 
-                if attempt >= opts.max_attempts {
-                    return PackagePublishResult {
-                        result: Err(anyhow::anyhow!(
-                            "{}@{}: upload reconciliation did not observe published package before max attempts",
-                            p.name,
-                            p.version
-                        )),
-                    };
-                }
-
-                // Previous cargo attempt could have partially completed. Re-run cargo in
-                // this resume attempt if the package is still not visible.
-                cargo_succeeded = false;
+                // Cargo already accepted this upload. Registry absence
+                // during readiness cannot authorize another submission.
+                return PackagePublishResult {
+                    result: Err(anyhow::anyhow!(
+                        "{}@{}: previously accepted upload is not yet visible on the registry",
+                        p.name,
+                        p.version
+                    )),
+                };
             }
             Err(error) => {
                 if let Err(close_error) = record_readiness_error(
@@ -1295,7 +1270,50 @@ pub(crate) fn publish_package_with_timeout(
                 cargo_timeout,
             ) {
                 Ok(o) => o,
-                Err(e) => {
+                Err(mut e) => {
+                    if let Some(no_launch) =
+                        e.downcast_mut::<crate::ops::process::CommandNotLaunched>()
+                    {
+                        let _lease = no_launch.take_lease();
+                        let message = "Cargo publish was not launched; check the executable and process setup before resuming".to_string();
+                        let ended_at = Utc::now();
+                        if let Err(persistence_error) = commit_with_attempt_detail_transition(
+                            st,
+                            state_dir,
+                            event_log,
+                            events_path,
+                            &key,
+                            PackageState::Failed {
+                                class: ErrorClass::Retryable,
+                                message: message.clone(),
+                            },
+                            PublishEvent {
+                                timestamp: ended_at,
+                                event_type: EventType::PackageNotLaunched {
+                                    attempt,
+                                    message: message.clone(),
+                                },
+                                package: pkg_label.clone(),
+                            },
+                            AttemptDetail {
+                                package: p.name.clone(),
+                                version: p.version.clone(),
+                                attempt,
+                                max_attempts: opts.max_attempts,
+                                started_at: attempt_started_at,
+                                ended_at,
+                                error_class: Some(ErrorClass::Retryable),
+                                next_attempt_at: None,
+                                redacted_message: Some(message),
+                            },
+                        ) {
+                            return PackagePublishResult {
+                                result: Err(persistence_error.context(format!(
+                                    "failed to record that Cargo did not launch: {e:#}"
+                                ))),
+                            };
+                        }
+                    }
                     reporter.error(&format!(
                         "{}@{}: cargo publish failed to execute: {}",
                         p.name, p.version, e
@@ -1438,8 +1456,6 @@ pub(crate) fn publish_package_with_timeout(
                 cargo_succeeded = true;
                 // PackageUploaded is the durable checkpoint that proves cargo
                 // accepted the upload and projects Uploaded on rebuild.
-                // Keep the older ReadinessStarted mapping as a compatibility
-                // bridge for historical event logs that predate this seam.
                 if let Err(e) = commit_with_attempt_detail_transition(
                     st,
                     state_dir,
@@ -1461,10 +1477,6 @@ pub(crate) fn publish_package_with_timeout(
                     return PackagePublishResult { result: Err(error) };
                 }
             } else {
-                // The cleaned ordinary outcome has passed the immediate
-                // interruption decision. Registry waits below retain normal
-                // process termination rather than deferring it indefinitely.
-                drop(captured._interruption_lease);
                 let failure_output = format!("{}\n{}", out.stderr_tail, out.stdout_tail);
                 // Killing Cargo cannot establish whether the upload reached the
                 // registry. The typed timeout owns this decision even when the
@@ -1497,6 +1509,35 @@ pub(crate) fn publish_package_with_timeout(
                     next_attempt_at: None,
                     redacted_message: Some(msg.clone()),
                 };
+
+                // Preserve the unresolved upload under the process lease.
+                // Registry I/O below can take longer than a controlled stop
+                // allows, so release the lease as soon as replay is safe.
+                if let Err(error) = commit_pending_with_attempt_detail_transition(
+                    st,
+                    state_dir,
+                    event_log,
+                    events_path,
+                    &key,
+                    PackageState::Ambiguous {
+                        message: msg.clone(),
+                    },
+                    attempt_detail.clone(),
+                    vec![PublishEvent {
+                        timestamp: completion_timestamp,
+                        event_type: EventType::PackageUploadUnconfirmed {
+                            class: class.clone(),
+                            message: msg.clone(),
+                        },
+                        package: pkg_label.clone(),
+                    }],
+                ) {
+                    return PackagePublishResult { result: Err(error) };
+                }
+                drop(captured._interruption_lease);
+                if let Err(error) = crate::ops::process::interruption::check() {
+                    return PackagePublishResult { result: Err(error) };
+                }
 
                 // Event: PackageFailed
                 let mut pending_events = vec![PublishEvent {
@@ -1578,10 +1619,13 @@ pub(crate) fn publish_package_with_timeout(
                             break;
                         }
                         ReconciliationOutcome::NotPublished { .. } => {
-                            if let Err(e) = flush_package_events(
+                            if let Err(e) = commit_pending_transition(
+                                st,
+                                state_dir,
                                 event_log,
                                 events_path,
                                 &key,
+                                PackageState::Pending,
                                 std::mem::take(&mut pending_events),
                             ) {
                                 return PackagePublishResult { result: Err(e) };
@@ -1743,27 +1787,9 @@ pub(crate) fn publish_package_with_timeout(
                                 p.name,
                                 p.version
                             );
-                            if let Err(persistence_error) =
-                                commit_pending_with_attempt_detail_transition(
-                                    st,
-                                    state_dir,
-                                    event_log,
-                                    events_path,
-                                    &key,
-                                    PackageState::Failed {
-                                        class: class.clone(),
-                                        message: msg.clone(),
-                                    },
-                                    attempt_detail,
-                                    pending_events,
-                                )
-                            {
-                                return PackagePublishResult {
-                                    result: Err(error.context(format!(
-                                        "also failed to persist package failure transition: {persistence_error:#}"
-                                    ))),
-                                };
-                            }
+                            // The unconfirmed-upload checkpoint is already durable.
+                            // Unavailable evidence cannot turn it into a retryable
+                            // failure: resume must reconcile before another Cargo run.
                             return PackagePublishResult { result: Err(error) };
                         }
                     }
@@ -1853,12 +1879,13 @@ pub(crate) fn publish_package_with_timeout(
                                 &class,
                                 &msg,
                             ));
-                            if let Err(e) = commit_attempt_detail_transition(
+                            if let Err(e) = commit_pending_with_attempt_detail_transition(
                                 st,
                                 state_dir,
                                 event_log,
                                 events_path,
                                 &key,
+                                PackageState::Pending,
                                 attempt_detail,
                                 pending_events,
                             ) {
@@ -1874,17 +1901,11 @@ pub(crate) fn publish_package_with_timeout(
                                 class.clone(),
                                 &msg,
                             );
-                        } else if let Err(e) = commit_attempt_detail_transition(
-                            st,
-                            state_dir,
-                            event_log,
-                            events_path,
-                            &key,
-                            attempt_detail,
-                            pending_events,
-                        ) {
-                            return PackagePublishResult { result: Err(e) };
                         }
+                        // Exhaustion leaves the durable unconfirmed checkpoint
+                        // in place until the final visibility check returns.
+                        // A separate PackageFailed here would classify replay
+                        // before the matching live state can be committed.
                     }
                 }
                 continue;
@@ -2152,32 +2173,33 @@ pub(crate) fn publish_package_with_timeout(
                         return PackagePublishResult { result: Err(e) };
                     }
                     let error_class_str = format!("{:?}", class);
-                    let failed = PackageState::Failed {
-                        class: class.clone(),
-                        message: msg.clone(),
-                    };
-                    // Event: PackageFailed (final)
-                    let pending_events = vec![PublishEvent {
-                        timestamp: Utc::now(),
-                        event_type: EventType::PackageFailed {
-                            class: class.clone(),
-                            message: msg.clone(),
-                        },
-                        package: pkg_label.clone(),
-                    }];
-                    if let Err(e) = commit_pending_transition(
-                        st,
-                        state_dir,
-                        event_log,
-                        events_path,
-                        &key,
-                        failed,
-                        pending_events,
-                    ) {
+                    // Keep the accepted upload checkpoint when readiness
+                    // fails. Subsequent runs can still verify visibility.
+                    if !cargo_succeeded
+                        && let Err(e) = commit_transition(
+                            st,
+                            state_dir,
+                            event_log,
+                            events_path,
+                            &key,
+                            PackageState::Failed {
+                                class: class.clone(),
+                                message: msg.clone(),
+                            },
+                            PublishEvent {
+                                timestamp: Utc::now(),
+                                event_type: EventType::PackageFailed {
+                                    class: class.clone(),
+                                    message: msg.clone(),
+                                },
+                                package: pkg_label.clone(),
+                            },
+                        )
+                    {
                         return PackagePublishResult { result: Err(e) };
                     }
 
-                    // Send webhook notification: package failed
+                    // Send webhook notification: publication did not finish
                     maybe_send_event(
                         &opts.webhook,
                         WebhookEvent::PublishFailed {

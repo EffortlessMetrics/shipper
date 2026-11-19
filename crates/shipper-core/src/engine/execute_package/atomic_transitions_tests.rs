@@ -441,3 +441,267 @@ fn failed_event_write_keeps_batch_and_original_projection() -> Result<()> {
     ensure!(!directory.path().join("state.json").exists());
     Ok(())
 }
+
+#[test]
+#[serial_test::serial]
+fn unresolved_upload_replays_through_repeated_resume_before_registry_outcome() -> Result<()> {
+    for class in [ErrorClass::Retryable, ErrorClass::Ambiguous] {
+        let directory = tempfile::tempdir()?;
+        let path = events_path(directory.path());
+        let log = Arc::new(Mutex::new(EventLog::new()));
+        let state = Arc::new(Mutex::new(initial_state()));
+        let key = "alpha@1.0.0";
+        let started_at = Utc::now();
+        let ended_at = started_at + chrono::Duration::seconds(1);
+        commit_attempt_transition(
+            &state,
+            directory.path(),
+            &log,
+            &path,
+            key,
+            1,
+            PublishEvent {
+                timestamp: started_at,
+                event_type: EventType::PackageAttempted {
+                    attempt: 1,
+                    max_attempts: 3,
+                    command: "cargo publish -p alpha".into(),
+                },
+                package: key.into(),
+            },
+        )?;
+        let state_on_disk = || {
+            crate::state::execution_state::load_state(directory.path())?
+                .context("durable projection should exist")
+        };
+
+        let message = "Cargo exited before registry visibility was known".to_string();
+        let expected = PackageState::Ambiguous {
+            message: message.clone(),
+        };
+        let detail = AttemptDetail {
+            package: "alpha".into(),
+            version: "1.0.0".into(),
+            attempt: 1,
+            max_attempts: 3,
+            started_at,
+            ended_at,
+            error_class: Some(class.clone()),
+            next_attempt_at: None,
+            redacted_message: Some(message.clone()),
+        };
+        commit_pending_with_attempt_detail_transition(
+            &state,
+            directory.path(),
+            &log,
+            &path,
+            key,
+            expected.clone(),
+            detail.clone(),
+            vec![PublishEvent {
+                timestamp: ended_at,
+                event_type: EventType::PackageUploadUnconfirmed { class, message },
+                package: key.into(),
+            }],
+        )?;
+        // A resume can itself be interrupted before reconciliation reports an
+        // outcome. Neither the live projection nor replay authorizes a retry.
+        for interruption in 0..=2 {
+            if interruption > 0 {
+                let mut log = log.lock().unwrap();
+                log.record(PublishEvent {
+                    timestamp: ended_at + chrono::Duration::seconds(interruption),
+                    event_type: EventType::PackageStarted {
+                        name: "alpha".into(),
+                        version: "1.0.0".into(),
+                    },
+                    package: key.into(),
+                });
+                log.write_to_file(&path)?;
+                log.clear();
+            }
+            let persisted = state_on_disk()?;
+            let rebuilt = crate::state::rebuild::rebuild_state_from_events(
+                &path,
+                crate::state::rebuild::StateRebuildOptions::new(persisted.registry.clone())
+                    .with_fallback_plan_id(&persisted.plan_id),
+            )?;
+            ensure!(persisted.packages[key].state == expected);
+            ensure!(rebuilt.packages[key].state == expected);
+            ensure!(rebuilt.packages[key].attempts == 1);
+            ensure!(persisted.attempt_history.as_slice() == std::slice::from_ref(&detail));
+            ensure!(rebuilt.attempt_history.as_slice() == std::slice::from_ref(&detail));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[serial_test::serial]
+fn interrupted_not_published_checkpoint_preserves_interleaved_history_order() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = events_path(directory.path());
+    let log = Arc::new(Mutex::new(EventLog::new()));
+    let live = Arc::new(Mutex::new(initial_state()));
+    let at = Utc::now();
+    let end = at + chrono::TimeDelta::milliseconds(1);
+    let alpha = "alpha@1.0.0";
+    let beta = "beta@1.0.0";
+    let event = |package: &str, timestamp, event_type| PublishEvent {
+        timestamp,
+        package: package.into(),
+        event_type,
+    };
+    let detail = |name: &str, class, message| AttemptDetail {
+        package: name.into(),
+        version: "1.0.0".into(),
+        attempt: 1,
+        max_attempts: 3,
+        started_at: at,
+        ended_at: end,
+        error_class: class,
+        next_attempt_at: None,
+        redacted_message: message,
+    };
+    for key in [alpha, beta] {
+        commit_attempt_transition(
+            &live,
+            directory.path(),
+            &log,
+            &path,
+            key,
+            1,
+            event(
+                key,
+                at,
+                EventType::PackageAttempted {
+                    attempt: 1,
+                    max_attempts: 3,
+                    command: "cargo publish".into(),
+                },
+            ),
+        )?;
+    }
+    let message = "upload unconfirmed".to_string();
+    let mut alpha_detail = detail("alpha", Some(ErrorClass::Ambiguous), Some(message.clone()));
+    commit_pending_with_attempt_detail_transition(
+        &live,
+        directory.path(),
+        &log,
+        &path,
+        alpha,
+        PackageState::Ambiguous {
+            message: message.clone(),
+        },
+        alpha_detail.clone(),
+        vec![event(
+            alpha,
+            end,
+            EventType::PackageUploadUnconfirmed {
+                class: ErrorClass::Ambiguous,
+                message: message.clone(),
+            },
+        )],
+    )?;
+    let beta_detail = detail("beta", None, None);
+    commit_pending_with_attempt_detail_transition(
+        &live,
+        directory.path(),
+        &log,
+        &path,
+        beta,
+        PackageState::Uploaded,
+        beta_detail.clone(),
+        vec![event(beta, end, EventType::PackageUploaded)],
+    )?;
+    commit_pending_transition(
+        &live,
+        directory.path(),
+        &log,
+        &path,
+        alpha,
+        PackageState::Pending,
+        vec![
+            event(
+                alpha,
+                end,
+                EventType::PackageFailed {
+                    class: ErrorClass::Ambiguous,
+                    message: message.clone(),
+                },
+            ),
+            event(
+                alpha,
+                end,
+                EventType::PublishReconciling {
+                    method: ReadinessMethod::Api,
+                },
+            ),
+            event(
+                alpha,
+                end,
+                EventType::PublishReconciled {
+                    outcome: ReconciliationOutcome::NotPublished {
+                        attempts: 1,
+                        elapsed_ms: 1,
+                    },
+                },
+            ),
+        ],
+    )?;
+
+    let compare = |expected: &[AttemptDetail]| -> Result<()> {
+        let saved =
+            crate::state::execution_state::load_state(directory.path())?.context("snapshot")?;
+        let rebuilt = crate::state::rebuild::rebuild_state_from_events(
+            &path,
+            crate::state::rebuild::StateRebuildOptions::new(saved.registry.clone())
+                .with_fallback_plan_id(&saved.plan_id),
+        )?;
+        ensure!(saved.packages[alpha].state == PackageState::Pending);
+        ensure!(saved.packages[beta].state == PackageState::Uploaded);
+        for package in [alpha, beta] {
+            ensure!(saved.packages[package].state == rebuilt.packages[package].state);
+            ensure!(
+                saved.packages[package].attempts == 1 && rebuilt.packages[package].attempts == 1
+            );
+        }
+        ensure!(
+            saved.attempt_history == expected,
+            "live history: {:?}",
+            saved.attempt_history
+        );
+        ensure!(
+            rebuilt.attempt_history == expected,
+            "replayed history: {:?}",
+            rebuilt.attempt_history
+        );
+        Ok(())
+    };
+
+    // The first interruption is between reconciliation and retry scheduling.
+    compare(&[alpha_detail.clone(), beta_detail.clone()])?;
+
+    let next = end + chrono::TimeDelta::seconds(1);
+    alpha_detail.next_attempt_at = Some(next);
+    commit_pending_with_attempt_detail_transition(
+        &live,
+        directory.path(),
+        &log,
+        &path,
+        alpha,
+        PackageState::Pending,
+        alpha_detail.clone(),
+        retry_backoff_events(
+            alpha,
+            1,
+            3,
+            Duration::from_secs(1),
+            next,
+            &ErrorClass::Ambiguous,
+            &message,
+        ),
+    )?;
+    // The second interruption is in backoff with both attempts still present.
+    compare(&[alpha_detail, beta_detail])
+}

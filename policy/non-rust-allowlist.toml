@@ -492,6 +492,17 @@ created = "2026-09-08"
 review_after = "2026-12-08"
 
 [[file]]
+path = "scripts/ci/check-windows-publish-interruption.py"
+kind = "ci_policy_script"
+surface = "ci"
+classification = "script"
+owner = "release/ci"
+reason = "Exercise OS-delivered Ctrl+Break and resume under a Windows watchdog using fake Cargo publication, a loopback registry, and temporary workspace state."
+covered_by = ["python scripts/ci/check-windows-publish-interruption.py final-visibility <shipper-cli.exe>"]
+created = "2026-11-19"
+review_after = "2027-02-19"
+
+[[file]]
 path = "scripts/ci/test-release-identity-gate.py"
 kind = "ci_policy_script"
 surface = "ci"

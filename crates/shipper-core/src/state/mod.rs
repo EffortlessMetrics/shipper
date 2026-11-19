@@ -13,3 +13,21 @@ pub mod rebuild;
 pub mod reconciliation;
 pub mod rehearsal;
 pub(crate) mod run_observation;
+pub(crate) mod upload_evidence;
+
+/// A checkpointed attempt owns the history slot of its first durable detail.
+/// Reconciliation and retry scheduling can refine the detail in place.
+pub(crate) fn record_attempt_detail(
+    history: &mut Vec<crate::types::AttemptDetail>,
+    detail: crate::types::AttemptDetail,
+) {
+    if let Some(previous) = history.iter_mut().find(|previous| {
+        previous.package == detail.package
+            && previous.version == detail.version
+            && previous.attempt == detail.attempt
+    }) {
+        *previous = detail;
+    } else {
+        history.push(detail);
+    }
+}

@@ -187,6 +187,17 @@ fn retained_retryable_unconfirmed_resume_keeps_existing_retry_policy() {
                         .expect_err("retain first retryable failure");
                 },
             );
+            let before_resume = state::load_state(&state_dir)
+                .expect("load retained state")
+                .expect("retained state");
+            let [original_attempt] = before_resume.attempt_history.as_slice() else {
+                panic!("expected a single retained attempt");
+            };
+            assert_eq!(original_attempt.attempt, 1);
+            assert_eq!(original_attempt.error_class, Some(ErrorClass::Retryable));
+            assert!(original_attempt.next_attempt_at.is_none());
+            let event_path = crate::state::events::events_path(&state_dir);
+            let original_events = fs::read(&event_path).expect("retained events");
             opts.max_attempts = 2;
             with_test_env(
                 &bin,
@@ -206,6 +217,26 @@ fn retained_retryable_unconfirmed_resume_keeps_existing_retry_policy() {
                     assert_eq!(receipt.packages[0].attempts, 2);
                     assert!(matches!(receipt.packages[0].state, PackageState::Published));
                     assert_eq!(cargo_invocations(&cargo_log), 2);
+                    let live = state::load_state(&state_dir)
+                        .expect("load resumed state")
+                        .expect("resumed state");
+                    let [first, second] = live.attempt_history.as_slice() else {
+                        panic!("expected exactly one detail per Cargo attempt");
+                    };
+                    assert_eq!(first, original_attempt);
+                    assert_eq!(second.attempt, 2);
+                    assert!(second.error_class.is_none());
+                    assert!(
+                        fs::read(&event_path)
+                            .expect("resumed events")
+                            .starts_with(&original_events)
+                    );
+                    let replay = crate::state::rebuild::rebuild_state_from_events(
+                        &event_path,
+                        crate::state::rebuild::StateRebuildOptions::new(live.registry.clone()),
+                    )
+                    .expect("replay resumed events");
+                    assert_eq!(replay.attempt_history, live.attempt_history);
                     assert_eq!(
                         reporter.warns.iter().any(|message| {
                             message.contains("existing-version check failed before publish")

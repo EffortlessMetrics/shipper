@@ -2,7 +2,9 @@ use std::io::{self, Cursor, Write};
 use std::time::Duration;
 
 use super::*;
-use crate::ops::process::{run_command_with_publish_capture, run_command_with_timeout};
+#[cfg(target_os = "linux")]
+use crate::ops::process::run_command_with_publish_capture;
+use crate::ops::process::run_command_with_timeout;
 
 #[test]
 fn complete_capture_matches_tail_semantics_across_chunk_boundaries() {

@@ -255,13 +255,13 @@ drains stdout and stderr while Cargo runs, so verbose output does not block
 the child on a full pipe. The configured line tails are sanitized before
 being retained in events and receipts.
 
-This is an execution deadline for the direct child, not a bound on total
-capture or cleanup time. Output is still collected in full before tailing,
-and inherited pipe handles in descendants can delay EOF after the child exits
-or is killed. Bounded capture, descendant cleanup, and typed publish-timeout
-reconciliation remain open acceptance in
-[#412](https://github.com/EffortlessMetrics/shipper-swarm/issues/412). A killed
-Cargo process does not establish that the registry rejected its upload.
+After direct-child exit, timeout, or controlled interruption, Linux, macOS,
+and Windows allow up to one additional second to confirm owned-process cleanup
+and drain both output streams. Windows uses one Job Object per invocation.
+Shipper retains a cleanup hold when it cannot confirm cleanup. A timed-out
+publish requires registry reconciliation before Shipper can consider another
+upload. See [#412](https://github.com/EffortlessMetrics/shipper-swarm/issues/412)
+for platform qualification.
 
 ### Registry
 

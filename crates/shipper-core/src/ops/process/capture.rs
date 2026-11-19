@@ -16,7 +16,7 @@ pub(crate) enum CaptureLoss {
     LineBytes,
     TailEntries,
     Read,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     Cleanup,
 }
 
@@ -43,6 +43,16 @@ pub(crate) enum CleanupFailure {
     GroupStillPresent,
     Reap,
     InheritedPipe,
+    #[cfg(windows)]
+    PipeEofUnconfirmed,
+    #[cfg(windows)]
+    JobAssignment,
+    #[cfg(windows)]
+    JobResume,
+    #[cfg(windows)]
+    JobTermination,
+    #[cfg(windows)]
+    JobStillActive,
 }
 
 impl CleanupFailure {
@@ -55,6 +65,22 @@ impl CleanupFailure {
             }
             Self::Reap => "the owned child was not reaped within the cleanup allowance",
             Self::InheritedPipe => "an inherited output pipe remained open after group shutdown",
+            #[cfg(windows)]
+            Self::PipeEofUnconfirmed => {
+                "a Windows output reader closed after a read failure before confirming EOF"
+            }
+            #[cfg(windows)]
+            Self::JobAssignment => {
+                "cleanup after Windows Job Object assignment failed to be confirmed"
+            }
+            #[cfg(windows)]
+            Self::JobResume => {
+                "cleanup after resuming the suspended Windows process failed to be confirmed"
+            }
+            #[cfg(windows)]
+            Self::JobTermination => "termination of the owned Windows Job Object was not confirmed",
+            #[cfg(windows)]
+            Self::JobStillActive => "the owned Windows Job Object was not confirmed empty",
         }
     }
 }
@@ -79,7 +105,7 @@ pub(super) enum CaptureBuffer {
 }
 
 impl CaptureBuffer {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     pub(super) fn new(mode: CaptureMode) -> Self {
         match mode {
             CaptureMode::Full => Self::Full(Vec::new()),
@@ -87,7 +113,7 @@ impl CaptureBuffer {
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     pub(super) fn lose(&mut self, reason: CaptureLoss) {
         if let Self::Tail(tail) = self {
             tail.lose(reason);

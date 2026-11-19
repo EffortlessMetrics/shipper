@@ -76,8 +76,8 @@ doctor check does not authorize publication.
 ## Compatibility note
 
 0.5 artifacts are rebuildable for every field promised by the event vocabulary.
-0.4 events, state, and receipts remain readable and safely resumable, but
-fields introduced after 0.4 are unknown when the old artifact cannot provide
+Shipper 0.5 can read 0.4 events, state, and receipts and safely resume those runs.
+Fields introduced after 0.4 are unknown when the old artifact cannot provide
 evidence unless their schema defines an explicit compatibility default. The
 current exception is `Receipt.execution_result`: a missing value in a legacy
 all-published receipt deserializes as `success`, as preserved by
@@ -85,6 +85,10 @@ all-published receipt deserializes as `success`, as preserved by
 invent defaults for other absent evidence. See
 [INVARIANTS.md](../INVARIANTS.md) for the full compatibility and event-first
 contract.
+
+Use Shipper 0.5 to resume a run once `package_upload_unconfirmed`
+or `package_not_launched` appears in its journal. The 0.4 reader predates both
+event types.
 
 `PackageState::CleanupIncomplete` (`cleanup_incomplete`) and
 `EventType::PackageCleanupIncomplete` (`package_cleanup_incomplete`) add a local
@@ -131,6 +135,10 @@ Common event types:
 - `plan_created` — beginning
 - `preflight_started`, `preflight_workspace_verify`, `preflight_complete`
 - `package_started`, `package_attempted`, `package_uploaded`, `package_published`, `package_failed`, `package_skipped`
+- `package_upload_unconfirmed` — Cargo ran, and upload acceptance is still
+  unknown. The event records the attempt's failure class and message.
+- `package_not_launched` — the supervisor proved Cargo did not start for this
+  attempt. The attempt still counts toward the retry limit.
 - `package_cleanup_incomplete` — local process cleanup was not confirmed; blocks new publication regardless of registry truth
 - `retry_backoff_started` — added in [#91](https://github.com/EffortlessMetrics/shipper/issues/91); carries attempt N/M, delay, reason, next-attempt time
 - `publish_reconciling`, `publish_reconciled` — added in [#99](https://github.com/EffortlessMetrics/shipper/issues/99); registry-truth resolution of ambiguous outcomes

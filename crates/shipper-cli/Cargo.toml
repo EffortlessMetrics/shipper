@@ -50,6 +50,9 @@ shipper-output-sanitizer.workspace = true
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 signal-hook = { version = "0.3.18", default-features = false }
 
+[target.'cfg(windows)'.dependencies]
+ctrlc = "=3.5.2"
+
 [lints]
 workspace = true
 
@@ -64,3 +67,6 @@ tempfile = "3"
 tiny_http = "0.12"
 temp-env = "0.3"
 serde_yaml = "0.9"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-spawn = "=0.1.0"
