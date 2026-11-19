@@ -139,6 +139,47 @@ fn read_failure_is_typed_even_when_empty_output_was_requested() {
     assert_eq!(capture.finish(), ("ok\n".into(), None));
 }
 
+struct InvalidCountReader {
+    prefix: Cursor<&'static [u8]>,
+    count: usize,
+}
+
+impl Read for InvalidCountReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let read = self.prefix.read(buffer)?;
+        Ok(if read == 0 { self.count } else { read })
+    }
+}
+
+#[test]
+fn oversized_read_count_discards_partial_capture_with_typed_loss() {
+    for prefix in [b"".as_slice(), b"first\npartial".as_slice()] {
+        for count in [READ_BYTES + 1, usize::MAX] {
+            for lines in [0, 1, 100] {
+                let reader = InvalidCountReader {
+                    prefix: Cursor::new(prefix),
+                    count,
+                };
+                let capture = CaptureBuffer::read(Some(reader), CaptureMode::PublishTail(lines));
+                assert_eq!(
+                    capture.finish(),
+                    (String::new(), Some(CaptureLoss::Read)),
+                    "prefix={prefix:?} count={count} lines={lines}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn valid_reads_crossing_the_buffer_boundary_preserve_complete_output() {
+    for length in [READ_BYTES - 1, READ_BYTES, READ_BYTES + 1] {
+        let input = vec![b'x'; length];
+        let capture = CaptureBuffer::read(Some(Cursor::new(&input)), CaptureMode::PublishTail(1));
+        assert_eq!(capture.finish(), ("x".repeat(length), None));
+    }
+}
+
 const STREAM_CHILD: &str = "ops::process::capture::tests::capture_stream_child";
 
 #[test]

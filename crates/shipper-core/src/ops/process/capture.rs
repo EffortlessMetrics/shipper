@@ -112,7 +112,13 @@ impl CaptureBuffer {
                     loop {
                         match stream.read(&mut chunk) {
                             Ok(0) => break,
-                            Ok(len) => tail.push(&chunk[..len]),
+                            Ok(len) => {
+                                let Some(bytes) = chunk.get(..len) else {
+                                    tail.lose(CaptureLoss::Read);
+                                    break;
+                                };
+                                tail.push(bytes);
+                            }
                             Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                             Err(_) => {
                                 tail.lose(CaptureLoss::Read);
