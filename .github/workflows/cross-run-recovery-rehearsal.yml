@@ -42,8 +42,16 @@ jobs:
           SHIPPER_LIVE_REHEARSAL_ROOT: ${{ runner.temp }}/shipper-cross-run-recovery
         run: python3 scripts/ci/test-release-resume-artifacts.py --mode prepare --phase "$PHASE" --predecessor-run-id "$PREDECESSOR"
 
+      - name: Select checkout toolchain
+        run: python3 scripts/ci/test-release-resume-artifacts.py --mode select-toolchain
+
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+
+      - name: Verify actual toolchain
+        run: python3 scripts/ci/test-release-resume-artifacts.py --mode verify-toolchain
 
       - name: Cache Cargo
         uses: actions/cache@v6
@@ -58,7 +66,7 @@ jobs:
       - name: Execute one controlled recovery phase
         env:
           SHIPPER_LIVE_REHEARSAL_ROOT: ${{ runner.temp }}/shipper-cross-run-recovery
-        run: cargo test -p shipper-cli --test e2e_rehearse cross_run::hosted_recovery_phase --locked -- --ignored --exact --nocapture
+        run: cargo "+$RUSTUP_TOOLCHAIN" test -p shipper-cli --test e2e_rehearse cross_run::hosted_recovery_phase --locked -- --ignored --exact --nocapture
 
       - name: Verify and record continuation evidence
         env:
@@ -72,5 +80,14 @@ jobs:
           name: shipper-state-final
           path: ${{ runner.temp }}/shipper-cross-run-recovery/.shipper/
           include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload actual toolchain identity
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shipper-toolchain
+          path: ${{ runner.temp }}/shipper-toolchain.json
           if-no-files-found: error
           retention-days: 30

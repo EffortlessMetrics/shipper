@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 
 def step(job, name):
@@ -142,6 +143,83 @@ def checked(args, *, env=None, stdout=None):
 
 def api(path):
     return json.loads(checked(["gh", "api", "--method", "GET", path]))
+
+
+def toolchain_pin():
+    pin = tomllib.loads(Path("rust-toolchain.toml").read_text(encoding="utf-8"))["toolchain"]["channel"]
+    require(isinstance(pin, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", pin) is not None,
+            "rehearsal requires an exact stable checkout toolchain pin")
+    return pin
+
+
+def select_toolchain():
+    pin = toolchain_pin()
+    with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as output:
+        output.write(f"RUSTUP_TOOLCHAIN={pin}\n")
+
+
+def verify_toolchain():
+    pin = toolchain_pin()
+    require(os.environ.get("RUSTUP_TOOLCHAIN") == pin, "selected toolchain differs from checkout pin")
+    rustc = checked(["rustc", "+" + pin, "-Vv"]).decode().strip()
+    cargo = checked(["cargo", "+" + pin, "-V"]).decode().strip()
+    require(f"release: {pin}" in rustc.splitlines(), "rustc release differs from checkout pin")
+    require(cargo.startswith(f"cargo {pin} "), "cargo release differs from checkout pin")
+    source = os.environ.get("GITHUB_SHA", "")
+    require(re.fullmatch(r"[0-9a-f]{40}", source) is not None, "invalid source SHA")
+    phase = os.environ.get("PHASE")
+    require(phase in PHASES, "unknown rehearsal phase")
+    receipt = {"format": "rehearsal-toolchain-v1", "source": source,
+               "run_id": positive_id(os.environ.get("GITHUB_RUN_ID", "")),
+               "run_attempt": positive_id(os.environ.get("GITHUB_RUN_ATTEMPT", "")),
+               "phase": phase, "pin": pin, "rustc_verbose": rustc, "cargo_version": cargo}
+    encoded = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
+    (Path(os.environ["RUNNER_TEMP"]) / "shipper-toolchain.json").write_text(encoded, encoding="utf-8")
+    with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+        summary.write("### Actual rehearsal toolchain (not release authority)\n\n```json\n" + encoded + "```\n")
+
+
+def toolchain_tests():
+    from unittest.mock import Mock, patch
+    with tempfile.TemporaryDirectory(prefix="shipper-toolchain-test-") as directory:
+        root = Path(directory)
+        env = {"RUSTUP_TOOLCHAIN": "1.95.0", "GITHUB_SHA": "a" * 40,
+               "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "PHASE": "seed",
+               "RUNNER_TEMP": str(root), "GITHUB_STEP_SUMMARY": str(root / "summary"),
+               "GITHUB_ENV": str(root / "env")}
+        identity = root / "shipper-toolchain.json"
+        # Execute the real helpers with bounded command responses, never a registry.
+        with patch.dict(os.environ, env), patch.object(Path, "read_text", return_value='[toolchain]\nchannel = "1.95.0"\n'):
+            select_toolchain()
+            commands = Mock(side_effect=[b"rustc 1.95.0 (fixture)\nrelease: 1.95.0\nhost: fixture", b"cargo 1.95.0 (fixture)"])
+            with patch.dict(globals(), checked=commands):
+                verify_toolchain()
+                assert commands.call_args_list[0].args[0] == ["rustc", "+1.95.0", "-Vv"]
+                assert commands.call_args_list[1].args[0] == ["cargo", "+1.95.0", "-V"]
+        receipt = json.loads(identity.read_text())
+        assert receipt["pin"] == "1.95.0" and receipt["phase"] == "seed" and receipt["source"] == "a" * 40
+        assert (root / "env").read_text() == "RUSTUP_TOOLCHAIN=1.95.0\n"
+        before = identity.read_bytes()
+        controls = 0
+        for pin, selected, rustc, cargo in [
+            ("stable", "stable", "release: 1.95.0", "cargo 1.95.0 (fixture)"),
+            ("1.95.0\nINJECT=x", "1.95.0", "release: 1.95.0", "cargo 1.95.0 (fixture)"),
+            ("1.95.0", "1.100.0", "release: 1.95.0", "cargo 1.95.0 (fixture)"),
+            ("1.95.0", "1.95.0", "release: 1.100.0", "cargo 1.95.0 (fixture)"),
+            ("1.95.0", "1.95.0", "release: 1.95.0", "cargo 1.100.0 (fixture)"),
+        ]:
+            with patch.dict(os.environ, {**env, "RUSTUP_TOOLCHAIN": selected}), \
+                 patch.object(Path, "read_text", return_value="[toolchain]\nchannel = " + json.dumps(pin) + "\n"), \
+                 patch.dict(globals(), checked=Mock(side_effect=[rustc.encode(), cargo.encode()])):
+                try:
+                    verify_toolchain()
+                except ValueError:
+                    controls += 1
+                else:
+                    raise AssertionError("incorrect compiler identity accepted")
+            assert identity.read_bytes() == before
+        assert controls == 5
+    print("Passed toolchain selection/identity positive and 5 refusal controls.")
 
 
 def live_context(phase, predecessor):
@@ -536,10 +614,10 @@ def workflow_contract(text):
         "SHIPPER_CROSS_RUN_PHASE": "${{ inputs.phase }}",
         "SHIPPER_LIVE_REHEARSAL_REGISTRY_ADDR": REGISTRY}, "fixture context changed")
     steps = [sections("        " + part, 8) for part in re.split(r"(?m)^      - ", job["steps"])[1:]]
-    require(len(steps) == 7, "unexpected phase step count")
+    require(len(steps) == 10, "unexpected phase step count")
     require(steps[0] == {"uses": "actions/checkout@v7.0.1", "with":
                         "          ref: ${{ github.sha }}\n          persist-credentials: false"}, "checkout not pinned")
-    for index, mode in [(1, "prepare"), (5, "record")]:
+    for index, mode in [(1, "prepare"), (7, "record")]:
         step_data = steps[index]
         require(set(step_data) == {"name", "run", "env"},
                 "phase proof skipped or waived")
@@ -549,30 +627,41 @@ def workflow_contract(text):
     fixture_env = {"SHIPPER_LIVE_REHEARSAL_ROOT": "${{ runner.temp }}/shipper-cross-run-recovery"}
     require(sections(steps[1]["env"], 10) == {**fixture_env, "GH_TOKEN": "${{ github.token }}"},
             "unexpected prepare environment")
-    for index in (4, 5):
+    for index in (6, 7):
         require(sections(steps[index].get("env", ""), 10) == fixture_env,
                 "phase step must retain the runner-local fixture root")
-    require(steps[2] == {"name": "Install Rust", "uses": "dtolnay/rust-toolchain@stable"}, "toolchain step changed")
-    require(set(steps[3]) == {"name", "uses", "with"} and steps[3]["uses"] == "actions/cache@v6", "cache step changed")
-    cache = sections(steps[3]["with"], 10)
+    require(steps[2] == {"name": "Select checkout toolchain", "run":
+        "python3 scripts/ci/test-release-resume-artifacts.py --mode select-toolchain"}, "toolchain selection changed")
+    require(steps[3] == {"name": "Install Rust", "uses": "dtolnay/rust-toolchain@master", "with":
+        "          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}"}, "toolchain install changed")
+    require(steps[4] == {"name": "Verify actual toolchain", "run":
+        "python3 scripts/ci/test-release-resume-artifacts.py --mode verify-toolchain"}, "toolchain verification changed")
+    require(set(steps[5]) == {"name", "uses", "with"} and steps[5]["uses"] == "actions/cache@v6", "cache step changed")
+    cache = sections(steps[5]["with"], 10)
     require(set(cache) == {"path", "key", "restore-keys"}
             and cache["path"].removeprefix("|").split() == ["~/.cargo/registry", "~/.cargo/git", "target"]
             and cache["key"] == "hosted-cross-run-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}"
             and cache["restore-keys"] == "hosted-cross-run-${{ runner.os }}-", "cache isolation changed")
-    require(set(steps[4]) == {"name", "run", "env"} and steps[4]["run"] ==
-            "cargo test -p shipper-cli --test e2e_rehearse cross_run::hosted_recovery_phase --locked -- --ignored --exact --nocapture",
+    require(set(steps[6]) == {"name", "run", "env"} and steps[6]["run"] ==
+            'cargo "+$RUSTUP_TOOLCHAIN" test -p shipper-cli --test e2e_rehearse cross_run::hosted_recovery_phase --locked -- --ignored --exact --nocapture',
             "actual phase execution changed")
-    require(set(steps[6]) == {"name", "if", "uses", "with"} and steps[6]["if"] == "always()"
-            and steps[6]["uses"] == "actions/upload-artifact@v7", "checkpoint retention changed")
-    require(sections(steps[6]["with"], 10) == {
+    require(set(steps[8]) == {"name", "if", "uses", "with"} and steps[8]["if"] == "always()"
+            and steps[8]["uses"] == "actions/upload-artifact@v7", "checkpoint retention changed")
+    require(sections(steps[8]["with"], 10) == {
         "name": "shipper-state-final", "path": "${{ runner.temp }}/shipper-cross-run-recovery/.shipper/",
         "include-hidden-files": "true", "if-no-files-found": "error", "retention-days": "30"}, "wrong checkpoint upload")
 
+    require(steps[9] == {"name": "Upload actual toolchain identity", "if": "always()", "uses": "actions/upload-artifact@v7", "with":
+        "          name: shipper-toolchain\n          path: ${{ runner.temp }}/shipper-toolchain.json\n          if-no-files-found: error\n          retention-days: 30"}, "toolchain retention changed")
 
 def workflow_tests():
     text = Path(HARNESS_WORKFLOW).read_text()
     workflow_contract(text)
-    mutations = [("workflow_dispatch:\n", "pull_request:\n"),
+    mutations = [("--mode select-toolchain", "--mode verify-toolchain"),
+                 ("--mode verify-toolchain", "--mode select-toolchain"),
+                 ('cargo "+$RUSTUP_TOOLCHAIN" test', "cargo test"),
+                 ("name: shipper-toolchain", "name: unrelated-toolchain"),
+                 ("workflow_dispatch:\n", "pull_request:\n"),
                  ("github.repository == 'EffortlessMetrics/shipper-swarm'", "true"),
                  ("actions: read", "actions: write"), ("contents: read", "contents: write"),
                  ("ref: ${{ github.sha }}", "ref: main"),
@@ -603,16 +692,20 @@ def workflow_tests():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workflow", type=Path, default=Path(".github/workflows/release.yml"))
-    parser.add_argument("--mode", choices=("test", "prepare", "record"), default="test")
+    parser.add_argument("--mode", choices=("test", "prepare", "record", "select-toolchain", "verify-toolchain"), default="test")
     parser.add_argument("--phase", choices=tuple(PHASES))
     parser.add_argument("--predecessor-run-id", default="")
     args = parser.parse_args()
+    if args.mode in ("select-toolchain", "verify-toolchain"):
+        (select_toolchain if args.mode == "select-toolchain" else verify_toolchain)()
+        return
     workflow = args.workflow.read_text(encoding="utf-8")
     if args.mode == "test":
         test(workflow)
         cross_run_tests()
         transport_tests(workflow)
         workflow_tests()
+        toolchain_tests()
     else:
         context = live_context(args.phase, args.predecessor_run_id)
         if args.mode == "prepare":
